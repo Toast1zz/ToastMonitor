@@ -74,8 +74,8 @@ struct OverviewView: View {
                 HStack(spacing: 22) {
                     heroMini("本周", Format.compact(app.weekTokens), unit: "tokens")
                     heroMini("本月", Format.compact(app.monthTokens), unit: "tokens")
-                    heroMini("已确认支出", Format.money(app.costToday.actual), unit: "实际")
-                    heroMini("估算", Format.money(app.costToday.estimated), unit: "估算口径")
+                    heroMini("已确认支出", Format.money(app.costToday.actual))
+                    heroMini("估算", Format.money(app.costToday.estimated))
                 }
                 .padding(.top, 4)
             }

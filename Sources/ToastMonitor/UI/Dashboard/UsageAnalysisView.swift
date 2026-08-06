@@ -199,12 +199,12 @@ struct UsageAnalysisView: View {
                             if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                             else { path.addLine(to: CGPoint(x: x, y: y)) }
                         }
-                        ctx.stroke(path, with: .color(.orange), lineWidth: 1.6)
+                        ctx.stroke(path, with: .color(TMDesign.accent), lineWidth: 1.6)
                         var area = path
                         area.addLine(to: CGPoint(x: size.width, y: chartH))
                         area.addLine(to: CGPoint(x: 0, y: chartH))
                         area.closeSubpath()
-                        ctx.fill(area, with: .color(.orange.opacity(0.12)))
+                        ctx.fill(area, with: .color(TMDesign.accent.opacity(0.12)))
                         for (idx, label) in monthTickIndices(keys) {
                             let x = keys.count > 1 ? CGFloat(idx) / CGFloat(keys.count - 1) * size.width : 0
                             ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),

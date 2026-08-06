@@ -447,10 +447,19 @@ struct PlansView: View {
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(configured ? TMDesign.quiet : .secondary)
                 Spacer()
-                Button(actionTitle) {
-                    showForm.wrappedValue.toggle()
+                if configured {
+                    Button(actionTitle) {
+                        showForm.wrappedValue.toggle()
+                    }
+                    .font(.system(size: TMType.caption))
+                } else {
+                    Button(actionTitle) {
+                        showForm.wrappedValue.toggle()
+                    }
+                    .font(.system(size: TMType.caption))
+                    .buttonStyle(.borderedProminent)
+                    .tint(TMDesign.accent)
                 }
-                .font(.system(size: TMType.caption))
                 if configured, let clearAction {
                     Button("清除") {
                         showForm.wrappedValue = false

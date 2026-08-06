@@ -45,7 +45,11 @@ printf '%s\n' 'auth_cookie' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor 
 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>  # 远程 feed URL（默认 Tailscale）
 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                 # 清除
 TM_DEBUG=1 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor                     # 逐文件扫描决策日志
+dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --render-dashboard /tmp/dash.png 1000 1120 plans
+                                                                                 # 无头渲染 Dashboard 为 PNG（开发验证，无需窗口/钥匙串）
 ```
+
+开发验证：`--render-dashboard <path> [height] [width] [tab]`，路径含 `dark`/`light` 时按对应外观渲染；tab 取 overview/analysis/plans/sources。
 
 ## 已知边界
 

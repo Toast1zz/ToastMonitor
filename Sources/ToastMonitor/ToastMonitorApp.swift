@@ -192,6 +192,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hosting = NSHostingView(rootView: root)
         if path.contains("dark") {
             hosting.appearance = NSAppearance(named: .darkAqua)
+        } else if path.contains("light") {
+            hosting.appearance = NSAppearance(named: .aqua)
         }
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
         hosting.layoutSubtreeIfNeeded()
