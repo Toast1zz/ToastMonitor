@@ -72,10 +72,10 @@ struct OverviewView: View {
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.faint)
                 HStack(spacing: 22) {
-                    heroMini("本周", Format.compact(app.weekTokens))
-                    heroMini("本月", Format.compact(app.monthTokens))
-                    heroMini("已确认支出", Format.money(app.costToday.actual))
-                    heroMini("估算", Format.money(app.costToday.estimated))
+                    heroMini("本周", Format.compact(app.weekTokens), unit: "tokens")
+                    heroMini("本月", Format.compact(app.monthTokens), unit: "tokens")
+                    heroMini("已确认支出", Format.money(app.costToday.actual), unit: "实际")
+                    heroMini("估算", Format.money(app.costToday.estimated), unit: "估算口径")
                 }
                 .padding(.top, 4)
             }
@@ -84,14 +84,21 @@ struct OverviewView: View {
         }
     }
 
-    private func heroMini(_ label: String, _ value: String) -> some View {
+    private func heroMini(_ label: String, _ value: String, unit: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label)
                 .font(.system(size: TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
-            Text(value)
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .monospacedDigit()
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                if let unit {
+                    Text(unit)
+                        .font(.system(size: TMType.micro))
+                        .foregroundStyle(TMDesign.faint)
+                }
+            }
         }
     }
 
@@ -288,7 +295,7 @@ struct OverviewView: View {
 
     private func rankingColumn(title: String, rows: [(String, Int64, Double, Color)]) -> some View {
         let total = rows.reduce(Int64(0)) { $0 + $1.1 }
-        return VStack(alignment: .leading, spacing: 9) {
+        return VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.system(size: TMType.section, weight: .semibold))
             if rows.isEmpty {
@@ -298,7 +305,7 @@ struct OverviewView: View {
             } else {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     let ratio = total > 0 ? Double(row.1) / Double(total) : 0
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
                             Circle().fill(row.3).frame(width: 6, height: 6)
                             Text(row.0)

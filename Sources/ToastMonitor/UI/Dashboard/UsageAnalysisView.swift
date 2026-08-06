@@ -382,7 +382,7 @@ struct UsageAnalysisView: View {
                 HStack(spacing: 4) {
                     Circle().fill(color(for: n)).frame(width: 6, height: 6)
                     Text(n)
-                        .font(.system(size: 9.5))
+                        .font(.system(size: TMType.micro))
                         .foregroundStyle(.secondary)
                 }
             }

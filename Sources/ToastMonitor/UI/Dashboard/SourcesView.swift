@@ -98,7 +98,7 @@ struct SourcesView: View {
             }
             Text(isRemote ? "实际生效配置：远程 VPS feed（\(remote.feedURL)）"
                  : "实际生效配置：本机日志目录")
-                .font(.system(size: 9.5))
+                .font(.system(size: TMType.micro))
                 .foregroundStyle(.tertiary)
             if let err = h?.error {
                 Text(err)
@@ -147,7 +147,7 @@ struct SourcesView: View {
                 infoItem("数据延迟", st.lastSync > 0 ? Format.remaining(Int64(Date().timeIntervalSince1970) - st.lastSync) : "—")
             }
             Text("Feed: \(remote.feedURL) · 校验 scheme/host/MIME/schema，未知工具拒绝导入")
-                .font(.system(size: 9.5))
+                .font(.system(size: TMType.micro))
                 .foregroundStyle(.tertiary)
         }
         .padding(14)
@@ -162,10 +162,10 @@ struct SourcesView: View {
     private func infoItem(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 10))
+                .font(.system(size: TMType.caption))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(size: TMType.caption, design: .monospaced))
                 .monospacedDigit()
         }
     }

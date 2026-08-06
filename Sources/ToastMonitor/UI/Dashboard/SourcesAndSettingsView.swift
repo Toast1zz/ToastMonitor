@@ -14,13 +14,8 @@ struct SourcesAndSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("来源与设置")
-                        .font(.title2.weight(.semibold))
-                    Text(section == .sources ? "确认采集器、Feed 与数据新鲜度" : "管理来源、凭据与固定订阅")
-                        .font(.subheadline)
-                        .foregroundStyle(TMDesign.quiet)
-                }
+                Text("来源与设置")
+                    .font(.title2.weight(.semibold))
                 Spacer()
                 Picker("部分", selection: $section) {
                     ForEach(Section.allCases) { item in

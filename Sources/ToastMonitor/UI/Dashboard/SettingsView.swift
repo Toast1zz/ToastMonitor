@@ -192,7 +192,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("关于配额面板")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("OpenCode Go 套餐与 OpenRouter 的配额均内建（不依赖 opencode-quota 插件）：\n· 计划与余额：粘贴 workspaceId + 会话 cookie，或命令行 --provision-go 注入\n· OpenRouter API key：在完整面板的设置/配额入口配置，或命令行 --provision-or-key 注入\n· secret 只存 macOS 钥匙串；命令行 secret 通过 stdin，不进入进程参数")
+                    Text("OpenCode Go 套餐与 OpenRouter 的配额均内建（不依赖 opencode-quota 插件）：\n· 额度凭据（OpenRouter key / Go workspaceId + cookie）在「计划与余额」页配置\n· 也可用命令行注入：--provision-or-key 与 --provision-go <workspaceId>，secret 从 stdin 输入\n· secret 只存 macOS 钥匙串；命令行 secret 不进入进程参数")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

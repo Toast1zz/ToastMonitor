@@ -5,13 +5,23 @@ import SwiftUI
 struct SessionListRow: View {
     let session: Database.SessionRow
 
+    /// OpenCode's default title is "New session - <timestamp>"; show the
+    /// project directory instead of the boilerplate.
+    private var displayTitle: String {
+        if let title = session.title, !title.isEmpty, !title.hasPrefix("New session") {
+            return title
+        }
+        if let project = session.project, !project.isEmpty { return project }
+        return session.sessionID
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(ToolKind(rawValue: session.tool)?.color ?? .gray)
                     .frame(width: 7, height: 7)
-                Text(session.title ?? session.sessionID)
+                Text(displayTitle)
                     .font(.system(size: TMType.body, weight: .medium))
                     .lineLimit(1)
                 Spacer()
@@ -45,13 +55,21 @@ struct SessionDetailView: View {
     let session: Database.SessionRow
     @State private var turns: [(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = []
 
+    private var displayTitle: String {
+        if let title = session.title, !title.isEmpty, !title.hasPrefix("New session") {
+            return title
+        }
+        if let project = session.project, !project.isEmpty { return project }
+        return session.sessionID
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Image(systemName: ToolKind(rawValue: session.tool)?.symbol ?? "questionmark")
                         .foregroundStyle(ToolKind(rawValue: session.tool)?.color ?? .gray)
-                    Text(session.title ?? session.sessionID)
+                    Text(displayTitle)
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
                     Spacer()
