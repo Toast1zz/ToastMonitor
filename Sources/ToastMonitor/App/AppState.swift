@@ -9,7 +9,7 @@ final class AppState: ObservableObject {
     @Published var today: Database.ToolTotals = .init(tool: "all", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, count: 0)
     @Published var week: Database.ToolTotals = .init(tool: "all", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, count: 0)
     @Published var month: Database.ToolTotals = .init(tool: "all", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, count: 0)
-    /// 主 token 口径（输入 + 输出；缓存命中是独立明细）。
+    /// 主 token 口径（输入 + 输出 + 缓存命中；codex 的 input 已含缓存）。
     @Published var todayTokens: Int64 = 0
     @Published var weekTokens: Int64 = 0
     @Published var monthTokens: Int64 = 0

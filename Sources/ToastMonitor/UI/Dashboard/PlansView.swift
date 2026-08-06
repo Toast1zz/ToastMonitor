@@ -257,10 +257,10 @@ struct PlansView: View {
                             .font(.system(size: TMType.caption))
                             .disabled(orKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             if orClient.hasKey {
-                                Button(orAppend ? "替换模式" : "追加模式") {
-                                    orAppend.toggle()
-                                }
-                                .font(.system(size: TMType.caption))
+                                Toggle("追加到现有 key", isOn: $orAppend)
+                                    .toggleStyle(.checkbox)
+                                    .font(.system(size: TMType.caption))
+                                    .controlSize(.small)
                             }
                         }
                         if let formMessage, showGoForm || showORForm {

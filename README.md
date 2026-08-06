@@ -49,6 +49,6 @@ TM_DEBUG=1 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor                    
 
 ## 已知边界
 
-- 菜单栏显示「今日 tokens · 已确认变量支出」，估算与固定订阅在 tooltip/面板分开；点击出 popover。完整面板包含四个 Tab：概览、用量分析、计划与余额、来源与设置。弹窗只保留周期摘要、工具/会话/额度速览。
+- 菜单栏显示「今日 tokens · 已确认变量支出」，估算与固定订阅在 tooltip/面板分开；点击出 popover。完整面板包含四个 Tab：概览、用量分析、计划与余额、来源与设置。弹窗只保留周期摘要与速览。
 - 价格表是近似值（按官方价），OpenCode 自带 cost 字段则直接用。
 - 分发需 Developer ID 证书；当前 ad-hoc 签名仅供本机。
