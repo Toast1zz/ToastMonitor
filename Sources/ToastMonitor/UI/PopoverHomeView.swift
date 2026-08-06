@@ -1,0 +1,500 @@
+import SwiftUI
+
+/// Compact, single-purpose menu bar home. It answers three questions quickly:
+/// how much was used, where it came from, and whether a limit needs attention.
+struct PopoverHomeView: View {
+    static let testPeriodNotification = Notification.Name("tmTestPopoverPeriod")
+
+    enum Period: String, CaseIterable, Identifiable {
+        case today = "今日"
+        case week = "7 天"
+        case month = "近 30 天"
+        var id: String { rawValue }
+    }
+
+    @ObservedObject private var app = AppState.shared
+    @ObservedObject private var orClient = OpenRouterClient.shared
+    @ObservedObject private var goClient = OpenCodeGoClient.shared
+    @ObservedObject private var codexQuota = CodexQuotaClient.shared
+    @ObservedObject private var health = SourceHealthHub.shared
+    @State private var period: Period = .today
+    /// Drives countdown refresh (resets etc.) once a minute.
+    @State private var now = Date()
+    private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    private var totals: Database.ToolTotals {
+        switch period {
+        case .today: app.today
+        case .week: app.week
+        case .month: app.month
+        }
+    }
+
+    private var tokens: Int64 {
+        switch period {
+        case .today: app.todayTokens
+        case .week: app.weekTokens
+        case .month: app.monthTokens
+        }
+    }
+
+    private var cost: UsageQueryService.CostQuality {
+        switch period {
+        case .today: app.costToday
+        case .week: app.costWeek
+        case .month: app.costMonth
+        }
+    }
+
+    private var byTool: [Database.ToolTotals] {
+        switch period {
+        case .today: app.byToolToday
+        case .week: app.byToolWeek
+        case .month: app.byToolMonth
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Keep the period selector outside the scroll view. Long 7-day
+            // and 30-day pages may need to scroll after the panel reaches the
+            // screen-height limit, but the selector must always remain visible.
+            periodControl
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 12)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { postPanelHeight(kind: "pinned", height: geo.size.height) }
+                            .onChange(of: geo.size.height) { h in
+                                postPanelHeight(kind: "pinned", height: h)
+                            }
+                    }
+                )
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    hero
+                        .padding(.bottom, 10)
+                    sourceBar
+                        .padding(.bottom, 12)
+                    metricsTable
+                        .padding(.bottom, 14)
+                    Divider()
+                    quotaSection
+                        .padding(.top, 14)
+                }
+                .padding(.horizontal, 20)
+                // A ScrollView normally accepts the viewport's proposed
+                // height, which made every period report the same 684pt panel
+                // height. Force the document to keep its natural vertical
+                // size so 7-day / 30-day pages can actually grow the panel.
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { postPanelHeight(kind: "body", height: geo.size.height) }
+                            .onChange(of: geo.size.height) { h in
+                                postPanelHeight(kind: "body", height: h)
+                            }
+                    }
+                )
+            }
+            .onChange(of: period) { _, _ in
+                // Reset the underlying NSClipView after SwiftUI updates the
+                // document and PanelController resizes the NSPanel.
+                NotificationCenter.default.post(
+                    name: PanelController.resetScrollNotification,
+                    object: nil
+                )
+            }
+            .frame(minHeight: 0, maxHeight: .infinity)
+            .layoutPriority(1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onReceive(minuteTicker) { now = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
+            guard let raw = note.object as? String else { return }
+            switch raw {
+            case "week": period = .week
+            case "month": period = .month
+            default: period = .today
+            }
+        }
+    }
+
+    /// Hero: the decision number is TOKENS. Spend lives in the table below.
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(Format.compact(tokens))
+                    .font(.system(size: 32, weight: .bold))
+                    .monospacedDigit()
+                Text("tokens")
+                    .font(.caption)
+                    .foregroundStyle(TMDesign.quiet)
+            }
+            Text("\(Format.count(totals.count)) 次调用")
+                .font(.caption2)
+                .foregroundStyle(TMDesign.quiet)
+        }
+    }
+
+    private var periodControl: some View {
+        HStack(spacing: 2) {
+            ForEach(Period.allCases) { p in
+                Button {
+                    period = p
+                } label: {
+                    Text(p.rawValue)
+                        .font(.subheadline.weight(period == p ? .semibold : .regular))
+                        .foregroundStyle(period == p ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(period == p ? Color.primary.opacity(0.10) : .clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(p.rawValue)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+    }
+
+    /// 成本拆解表。口径（用户 2026-08-05 定义）：
+    /// 实际支出 = 订阅摊销 + PAYG 实际（OpenRouter 今日 + 直连 turns actual）；
+    /// 估算成本 = turns 估算（未知真实价的估算）。
+    /// 布局：两列三行，每行左 token 指标、右成本指标，label 左 value 右。
+    private var metricsTable: some View {
+        VStack(spacing: 8) {
+            metricPair("输入", Format.compact(totals.input),
+                       "实际支出", actualShown > 0 ? Format.money(actualShown) : "—")
+            Divider()
+            metricPair("输出", Format.compact(totals.output),
+                       "估算成本", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
+            Divider()
+            metricPair("缓存命中", Format.compact(totals.cacheRead),
+                       "缓存率", cacheRateText)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .help("缓存率：缓存命中 token 占全部 token 的比例")
+    }
+
+    /// 缓存率 = 缓存命中 / (输入 + 输出 + 缓存命中)。
+    private var cacheRateText: String {
+        let total = totals.input + totals.output + totals.cacheRead
+        guard total > 0 else { return "—" }
+        return "\(Int(Double(totals.cacheRead) / Double(total) * 100))%"
+    }
+
+    private func metricPair(_ l1: String, _ v1: String, _ l2: String, _ v2: String) -> some View {
+        HStack(spacing: 0) {
+            metricItem(l1, v1)
+                .padding(.trailing, 10)
+            Divider().frame(height: 28)
+            metricItem(l2, v2)
+                .padding(.leading, 10)
+        }
+    }
+
+    private func metricItem(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(TMDesign.quiet)
+            Spacer(minLength: 4)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold))
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 实际支出 = turns 实际 + OpenRouter 今日实际 + 全部订阅摊销。
+    private var actualShown: Double {
+        cost.actual + periodOrUsage + subsAmortized
+    }
+
+    /// 估算成本 = turns 估算（订阅已计入实际支出，不重复）。
+    private var estimatedShown: Double {
+        cost.estimated
+    }
+
+    private var periodOrUsage: Double {
+        switch period {
+        case .today: orClient.state.usageDaily
+        case .week: orClient.state.usageWeekly
+        case .month: orClient.state.usageMonthly
+        }
+    }
+
+    private var subsAmortized: Double {
+        let days: Double
+        switch period {
+        case .today: days = 1
+        case .week: days = 7
+        case .month: days = 30
+        }
+        var t = 0.0
+        for sub in app.subscriptions {
+            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                t += sub.price / Double(info.totalDays) * days
+            }
+        }
+        return t
+    }
+
+    private func compactMetric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(TMDesign.quiet)
+            Text(value)
+                .font(.headline.weight(.semibold))
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var costLine: String {
+        if cost.actual > 0 { return "已确认 \(Format.money(cost.actual))" }
+        if cost.estimated > 0 { return "估算 \(Format.money(cost.estimated))" }
+        return "成本暂无覆盖"
+    }
+
+    /// 来源分段条 + 每来源一行。悬停条上某段时，条上方显示该来源占比
+    /// （popover 内系统 tooltip 不可靠，用 onHover + 文字行）。
+    @State private var hoveredSource: (name: String, pct: Int)?
+    private var sourceBar: some View {
+        let rows = sortedRows
+        let total = rows.reduce(Int64(0)) {
+            $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            if rows.isEmpty {
+                Text("暂无来源数据")
+                    .font(.caption)
+                    .foregroundStyle(TMDesign.quiet)
+            } else {
+                Text(hoveredSource.map { "\($0.name) 占 \($0.pct)%" } ?? " ")
+                    .font(.caption2)
+                    .foregroundStyle(TMDesign.quiet)
+                    .frame(height: 14, alignment: .leading)
+                    .animation(.easeOut(duration: 0.1), value: hoveredSource?.name)
+
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        ForEach(rows, id: \.tool) { row in
+                            let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
+                            let ratio = total > 0 ? CGFloat(value) / CGFloat(total) : 0
+                            Rectangle()
+                                .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+                                .frame(width: geo.size.width * ratio)
+                                .contentShape(Rectangle())
+                                .onHover { hovering in
+                                    hoveredSource = hovering
+                                        ? (ToolKind(rawValue: row.tool)?.displayName ?? row.tool, Int(ratio * 100))
+                                        : nil
+                                }
+                        }
+                    }
+                }
+                .frame(height: 6)
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+
+                ForEach(rows, id: \.tool) { row in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+                            .frame(width: 6, height: 6)
+                        Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                        Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(TMDesign.quiet)
+                    }
+                }
+            }
+        }
+    }
+
+    private var sortedRows: [Database.ToolTotals] {
+        byTool.sorted {
+            (ToolKind(rawValue: $0.tool)?.totalTokens($0) ?? ($0.input + $0.output)) >
+                (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
+        }
+    }
+
+    private func sourceRow(_ row: Database.ToolTotals) -> some View {
+        let kind = ToolKind(rawValue: row.tool)
+        let value = kind?.totalTokens(row) ?? (row.input + row.output)
+        let source = health.sources.first { $0.tool == row.tool }
+        let stateColor = TMDesign.statusColor(isError: source?.error != nil, isStale: source?.isStale == true)
+        return HStack(spacing: 9) {
+            Text(kind?.displayName ?? row.tool)
+                .font(.headline.weight(.semibold))
+            // 状态灯只在异常时出现（错误/过期）；正常保持安静。
+            if let source, source.error != nil || source.isStale {
+                Image(systemName: source.error != nil ? "exclamationmark.triangle.fill" : "clock.badge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(stateColor)
+                    .help(source.error ?? "来源数据过期")
+            }
+            Spacer()
+            Text(Format.compact(value))
+                .font(.subheadline.monospacedDigit())
+        }
+    }
+
+    private var quotaSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TMSectionHeader("计划与余额")
+            goQuota
+            Divider()
+            if let sub = app.subscriptions.first(where: { $0.plan == "codex" }) {
+                codexRow(sub)
+                Divider()
+            }
+            routerQuota
+        }
+    }
+
+    /// Codex Plus：固定月费订阅 + 官方周限额（wham/usage API）。与 OCG
+    /// 同构：名称行 → 进度条 → 明细行（月成本 + 重置）。
+    private func codexRow(_ sub: Database.Subscription) -> some View {
+        let state = codexQuota.state
+        let pct = Double(state.primaryPct ?? 0)
+        let hasQuota = state.primaryPct != nil
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                Text("Codex Plus")
+                    .font(.headline.weight(.semibold))
+                Spacer()
+                if hasQuota {
+                    let remaining = 100 - Int(pct)
+                    Text("周限额剩余 \(remaining)%")
+                        .font(.subheadline.monospacedDigit().weight(.medium))
+                        .foregroundStyle(remaining < 20 ? .red : (remaining < 40 ? .orange : .green))
+                } else if state.error != nil {
+                    Text("限额读取失败")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help(state.error ?? "")
+                }
+            }
+            if hasQuota {
+                let remaining = 100 - Int(pct)
+                TMProgressBar(value: Double(remaining) / 100, tint: remaining < 20 ? .red : (remaining < 40 ? .orange : .green), height: 4)
+                HStack {
+                    Text("\(Format.money(sub.price))/月 固定订阅")
+                    Spacer()
+                    if let reset = state.resetAt {
+                        Text("\(Format.remaining(reset - Int64(now.timeIntervalSince1970))) 后重置")
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(TMDesign.quiet)
+            }
+        }
+    }
+
+    /// 窗口标签由 limit_window_seconds 决定：604800 = 每周（Plus 现状）。
+    private var windowLabel: String {
+        guard let s = codexQuota.state.windowSeconds else { return "限额" }
+        if s >= 7 * 86400 { return "每周" }
+        if s >= 86400 { return "每 \(s / 86400) 天" }
+        if s >= 3600 { return "每 \(s / 3600) 小时" }
+        return "限额"
+    }
+
+    private var goQuota: some View {
+        let state = goClient.state
+        let goSub = app.subscriptions.first { $0.plan == "go" }
+        let goPrice = goSub?.price ?? OpenCodeGoClient.monthlyPriceUSD
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("OpenCode Go")
+                        .font(.headline.weight(.semibold))
+                    if !goClient.configured {
+                        Text("尚未配置")
+                            .font(.caption2)
+                            .foregroundStyle(TMDesign.quiet)
+                    }
+                }
+                Spacer()
+                if let pct = state.monthlyPct {
+                    let remaining = Int(100 - pct)
+                    Text("月限额剩余 \(remaining)%")
+                        .font(.subheadline.monospacedDigit().weight(.medium))
+                        .foregroundStyle(remaining < 20 ? .red : (remaining < 40 ? .orange : .green))
+                }
+            }
+            if let pct = state.monthlyPct {
+                let remaining = Int(100 - pct)
+                TMProgressBar(value: Double(remaining) / 100, tint: remaining < 20 ? .red : (remaining < 40 ? .orange : .green), height: 4)
+                HStack {
+                    Text("\(Format.money(goPrice))/月 · 已用 \(Format.money(pct / 100 * OpenCodeGoClient.monthlyLimitUSD))/\(Format.money(OpenCodeGoClient.monthlyLimitUSD))")
+                    Spacer()
+                    if let reset = state.monthlyReset, state.lastSync > 0 {
+                        Text("\(Format.remaining(state.lastSync + reset - Int64(now.timeIntervalSince1970))) 后重置")
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(TMDesign.quiet)
+            }
+        }
+    }
+
+    private var routerQuota: some View {
+        let state = orClient.state
+        return HStack(spacing: 9) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("OpenRouter")
+                    .font(.headline.weight(.semibold))
+                Text(orClient.hasKey ? "本月实际使用" : "尚未配置 API key")
+                    .font(.caption2)
+                    .foregroundStyle(TMDesign.quiet)
+            }
+            Spacer()
+            if orClient.hasKey {
+                Text(Format.money(state.usageMonthly))
+                    .font(.subheadline.monospacedDigit().weight(.medium))
+            } else {
+                Text("—")
+                    .foregroundStyle(TMDesign.faint)
+            }
+        }
+    }
+
+    /// Post a measured height slice straight to the panel controller.
+    /// Notifications bypass SwiftUI's preference chain, which is unreliable
+    /// across ScrollView boundaries (the pinned slice was stuck at 0 and the
+    /// bottom rows — OpenRouter — got cut off).
+    private func postPanelHeight(kind: String, height: CGFloat) {
+        NotificationCenter.default.post(
+            name: PanelController.contentHeightNotification,
+            object: nil,
+            userInfo: ["kind": kind, "height": height]
+        )
+    }
+}

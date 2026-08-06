@@ -1,0 +1,14 @@
+# Build artifacts
+.build/
+dist/
+.buildSystem_*
+
+# User data & credentials — NEVER commit
+backups/
+*.db
+*.sqlite
+*.sqlite3
+*.keychain
+
+# macOS
+.DS_Store
