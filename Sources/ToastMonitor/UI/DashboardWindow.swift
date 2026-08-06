@@ -74,15 +74,6 @@ struct DashboardView: View {
             case .sources: "slider.horizontal.3"
             }
         }
-
-        var subtitle: String {
-            switch self {
-            case .overview: "概览"
-            case .analysis: "用量分析"
-            case .plans: "计划与余额"
-            case .sources: "来源与设置"
-            }
-        }
     }
 
     var body: some View {
@@ -100,33 +91,22 @@ struct DashboardView: View {
 
     private var sidebar: some View {
         List(selection: $tab) {
-            Section {
-                ForEach(Tab.allCases) { item in
-                    Label {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(item.rawValue)
-                            Text(item.subtitle)
-                                .font(.caption2)
-                                .foregroundStyle(TMDesign.quiet)
-                        }
-                    } icon: {
-                        Image(systemName: item.icon)
-                            .foregroundStyle(item == tab ? TMDesign.accent : TMDesign.quiet)
-                    }
-                    .tag(item)
-                    .padding(.vertical, 3)
+            ForEach(Tab.allCases) { item in
+                Label {
+                    Text(item.rawValue)
+                        .font(.system(size: TMType.body))
+                } icon: {
+                    Image(systemName: item.icon)
+                        .foregroundStyle(item == tab ? TMDesign.accent : TMDesign.quiet)
                 }
-            } header: {
-                Text("工作台")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(TMDesign.quiet)
-                    .textCase(nil)
+                .tag(item)
+                .padding(.vertical, 4)
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .navigationTitle("ToastMonitor")
-        .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
+        .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
     }
 
     private var detail: some View {

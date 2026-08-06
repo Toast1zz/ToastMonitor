@@ -138,6 +138,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("diagnostics export failed")
             exit(1)
         }
+        // Headless UI verification: render the dashboard to a PNG without a
+        // window or Keychain access (OpenRouter/Go clients are not started).
+        // Usage: ToastMonitor --render-dashboard /tmp/dash.png
+        if let flag = args.firstIndex(of: "--render-dashboard") {
+            let outPath = args[flag + 1]
+            let height = (flag + 2 < args.count) ? (Double(args[flag + 2]) ?? 720) : 720
+            let width = (flag + 3 < args.count) ? (Double(args[flag + 3]) ?? 1120) : 1120
+            let tabName = flag + 4 < args.count ? args[flag + 4] : "overview"
+            let tab: DashboardView.Tab? = {
+                switch tabName {
+                case "analysis": return .analysis
+                case "plans": return .plans
+                case "sources": return .sources
+                default: return .overview
+                }
+            }()
+            Database.shared.open()
+            ensureDefaultSubscriptions()
+            AppState.shared.start()
+            let deadline = Date().addingTimeInterval(10)
+            while AppState.shared.snapshotFetchedAt == 0 && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            renderDashboard(to: outPath, height: height, width: width, tab: tab)
+            exit(0)
+        }
 
         NSApp.setActivationPolicy(.accessory)
         Database.shared.open() // synchronous — needed before any DB reads
@@ -156,6 +183,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 WindowManager.shared.show()
             }
         }
+    }
+
+    /// Renders the dashboard root into a PNG via off-screen NSHostingView
+    /// (used by --render-dashboard; no window server round-trip needed).
+    private func renderDashboard(to path: String, height: CGFloat = 720, width: CGFloat = 1120, tab: DashboardView.Tab? = nil) {
+        let root = DashboardView(initialTab: tab).environmentObject(AppState.shared)
+        let hosting = NSHostingView(rootView: root)
+        if path.contains("dark") {
+            hosting.appearance = NSAppearance(named: .darkAqua)
+        }
+        hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            print("render failed: no bitmap rep")
+            exit(1)
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            print("render failed: no PNG data")
+            exit(1)
+        }
+        try? data.write(to: URL(fileURLWithPath: path))
+        print("rendered \(path)")
     }
 
     /// Custom status item + floating panel (Tusi-style 20pt corners).

@@ -1,29 +1,47 @@
 import SwiftUI
+import Charts
 
-/// 计划与余额 (spec §3.2): 一个服务一张主卡，额度/固定费用/续期/余额在同一上下文，
-/// 清楚区分「额度消耗」「现金余额」「固定订阅价格」「估算价值」。
+/// 计划与余额: one card per service — quota, balance, credentials and history
+/// in the same place. Fixed subscriptions are a read-only summary here;
+/// add/edit lives in 设置.
 struct PlansView: View {
     @EnvironmentObject var app: AppState
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
+    @State private var goSnapshots: [Database.OGSnapshot] = []
+    @State private var orSnapshots: [Database.ORSnapshot] = []
+    @State private var showGoForm = false
+    @State private var showORForm = false
+    @State private var goWS = ""
+    @State private var goCookie = ""
+    @State private var orKey = ""
+    @State private var orAppend = false
+    @State private var formMessage: String?
+    @State private var formFailed = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 TMPageHeader(
                     title: "计划与余额",
-                    subtitle: "把实际支出、估算、固定订阅和额度消耗分开显示",
+                    subtitle: "一个服务一张卡：额度、余额、凭据与历史都在同一处",
                     eyebrow: "财务"
                 )
                 goCard
-                Divider()
                 orCard
-                Divider()
                 subsCard
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
         }
+        .onAppear { loadSnapshots() }
+        .onReceive(goClient.$state) { _ in loadSnapshots() }
+        .onReceive(orClient.$state) { _ in loadSnapshots() }
+    }
+
+    private func loadSnapshots() {
+        UsageQueryService.shared.loadOGSnapshots(limit: 120) { goSnapshots = $0 }
+        UsageQueryService.shared.loadORSnapshots(limit: 120) { orSnapshots = $0 }
     }
 
     // MARK: - OpenCode Go
@@ -31,128 +49,153 @@ struct PlansView: View {
     private var goCard: some View {
         let go = goClient.state
         return serviceCard(title: "OpenCode Go", icon: "g.circle.fill", color: .orange) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("状态")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if go.isLoading {
-                        ProgressView().controlSize(.mini)
-                    } else if !goClient.configured {
-                        Text("未配置")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                    } else if go.error != nil {
-                        TMStatusPill(text: "同步失败", color: .red, symbol: "xmark.circle.fill")
-                    } else {
-                        Label("已同步", systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.green)
-                    }
-                }
-
+            VStack(alignment: .leading, spacing: 12) {
+                statusHeader(
+                    isLoading: go.isLoading,
+                    configured: goClient.configured,
+                    error: go.error,
+                    syncedText: go.lastOK > 0 ? "更新于 \(Format.dateTime(go.lastOK))" : nil,
+                    refresh: goClient.configured ? { goClient.refresh() } : nil
+                )
                 if let err = go.error {
                     Text(err)
-                        .font(.caption)
+                        .font(.system(size: TMType.caption))
                         .foregroundStyle(.red.opacity(0.85))
                         .lineLimit(2)
                 }
 
-                if let pct = go.monthlyPct {
-                    HStack {
-                        Text("额度消耗")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("\(Format.money(pct / 100 * OpenCodeGoClient.monthlyLimitUSD)) / $\(Int(OpenCodeGoClient.monthlyLimitUSD))")
-                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .monospacedDigit()
-                        Text("\(Int(pct))%")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundStyle(pct > 95 ? .red : (pct > 80 ? .orange : .green))
+                // Credentials live here — provisioning and quota are one task.
+                credentialsRow(
+                    configured: goClient.configured,
+                    summary: goClient.configured ? "已配置 workspace" : "未配置 — 配额无法读取",
+                    actionTitle: goClient.configured ? "更换凭据" : "配置",
+                    showForm: $showGoForm,
+                    clearAction: {
+                        goClient.clear()
+                        goWS = ""
+                        goCookie = ""
+                        formMessage = "OpenCode Go 凭据已清除"
+                        formFailed = false
                     }
-                    GeometryReader { geo in
-                        let w = geo.size.width
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.primary.opacity(0.06))
-                            Capsule().fill(pct > 95 ? Color.red : (pct > 80 ? Color.orange : Color.green))
-                                .frame(width: max(3, w * CGFloat(pct / 100)))
-                            let breakEven = subForGo?.price ?? 10
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.45))
-                                .frame(width: 1)
-                                .offset(x: w * CGFloat(min(breakEven / OpenCodeGoClient.monthlyLimitUSD, 1)) - 0.5)
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            TextField("workspaceId (wrk_...)", text: $goWS)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                            SecureField("auth cookie (Fe26.2**...)", text: $goCookie)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                            Button("保存并查询") {
+                                let ws = goWS.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let ck = goCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !ws.isEmpty, !ck.isEmpty else { return }
+                                if goClient.provision(workspaceId: ws, cookie: ck) {
+                                    goClient.refresh()
+                                    showGoForm = false
+                                    goWS = ""
+                                    goCookie = ""
+                                    formMessage = "OpenCode Go 凭据已保存"
+                                    formFailed = false
+                                } else {
+                                    formMessage = goClient.state.error ?? "保存失败（钥匙串不可用）"
+                                    formFailed = true
+                                }
+                            }
+                            .font(.system(size: TMType.caption))
+                        }
+                        if let formMessage, showGoForm || showORForm {
+                            Text(formMessage)
+                                .font(.system(size: TMType.caption))
+                                .foregroundStyle(formFailed ? .red : .green)
                         }
                     }
-                    .frame(height: 8)
-                    Text("竖线 = 订阅价格参考线（\(Format.money(subForGo?.price ?? 10))），非官方回本结论")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
                 }
 
-                windowRow("5 小时窗口", pct: go.rollingPct, reset: go.rollingReset)
-                windowRow("本周窗口", pct: go.weeklyPct, reset: go.weeklyReset)
-                windowRow("本月窗口", pct: go.monthlyPct, reset: go.monthlyReset)
-
-                if let sub = subForGo, let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
-                    Divider()
-                    HStack {
-                        Text("固定订阅")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "月" : "年")")
-                            .font(.system(size: 12, design: .monospaced))
-                            .monospacedDigit()
-                        Text("周期第 \(info.dayOfCycle)/\(info.totalDays) 天")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                if goClient.configured {
+                    if let pct = go.monthlyPct {
+                        quotaBar(
+                            title: "月度额度",
+                            pct: pct,
+                            reset: go.monthlyReset,
+                            limit: OpenCodeGoClient.monthlyLimitUSD,
+                            color: .orange,
+                            reference: subForGo?.price
+                        )
                     }
-                    if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                        let line = ForecastText.compact(for: fc, plan: sub.plan)
-                        HStack {
-                            Text("预测")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                    windowRow("5 小时窗口", pct: go.rollingPct, reset: go.rollingReset)
+                    windowRow("本周窗口", pct: go.weeklyPct, reset: go.weeklyReset)
+
+                    if let sub = subForGo, let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                        Divider()
+                        HStack(spacing: 8) {
+                            Text("固定订阅")
+                                .font(.system(size: TMType.caption))
+                                .foregroundStyle(TMDesign.quiet)
                             Spacer()
-                            Text(line.text)
-                                .font(.system(size: 11, design: .monospaced))
+                            Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "月" : "年")")
+                                .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
                                 .monospacedDigit()
-                                .foregroundStyle(ForecastText.color(line.status))
+                            Text("第 \(info.dayOfCycle)/\(info.totalDays) 天")
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(TMDesign.quiet)
+                            if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
+                                let line = ForecastText.compact(for: fc, plan: sub.plan)
+                                Text(line.text)
+                                    .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
+                                    .monospacedDigit()
+                                    .foregroundStyle(ForecastText.color(line.status))
+                            }
                         }
                     }
+
+                    goHistory
                 }
             }
         }
     }
 
-    private func windowRow(_ label: String, pct: Double?, reset: Int64?) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
-            if let pct {
-                Text("\(Int(pct))%")
-                    .font(.system(size: 11, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(pct > 95 ? .red : (pct > 80 ? .orange : .primary))
+    private var goHistory: some View {
+        let data = goSnapshots.filter { $0.monthlyPct != nil }
+        return VStack(alignment: .leading, spacing: 6) {
+            if data.count >= 2 {
+                Text("月度用量历史")
+                    .font(.system(size: TMType.caption, weight: .semibold))
+                Chart(data.reversed()) { s in
+                    if let pct = s.monthlyPct {
+                        LineMark(
+                            x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                            y: .value("用量 %", pct)
+                        )
+                        .foregroundStyle(.orange.opacity(0.85))
+                        .interpolationMethod(.catmullRom)
+                    }
+                    if let pct = s.weeklyPct {
+                        LineMark(
+                            x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                            y: .value("用量 %", pct)
+                        )
+                        .foregroundStyle(.yellow.opacity(0.7))
+                        .interpolationMethod(.catmullRom)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) { Text("\(Int(v))%") }
+                        }
+                    }
+                }
+                .frame(height: 110)
             } else {
-                Text("—")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-            if let reset, goClient.state.lastSync > 0 {
-                let absReset = goClient.state.lastSync + reset
-                Text("重置 \(Format.remaining(absReset - Int64(Date().timeIntervalSince1970)))")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                Text("快照不足，暂无可绘制历史（持续运行后出现）")
+                    .font(.system(size: TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
             }
         }
+        .padding(.top, 4)
     }
 
     private var subForGo: Database.Subscription? {
@@ -164,125 +207,371 @@ struct PlansView: View {
     private var orCard: some View {
         let or = orClient.state
         return serviceCard(title: "OpenRouter", icon: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("状态")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    if or.isManagementKey {
-                        Text("管理 key")
-                            .font(.system(size: 9))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(ToolKind.openrouter.color.opacity(0.14)))
-                            .foregroundStyle(ToolKind.openrouter.color)
-                    }
-                    Spacer()
-                    if or.isLoading {
-                        ProgressView().controlSize(.mini)
-                    } else if !orClient.hasKey {
-                        Text("未配置")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                    } else if or.error != nil {
-                        TMStatusPill(text: "部分失败", color: .red, symbol: "exclamationmark.triangle.fill")
-                    } else {
-                        Label("已同步", systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.green)
-                    }
-                }
-
+            VStack(alignment: .leading, spacing: 12) {
+                statusHeader(
+                    isLoading: or.isLoading,
+                    configured: orClient.hasKey,
+                    error: or.error,
+                    syncedText: or.lastOK > 0 ? "更新于 \(Format.dateTime(or.lastOK))" : nil,
+                    refresh: orClient.hasKey ? { orClient.refresh() } : nil
+                )
                 if let err = or.error {
                     Text(err)
-                        .font(.caption)
+                        .font(.system(size: TMType.caption))
                         .foregroundStyle(.red.opacity(0.85))
                         .lineLimit(2)
                 }
 
+                credentialsRow(
+                    configured: orClient.hasKey,
+                    summary: orClient.hasKey ? "已配置 \(or.keyCount) 个 key（钥匙串）" : "未配置 — 额度无法读取",
+                    actionTitle: orClient.hasKey ? "更换 / 追加" : "配置",
+                    showForm: $showORForm,
+                    clearAction: {
+                        _ = orClient.setKey(nil)
+                        orKey = ""
+                        orAppend = false
+                        formMessage = "OpenRouter key 已清除"
+                        formFailed = false
+                    }
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            SecureField("sk-or-...", text: $orKey)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                            Button("保存") {
+                                let k = orKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let ok = orAppend ? orClient.addKey(k) : orClient.setKey(k)
+                                if ok {
+                                    showORForm = false
+                                    orKey = ""
+                                    orAppend = false
+                                    formMessage = "OpenRouter key 已保存并开始查询"
+                                    formFailed = false
+                                } else {
+                                    formMessage = orClient.state.error ?? "保存失败（钥匙串不可用）"
+                                    formFailed = true
+                                }
+                            }
+                            .font(.system(size: TMType.caption))
+                            .disabled(orKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if orClient.hasKey {
+                                Button(orAppend ? "替换模式" : "追加模式") {
+                                    orAppend.toggle()
+                                }
+                                .font(.system(size: TMType.caption))
+                            }
+                        }
+                        if let formMessage, showGoForm || showORForm {
+                            Text(formMessage)
+                                .font(.system(size: TMType.caption))
+                                .foregroundStyle(formFailed ? .red : .green)
+                        }
+                    }
+                }
+
                 if orClient.hasKey {
-                    metricRow("现金余额", Format.money(or.accountBalance ?? 0))
-                    metricRow("今日实际使用", Format.money(or.usageDaily))
-                    metricRow("本月实际使用", Format.money(or.usageMonthly))
-                    if let limit = or.limit {
-                        metricRow("key 限额", "\(Format.money(limit)) · 剩余 \(Format.money(or.limitRemaining ?? 0))")
+                    HStack(spacing: 24) {
+                        liveStat("现金余额", Format.money(or.accountBalance ?? 0))
+                        liveStat("今日实际", Format.money(or.usageDaily))
+                        liveStat("本月实际", Format.money(or.usageMonthly))
+                        if let limit = or.limit {
+                            liveStat("key 限额", Format.money(limit))
+                        }
+                    }
+                    if let remaining = or.limitRemaining, let limit = or.limit {
+                        quotaBar(
+                            title: "key 额度剩余",
+                            pct: limit > 0 ? remaining / limit * 100 : 0,
+                            reset: nil,
+                            limit: limit,
+                            color: .blue,
+                            reference: nil,
+                            remainingText: Format.money(remaining)
+                        )
                     }
                     Text(or.isManagementKey
-                         ? "能力：管理 key 可枚举全部 key 与账户额度；余额来自账户级 credits。"
-                         : "能力：普通 key 仅可查本 key 用量与账户余额；key 限额仅管理 key 可见。")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Text("未配置 API key，无法读取 OpenRouter 额度")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                         ? "管理 key：可枚举全部 key 与账户额度；余额来自账户级 credits。"
+                         : "普通 key：仅可查本 key 用量与账户余额；key 限额仅管理 key 可见。建议在控制台创建管理级 key。")
+                        .font(.system(size: TMType.micro))
+                        .foregroundStyle(TMDesign.faint)
+
+                    orHistory
                 }
             }
         }
     }
 
-    private func metricRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .monospacedDigit()
+    private var orHistory: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if orSnapshots.count >= 2 {
+                Text("用量快照历史")
+                    .font(.system(size: TMType.caption, weight: .semibold))
+                Chart(orSnapshots.reversed()) { s in
+                    LineMark(
+                        x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                        y: .value("用量", s.usage)
+                    )
+                    .foregroundStyle(ToolKind.openrouter.color.opacity(0.8))
+                    .interpolationMethod(.catmullRom)
+                    if let limit = s.limit {
+                        RuleMark(y: .value("额度", limit))
+                            .foregroundStyle(.gray.opacity(0.4))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) { Text(Format.moneyShort(v)) }
+                        }
+                    }
+                }
+                .frame(height: 110)
+            } else {
+                Text("快照不足，暂无可绘制历史（持续运行后出现）")
+                    .font(.system(size: TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+            }
         }
+        .padding(.top, 4)
     }
 
-    // MARK: - 固定订阅
+    // MARK: - 固定订阅（只读摘要，管理在设置）
 
     private var subsCard: some View {
         serviceCard(title: "固定订阅", icon: "calendar", color: .gray) {
             if app.subscriptions.isEmpty {
-                Text("暂无订阅 — 在设置页添加（如 OpenCode Go $10/月）")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("暂无订阅记录。订阅金额是固定成本（如 Codex Plus $20/月），不计入 API 支出统计。")
+                        .font(.system(size: TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
+                    Button("在设置中添加订阅") {
+                        NotificationCenter.default.post(name: DashboardView.selectTab, object: DashboardView.Tab.sources)
+                    }
+                    .font(.system(size: TMType.caption))
+                }
             } else {
                 VStack(spacing: 0) {
                     ForEach(app.subscriptions) { sub in
-                        HStack {
+                        HStack(spacing: 8) {
                             Text(sub.name)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: TMType.body, weight: .medium))
+                            if !sub.plan.isEmpty {
+                                Text(sub.plan == "go" ? "关联 Go" : (sub.plan == "openrouter" ? "关联 OpenRouter" : ""))
+                                    .font(.system(size: TMType.micro))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                    .foregroundStyle(TMDesign.quiet)
+                            }
                             Spacer()
                             Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "月" : "年")")
-                                .font(.system(size: 11.5, design: .monospaced))
+                                .font(.system(size: TMType.body, weight: .semibold, design: .monospaced))
                                 .monospacedDigit()
                         }
-                        .padding(.vertical, 4)
-                        if sub.id != app.subscriptions.last?.id { Divider() }
+                        .padding(.vertical, 5)
+                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                            HStack(spacing: 8) {
+                                Text("第 \(info.dayOfCycle)/\(info.totalDays) 天 · 续期 \(SubscriptionMath.dateStr(info.end)) · 日均 \(Format.money(sub.price / Double(info.totalDays)))")
+                                    .font(.system(size: TMType.caption, design: .monospaced))
+                                    .monospacedDigit()
+                                    .foregroundStyle(TMDesign.quiet)
+                                if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
+                                    let line = ForecastText.compact(for: fc, plan: sub.plan)
+                                    Text(line.text)
+                                        .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
+                                        .monospacedDigit()
+                                        .foregroundStyle(ForecastText.color(line.status))
+                                }
+                                Spacer()
+                            }
+                        }
+                        if sub.id != app.subscriptions.last?.id { Divider().padding(.vertical, 3) }
                     }
                 }
-                Text("固定订阅金额不与其他口径相加（不计入 API 支出统计）")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.tertiary)
             }
         }
     }
 
-    // MARK: - 容器
+    // MARK: - 容器与通用行
 
-    private func serviceCard<Content: View>(title: String, icon: String, color: Color, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func statusHeader(isLoading: Bool, configured: Bool, error: String?,
+                              syncedText: String?, refresh: (() -> Void)?) -> some View {
+        HStack(spacing: 8) {
+            Text("状态")
+                .font(.system(size: TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            if isLoading {
+                ProgressView().controlSize(.mini)
+            } else if !configured {
+                Text("未配置")
+                    .font(.system(size: TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+            } else if error != nil {
+                TMStatusPill(text: "同步失败", color: .red, symbol: "xmark.circle.fill")
+            } else {
+                Label("已同步", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: TMType.caption))
+                    .foregroundStyle(.green)
+            }
+            Spacer()
+            if let syncedText {
+                Text(syncedText)
+                    .font(.system(size: TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+            }
+            if let refresh {
+                Button {
+                    refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: TMType.caption))
+            }
+        }
+    }
+
+    private func credentialsRow(configured: Bool, summary: String, actionTitle: String,
+                                showForm: Binding<Bool>, clearAction: (() -> Void)? = nil,
+                                @ViewBuilder form: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: configured ? "key.fill" : "key.slash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(configured ? .green : TMDesign.quiet)
+                Text(summary)
+                    .font(.system(size: TMType.caption))
+                    .foregroundStyle(configured ? TMDesign.quiet : .secondary)
+                Spacer()
+                Button(actionTitle) {
+                    showForm.wrappedValue.toggle()
+                }
+                .font(.system(size: TMType.caption))
+                if configured, let clearAction {
+                    Button("清除") {
+                        showForm.wrappedValue = false
+                        clearAction()
+                    }
+                    .font(.system(size: TMType.caption))
+                }
+            }
+            if showForm.wrappedValue {
+                form()
+            }
+        }
+    }
+
+    private func quotaBar(title: String, pct: Double, reset: Int64?,
+                          limit: Double, color: Color, reference: Double?,
+                          remainingText: String? = nil) -> some View {
+        let p = min(max(pct, 0), 100)
+        let used = p / 100 * limit
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: TMType.caption, weight: .medium))
+                Spacer()
+                if let remainingText {
+                    Text("剩余 \(remainingText) / \(Format.money(limit))")
+                        .font(.system(size: TMType.caption, design: .monospaced))
+                        .monospacedDigit()
+                } else {
+                    Text("已用 \(Format.money(used)) / \(Format.money(limit))")
+                        .font(.system(size: TMType.caption, design: .monospaced))
+                        .monospacedDigit()
+                }
+                Text("\(Int(p))%")
+                    .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(p > 95 ? .red : (p > 80 ? .orange : (p > 50 ? color : .green)))
+            }
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.07))
+                    Capsule().fill(p > 95 ? Color.red : (p > 80 ? Color.orange : color))
+                        .frame(width: max(3, w * CGFloat(p / 100)))
+                    if let reference {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.4))
+                            .frame(width: 1)
+                            .offset(x: w * CGFloat(min(reference / limit, 1)) - 0.5)
+                    }
+                }
+            }
+            .frame(height: 7)
+            if let reference {
+                Text("竖线 = 订阅价格参考线（\(Format.money(reference))）")
+                    .font(.system(size: TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+            }
+            if let reset, pct > 0 {
+                Text("重置于 \(Format.countdown(reset))")
+                    .font(.system(size: TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+            }
+        }
+    }
+
+    private func windowRow(_ label: String, pct: Double?, reset: Int64?) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            Spacer()
+            if let pct {
+                Text("\(Int(pct))%")
+                    .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(pct > 95 ? .red : (pct > 80 ? .orange : .primary))
+            } else {
+                Text("—")
+                    .font(.system(size: TMType.caption))
+                    .foregroundStyle(TMDesign.faint)
+            }
+            if let reset, goClient.state.lastSync > 0 {
+                let absReset = goClient.state.lastSync + reset
+                Text("重置 \(Format.remaining(absReset - Int64(Date().timeIntervalSince1970)))")
+                    .font(.system(size: TMType.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.quiet)
+            }
+        }
+    }
+
+    private func liveStat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            Text(value)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+        }
+    }
+
+    private func serviceCard<Content: View>(title: String, icon: String, color: Color,
+                                            @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(color)
-                    .frame(width: 20)
+                    .frame(width: 22)
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
             }
             content()
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 2)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous)
                 .stroke(TMDesign.divider, lineWidth: 1)
         }
     }

@@ -67,6 +67,15 @@ final class Database {
         exec("PRAGMA foreign_keys=ON;")
         migrate()
         migrateDropLegacyTurnsUnique()
+        // OpenCode upstream stored `model` as a JSON object
+        // ({"id":...,"providerID":...}) in some versions; normalize any
+        // already-imported rows once (idempotent, no-op afterwards).
+        execChecked("""
+        UPDATE sessions SET model = json_extract(model, '$.id')
+        WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
+        UPDATE turns SET model = json_extract(model, '$.id')
+        WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
+        """)
     }
 
     /// P0-3: rebuilds `turns` without the legacy compound UNIQUE constraint

@@ -43,7 +43,7 @@ enum OpenCodeParser {
         while sqlite3_step(stmt) == SQLITE_ROW {
             let col = { (i: Int32) -> String in String(cString: sqlite3_column_text(stmt, i)) }
             let model: String? = sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : col(3)
-            out.append(Row(id: col(0), title: col(1), directory: col(2), model: model,
+            out.append(Row(id: col(0), title: col(1), directory: col(2), model: normalizeModel(model),
                            cost: sqlite3_column_double(stmt, 4),
                            input: sqlite3_column_int64(stmt, 5),
                            output: sqlite3_column_int64(stmt, 6),
@@ -54,6 +54,19 @@ enum OpenCodeParser {
                            timeUpdated: sqlite3_column_int64(stmt, 11)))
         }
         return out
+    }
+
+    /// The `model` column is sometimes a JSON object
+    /// ({"id":"...","providerID":"..."}) instead of a bare id. Extract the id
+    /// so the UI never shows raw JSON in session/model rows.
+    static func normalizeModel(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if raw.hasPrefix("{"), let data = raw.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let id = obj["id"] as? String, !id.isEmpty {
+            return id
+        }
+        return raw
     }
 
     static func scan() -> (turns: [TurnRecord], sessions: [SessionInfo]) {

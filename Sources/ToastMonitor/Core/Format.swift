@@ -57,4 +57,15 @@ enum Format {
         if s >= 60 { return "\(s / 60)m" }
         return "\(s)s"
     }
+
+    /// 重置倒计时: "3天2小时" / "45分后"（配额窗口重置）。
+    static func countdown(_ secs: Int64) -> String {
+        if secs <= 0 { return "即将重置" }
+        let d = secs / 86400
+        let h = (secs % 86400) / 3600
+        let m = (secs % 3600) / 60
+        if d > 0 { return "\(d)天\(h)小时" }
+        if h > 0 { return "\(h)小时\(m)分" }
+        return "\(m)分后"
+    }
 }

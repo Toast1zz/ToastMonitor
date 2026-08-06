@@ -3,19 +3,12 @@ import SwiftUI
 /// 设置: per-tool data source (local Mac vs remote VPS feed) + feed URL.
 struct SettingsView: View {
     @ObservedObject private var health = SourceHealthHub.shared
-    @ObservedObject private var orClient = OpenRouterClient.shared
-    @ObservedObject private var goClient = OpenCodeGoClient.shared
     @State private var feedURL = ""
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
     @State private var saved = false
     @State private var feedError = false
     @State private var sourceSaved: ToolKind?
     @State private var sourceFailed: ToolKind?
-    @State private var orKeyInput = ""
-    @State private var goWorkspaceID = ""
-    @State private var goCookie = ""
-    @State private var credentialMessage: String?
-    @State private var credentialFailed = false
 
     private let tools = ToolKind.allCases.filter { $0 != .openrouter }
 
@@ -96,7 +89,7 @@ struct SettingsView: View {
                 }
                 .tmPanelSurface()
 
-                // 来源健康（每采集器一张状态卡）
+                // 来源健康（详情在「来源状态」页，这里只留一行摘要）
                 VStack(alignment: .leading, spacing: 10) {
                     Text("数据来源健康")
                         .font(.system(size: 13, weight: .semibold))
@@ -105,33 +98,22 @@ struct SettingsView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(health.sources) { h in
-                            HStack(spacing: 10) {
-                                Image(systemName: ToolKind(rawValue: h.tool)?.symbol ?? "dot.radiowaves.left.and.right")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(ToolKind(rawValue: h.tool)?.color ?? .gray)
-                                    .frame(width: 18)
-                                Text(ToolKind(rawValue: h.tool)?.displayName ?? h.tool)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .frame(width: 100, alignment: .leading)
-                                Text(h.mode == "remote" ? "远程" : "本机")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 34)
-                                Spacer()
-                                if let err = h.error {
-                                    Text(err)
-                                        .font(.system(size: 10.5))
-                                        .foregroundStyle(.red)
-                                } else {
-                                    Text("\(Format.dateTime(h.lastScan)) · \(h.lastRows) 条 · \(String(format: "%.0fms", h.durationMs))")
-                                        .font(.system(size: 10.5, design: .monospaced))
-                                        .monospacedDigit()
-                                        .foregroundStyle(.secondary)
-                                }
+                        let broken = health.sources.filter { $0.error != nil }.count
+                        let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
+                        HStack(spacing: 8) {
+                            if broken > 0 {
+                                TMStatusPill(text: "\(broken) 个异常", color: .red, symbol: "xmark.circle.fill")
                             }
-                            .padding(.vertical, 3)
-                            Divider()
+                            if stale > 0 {
+                                TMStatusPill(text: "\(stale) 个过期", color: .orange, symbol: "clock.badge.exclamationmark")
+                            }
+                            if broken == 0 && stale == 0 {
+                                TMStatusPill(text: "全部正常", color: .green, symbol: "checkmark.circle.fill")
+                            }
+                            Spacer()
+                            Text("详细状态与测试连接见「来源状态」")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
                         }
                     }
                 }
@@ -193,7 +175,19 @@ struct SettingsView: View {
                 }
                 .tmPanelSurface()
 
-                quotaCredentials
+                // 额度凭据统一在「计划与余额」页管理（状态 + 配置 + 历史同处）。
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("配额凭据")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("OpenRouter API key 与 OpenCode Go cookie 在「计划与余额」页配置——额度、凭据与历史同处一张卡，凭据只存 macOS 钥匙串，保存失败不会回退到 SQLite 明文。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Button("前往计划与余额") {
+                        NotificationCenter.default.post(name: DashboardView.selectTab, object: DashboardView.Tab.plans)
+                    }
+                    .font(.system(size: 11))
+                }
+                .tmPanelSurface()
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("关于配额面板")
@@ -215,109 +209,6 @@ struct SettingsView: View {
                 sources[t] = t.sourceIsRemote
             }
         }
-    }
-
-    private var quotaCredentials: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("配额凭据")
-                .font(.system(size: 13, weight: .semibold))
-            Text("凭据只保存到 macOS 钥匙串；保存失败时不会回退到 SQLite 明文。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("OpenRouter")
-                        .font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Text(orClient.hasKey ? "已配置 \(orClient.state.keyCount) 个 key" : "未配置")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(orClient.hasKey ? .green : .secondary)
-                    if orClient.hasKey {
-                        Button("清除") {
-                            _ = orClient.setKey(nil)
-                            orKeyInput = ""
-                            credentialMessage = "OpenRouter key 已清除"
-                            credentialFailed = false
-                        }
-                        .font(.system(size: 11))
-                    }
-                }
-                HStack(spacing: 8) {
-                    SecureField("sk-or-...", text: $orKeyInput)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11.5, design: .monospaced))
-                    Button("保存") {
-                        let key = orKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if orClient.setKey(key) {
-                            orKeyInput = ""
-                            credentialMessage = "OpenRouter key 已保存并开始查询"
-                            credentialFailed = false
-                        } else {
-                            credentialMessage = orClient.state.error ?? "OpenRouter key 保存失败"
-                            credentialFailed = true
-                        }
-                    }
-                    .font(.system(size: 11))
-                    .disabled(orKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("OpenCode Go")
-                        .font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Text(goClient.configured ? "已配置" : "未配置")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(goClient.configured ? .green : .secondary)
-                    if goClient.configured {
-                        Button("清除") {
-                            goClient.clear()
-                            goWorkspaceID = ""
-                            goCookie = ""
-                            credentialMessage = "OpenCode Go 凭据已清除"
-                            credentialFailed = false
-                        }
-                        .font(.system(size: 11))
-                    }
-                }
-                HStack(spacing: 8) {
-                    TextField("workspaceId", text: $goWorkspaceID)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11.5, design: .monospaced))
-                    SecureField("auth cookie", text: $goCookie)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11.5, design: .monospaced))
-                    Button("保存") {
-                        let ws = goWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let cookie = goCookie.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if goClient.provision(workspaceId: ws, cookie: cookie) {
-                            goClient.refresh()
-                            goWorkspaceID = ""
-                            goCookie = ""
-                            credentialMessage = "OpenCode Go 凭据已保存并开始查询"
-                            credentialFailed = false
-                        } else {
-                            credentialMessage = goClient.state.error ?? "OpenCode Go 凭据保存失败"
-                            credentialFailed = true
-                        }
-                    }
-                    .font(.system(size: 11))
-                    .disabled(goWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || goCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-
-            if let credentialMessage {
-                Text(credentialMessage)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(credentialFailed ? .red : .green)
-            }
-        }
-        .tmPanelSurface()
     }
 }
 

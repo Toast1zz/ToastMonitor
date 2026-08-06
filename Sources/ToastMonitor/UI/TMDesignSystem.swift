@@ -14,16 +14,70 @@ enum TMDesign {
     static let accentWash = Color(red: 0.78, green: 0.32, blue: 0.16).opacity(0.06)
     static let canvas = Color(nsColor: .windowBackgroundColor)
     static let secondaryCanvas = Color(nsColor: .underPageBackgroundColor)
-    static let surface = Color(nsColor: .controlBackgroundColor)
-    static let divider = Color.primary.opacity(0.11)
+    /// Card surface. The system controlBackgroundColor barely separates from
+    /// windowBackground in dark mode (30 vs 38), which makes panels read as
+    /// invisible boxes; dark mode gets a custom lift instead.
+    static let surface = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedWhite: 0.165, alpha: 1.0)
+        }
+        return NSColor.controlBackgroundColor
+    })
+    static let divider = Color.primary.opacity(0.13)
     static let quiet = Color.primary.opacity(0.58)
     static let faint = Color.primary.opacity(0.36)
-    static let radius: CGFloat = 8
+    static let radius: CGFloat = 12
 
     static func statusColor(isError: Bool, isStale: Bool) -> Color {
         if isError { return .red }
         if isStale { return .orange }
         return .green
+    }
+}
+
+/// Type scale for the dashboard. Data-heavy surfaces keep the floor at 11pt;
+/// nothing below that is used for readable copy.
+enum TMType {
+    /// Page title (26) — one per page, in TMPageHeader.
+    static let pageTitle: CGFloat = 26
+    /// Hero number (40+), for the single most important figure on a page.
+    static let hero: CGFloat = 40
+    /// Section heading inside a panel (13).
+    static let section: CGFloat = 13
+    /// Body text (12.5).
+    static let body: CGFloat = 12.5
+    /// Captions, labels, secondary info (11).
+    static let caption: CGFloat = 11
+    /// Micro metadata (10) — the floor; use sparingly.
+    static let micro: CGFloat = 10
+}
+
+/// Ring gauge — the overview's signature element: today's usage against the
+/// trailing 30-day daily average. Reads as a capacity meter, not a card.
+struct TMGauge: View {
+    let progress: Double
+    var lineWidth: CGFloat = 10
+    var tint: Color = TMDesign.accent
+    var track: Color = Color.primary.opacity(0.08)
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(track, style: StrokeStyle(lineWidth: lineWidth))
+            Circle()
+                .trim(from: 0, to: min(max(progress, 0), 1))
+                .stroke(
+                    AngularGradient(
+                        colors: [tint.opacity(0.55), tint],
+                        center: .center,
+                        startAngle: .degrees(-90),
+                        endAngle: .degrees(270)
+                    ),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .accessibilityValue(Text("\(Int(min(max(progress, 0), 1) * 100))%"))
     }
 }
 
@@ -76,7 +130,7 @@ struct TMPageHeader: View {
                     .foregroundStyle(TMDesign.accent)
             }
             Text(title)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
                 .foregroundStyle(.primary)
             Text(subtitle)
                 .font(.subheadline)
@@ -299,5 +353,68 @@ extension View {
         } else {
             self
         }
+    }
+}
+import SwiftUI
+
+/// 预测文案统一生成（Popover / 设置 / 计划与余额共用）。
+enum ForecastText {
+    enum Status { case ok, warn, danger, neutral }
+
+    /// 主预测行 + 状态。
+    static func line(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: Status) {
+        switch plan {
+        case "go":
+            if let exhaust = fc.exhaustDate {
+                let daysLeft = max(Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()),
+                                                                   to: Calendar.current.startOfDay(for: exhaust)).day ?? 0, 0)
+                return ("预计 \(date(exhaust)) 用尽 $60 额度 · 日均 \(Format.money(fc.dailyRate))",
+                        daysLeft <= 5 ? .danger : .warn)
+            }
+            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
+            let util = fc.limit > 0 ? Int(((fc.projectedEnd ?? 0) / fc.limit) * 100) : 0
+            return ("日均 \(Format.money(fc.dailyRate)) → 期末预计 \(Format.money(fc.projectedEnd ?? 0)) · 剩 \(Format.money(remaining))（利用率 \(util)%）", .ok)
+        case "openrouter":
+            if let exhaust = fc.exhaustDate {
+                return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate)) → 约 \(date(exhaust)) 耗尽", .warn)
+            }
+            return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate)) · 无耗尽风险", .ok)
+        default:
+            return ("已付 \(Format.money(fc.used)) · 未关联用量源", .neutral)
+        }
+    }
+
+    /// 紧凑单行（Popover / 设置行）。
+    static func compact(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: Status) {
+        switch plan {
+        case "go":
+            if let exhaust = fc.exhaustDate {
+                return ("已用 \(Format.money(fc.used)) · 预计 \(date(exhaust)) 用尽", .warn)
+            }
+            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
+            return ("已用 \(Format.money(fc.used)) · 日均 \(Format.money(fc.dailyRate)) · 期末剩 \(Format.money(remaining))", .ok)
+        case "openrouter":
+            if let exhaust = fc.exhaustDate {
+                return ("余额 \(Format.money(fc.limit)) · 约 \(date(exhaust)) 耗尽", .warn)
+            }
+            return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate))", .ok)
+        default:
+            return ("已付 \(Format.money(fc.used)) · 未关联用量源", .neutral)
+        }
+    }
+
+    static func color(_ status: Status) -> Color {
+        switch status {
+        case .ok: return .green
+        case .warn: return .orange
+        case .danger: return .red
+        case .neutral: return .secondary
+        }
+    }
+
+    private static func date(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd"
+        return f.string(from: d)
     }
 }

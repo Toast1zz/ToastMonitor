@@ -139,25 +139,32 @@ struct UsageAnalysisView: View {
                     .foregroundStyle(.secondary)
             } else {
                 let maxV = days.flatMap { $0.segments.map(\.value) }.max() ?? 1
+                let axisH: CGFloat = 14
                 GeometryReader { geo in
                     let width = geo.size.width
                     let barW = max(2, width / CGFloat(days.count) - 2)
                     Canvas { ctx, size in
+                        let chartH = size.height - axisH
                         for (di, day) in days.enumerated() {
-                            var y = size.height
+                            var y = chartH
                             for seg in day.segments {
-                                let h = max(0.5, size.height * CGFloat(seg.value) / CGFloat(maxV))
+                                let h = max(0.5, chartH * CGFloat(seg.value) / CGFloat(maxV))
                                 let rect = CGRect(x: CGFloat(di) * (barW + 2), y: y - h, width: barW, height: h)
                                 ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(seg.color.opacity(0.85)))
                                 y -= h
                             }
                         }
+                        for (idx, label) in monthTickIndices(days.map(\.date)) {
+                            let x = CGFloat(idx) * (barW + 2) + barW / 2
+                            ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
+                                     at: CGPoint(x: x, y: chartH + 6))
+                        }
                     }
                 }
-                .frame(height: 160)
-                .overlay(alignment: .bottomLeading) {
+                .frame(height: 174)
+                .overlay(alignment: .topLeading) {
                     Text("峰值 \(Format.compact(maxV)) / 天")
-                        .font(.system(size: 9.5))
+                        .font(.system(size: TMType.micro))
                         .foregroundStyle(.tertiary)
                         .padding(2)
                 }
@@ -179,30 +186,36 @@ struct UsageAnalysisView: View {
                     .foregroundStyle(.secondary)
             } else {
                 let maxV = max(days.values.max() ?? 0, 0.001)
+                let axisH: CGFloat = 14
                 GeometryReader { _ in
                     Canvas { ctx, size in
                         let keys = days.keys.sorted()
                         guard keys.count >= 2 else { return }
+                        let chartH = size.height - axisH
                         var path = Path()
                         for (i, k) in keys.enumerated() {
                             let x = CGFloat(i) / CGFloat(keys.count - 1) * size.width
-                            let y = size.height - size.height * CGFloat(days[k] ?? 0) / CGFloat(maxV)
+                            let y = chartH - chartH * CGFloat(days[k] ?? 0) / CGFloat(maxV)
                             if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                             else { path.addLine(to: CGPoint(x: x, y: y)) }
                         }
                         ctx.stroke(path, with: .color(.orange), lineWidth: 1.6)
-                        // 面积
                         var area = path
-                        area.addLine(to: CGPoint(x: size.width, y: size.height))
-                        area.addLine(to: CGPoint(x: 0, y: size.height))
+                        area.addLine(to: CGPoint(x: size.width, y: chartH))
+                        area.addLine(to: CGPoint(x: 0, y: chartH))
                         area.closeSubpath()
                         ctx.fill(area, with: .color(.orange.opacity(0.12)))
+                        for (idx, label) in monthTickIndices(keys) {
+                            let x = keys.count > 1 ? CGFloat(idx) / CGFloat(keys.count - 1) * size.width : 0
+                            ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
+                                     at: CGPoint(x: x, y: chartH + 6))
+                        }
                     }
                 }
-                .frame(height: 110)
-                .overlay(alignment: .bottomTrailing) {
+                .frame(height: 124)
+                .overlay(alignment: .topTrailing) {
                     Text("最高 \(Format.money(maxV)) / 天")
-                        .font(.system(size: 9.5))
+                        .font(.system(size: TMType.micro))
                         .foregroundStyle(.tertiary)
                         .padding(2)
                 }
@@ -346,6 +359,20 @@ struct UsageAnalysisView: View {
         let palette: [Color] = [.orange, .blue, .green, .purple, .pink, .teal, .indigo, .brown]
         let h = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
         return palette[h % palette.count]
+    }
+
+    /// Month labels for chart x-axes (yyyymmdd keys, one tick per month).
+    private func monthTickIndices(_ days: [Int64]) -> [(Int, String)] {
+        var out: [(Int, String)] = []
+        var last = -1
+        for (i, d) in days.enumerated() {
+            let m = (Int(d) / 100) % 100
+            if m != last {
+                out.append((i, "\(m)月"))
+                last = m
+            }
+        }
+        return out
     }
 
     private var legend: some View {
