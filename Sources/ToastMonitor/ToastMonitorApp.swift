@@ -39,18 +39,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let args = CommandLine.arguments
         if args.contains("--probe-vault") {
             // Diagnostic: run in a GUI session via `open --args` so the
-            // keychain behaves exactly as it does for the real app.
+            // keychain behaves exactly as it does for the real app. Reports
+            // presence/length only — never key material. Written to the app
+            // support dir (0600), not /tmp.
             let raw = KeychainStore.get(account: "or-keys")
             let orKeys = OpenRouterClient.shared.storedKeys()
             let log = """
             vault: \(KeychainStore.get(account: "or-keys") != nil ? "loginKC ok" : "loginKC empty")
-            or-keys raw: \(raw?.prefix(20) ?? "nil") (len \(raw?.count ?? -1))
-            storedKeys(): \(orKeys.count) keys, first prefix \(orKeys.first?.prefix(8) ?? "-")
+            or-keys raw: \(raw == nil ? "nil" : "present") (len \(raw?.count ?? -1))
+            storedKeys(): \(orKeys.count) keys
             hasKey: \(OpenRouterClient.shared.hasKey)
             state.error: \(OpenRouterClient.shared.state.error ?? "nil")
             state.usageMonthly: \(OpenRouterClient.shared.state.usageMonthly)
             """
-            try? log.write(toFile: "/tmp/tm-probe.log", atomically: true, encoding: .utf8)
+            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("ToastMonitor", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let outURL = dir.appendingPathComponent("probe.log")
+            try? log.write(to: outURL, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outURL.path)
             print(log)
             exit(0)
         }

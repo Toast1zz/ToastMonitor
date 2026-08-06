@@ -281,7 +281,10 @@ struct UsageAnalysisView: View {
                         return $0 + (ToolKind(rawValue: $1.key)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead)
                                    ?? ($1.input + $1.output))
                     }
-                    return $0 + $1.input + $1.output
+                    // by-model rows are keyed by model name (no tool);
+                    // cacheRead counts toward the total like by-tool (the
+                    // codex exception is not expressible at model granularity).
+                    return $0 + $1.input + $1.output + $1.cacheRead
                 }
                 if v > 0 {
                     segs.append((name, v, color(for: name)))
@@ -306,7 +309,8 @@ struct UsageAnalysisView: View {
                 return $0 + (ToolKind(rawValue: $1.key)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead)
                            ?? ($1.input + $1.output))
             }
-            return $0 + $1.input + $1.output
+            // by-model: no tool info on model-keyed rows; include cacheRead.
+            return $0 + $1.input + $1.output + $1.cacheRead
         }
         var out: [(name: String, tokens: Int64, calls: Int64, cost: Double, ratio: Double, color: Color)] = []
         for (name, list) in groups {
@@ -315,7 +319,8 @@ struct UsageAnalysisView: View {
                     return $0 + (ToolKind(rawValue: $1.key)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead)
                                ?? ($1.input + $1.output))
                 }
-                return $0 + $1.input + $1.output
+                // by-model: no tool info on model-keyed rows; include cacheRead.
+                return $0 + $1.input + $1.output + $1.cacheRead
             }
             if tokens == 0 { continue }
             let calls = list.count

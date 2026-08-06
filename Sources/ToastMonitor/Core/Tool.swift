@@ -61,8 +61,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         "local"
     }
 
-    /// 主 token 口径：输入 + 输出。缓存命中输入是输入的计量明细，
-    /// 单独展示但不再次加到主数字，避免与 provider 的 input 重复计数。
+    /// 主 token 口径：输入 + 输出 + 缓存命中（cacheRead 计入总量；
+    /// 唯一例外是 codex——其 input 已含缓存，不重复加）。
     func totalTokens(_ t: Database.ToolTotals) -> Int64 {
         totalTokens(input: t.input, output: t.output, cacheRead: t.cacheRead)
     }

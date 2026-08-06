@@ -21,6 +21,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>ToastMonitor</string>
     <key>CFBundleDisplayName</key><string>ToastMonitor</string>
     <key>CFBundleIdentifier</key><string>com.toast.toastmonitor</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>ToastMonitor</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>

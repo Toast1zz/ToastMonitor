@@ -88,7 +88,10 @@ final class OpenRouterClient: ObservableObject {
                 return arr
             }
         }
-        // Legacy migration (SQLite → Keychain, then erase).
+        // Legacy migration (SQLite → Keychain, then erase). Fail closed:
+        // when the Keychain write fails, return unconfigured instead of
+        // serving plaintext values to live API calls. The plaintext stays on
+        // disk (0600) as a recovery copy, marked unavailable.
         var migrated: [String] = []
         if let raw = Database.shared.setting("or_keys"),
            let data = raw.data(using: .utf8),
@@ -104,9 +107,13 @@ final class OpenRouterClient: ObservableObject {
                 Database.shared.setSetting("or_keys", nil)
                 Database.shared.setSetting("openrouter_key", nil)
                 KeychainStore.delete(account: "openrouter-key")
+                Database.shared.setSetting("or_cred_storage", "keychain")
+                return arr
             }
+            Database.shared.setSetting("or_cred_storage", "keychain-unavailable")
+            return []
         }
-        return normalizedKeys(legacy)
+        return []
     }
 
     private func normalizedKeys(_ keys: [String]) -> [String] {
@@ -392,6 +399,11 @@ final class OpenRouterClient: ObservableObject {
             }
             guard (200..<300).contains(http.statusCode) else {
                 DispatchQueue.main.async { completion(nil, "HTTP \(http.statusCode)") }
+                return
+            }
+            // Reject oversized responses from the header before buffering.
+            if http.expectedContentLength > 10_000_000 {
+                DispatchQueue.main.async { completion(nil, "响应过大 (>10MB)") }
                 return
             }
             if let mime = http.mimeType,

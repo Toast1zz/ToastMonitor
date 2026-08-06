@@ -14,7 +14,7 @@
 | Hermes | `~/.hermes/state.db`（列自省） | VPS feed（`session_model_usage` 聚合） |
 | OpenRouter | 云端 API（key + credits 快照） | — |
 
-- 默认来源：Hermes=远程（用户实际部署），其余=本机；设置 Tab 里每个工具可切换。
+- 默认来源：Hermes=远程（用户实际部署），其余=本机；「来源与设置」Tab 里每个工具可切换。
 - 远程 feed：VPS cron 每 3 分钟跑 `tm-export.py` → `http://100.116.140.74/tm/usage.json`（Tailscale-only），App 每 60s 增量拉取（按工具的时间戳 + 事件 ID 游标，支持同秒事件）。
 
 ## 配额（内建，不依赖 opencode-quota）
@@ -49,6 +49,6 @@ TM_DEBUG=1 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor                    
 
 ## 已知边界
 
-- 菜单栏显示「今日 tokens · 已确认变量支出」，估算与固定订阅在 tooltip/面板分开；点击出 popover。完整面板包含：概览、用量分析、会话、计划与余额、数据来源、设置。弹窗只保留周期摘要、工具/会话/额度速览。
+- 菜单栏显示「今日 tokens · 已确认变量支出」，估算与固定订阅在 tooltip/面板分开；点击出 popover。完整面板包含四个 Tab：概览、用量分析、计划与余额、来源与设置。弹窗只保留周期摘要、工具/会话/额度速览。
 - 价格表是近似值（按官方价），OpenCode 自带 cost 字段则直接用。
 - 分发需 Developer ID 证书；当前 ad-hoc 签名仅供本机。

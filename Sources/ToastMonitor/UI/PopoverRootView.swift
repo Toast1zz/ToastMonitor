@@ -60,10 +60,10 @@ struct PopoverRootView: View {
         let title: String
         let symbol: String
         if broken > 0 {
-            title = "(broken) 个异常"
+            title = "\(broken) 个异常"
             symbol = "exclamationmark.triangle.fill"
         } else if stale > 0 {
-            title = "(stale) 个过期"
+            title = "\(stale) 个过期"
             symbol = "clock.badge.exclamationmark"
         } else if app.lastScan > 0 {
             title = "已同步"

@@ -27,7 +27,7 @@ struct SourcesView: View {
                         testResult = nil
                         let baseline = health.sources.map(\.lastScan).max() ?? 0
                         CollectorEngine.shared.scheduleScan()
-                        HermesRemoteClient.shared.start()
+                        HermesRemoteClient.shared.poll()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                             testing = false
                             let scanned = health.sources.contains { $0.lastScan > baseline }

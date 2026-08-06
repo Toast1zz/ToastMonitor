@@ -130,12 +130,13 @@ final class UsageQueryService {
             fetchedAt: Int64(Date().timeIntervalSince1970))
     }
 
-    /// 主 token 口径：输入 + 输出；cacheRead 只作为独立明细。
+    /// 主 token 口径：输入 + 输出 + 缓存命中（cacheRead 计入总量；
+    /// codex 除外——其 input 已含缓存，见 ToolKind.totalTokens）。
     private static func totalTokens(_ rows: [Database.ToolTotals]) -> Int64 {
         rows.reduce(Int64(0)) { $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output)) }
     }
 
-    /// day(yyyymmdd) -> primary tokens (input + output), for the last 371 days.
+    /// day(yyyymmdd) -> primary tokens (totalTokens 口径：含缓存命中，codex 除外), for the last 371 days.
     private static func buildHeatmap(aggs: [Database.DayAgg]) -> [Int64: Int64] {
         var out: [Int64: Int64] = [:]
         for a in aggs {

@@ -49,7 +49,9 @@ final class OpenCodeGoClient: ObservableObject {
     }
 
     /// Credentials live in the Keychain (P0-5); legacy SQLite values are
-    /// migrated on first read, then erased.
+    /// migrated on first read, then erased. Fail closed: when the Keychain
+    /// is unavailable the app reports unconfigured instead of serving
+    /// plaintext SQLite values to live API calls.
     private func credentials() -> (workspaceId: String, cookie: String)? {
         var ws = KeychainStore.get(account: "go-workspace-id")
         var ck = KeychainStore.get(account: "go-auth-cookie")
@@ -57,16 +59,23 @@ final class OpenCodeGoClient: ObservableObject {
             Database.shared.setSetting("go_workspace_id", nil)
             Database.shared.setSetting("go_auth_cookie", nil)
         }
-        if ws == nil && ck == nil {
+        if ws == nil || ck == nil {
             let legacyWS = Database.shared.setting("go_workspace_id")
             let legacyCK = Database.shared.setting("go_auth_cookie")
             if let legacyWS, let legacyCK {
-                ws = ws ?? legacyWS
-                ck = ck ?? legacyCK
                 if KeychainStore.set(legacyWS, account: "go-workspace-id"),
                    KeychainStore.set(legacyCK, account: "go-auth-cookie") {
                     Database.shared.setSetting("go_workspace_id", nil)
                     Database.shared.setSetting("go_auth_cookie", nil)
+                    Database.shared.setSetting("go_cred_storage", "keychain")
+                    ws = legacyWS
+                    ck = legacyCK
+                } else {
+                    // Keychain unavailable: treat as unconfigured. Plaintext
+                    // stays on disk (0600) as a recovery copy but is never
+                    // used for requests.
+                    Database.shared.setSetting("go_cred_storage", "keychain-unavailable")
+                    return nil
                 }
             }
         }
@@ -210,6 +219,11 @@ final class OpenCodeGoClient: ObservableObject {
                 }
                 guard let http = resp as? HTTPURLResponse else {
                     self.state.error = "无 HTTP 响应"
+                    return
+                }
+                // Reject oversized responses from the header before buffering.
+                if http.expectedContentLength > 10_000_000 {
+                    self.state.error = "响应过大 (>10MB)"
                     return
                 }
                 guard http.statusCode == 200 else {

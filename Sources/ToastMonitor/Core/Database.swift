@@ -58,6 +58,9 @@ final class Database {
             return
         }
         db = handle
+        sqlite3_busy_timeout(db, 3000) // WAL writers don't block, but reads
+                                       // during a long migration would fail
+                                       // fast without this; wait up to 3s.
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dbPath)
         exec("PRAGMA journal_mode=WAL;")
         exec("PRAGMA synchronous=NORMAL;")
@@ -176,6 +179,9 @@ final class Database {
             "DROP TABLE turns_legacy;",
             "CREATE INDEX IF NOT EXISTS idx_turns_ts ON turns(ts);",
             "CREATE INDEX IF NOT EXISTS idx_turns_tool ON turns(tool, ts);",
+            // The legacy rebuild drops the fresh-install idx_turns_session
+            // with turns_legacy; recreate it or session lookups go full-scan.
+            "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(tool, session_id);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_event ON turns(tool, event_id) WHERE event_id IS NOT NULL;"
         ]
         for sql in statements {
@@ -430,9 +436,16 @@ final class Database {
 
     /// Runs a body inside one transaction. When the body returns false the
     /// transaction is rolled back and no cursor/watermark may advance (P0-2).
+    /// Nested calls (body invoking inTransaction again) join the outer
+    /// transaction instead of starting a second one.
     func inTransaction(_ body: () -> Bool) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return false }
+        let joined = sqlite3_get_autocommit(db) == 0
+        if joined {
+            // Already inside an outer transaction: participate, don't commit.
+            return body()
+        }
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return false }
         transactionWriteError = false
         let ok = body()
@@ -597,7 +610,6 @@ final class Database {
         guard let db else { return }
         let now = Int64(Date().timeIntervalSince1970)
         if let last = Int64(setting("backfill_costs_last") ?? "0"), now - last < 60 { return }
-        _ = setSetting("backfill_costs_last", "\(now)")
         var stmt: OpaquePointer?
         let select = "SELECT id, model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE cost=0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
         guard sqlite3_prepare_v2(db, select, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -625,6 +637,9 @@ final class Database {
             sqlite3_reset(stmt)
         }
         sqlite3_finalize(stmt)
+        // Stamp the throttle only after the work actually ran, so a failed
+        // backfill is retried on the next tick instead of waiting 60s.
+        _ = setSetting("backfill_costs_last", "\(now)")
     }
 
     // MARK: - Settings

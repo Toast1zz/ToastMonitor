@@ -133,6 +133,18 @@ final class HermesRemoteClient: ObservableObject {
                     self.publishStatus { $0.error = "无 HTTP 响应" }
                     return
                 }
+                // URLSession follows redirects; the allowlist checked above
+                // covers only the initial URL, so re-check the final one.
+                if !Self.isAllowedFeedURL(http.url ?? url) {
+                    self.publishStatus { $0.error = "重定向到不允许的地址，已拒绝" }
+                    return
+                }
+                // Reject oversized responses from the Content-Length header
+                // before the body finishes buffering.
+                if http.expectedContentLength > 10_000_000 {
+                    self.publishStatus { $0.error = "响应过大 (>10MB)" }
+                    return
+                }
                 guard http.statusCode == 200 else {
                     self.publishStatus { $0.error = "HTTP \(http.statusCode)" }
                     return
@@ -240,8 +252,19 @@ final class HermesRemoteClient: ObservableObject {
                 ?? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
                                          lastSeen: lastSeen, firstSeen: firstSeen)
             let previousCursor = cursor(tool)
-            guard lastSeen > previousCursor.ts
-                    || (lastSeen == previousCursor.ts && eventID > previousCursor.eventID) else { continue }
+            // Watermark guard applies only to per-turn tools. Hermes/OpenCode
+            // rows are cumulative baselines: their deltas are idempotent via
+            // session_totals/baseline settings, and a ts+content-hash cursor
+            // would permanently skip never-imported keys (e.g. a fresh
+            // (session, model, provider) route-change row with lastSeen at or
+            // below the watermark).
+            switch tool {
+            case .hermes, .opencode:
+                break
+            default:
+                guard lastSeen > previousCursor.ts
+                        || (lastSeen == previousCursor.ts && eventID > previousCursor.eventID) else { continue }
+            }
             var isFirstRow = false // 首行 = 该 session 的累计基线 → 归 firstSeen 日期
 
             switch tool {

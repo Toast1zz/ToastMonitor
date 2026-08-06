@@ -100,6 +100,22 @@ enum CodexParser {
             }
 
             let fileName = (file as NSString).lastPathComponent
+
+            // A scan chunk may start with token_count rows whose turn_context
+            // lives earlier in the stream (or arrived in a previous scan).
+            // Prescan the chunk so those turns still get a model instead of
+            // being inserted with model=NULL (which backfillCosts can never
+            // repair because it requires model IS NOT NULL).
+            var chunkModel: String?
+            for item in objs {
+                let obj = item.obj
+                if obj["type"] as? String == "turn_context",
+                   let payload = obj["payload"] as? [String: Any],
+                   let m = payload["model"] as? String, !m.isEmpty {
+                    chunkModel = m
+                }
+            }
+
             for item in objs {
                 let obj = item.obj
                 let type = obj["type"] as? String
@@ -130,15 +146,20 @@ enum CodexParser {
                     // Threads metadata is a valid fallback when a rollout
                     // chunk does not contain turn_context before token_count.
                     let eventModel = model
+                        ?? chunkModel
                         ?? threadMeta[sid]?.model
                         ?? threadMeta[sid]?.provider
                     let est = Pricing.estimate(model: eventModel, input: input, output: output,
                                                 cacheRead: cacheRead, cacheWrite: cacheWrite)
                     if input + output + cacheRead + cacheWrite > 0 {
+                        // Truncate-and-rewrite replays from offset 0: reuse
+                        // the previous mtime so replayed fallback IDs collide
+                        // with the originals and dedupe (no double count).
+                        let idMtime = sameAppendOnlyFile ? st.mtime : prev.mtime
                         turns.append(TurnRecord(tool: .codex, sessionID: sid, project: nil,
                                                 model: eventModel, ts: ts, inputTokens: input, outputTokens: output,
                                                 cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,
-                                                eventID: "codex:\(fileName):\(st.identity):\(st.mtime):\(item.offset)",
+                                                eventID: "codex:\(fileName):\(st.identity):\(idMtime):\(item.offset)",
                                                 costQuality: est == nil ? "unknown" : "estimated"))
                     }
                     updated = max(updated, ts)

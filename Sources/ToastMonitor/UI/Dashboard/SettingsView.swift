@@ -46,22 +46,27 @@ struct SettingsView: View {
                             Picker("", selection: Binding(
                                 get: { sources[tool] ?? (tool.defaultSource == "remote") },
                                 set: { newValue in
-                                    // P0-4: persist immediately, show effect.
-                                    if tool.setSource(remote: newValue) {
-                                        sources[tool] = newValue
-                                        sourceSaved = tool
-                                        sourceFailed = nil
-                                    } else {
-                                        // Keep the picker aligned with the
-                                        // effective persisted value after a
-                                        // failed write.
-                                        sources[tool] = tool.sourceIsRemote
-                                        sourceFailed = tool
-                                        sourceSaved = nil
-                                    }
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                        if sourceSaved == tool { sourceSaved = nil }
-                                        if sourceFailed == tool { sourceFailed = nil }
+                                    // P0-4: persist immediately (off main thread), show effect.
+                                    DispatchQueue.global(qos: .userInitiated).async {
+                                        let ok = tool.setSource(remote: newValue)
+                                        DispatchQueue.main.async {
+                                            if ok {
+                                                sources[tool] = newValue
+                                                sourceSaved = tool
+                                                sourceFailed = nil
+                                            } else {
+                                                // Keep the picker aligned with the
+                                                // effective persisted value after a
+                                                // failed write.
+                                                sources[tool] = tool.sourceIsRemote
+                                                sourceFailed = tool
+                                                sourceSaved = nil
+                                            }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                                if sourceSaved == tool { sourceSaved = nil }
+                                                if sourceFailed == tool { sourceFailed = nil }
+                                            }
+                                        }
                                     }
                                 }
                             )) {
@@ -143,9 +148,13 @@ struct SettingsView: View {
                         Button("保存") {
                             let raw = feedURL.trimmingCharacters(in: .whitespacesAndNewlines)
                             saved = false
-                            let ok = HermesRemoteClient.shared.provision(url: raw.isEmpty ? nil : raw)
-                            saved = ok
-                            feedError = !ok
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                let ok = HermesRemoteClient.shared.provision(url: raw.isEmpty ? nil : raw)
+                                DispatchQueue.main.async {
+                                    saved = ok
+                                    feedError = !ok
+                                }
+                            }
                         }
                         .font(.system(size: 12))
                         Button {
@@ -467,12 +476,17 @@ struct SubscriptionSettingsSection: View {
                                 cycle: cycle,
                                 price: p,
                                 currency: "USD")
-                            if Database.shared.upsertSubscription(sub) {
-                                app.refresh()
-                                showForm = false
-                                databaseError = nil
-                            } else {
-                                databaseError = "订阅保存失败，请检查磁盘空间或数据库权限"
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                let ok = Database.shared.upsertSubscription(sub)
+                                DispatchQueue.main.async {
+                                    if ok {
+                                        app.refresh()
+                                        showForm = false
+                                        databaseError = nil
+                                    } else {
+                                        databaseError = "订阅保存失败，请检查磁盘空间或数据库权限"
+                                    }
+                                }
                             }
                         }
                         .font(.system(size: 12))
@@ -506,11 +520,16 @@ struct SubscriptionSettingsSection: View {
                 Button("取消", role: .cancel) { pendingDelete = nil }
                 Button("删除", role: .destructive) {
                     if let sub = pendingDelete {
-                        if Database.shared.deleteSubscription(id: sub.id) {
-                            app.refresh()
-                            databaseError = nil
-                        } else {
-                            databaseError = "订阅删除失败，请检查磁盘空间或数据库权限"
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let ok = Database.shared.deleteSubscription(id: sub.id)
+                            DispatchQueue.main.async {
+                                if ok {
+                                    app.refresh()
+                                    databaseError = nil
+                                } else {
+                                    databaseError = "订阅删除失败，请检查磁盘空间或数据库权限"
+                                }
+                            }
                         }
                     }
                     pendingDelete = nil

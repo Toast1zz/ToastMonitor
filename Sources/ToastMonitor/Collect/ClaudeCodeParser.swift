@@ -75,7 +75,12 @@ enum ClaudeCodeParser {
                     guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { continue }
                     let est = Pricing.estimate(model: model, input: input, output: output,
                                                cacheRead: cacheRead, cacheWrite: cacheWrite)
-                    let eventID = (obj["uuid"] as? String) ?? "claude:\(fileName):\(st.identity):\(st.mtime):\(item.offset)"
+                    // Truncate-and-rewrite replays the file from offset 0;
+                    // using the PREVIOUS mtime keeps replayed fallback IDs
+                    // colliding with the original inserts so ON CONFLICT
+                    // dedupes instead of double-counting.
+                    let idMtime = sameAppendOnlyFile ? st.mtime : prev.mtime
+                    let eventID = (obj["uuid"] as? String) ?? "claude:\(fileName):\(st.identity):\(idMtime):\(item.offset)"
                     turns.append(TurnRecord(tool: .claude, sessionID: sessionID, project: project,
                                             model: model, ts: ts, inputTokens: input, outputTokens: output,
                                             cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,

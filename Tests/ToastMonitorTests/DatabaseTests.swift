@@ -22,8 +22,8 @@ final class DatabaseTests: XCTestCase {
         super.tearDown()
     }
 
-    func testTokenMetricKeepsCacheAsSeparateDetail() {
-        XCTAssertEqual(ToolKind.claude.totalTokens(input: 100, output: 20, cacheRead: 1_000), 120)
+    func testTokenMetricIncludesCacheReadExceptCodex() {
+        XCTAssertEqual(ToolKind.claude.totalTokens(input: 100, output: 20, cacheRead: 1_000), 1_120)
         XCTAssertEqual(ToolKind.codex.totalTokens(input: 100, output: 20, cacheRead: 1_000), 120)
     }
 

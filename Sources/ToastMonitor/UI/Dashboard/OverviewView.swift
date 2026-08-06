@@ -64,7 +64,7 @@ struct OverviewView: View {
 
     private var metrics: some View {
         HStack(alignment: .top, spacing: 0) {
-            TMMetric(title: "本月 tokens", value: Format.compact(app.monthTokens), detail: "输入 + 输出", emphasis: true)
+            TMMetric(title: "本月 tokens", value: Format.compact(app.monthTokens), detail: "输入 + 输出（含缓存命中）", emphasis: true)
             Divider().frame(height: 58).padding(.horizontal, 18)
             TMMetric(title: "调用", value: Format.count(app.month.count), detail: "本月")
             Divider().frame(height: 58).padding(.horizontal, 18)

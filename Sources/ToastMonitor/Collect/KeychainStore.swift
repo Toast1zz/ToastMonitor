@@ -52,13 +52,26 @@ enum KeychainStore {
 
     /// Older builds stored secrets in a self-owned keychain file
     /// (toastmonitor.keychain with an embedded password). Move those values
-    /// into the login keychain on first launch of this build; the legacy
-    /// file is left untouched.
+    /// into the login keychain on first launch of this build; once every
+    /// value is migrated the legacy file is securely removed — it is
+    /// protected only by a compile-time password constant, so leaving it
+    /// behind would keep credentials readable by any local process.
     static func migrateLegacyVaultIfNeeded() {
-        for account in ["or-keys", "go-workspace-id", "go-auth-cookie"] {
+        let accounts = ["or-keys", "go-workspace-id", "go-auth-cookie"]
+        for account in accounts {
             guard get(account: account) == nil else { continue } // already migrated
             guard let legacy = legacyVaultValue(account: account) else { continue }
-            _ = set(legacy, account: account)
+            guard set(legacy, account: account) else {
+                return // Keychain write failed; keep the vault for a retry
+            }
+        }
+        // Every value is now in the login keychain (or was never in the
+        // vault); the obsolete file can go.
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ToastMonitor", isDirectory: true)
+        let path = dir.appendingPathComponent("toastmonitor.keychain").path
+        if FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.removeItem(atPath: path)
         }
     }
 
