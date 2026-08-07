@@ -40,11 +40,7 @@ struct UsageAnalysisView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TMPageHeader(
-                title: "用量分析",
-                subtitle: "按时间、工具或模型观察消耗趋势，并保留成本口径说明",
-                eyebrow: "分析"
-            )
+            TMPageHeader("用量分析")
             controls
                 .padding(.bottom, 12)
             Divider()
@@ -120,9 +116,6 @@ struct UsageAnalysisView: View {
             .frame(width: 180)
 
             Spacer()
-            Text("按天聚合 · \(range.rawValue)")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
         }
     }
 
@@ -353,12 +346,11 @@ struct UsageAnalysisView: View {
 
     private func color(for name: String) -> Color {
         if grouping == .byTool {
-            return ToolKind(rawValue: name)?.color ?? .gray
+            return ToolKind(rawValue: name)?.color ?? TMDesign.accent
         }
-        // 模型色：按名称散列取固定色板
-        let palette: [Color] = [.orange, .blue, .green, .purple, .pink, .teal, .indigo, .brown]
-        let h = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
-        return palette[h % palette.count]
+        // 模型色：accent 明度分层（不引入新色相）。
+        let h = Double(name.unicodeScalars.reduce(0) { $0 + Int($1.value) })
+        return TMDesign.accentShade((h.truncatingRemainder(dividingBy: 100)) / 100)
     }
 
     /// Month labels for chart x-axes (yyyymmdd keys, one tick per month).

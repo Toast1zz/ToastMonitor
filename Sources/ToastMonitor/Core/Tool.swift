@@ -31,12 +31,14 @@ enum ToolKind: String, CaseIterable, Identifiable {
     }
 
     var color: Color {
+        // One accent, lightness layers only — no multi-brand hues (palette
+        // rule: accent + danger + neutral grays).
         switch self {
-        case .claude: return Color(red: 0.80, green: 0.46, blue: 0.24)   // anthropic-ish orange
-        case .codex: return Color(red: 0.24, green: 0.55, blue: 0.91)    // codex blue
-        case .opencode: return Color(red: 0.36, green: 0.72, blue: 0.44) // terminal green
-        case .hermes: return Color(red: 0.72, green: 0.44, blue: 0.86)   // purple
-        case .openrouter: return Color(red: 0.86, green: 0.36, blue: 0.36) // red-ish
+        case .claude: return TMDesign.accentShade(0)
+        case .codex: return TMDesign.accentShade(0.25)
+        case .opencode: return TMDesign.accentShade(0.45)
+        case .hermes: return TMDesign.accentShade(0.65)
+        case .openrouter: return TMDesign.accentShade(0.85)
         }
     }
 

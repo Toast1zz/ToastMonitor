@@ -374,13 +374,8 @@ struct PopoverHomeView: View {
     /// fixed section below the period content, labelled as such.
     private var quotaSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("额度状态")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("实时 · 与周期无关")
-                    .font(.system(size: TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
-            }
+            Text("额度状态")
+                .font(.system(size: 13, weight: .semibold))
             goStatusRow
             codexStatusRow
             routerStatusRow
@@ -389,9 +384,9 @@ struct PopoverHomeView: View {
 
     private func remainingColor(_ remaining: Double?) -> Color {
         guard let remaining else { return TMDesign.quiet }
-        if remaining < 20 { return .red }
-        if remaining < 40 { return .orange }
-        return .green
+        if remaining < 20 { return TMDesign.danger }
+        if remaining < 40 { return TMDesign.accent }
+        return TMDesign.quiet
     }
 
     private func resetText(_ at: Int64?) -> String? {
@@ -413,8 +408,7 @@ struct PopoverHomeView: View {
                 status = state.error != nil ? "读取失败" : "同步中"
             }
         }
-        return statusRow(icon: "g.circle.fill", color: .orange,
-                         name: "OpenCode Go", status: status,
+        return statusRow(name: "OpenCode Go", status: status,
                          statusColor: remainingColor(remaining))
     }
 
@@ -442,8 +436,7 @@ struct PopoverHomeView: View {
         } else if let sub {
             status = "已订阅 \(Format.money(sub.price))/月"
         }
-        return statusRow(icon: "chevron.left.forwardslash.chevron.right", color: ToolKind.codex.color,
-                         name: "Codex Plus", status: status,
+        return statusRow(name: "Codex Plus", status: status,
                          statusColor: state.primaryPct != nil ? remainingColor(remaining) : TMDesign.quiet)
     }
 
@@ -452,19 +445,13 @@ struct PopoverHomeView: View {
         let status = orClient.hasKey
             ? "余额 \(Format.money(state.accountBalance ?? 0))"
             : "未配置"
-        return statusRow(icon: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color,
-                         name: "OpenRouter", status: status,
+        return statusRow(name: "OpenRouter", status: status,
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
     }
 
-    private func statusRow(icon: String, color: Color, name: String,
-                           status: String, statusColor: Color) -> some View {
+    private func statusRow(name: String, status: String, statusColor: Color) -> some View {
         Button(action: openPlans) {
             HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(color)
-                    .frame(width: 18)
                 Text(name)
                     .font(.system(size: TMType.body, weight: .medium))
                 Spacer()

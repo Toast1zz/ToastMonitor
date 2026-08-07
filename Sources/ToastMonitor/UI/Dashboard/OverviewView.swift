@@ -49,11 +49,7 @@ struct OverviewView: View {
     }
 
     private var intro: some View {
-        TMPageHeader(
-            title: "概览",
-            subtitle: "今天烧了多少、还剩多少、花在了哪里",
-            eyebrow: "工作台"
-        )
+        TMPageHeader("概览")
     }
 
     // MARK: - Hero: today's usage + capacity ring
@@ -143,13 +139,13 @@ struct OverviewView: View {
         let stale = health.sources.filter { $0.error == nil && $0.isStale }
         let minutesAgo = app.lastScan > 0 ? Int(Date().timeIntervalSince1970 - TimeInterval(app.lastScan)) / 60 : -1
         if !broken.isEmpty {
-            return AnyView(TMStatusLabel(text: "\(broken.count) 个来源异常，需要检查来源设置", color: .orange, symbol: "exclamationmark.triangle.fill"))
+            return AnyView(TMStatusLabel(text: "\(broken.count) 个来源异常", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill"))
         }
         if !stale.isEmpty {
-            return AnyView(TMStatusLabel(text: "\(stale.count) 个来源数据过期", color: .orange, symbol: "clock.badge.exclamationmark"))
+            return AnyView(TMStatusLabel(text: "\(stale.count) 个来源过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark"))
         }
         if minutesAgo >= 0 {
-            return AnyView(TMStatusLabel(text: minutesAgo < 1 ? "数据刚刚更新" : "数据已更新 \(minutesAgo) 分钟前", color: .green, symbol: "checkmark.circle.fill"))
+            return AnyView(TMStatusLabel(text: minutesAgo < 1 ? "数据刚刚更新" : "数据已更新 \(minutesAgo) 分钟前", color: TMDesign.quiet, symbol: "checkmark.circle.fill"))
         }
         return AnyView(TMStatusLabel(text: "等待首次扫描", color: TMDesign.quiet, symbol: "circle.dashed"))
     }
@@ -159,7 +155,7 @@ struct OverviewView: View {
     private var heatmapSection: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
-                TMSectionHeader("活动", subtitle: "近一年每日用量，色深 = 相对强度")
+                TMSectionHeader("活动")
                 Spacer()
                 Picker("指标", selection: $heatMetric) {
                     ForEach(HeatMetric.allCases) { metric in
@@ -168,9 +164,6 @@ struct OverviewView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 150)
-            }
-            if heatMetric == .cost && app.costMonth.totalCount > 0 && app.costMonth.coverage < 0.8 {
-                TMStatusLabel(text: "成本覆盖率较低，活动强度可能低估", color: .orange, symbol: "info.circle")
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 ZStack(alignment: .topLeading) {
@@ -215,9 +208,6 @@ struct OverviewView: View {
                 .font(.system(size: TMType.micro))
                 .foregroundStyle(TMDesign.faint)
             Spacer()
-            Text(heatMetric == .tokens ? "单位：tokens" : "单位：USD")
-                .font(.system(size: TMType.micro))
-                .foregroundStyle(TMDesign.faint)
         }
     }
 
@@ -274,7 +264,7 @@ struct OverviewView: View {
 
     private var rankings: some View {
         VStack(alignment: .leading, spacing: 18) {
-            TMSectionHeader("来源分布", subtitle: "近 7 天，模型与工具两个维度看同一窗口")
+            TMSectionHeader("来源分布")
             HStack(alignment: .top, spacing: 32) {
                 rankingColumn(title: "模型 · 近 7 天", rows: app.modelAggs.prefix(6).map { row in
                     let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead) ?? row.input + row.output
@@ -328,7 +318,7 @@ struct OverviewView: View {
 
     private var recentSessions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TMSectionHeader("最近会话", subtitle: "近 200 条中最新的 8 条，点击查看调用明细")
+            TMSectionHeader("最近会话")
             if app.sessions.isEmpty {
                 Text("暂无会话记录")
                     .font(.system(size: TMType.caption))

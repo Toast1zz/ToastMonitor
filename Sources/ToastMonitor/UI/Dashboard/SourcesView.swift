@@ -13,11 +13,7 @@ struct SourcesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                TMPageHeader(
-                    title: "来源状态",
-                    subtitle: "确认本机日志、远程 Feed 和最近一次采集结果",
-                    eyebrow: "数据状态"
-                )
+                TMPageHeader("来源状态")
                 HStack {
                     Text("采集器状态")
                         .font(.system(size: 14, weight: .semibold))
@@ -31,7 +27,7 @@ struct SourcesView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                             testing = false
                             let scanned = health.sources.contains { $0.lastScan > baseline }
-                            testResult = scanned ? "本次扫描已完成，结果见各卡片" : "扫描已触发，尚未收到新的完成心跳（请查看各卡片）"
+                            testResult = scanned ? "扫描完成" : "尚未收到扫描心跳"
                         }
                     } label: {
                         if testing {
@@ -52,7 +48,7 @@ struct SourcesView: View {
                 if let tr = testResult {
                     Text(tr)
                         .font(.system(size: 11))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(TMDesign.accent)
                 }
 
                 ForEach(tools) { t in
@@ -83,11 +79,11 @@ struct SourcesView: View {
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.06)))
                 if h?.error != nil {
-                    TMStatusPill(text: "异常", color: .red, symbol: "xmark.circle.fill")
+                    TMStatusPill(text: "异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
                 } else if h?.isStale == true {
-                    TMStatusPill(text: "过期", color: .orange, symbol: "clock.badge.exclamationmark")
+                    TMStatusPill(text: "过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                 } else if h != nil {
-                    TMStatusPill(text: "正常", color: .green, symbol: "checkmark.circle.fill")
+                    TMStatusPill(text: "正常", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                 }
             }
             HStack(spacing: 16) {
@@ -96,14 +92,10 @@ struct SourcesView: View {
                 infoItem("解析失败", h.map { "\($0.failedRows)" } ?? "—")
                 infoItem("耗时", h.map { String(format: "%.0fms", $0.durationMs) } ?? "—")
             }
-            Text(isRemote ? "实际生效配置：远程 VPS feed（\(remote.feedURL)）"
-                 : "实际生效配置：本机日志目录")
-                .font(.system(size: TMType.micro))
-                .foregroundStyle(.tertiary)
             if let err = h?.error {
                 Text(err)
                     .font(.caption)
-                    .foregroundStyle(.red.opacity(0.85))
+                    .foregroundStyle(TMDesign.danger.opacity(0.85))
                     .lineLimit(2)
             }
         }
@@ -122,7 +114,7 @@ struct SourcesView: View {
             HStack(spacing: 8) {
                 Image(systemName: "externaldrive.badge.icloud")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(TMDesign.accent)
                     .frame(width: 20)
                 Text("远程 Feed")
                     .font(.system(size: 13, weight: .semibold))
@@ -130,11 +122,11 @@ struct SourcesView: View {
                 if let err = st.error {
                     Text(err)
                         .font(.system(size: 10.5))
-                        .foregroundStyle(.red.opacity(0.9))
+                        .foregroundStyle(TMDesign.danger.opacity(0.9))
                 } else if st.lastSync > 0 {
                     Label("已同步", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(TMDesign.quiet)
                 } else {
                     Text("未同步")
                         .font(.system(size: 10.5))
@@ -146,9 +138,6 @@ struct SourcesView: View {
                 infoItem("最近导入", "\(st.lastRows) 条")
                 infoItem("数据延迟", st.lastSync > 0 ? Format.remaining(Int64(Date().timeIntervalSince1970) - st.lastSync) : "—")
             }
-            Text("Feed: \(remote.feedURL) · 校验 scheme/host/MIME/schema，未知工具拒绝导入")
-                .font(.system(size: TMType.micro))
-                .foregroundStyle(.tertiary)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

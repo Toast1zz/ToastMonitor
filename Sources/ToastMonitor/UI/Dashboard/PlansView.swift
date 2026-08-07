@@ -22,11 +22,7 @@ struct PlansView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                TMPageHeader(
-                    title: "计划与余额",
-                    subtitle: "一个服务一张卡：额度、余额、凭据与历史都在同一处",
-                    eyebrow: "财务"
-                )
+                TMPageHeader("计划与余额")
                 goCard
                 orCard
                 subsCard
@@ -48,7 +44,7 @@ struct PlansView: View {
 
     private var goCard: some View {
         let go = goClient.state
-        return serviceCard(title: "OpenCode Go", icon: "g.circle.fill", color: .orange) {
+        return serviceCard(title: "OpenCode Go", icon: "g.circle.fill", color: TMDesign.accent) {
             VStack(alignment: .leading, spacing: 12) {
                 statusHeader(
                     isLoading: go.isLoading,
@@ -60,7 +56,7 @@ struct PlansView: View {
                 if let err = go.error {
                     Text(err)
                         .font(.system(size: TMType.caption))
-                        .foregroundStyle(.red.opacity(0.85))
+                        .foregroundStyle(TMDesign.danger.opacity(0.85))
                         .lineLimit(2)
                 }
 
@@ -107,7 +103,7 @@ struct PlansView: View {
                         if let formMessage, showGoForm || showORForm {
                             Text(formMessage)
                                 .font(.system(size: TMType.caption))
-                                .foregroundStyle(formFailed ? .red : .green)
+                                .foregroundStyle(formFailed ? TMDesign.danger : TMDesign.accent)
                         }
                     }
                 }
@@ -119,7 +115,7 @@ struct PlansView: View {
                             pct: pct,
                             reset: go.monthlyReset,
                             limit: OpenCodeGoClient.monthlyLimitUSD,
-                            color: .orange,
+                            color: TMDesign.accent,
                             reference: subForGo?.price
                         )
                     }
@@ -168,7 +164,7 @@ struct PlansView: View {
                             x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
                             y: .value("用量 %", pct)
                         )
-                        .foregroundStyle(.orange.opacity(0.85))
+                        .foregroundStyle(TMDesign.accent.opacity(0.85))
                         .interpolationMethod(.catmullRom)
                     }
                     if let pct = s.weeklyPct {
@@ -176,7 +172,7 @@ struct PlansView: View {
                             x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
                             y: .value("用量 %", pct)
                         )
-                        .foregroundStyle(.yellow.opacity(0.7))
+                        .foregroundStyle(TMDesign.accentShade(0.6).opacity(0.8))
                         .interpolationMethod(.catmullRom)
                     }
                 }
@@ -190,7 +186,7 @@ struct PlansView: View {
                 }
                 .frame(height: 110)
             } else {
-                Text("快照不足，暂无可绘制历史（持续运行后出现）")
+                Text("快照不足")
                     .font(.system(size: TMType.micro))
                     .foregroundStyle(TMDesign.faint)
             }
@@ -218,7 +214,7 @@ struct PlansView: View {
                 if let err = or.error {
                     Text(err)
                         .font(.system(size: TMType.caption))
-                        .foregroundStyle(.red.opacity(0.85))
+                        .foregroundStyle(TMDesign.danger.opacity(0.85))
                         .lineLimit(2)
                 }
 
@@ -266,7 +262,7 @@ struct PlansView: View {
                         if let formMessage, showGoForm || showORForm {
                             Text(formMessage)
                                 .font(.system(size: TMType.caption))
-                                .foregroundStyle(formFailed ? .red : .green)
+                                .foregroundStyle(formFailed ? TMDesign.danger : TMDesign.accent)
                         }
                     }
                 }
@@ -286,14 +282,14 @@ struct PlansView: View {
                             pct: limit > 0 ? remaining / limit * 100 : 0,
                             reset: nil,
                             limit: limit,
-                            color: .blue,
+                            color: TMDesign.accent,
                             reference: nil,
                             remainingText: Format.money(remaining)
                         )
                     }
                     Text(or.isManagementKey
-                         ? "管理 key：可枚举全部 key 与账户额度；余额来自账户级 credits。"
-                         : "普通 key：仅可查本 key 用量与账户余额；key 限额仅管理 key 可见。建议在控制台创建管理级 key。")
+                         ? "管理 key"
+                         : "普通 key")
                         .font(.system(size: TMType.micro))
                         .foregroundStyle(TMDesign.faint)
 
@@ -331,7 +327,7 @@ struct PlansView: View {
                 }
                 .frame(height: 110)
             } else {
-                Text("快照不足，暂无可绘制历史（持续运行后出现）")
+                Text("快照不足")
                     .font(.system(size: TMType.micro))
                     .foregroundStyle(TMDesign.faint)
             }
@@ -345,7 +341,7 @@ struct PlansView: View {
         serviceCard(title: "固定订阅", icon: "calendar", color: .gray) {
             if app.subscriptions.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("暂无订阅记录。订阅金额是固定成本（如 Codex Plus $20/月），不计入 API 支出统计。")
+                    Text("暂无订阅")
                         .font(.system(size: TMType.caption))
                         .foregroundStyle(TMDesign.quiet)
                     Button("在设置中添加订阅") {
@@ -411,11 +407,11 @@ struct PlansView: View {
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             } else if error != nil {
-                TMStatusPill(text: "同步失败", color: .red, symbol: "xmark.circle.fill")
+                TMStatusPill(text: "同步失败", color: TMDesign.danger, symbol: "xmark.circle.fill")
             } else {
                 Label("已同步", systemImage: "checkmark.circle.fill")
                     .font(.system(size: TMType.caption))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(TMDesign.quiet)
             }
             Spacer()
             if let syncedText {
@@ -442,7 +438,7 @@ struct PlansView: View {
             HStack(spacing: 8) {
                 Image(systemName: configured ? "key.fill" : "key.slash")
                     .font(.system(size: 11))
-                    .foregroundStyle(configured ? .green : TMDesign.quiet)
+                    .foregroundStyle(configured ? TMDesign.accent : TMDesign.quiet)
                 Text(summary)
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(configured ? TMDesign.quiet : .secondary)
@@ -496,13 +492,13 @@ struct PlansView: View {
                 Text("\(Int(p))%")
                     .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
-                    .foregroundStyle(p > 95 ? .red : (p > 80 ? .orange : (p > 50 ? color : .green)))
+                    .foregroundStyle(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : TMDesign.quiet))
             }
             GeometryReader { geo in
                 let w = geo.size.width
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.07))
-                    Capsule().fill(p > 95 ? Color.red : (p > 80 ? Color.orange : color))
+                    Capsule().fill(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : color))
                         .frame(width: max(3, w * CGFloat(p / 100)))
                     if let reference {
                         Rectangle()
@@ -513,11 +509,6 @@ struct PlansView: View {
                 }
             }
             .frame(height: 7)
-            if let reference {
-                Text("竖线 = 订阅价格参考线（\(Format.money(reference))）")
-                    .font(.system(size: TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
-            }
             if let reset, pct > 0 {
                 Text("重置于 \(Format.countdown(reset))")
                     .font(.system(size: TMType.micro))
@@ -536,7 +527,7 @@ struct PlansView: View {
                 Text("\(Int(pct))%")
                     .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
-                    .foregroundStyle(pct > 95 ? .red : (pct > 80 ? .orange : .primary))
+                    .foregroundStyle(pct > 95 ? TMDesign.danger : (pct > 80 ? TMDesign.accent : .primary))
             } else {
                 Text("—")
                     .font(.system(size: TMType.caption))

@@ -7,8 +7,9 @@ import AppKit
 /// a strong window/material hierarchy, so the UI uses quiet surfaces, hairline
 /// dividers, aligned numbers and a single warm accent instead.
 enum TMDesign {
-    // One product accent. Tool colours remain reserved for attribution and
-    // source identity; they should not compete with navigation and actions.
+    // Palette rule: at most three families — one product accent, one danger
+    // red for anomalies, and neutral grays. Tool/model distinction uses
+    // lightness layers of the accent (accentShade), never extra hues.
     static let accent = Color(red: 0.78, green: 0.32, blue: 0.16)
     static let accentSoft = Color(red: 0.78, green: 0.32, blue: 0.16).opacity(0.12)
     static let accentWash = Color(red: 0.78, green: 0.32, blue: 0.16).opacity(0.06)
@@ -28,10 +29,31 @@ enum TMDesign {
     static let faint = Color.primary.opacity(0.36)
     static let radius: CGFloat = 12
 
+    /// The one semantic color: anomalies/danger. Muted red tuned for gray
+    /// glass backgrounds in both appearances — system red/green are harsh
+    /// there and read poorly.
+    static let danger = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedRed: 0.92, green: 0.40, blue: 0.42, alpha: 1)
+        }
+        return NSColor(calibratedRed: 0.80, green: 0.27, blue: 0.30, alpha: 1)
+    })
+
+    /// Accent lightness layers for distinguishing sources/models without
+    /// adding hues: 0 = pure accent, 1 = strongly lightened.
+    static func accentShade(_ fraction: Double) -> Color {
+        let base = NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.16, alpha: 1)
+        let f = min(max(fraction, 0), 1)
+        let light = base.blended(withFraction: f * 0.55, of: .white) ?? base
+        return Color(nsColor: light)
+    }
+
+    /// Normal states are neutral; only anomalies get color (danger), and
+    /// stale attention gets the accent.
     static func statusColor(isError: Bool, isStale: Bool) -> Color {
-        if isError { return .red }
-        if isStale { return .orange }
-        return .green
+        if isError { return danger }
+        if isStale { return accent }
+        return quiet
     }
 }
 
@@ -83,29 +105,19 @@ struct TMGauge: View {
 
 struct TMSectionHeader: View {
     let title: String
-    var subtitle: String?
     var action: (() -> Void)?
     var actionTitle: String?
 
-    init(_ title: String, subtitle: String? = nil, actionTitle: String? = nil, action: (() -> Void)? = nil) {
+    init(_ title: String, actionTitle: String? = nil, action: (() -> Void)? = nil) {
         self.title = title
-        self.subtitle = subtitle
         self.actionTitle = actionTitle
         self.action = action
     }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(TMDesign.quiet)
-                }
-            }
+            Text(title)
+                .font(.system(size: TMType.section, weight: .semibold))
             Spacer(minLength: 12)
             if let action, let actionTitle {
                 Button(actionTitle, action: action)
@@ -118,26 +130,17 @@ struct TMSectionHeader: View {
 
 struct TMPageHeader: View {
     let title: String
-    let subtitle: String
-    var eyebrow: String?
+
+    init(_ title: String) {
+        self.title = title
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let eyebrow {
-                Text(eyebrow.uppercased())
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(TMDesign.accent)
-            }
-            Text(title)
-                .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
-                .foregroundStyle(.primary)
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(TMDesign.quiet)
-        }
-        .padding(.top, 22)
-        .padding(.bottom, 14)
+        Text(title)
+            .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
+            .foregroundStyle(.primary)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
     }
 }
 
@@ -405,9 +408,9 @@ enum ForecastText {
 
     static func color(_ status: Status) -> Color {
         switch status {
-        case .ok: return .green
-        case .warn: return .orange
-        case .danger: return .red
+        case .ok: return TMDesign.quiet
+        case .warn: return TMDesign.accent
+        case .danger: return TMDesign.danger
         case .neutral: return .secondary
         }
     }

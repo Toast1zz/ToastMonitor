@@ -15,17 +15,10 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                TMPageHeader(
-                    title: "配置",
-                    subtitle: "来源、远程 Feed、凭据与固定订阅",
-                    eyebrow: "工作台"
-                )
+                TMPageHeader("配置")
                 VStack(alignment: .leading, spacing: 12) {
                     Text("数据来源")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("每个工具可以独立选择从「本机」还是「远程 VPS」读取用量日志。选择立即保存并生效，远程数据由 VPS 上的导出任务（tm-export.py）生成。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
 
                     ForEach(tools) { tool in
                         HStack(spacing: 10) {
@@ -76,12 +69,12 @@ struct SettingsView: View {
                             if sourceSaved == tool {
                                 Text("已保存 ✓")
                                     .font(.system(size: 10.5))
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(TMDesign.accent)
                             }
                             if sourceFailed == tool {
                                 Text("保存失败")
                                     .font(.system(size: 10.5))
-                                    .foregroundStyle(.red)
+                                    .foregroundStyle(TMDesign.danger)
                             }
                         }
                         .padding(.vertical, 2)
@@ -94,7 +87,7 @@ struct SettingsView: View {
                     Text("数据来源健康")
                         .font(.system(size: 13, weight: .semibold))
                     if health.sources.isEmpty {
-                        Text("暂无扫描记录 —— 首次扫描后显示每个来源的耗时、条数与状态。")
+                        Text("暂无扫描记录")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
@@ -102,18 +95,14 @@ struct SettingsView: View {
                         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
                         HStack(spacing: 8) {
                             if broken > 0 {
-                                TMStatusPill(text: "\(broken) 个异常", color: .red, symbol: "xmark.circle.fill")
+                                TMStatusPill(text: "\(broken) 个异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
                             }
                             if stale > 0 {
-                                TMStatusPill(text: "\(stale) 个过期", color: .orange, symbol: "clock.badge.exclamationmark")
+                                TMStatusPill(text: "\(stale) 个过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                             }
                             if broken == 0 && stale == 0 {
-                                TMStatusPill(text: "全部正常", color: .green, symbol: "checkmark.circle.fill")
+                                TMStatusPill(text: "全部正常", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                             }
-                            Spacer()
-                            Text("详细状态与测试连接见「来源状态」")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
                         }
                     }
                 }
@@ -159,42 +148,30 @@ struct SettingsView: View {
                         if let err = st.error {
                             Text(err)
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(TMDesign.danger)
                         }
                         if saved {
                             Text("已保存")
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(.green)
+                                .foregroundStyle(TMDesign.accent)
                         }
                         if feedError {
                             Text("URL 不安全或保存失败（仅 HTTPS/私有网段）")
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(TMDesign.danger)
                         }
                     }
                 }
                 .tmPanelSurface()
 
-                // 额度凭据统一在「计划与余额」页管理（状态 + 配置 + 历史同处）。
+                // 额度凭据统一在「计划与余额」页管理。
                 VStack(alignment: .leading, spacing: 10) {
                     Text("配额凭据")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("OpenRouter API key 与 OpenCode Go cookie 在「计划与余额」页配置——额度、凭据与历史同处一张卡，凭据只存 macOS 钥匙串，保存失败不会回退到 SQLite 明文。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                     Button("前往计划与余额") {
                         NotificationCenter.default.post(name: DashboardView.selectTab, object: DashboardView.Tab.plans)
                     }
                     .font(.system(size: 11))
-                }
-                .tmPanelSurface()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("关于配额面板")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("OpenCode Go 套餐与 OpenRouter 的配额均内建（不依赖 opencode-quota 插件）：\n· 额度凭据（OpenRouter key / Go workspaceId + cookie）在「计划与余额」页配置\n· 也可用命令行注入：--provision-or-key 与 --provision-go <workspaceId>，secret 从 stdin 输入\n· secret 只存 macOS 钥匙串；命令行 secret 不进入进程参数")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                 }
                 .tmPanelSurface()
 
@@ -260,7 +237,7 @@ struct SubscriptionSettingsSection: View {
             }
 
             if app.subscriptions.isEmpty {
-                Text("暂无订阅记录。记录后「计划与余额」会显示周期进度、续期日期和用量预测。")
+                Text("暂无订阅")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             } else {
@@ -309,7 +286,7 @@ struct SubscriptionSettingsSection: View {
                         }
                         .buttonStyle(.borderless)
                         .font(.system(size: 11))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(TMDesign.danger)
                         .help("删除订阅")
                     }
                     .padding(10)
@@ -384,19 +361,16 @@ struct SubscriptionSettingsSection: View {
                         if priceError {
                             Text("费用无效（需 ≥ 0 的数字）")
                                 .font(.system(size: 10))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(TMDesign.danger)
                         }
                         if let databaseError {
                             Text(databaseError)
                                 .font(.system(size: 10))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(TMDesign.danger)
                         }
                         Button("取消") { showForm = false }
                             .font(.system(size: 12))
                         Spacer()
-                        Text("关联 OpenCode Go / OpenRouter 后自动计算已用价值")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
                     }
                 }
                 .padding(12)
@@ -435,6 +409,6 @@ struct SubscriptionSettingsSection: View {
     }
 
     private func planColor(_ p: String) -> Color {
-        p == "go" ? .orange : (p == "openrouter" ? ToolKind.openrouter.color : .gray)
+        p == "go" ? TMDesign.accent : (p == "openrouter" ? ToolKind.openrouter.color : .gray)
     }
 }
