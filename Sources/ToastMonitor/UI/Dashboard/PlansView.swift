@@ -16,8 +16,12 @@ struct PlansView: View {
     @State private var goCookie = ""
     @State private var orKey = ""
     @State private var orAppend = false
-    @State private var formMessage: String?
-    @State private var formFailed = false
+    /// Each credential form shows only its own message/color — saving Go
+    /// must never flash a message inside the OpenRouter form (and vice versa).
+    @State private var goFormMessage: String?
+    @State private var goFormFailed = false
+    @State private var orFormMessage: String?
+    @State private var orFormFailed = false
 
     var body: some View {
         ScrollView {
@@ -31,12 +35,22 @@ struct PlansView: View {
             .padding(.vertical, 18)
         }
         .onAppear { loadSnapshots() }
-        .onReceive(goClient.$state) { _ in loadSnapshots() }
-        .onReceive(orClient.$state) { _ in loadSnapshots() }
+        .onReceive(goClient.$state) { _ in loadOGSnapshots() }
+        .onReceive(orClient.$state) { _ in loadORSnapshots() }
     }
 
     private func loadSnapshots() {
+        loadOGSnapshots()
+        loadORSnapshots()
+    }
+
+    /// Reloads only the OpenCode Go history series.
+    private func loadOGSnapshots() {
         UsageQueryService.shared.loadOGSnapshots(limit: 120) { goSnapshots = $0 }
+    }
+
+    /// Reloads only the OpenRouter history series.
+    private func loadORSnapshots() {
         UsageQueryService.shared.loadORSnapshots(limit: 120) { orSnapshots = $0 }
     }
 
@@ -70,8 +84,8 @@ struct PlansView: View {
                         goClient.clear()
                         goWS = ""
                         goCookie = ""
-                        formMessage = "OpenCode Go 凭据已清除"
-                        formFailed = false
+                        goFormMessage = "OpenCode Go 凭据已清除"
+                        goFormFailed = false
                     }
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -91,19 +105,19 @@ struct PlansView: View {
                                     showGoForm = false
                                     goWS = ""
                                     goCookie = ""
-                                    formMessage = "OpenCode Go 凭据已保存"
-                                    formFailed = false
+                                    goFormMessage = "OpenCode Go 凭据已保存"
+                                    goFormFailed = false
                                 } else {
-                                    formMessage = goClient.state.error ?? "保存失败（钥匙串不可用）"
-                                    formFailed = true
+                                    goFormMessage = goClient.state.error ?? "保存失败（钥匙串不可用）"
+                                    goFormFailed = true
                                 }
                             }
                             .font(.system(size: TMType.caption))
                         }
-                        if let formMessage, showGoForm || showORForm {
-                            Text(formMessage)
+                        if let goFormMessage, showGoForm {
+                            Text(goFormMessage)
                                 .font(.system(size: TMType.caption))
-                                .foregroundStyle(formFailed ? TMDesign.danger : TMDesign.accent)
+                                .foregroundStyle(goFormFailed ? TMDesign.danger : TMDesign.accent)
                         }
                     }
                 }
@@ -227,8 +241,8 @@ struct PlansView: View {
                         _ = orClient.setKey(nil)
                         orKey = ""
                         orAppend = false
-                        formMessage = "OpenRouter key 已清除"
-                        formFailed = false
+                        orFormMessage = "OpenRouter key 已清除"
+                        orFormFailed = false
                     }
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -243,11 +257,11 @@ struct PlansView: View {
                                     showORForm = false
                                     orKey = ""
                                     orAppend = false
-                                    formMessage = "OpenRouter key 已保存并开始查询"
-                                    formFailed = false
+                                    orFormMessage = "OpenRouter key 已保存并开始查询"
+                                    orFormFailed = false
                                 } else {
-                                    formMessage = orClient.state.error ?? "保存失败（钥匙串不可用）"
-                                    formFailed = true
+                                    orFormMessage = orClient.state.error ?? "保存失败（钥匙串不可用）"
+                                    orFormFailed = true
                                 }
                             }
                             .font(.system(size: TMType.caption))
@@ -259,10 +273,10 @@ struct PlansView: View {
                                     .controlSize(.small)
                             }
                         }
-                        if let formMessage, showGoForm || showORForm {
-                            Text(formMessage)
+                        if let orFormMessage, showORForm {
+                            Text(orFormMessage)
                                 .font(.system(size: TMType.caption))
-                                .foregroundStyle(formFailed ? TMDesign.danger : TMDesign.accent)
+                                .foregroundStyle(orFormFailed ? TMDesign.danger : TMDesign.accent)
                         }
                     }
                 }

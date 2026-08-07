@@ -67,11 +67,7 @@ enum Format {
 
     /// 1.2k / 34 这类计数缩写（与 compact 同单位体系）。
     static func count(_ n: Int64) -> String {
-        if n >= 1_000_000_000_000 { return String(format: "%.2fT", Double(n) / 1_000_000_000_000) }
-        if n >= 1_000_000_000 { return String(format: "%.2fB", Double(n) / 1_000_000_000) }
-        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.1fk", Double(n) / 1_000) }
-        return "\(n)"
+        compact(n)
     }
 
     /// 相对剩余时间: "2.1h" / "45m" / "3d"。

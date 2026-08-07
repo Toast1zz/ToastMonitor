@@ -7,7 +7,6 @@ struct OverviewView: View {
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
-    @State private var hoveredDay: (key: Int64, tokens: Int64, cost: Double)?
     @State private var period: Period = .today
 
     /// Page-wide period: hero totals and the distribution section follow it.
@@ -21,7 +20,6 @@ struct OverviewView: View {
         var id: String { rawValue }
     }
 
-    private let calendar = Calendar.current
     /// Heatmap cell geometry (13pt cells, 3pt gutter) — must match render.
     private let cellSize: CGFloat = 13
     private let cellGutter: CGFloat = 3
@@ -205,65 +203,40 @@ struct OverviewView: View {
     private var heatmapSection: some View {
         VStack(alignment: .leading, spacing: 11) {
             TMSectionHeader("活动")
-            HStack {
-                if let h = hoveredDay {
-                    Text("\(Format.dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
-                         + (h.cost > 0 ? " · \(Format.money(h.cost))" : ""))
-                        .font(.system(size: TMType.caption, weight: .medium))
-                        .monospacedDigit()
-                }
-                Spacer()
-            }
-            .frame(height: 16)
-            ScrollView(.horizontal, showsIndicators: false) {
-                ZStack(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: cellGutter) {
-                        ForEach(heatmapWeeks.indices, id: \.self) { wi in
-                            VStack(spacing: cellGutter) {
-                                ForEach(0..<7, id: \.self) { di in
-                                    heatCell(heatmapWeeks[wi][di])
-                                }
-                            }
-                        }
-                    }
-                    .padding(.top, 16)
-                    // Month labels overhang their column like GitHub's grid.
-                    ForEach(monthLabels, id: \.index) { m in
-                        Text(m.label)
-                            .font(.system(size: TMType.micro, weight: .medium))
-                            .foregroundStyle(TMDesign.quiet)
-                            .fixedSize()
-                            .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
-                    }
-                }
-                .padding(.vertical, 5)
-            }
-            heatLegend
+            HeatmapGrid(
+                weeks: heatmapWeeks,
+                heatmap: app.heatmap,
+                heatmapCost: app.heatmapCost,
+                maxTokens: heatmapMaxTokens,
+                cellSize: cellSize,
+                cellGutter: cellGutter
+            )
         }
     }
 
-    private var heatLegend: some View {
-        HStack(spacing: 4) {
-            Text("少")
-                .font(.system(size: TMType.micro))
-                .foregroundStyle(TMDesign.faint)
-            ForEach(0..<5, id: \.self) { level in
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(level == 0
-                          ? Color.primary.opacity(0.07)
-                          : TMDesign.accent.opacity(0.18 + Double(level) / 4 * 0.72))
-                    .frame(width: 11, height: 11)
-            }
-            Text("多")
-                .font(.system(size: TMType.micro))
-                .foregroundStyle(TMDesign.faint)
-            Spacer()
-        }
+    /// One O(n) pass per body evaluation, shared by every heatmap cell
+    /// (the per-cell `values.max()` was 371 passes per body eval).
+    private var heatmapMaxTokens: Int64 {
+        app.heatmap.values.max() ?? 0
     }
+
+    /// 53-week grid for the current year window. Recomputed at most once per
+    /// day (371 Calendar operations), never on every body evaluation.
+    private static var cachedWeeks: [[Int64?]] = []
+    private static var cachedWeeksDay: Int = -1
 
     private var heatmapWeeks: [[Int64?]] {
-        var weeks: [[Int64?]] = []
         let now = Date()
+        let day = Calendar.current.ordinality(of: .day, in: .year, for: now) ?? -1
+        guard Self.cachedWeeksDay != day else { return Self.cachedWeeks }
+        Self.cachedWeeks = Self.buildHeatmapWeeks(now: now)
+        Self.cachedWeeksDay = day
+        return Self.cachedWeeks
+    }
+
+    private static func buildHeatmapWeeks(now: Date) -> [[Int64?]] {
+        var weeks: [[Int64?]] = []
+        let calendar = Calendar.current
         guard let monday = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return weeks }
         for week in 0..<53 {
             var column: [Int64?] = []
@@ -283,47 +256,6 @@ struct OverviewView: View {
             weeks.append(column)
         }
         return weeks
-    }
-
-    /// First week whose Monday falls in a new month gets that month's label.
-    /// January also carries the (2-digit) year so the year boundary is
-    /// visible in a 53-week span.
-    private var monthLabels: [(index: Int, label: String)] {
-        var out: [(Int, String)] = []
-        var lastMonth = -1
-        var lastYear = -1
-        for (wi, week) in heatmapWeeks.enumerated() {
-            guard let first = week.compactMap({ $0 }).first else { continue }
-            let year = Int(first) / 10_000
-            let month = (Int(first) / 100) % 100
-            if month != lastMonth || year != lastYear {
-                if month == 1 {
-                    out.append((wi, "\(year % 100)年1月"))
-                } else {
-                    out.append((wi, "\(month)月"))
-                }
-                lastMonth = month
-                lastYear = year
-            }
-        }
-        return out
-    }
-
-    private func heatCell(_ day: Int64?) -> some View {
-        let value = day.flatMap { Double(app.heatmap[$0] ?? 0) } ?? 0
-        let maxValue = Double(app.heatmap.values.max() ?? 0)
-        let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
-        return RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-            .fill(value > 0 ? TMDesign.accent.opacity(0.18 + intensity * 0.72) : Color.primary.opacity(0.07))
-            .frame(width: cellSize, height: cellSize)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                if hovering, let day {
-                    hoveredDay = (day, app.heatmap[day] ?? 0, app.heatmapCost[day] ?? 0)
-                } else if hoveredDay?.key == day {
-                    hoveredDay = nil
-                }
-            }
     }
 
     // MARK: - Attribution (same trailing-7d window on both columns)
@@ -403,5 +335,119 @@ struct OverviewView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The year heatmap owns its hover state: hovering re-evaluates only this
+/// grid, never the whole overview body. `maxTokens` is computed once per
+/// OverviewView body evaluation (not per cell) and passed down as a constant.
+private struct HeatmapGrid: View {
+    let weeks: [[Int64?]]
+    let heatmap: [Int64: Int64]
+    let heatmapCost: [Int64: Double]
+    let maxTokens: Int64
+    let cellSize: CGFloat
+    let cellGutter: CGFloat
+
+    private let calendar = Calendar.current
+    @State private var hoveredDay: (key: Int64, tokens: Int64, cost: Double)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                if let h = hoveredDay {
+                    Text("\(Format.dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
+                         + (h.cost > 0 ? " · \(Format.money(h.cost))" : ""))
+                        .font(.system(size: TMType.caption, weight: .medium))
+                        .monospacedDigit()
+                }
+                Spacer()
+            }
+            .frame(height: 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                ZStack(alignment: .topLeading) {
+                    HStack(alignment: .top, spacing: cellGutter) {
+                        ForEach(weeks.indices, id: \.self) { wi in
+                            VStack(spacing: cellGutter) {
+                                ForEach(0..<7, id: \.self) { di in
+                                    heatCell(weeks[wi][di])
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 16)
+                    // Month labels overhang their column like GitHub's grid.
+                    ForEach(monthLabels, id: \.index) { m in
+                        Text(m.label)
+                            .font(.system(size: TMType.micro, weight: .medium))
+                            .foregroundStyle(TMDesign.quiet)
+                            .fixedSize()
+                            .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
+                    }
+                }
+                .padding(.vertical, 5)
+            }
+            heatLegend
+        }
+    }
+
+    /// First week whose Monday falls in a new month gets that month's label.
+    /// January also carries the (2-digit) year so the year boundary is
+    /// visible in a 53-week span.
+    private var monthLabels: [(index: Int, label: String)] {
+        var out: [(Int, String)] = []
+        var lastMonth = -1
+        var lastYear = -1
+        for (wi, week) in weeks.enumerated() {
+            guard let first = week.compactMap({ $0 }).first else { continue }
+            let year = Int(first) / 10_000
+            let month = (Int(first) / 100) % 100
+            if month != lastMonth || year != lastYear {
+                if month == 1 {
+                    out.append((wi, "\(year % 100)年1月"))
+                } else {
+                    out.append((wi, "\(month)月"))
+                }
+                lastMonth = month
+                lastYear = year
+            }
+        }
+        return out
+    }
+
+    private var heatLegend: some View {
+        HStack(spacing: 4) {
+            Text("少")
+                .font(.system(size: TMType.micro))
+                .foregroundStyle(TMDesign.faint)
+            ForEach(0..<5, id: \.self) { level in
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(level == 0
+                          ? Color.primary.opacity(0.07)
+                          : TMDesign.accent.opacity(0.18 + Double(level) / 4 * 0.72))
+                    .frame(width: 11, height: 11)
+            }
+            Text("多")
+                .font(.system(size: TMType.micro))
+                .foregroundStyle(TMDesign.faint)
+            Spacer()
+        }
+    }
+
+    private func heatCell(_ day: Int64?) -> some View {
+        let value = day.flatMap { Double(heatmap[$0] ?? 0) } ?? 0
+        let maxValue = Double(maxTokens)
+        let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
+        return RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+            .fill(value > 0 ? TMDesign.accent.opacity(0.18 + intensity * 0.72) : Color.primary.opacity(0.07))
+            .frame(width: cellSize, height: cellSize)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering, let day {
+                    hoveredDay = (day, heatmap[day] ?? 0, heatmapCost[day] ?? 0)
+                } else if hoveredDay?.key == day {
+                    hoveredDay = nil
+                }
+            }
     }
 }

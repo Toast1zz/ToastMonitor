@@ -42,13 +42,10 @@ final class UsageQueryService {
         var modelAggsToday: [Database.ModelAgg]
         var modelAggsMonth: [Database.ModelAgg]
         var modelAggsAll: [Database.ModelAgg]
-        var dailyAggs: [Database.DayAgg]
         var heatmap: [Int64: Int64]
         var heatmapCost: [Int64: Double]
-        var sessions: [Database.SessionRow]
         var subscriptions: [Database.Subscription]
         var lastScan: Int64
-        var hasLocalData: Bool
         var fetchedAt: Int64
     }
 
@@ -115,7 +112,6 @@ final class UsageQueryService {
         let byToolWeek = Database.shared.totalsByTool(from: weekStart, to: nowTs)
         let byToolMonth = Database.shared.totalsByTool(from: monthStart, to: nowTs)
         let byToolAll = Database.shared.totalsByTool(from: 0, to: nowTs)
-        let dailyAggs = Database.shared.dailyAggregates(days: 35)
         let annualAggs = Database.shared.dailyAggregates(days: 371)
         return Snapshot(
             today: today,
@@ -142,14 +138,11 @@ final class UsageQueryService {
             modelAggsToday: Database.shared.modelAggregates(from: todayStart, to: nowTs),
             modelAggsMonth: Database.shared.modelAggregates(from: monthStart, to: nowTs),
             modelAggsAll: Database.shared.modelAggregates(from: 0, to: nowTs),
-            dailyAggs: dailyAggs,
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),
             heatmapCost: Self.buildCostHeatmap(aggs: annualAggs),
-            sessions: Database.shared.sessions(limit: 200),
             subscriptions: Database.shared.subscriptions(),
             lastScan: Database.shared.lastScanTime(),
-            hasLocalData: Database.shared.turnCount() > 0,
             fetchedAt: Int64(Date().timeIntervalSince1970))
     }
 

@@ -43,6 +43,16 @@ final class Database {
         return d
     }
 
+    /// Closes the underlying SQLite handle. Safe to call more than once:
+    /// after the first close the handle is nil and later calls are no-ops.
+    /// Tests call this in teardown so temp db/-wal/-shm files can be removed.
+    func close() {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return }
+        sqlite3_close(db)
+        self.db = nil
+    }
+
     private func openLocked(_ path: String) {
         let fm = FileManager.default
         let dir = (path as NSString).deletingLastPathComponent

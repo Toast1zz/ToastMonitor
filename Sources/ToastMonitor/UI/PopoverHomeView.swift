@@ -18,7 +18,6 @@ struct PopoverHomeView: View {
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
-    @ObservedObject private var health = SourceHealthHub.shared
     @State private var period: Period = .today
     /// Drives countdown refresh (resets etc.) once a minute.
     @State private var now = Date()
@@ -300,24 +299,6 @@ struct PopoverHomeView: View {
         return SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
     }
 
-    private func compactMetric(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(TMDesign.quiet)
-            Text(value)
-                .font(.headline.weight(.semibold))
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var costLine: String {
-        if cost.actual > 0 { return "已确认 \(Format.money(cost.actual))" }
-        if cost.estimated > 0 { return "估算 \(Format.money(cost.estimated))" }
-        return "成本暂无覆盖"
-    }
-
     /// 来源分段条 + 每来源一行（行尾直接显示占比，无隐式交互）。
     private var sourceBar: some View {
         let rows = sortedRows
@@ -375,27 +356,6 @@ struct PopoverHomeView: View {
         byTool.sorted {
             (ToolKind(rawValue: $0.tool)?.totalTokens($0) ?? ($0.input + $0.output)) >
                 (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
-        }
-    }
-
-    private func sourceRow(_ row: Database.ToolTotals) -> some View {
-        let kind = ToolKind(rawValue: row.tool)
-        let value = kind?.totalTokens(row) ?? (row.input + row.output)
-        let source = health.sources.first { $0.tool == row.tool }
-        let stateColor = TMDesign.statusColor(isError: source?.error != nil, isStale: source?.isStale == true)
-        return HStack(spacing: 9) {
-            Text(kind?.displayName ?? row.tool)
-                .font(.headline.weight(.semibold))
-            // 状态灯只在异常时出现（错误/过期）；正常保持安静。
-            if let source, source.error != nil || source.isStale {
-                Image(systemName: source.error != nil ? "exclamationmark.triangle.fill" : "clock.badge.exclamationmark")
-                    .font(.caption2)
-                    .foregroundStyle(stateColor)
-                    .help(source.error ?? "来源数据过期")
-            }
-            Spacer()
-            Text(Format.compact(value))
-                .font(.subheadline.monospacedDigit())
         }
     }
 

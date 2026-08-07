@@ -34,9 +34,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return value
     }
 
+    // MARK: - Crash reporting (minimal)
+
+    /// Installs a minimal crash reporter: an Objective-C uncaught-exception
+    /// handler plus C signal handlers for the fatal signals. Each writes a
+    /// one-line marker to `<Application Support>/ToastMonitor/crash-<ts>.log`.
+    /// Does not interfere with normal operation: the signal path restores the
+    /// default disposition and re-raises so the OS still records the crash.
+    private func installCrashHandlers() {
+        let fm = FileManager.default
+        let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("ToastMonitor", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Precompute "<dir>/crash-" for the signal handler (which must not
+        // call Foundation) and force the scratch buffer's lazy init now.
+        tmCrashDirPrefixC = Array((dir.path + "/crash-").utf8CString)
+        _ = tmCrashScratch.count
+
+        // Objective-C exception handler: may use Foundation (normal context).
+        NSSetUncaughtExceptionHandler { exception in
+            let name = exception.name.rawValue
+            let reason = exception.reason ?? "(no reason)"
+            let stack = exception.callStackSymbols.prefix(12).joined(separator: "\n")
+            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("ToastMonitor", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let line = "uncaught exception \(name): \(reason)\n\(stack)\n"
+            let path = dir.appendingPathComponent("crash-\(Int(Date().timeIntervalSince1970)).log")
+            try? line.write(to: path, atomically: true, encoding: .utf8)
+            // Returning lets the runtime terminate the app normally.
+        }
+
+        signal(SIGILL, tmCrashSignalHandler)
+        signal(SIGABRT, tmCrashSignalHandler)
+        signal(SIGSEGV, tmCrashSignalHandler)
+        signal(SIGBUS, tmCrashSignalHandler)
+        signal(SIGFPE, tmCrashSignalHandler)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installCrashHandlers()
         // Headless CLI modes (used for provisioning the keychain over SSH).
         let args = CommandLine.arguments
+        if args.contains("--version") {
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0 (dev)"
+            print("ToastMonitor \(version)")
+            exit(0)
+        }
         if args.contains("--probe-vault") {
             // Diagnostic: run in a GUI session via `open --args` so the
             // keychain behaves exactly as it does for the real app. Reports
@@ -334,4 +378,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+}
+
+// MARK: - Crash signal handler (async-signal-safe)
+
+/// "<dir>/crash-" (NUL-terminated). Built once in `installCrashHandlers`
+/// (Foundation allowed there); read-only afterwards.
+private var tmCrashDirPrefixC: [CChar] = []
+/// Preallocated scratch buffer. Lazily initialized on first access — forced
+/// during `installCrashHandlers`, so the handler itself never allocates
+/// (malloc is not async-signal-safe).
+private var tmCrashScratch = [CChar](repeating: 0, count: 2048)
+
+/// Appends the decimal digits of `v` (>= 0) to `buf` at `i`, returning the
+/// index after the last digit. Pure integer math — safe in signal handlers.
+private func tmAppendDecimal(_ v: Int64, to buf: UnsafeMutableBufferPointer<CChar>, at i: Int) -> Int {
+    var n = 1
+    var t = v
+    while t >= 10 { n += 1; t /= 10 }
+    var pos = i + n - 1
+    var x = v
+    repeat {
+        buf[pos] = CChar(48 + x % 10)
+        x /= 10
+        pos -= 1
+    } while x > 0
+    return i + n
+}
+
+/// Writes `<dir>/crash-<unix-ts>.log` with a one-line "signal <N>" marker,
+/// then restores the default disposition and re-raises so the OS records
+/// the crash normally. Only async-signal-safe calls: open/write/close/time/
+/// signal/raise plus integer math on the preallocated buffer (string
+/// literals are static; iterating their utf8 never allocates).
+private func tmCrashSignalHandler(_ sig: Int32) {
+    tmCrashScratch.withUnsafeMutableBufferPointer { buf in
+        var i = 0
+        for c in tmCrashDirPrefixC {
+            if i >= buf.count - 24 { break }
+            buf[i] = c
+            i += 1
+        }
+        i = tmAppendDecimal(Int64(time(nil)), to: buf, at: i)
+        for b in ".log".utf8 {
+            guard i < buf.count - 2 else { break }
+            buf[i] = CChar(bitPattern: b)
+            i += 1
+        }
+        buf[i] = 0 // NUL-terminate the path
+        let fd = open(buf.baseAddress!, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        if fd >= 0 {
+            var j = 0
+            for b in "signal ".utf8 {
+                buf[j] = CChar(bitPattern: b)
+                j += 1
+            }
+            j = tmAppendDecimal(Int64(sig), to: buf, at: j)
+            buf[j] = 0x0A // '\n'
+            _ = write(fd, buf.baseAddress!, j + 1)
+            close(fd)
+        }
+    }
+    signal(sig, SIG_DFL)
+    raise(sig)
 }

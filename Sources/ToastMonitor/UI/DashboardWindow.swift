@@ -6,6 +6,7 @@ import SwiftUI
 final class WindowManager {
     static let shared = WindowManager()
     private var window: NSWindow?
+    private var closeObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -44,9 +45,25 @@ final class WindowManager {
         window.center()
         window.setFrameAutosaveName("ToastMonitorDashboard")
         self.window = window
+        // The close button (or Cmd-W) closes the window without going through
+        // toggle(); without this the foreground timer keeps firing after the
+        // dashboard is gone.
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { _ in
+            NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
+    }
+
+    deinit {
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+        }
     }
 }
 
@@ -104,6 +121,8 @@ struct DashboardView: View {
                     CollectorEngine.shared.scheduleScan()
                     OpenRouterClient.shared.refresh()
                     OpenCodeGoClient.shared.refresh()
+                    HermesRemoteClient.shared.maybePoll()
+                    CodexQuotaClient.shared.refresh()
                 } label: {
                     Image(systemName: app.manualRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
                 }

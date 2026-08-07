@@ -28,6 +28,20 @@ enum CodexParser {
         return String(stem[r])
     }
 
+    /// Token counts for a single token_count event. Uses `last_token_usage`
+    /// (the per-turn delta); `total_token_usage` is cumulative across the
+    /// rollout and must never be used for an individual turn.
+    /// Returns nil when the event carries no `last_token_usage`.
+    static func tokenCounts(from info: [String: Any]) -> (input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64)? {
+        guard let last = info["last_token_usage"] as? [String: Any] else { return nil }
+        return (
+            input: (last["input_tokens"] as? NSNumber)?.int64Value ?? 0,
+            output: (last["output_tokens"] as? NSNumber)?.int64Value ?? 0,
+            cacheRead: (last["cached_input_tokens"] as? NSNumber)?.int64Value ?? 0,
+            cacheWrite: (last["cache_write_input_tokens"] as? NSNumber)?.int64Value ?? 0
+        )
+    }
+
     /// Reads threads table into [sessionID: model] plus session metadata.
     static func readThreads() -> [String: (model: String?, provider: String?, title: String?, cwd: String?)] {
         var out: [String: (model: String?, provider: String?, title: String?, cwd: String?)] = [:]
@@ -141,11 +155,11 @@ enum CodexParser {
                 if type == "event_msg", let payload = obj["payload"] as? [String: Any],
                    payload["type"] as? String == "token_count",
                    let info = payload["info"] as? [String: Any],
-                   let last = info["last_token_usage"] as? [String: Any] {
-                    let input = (last["input_tokens"] as? NSNumber)?.int64Value ?? 0
-                    let output = (last["output_tokens"] as? NSNumber)?.int64Value ?? 0
-                    let cacheRead = (last["cached_input_tokens"] as? NSNumber)?.int64Value ?? 0
-                    let cacheWrite = (last["cache_write_input_tokens"] as? NSNumber)?.int64Value ?? 0
+                   let counts = tokenCounts(from: info) {
+                    let input = counts.input
+                    let output = counts.output
+                    let cacheRead = counts.cacheRead
+                    let cacheWrite = counts.cacheWrite
                     let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
                         ?? Int64(Date().timeIntervalSince1970)
                     // Threads metadata is a valid fallback when a rollout

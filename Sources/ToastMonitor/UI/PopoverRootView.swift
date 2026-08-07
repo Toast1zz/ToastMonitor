@@ -25,10 +25,6 @@ struct PopoverRootView: View {
         .environment(\.controlSize, .small)
     }
 
-    /// Panel height = scroll body + pinned selector + fixed chrome
-    /// (header ~46 + dividers ~4 + footer ~58 ≈ 108). Kept for reference.
-    static let panelChromeHeight: CGFloat = 108
-
     private var header: some View {
         HStack(spacing: 10) {
             Text("ToastMonitor")

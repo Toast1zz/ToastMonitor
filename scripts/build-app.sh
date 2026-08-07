@@ -6,6 +6,16 @@ cd "$(dirname "$0")/.."   # ~/Projects/ToastMonitor
 BIN="$(swift build -c release --show-bin-path)/ToastMonitor"
 APP="$(pwd)/dist/ToastMonitor.app"
 
+# Version scheme: CFBundleShortVersionString = `git describe --tags --always
+# --dirty` (nearest tag, else the short commit hash, with a "-dirty" suffix
+# when the tree has uncommitted changes); CFBundleVersion = total commit
+# count. Both fall back when git metadata is unavailable (e.g. a source
+# tarball export).
+SHORT_VERSION="$(git describe --tags --always --dirty 2>/dev/null || true)"
+if [[ -z "$SHORT_VERSION" ]]; then SHORT_VERSION="0.1.0"; fi
+BUILD_VERSION="$(git rev-list --count HEAD 2>/dev/null || true)"
+if [[ -z "$BUILD_VERSION" ]]; then BUILD_VERSION="1"; fi
+
 echo "== building (if needed) =="
 swift build -c release
 
@@ -41,6 +51,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+# Overwrite the placeholder version keys with the git-derived values.
+echo "version: $SHORT_VERSION (build $BUILD_VERSION)"
+plutil -replace CFBundleShortVersionString -string "$SHORT_VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$BUILD_VERSION" "$APP/Contents/Info.plist"
 
 cp "$BIN" "$APP/Contents/MacOS/ToastMonitor"
 

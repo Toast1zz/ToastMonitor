@@ -18,11 +18,11 @@ sqlite3 "$DB" "PRAGMA wal_checkpoint(TRUNCATE);"
 cp "$DB" ~/Projects/ToastMonitor/backups/toastmonitor-$(date +%Y%m%d-%H%M%S).db
 ```
 
-保留最近 7 份；恢复 = 停 App → 替换 db + 删除 -wal/-shm → 启动。
+恢复 = 停 App → 替换 db + 删除 -wal/-shm → 启动。
 
 ## 3. 迁移机制（阶段 C 落地）
 
-- `PRAGMA user_version` 版本化迁移，所有迁移在事务内执行。
+- `PRAGMA user_version` 版本化迁移在 `BEGIN IMMEDIATE` 事务内执行。幂等的 `ensureColumn` ALTER（如 `subscriptions.end_date`、`scan_state.context`）在事务外直接执行——失败可安全重试，不属于版本化迁移。
 - 新增列用幂等 `ensureColumn`；数据库使用递归锁，迁移/采集事务可安全调用。`turns` 的 legacy 唯一约束重建和事件索引创建也在同一 `BEGIN IMMEDIATE` 事务内，失败会回滚并保持 `user_version=0` 以便重试。
 - 每个历史版本有一份迁移测试（从该版本 schema 升级到最新）。
 

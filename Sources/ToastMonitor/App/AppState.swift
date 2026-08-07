@@ -27,7 +27,6 @@ final class AppState: ObservableObject {
     @Published var costWeek = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var costMonth = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var costAll = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
-    @Published var isRefreshing: Bool = false
     /// True only while a USER-initiated refresh is in flight — the toolbar
     /// spinner reacts to this, never to automatic refreshes.
     @Published var manualRefreshing: Bool = false
@@ -35,17 +34,18 @@ final class AppState: ObservableObject {
     @Published var modelAggsToday: [Database.ModelAgg] = []
     @Published var modelAggsMonth: [Database.ModelAgg] = []
     @Published var modelAggsAll: [Database.ModelAgg] = []
-    @Published var dailyAggs: [Database.DayAgg] = []
     @Published var heatmap: [Int64: Int64] = [:]
     @Published var heatmapCost: [Int64: Double] = [:]
-    @Published var sessions: [Database.SessionRow] = []
     @Published var subscriptions: [Database.Subscription] = []
     @Published var lastScan: Int64 = 0
-    @Published var hasLocalData: Bool = true
     @Published var snapshotFetchedAt: Int64 = 0
 
     private var refreshTimer: Timer?
     private var refreshInFlight = false
+    /// A manual refresh arrived while a snapshot was already in flight;
+    /// re-run as manual once the in-flight one completes so the toolbar
+    /// spinner reflects the user's request.
+    private var pendingManual = false
     private var popoverVisible = false
     private var dashboardVisible = false
     private var foreground = false
@@ -106,9 +106,11 @@ final class AppState: ObservableObject {
     /// `manual` marks user-initiated refreshes (toolbar button) so the
     /// spinner shows only for those.
     func refresh(manual: Bool = false) {
-        guard !refreshInFlight else { return }
+        guard !refreshInFlight else {
+            if manual { pendingManual = true }
+            return
+        }
         refreshInFlight = true
-        isRefreshing = true
         if manual { manualRefreshing = true }
         UsageQueryService.shared.loadSnapshot { [weak self] snap in
             guard let self else { return }
@@ -136,17 +138,17 @@ final class AppState: ObservableObject {
             self.modelAggsToday = snap.modelAggsToday
             self.modelAggsMonth = snap.modelAggsMonth
             self.modelAggsAll = snap.modelAggsAll
-            self.dailyAggs = snap.dailyAggs
             self.heatmap = snap.heatmap
             self.heatmapCost = snap.heatmapCost
-            self.sessions = snap.sessions
             self.subscriptions = snap.subscriptions
             self.lastScan = snap.lastScan
-            self.hasLocalData = snap.hasLocalData
             self.snapshotFetchedAt = snap.fetchedAt
             self.refreshInFlight = false
-            self.isRefreshing = false
             self.manualRefreshing = false
+            if self.pendingManual {
+                self.pendingManual = false
+                self.refresh(manual: true)
+            }
         }
     }
 }

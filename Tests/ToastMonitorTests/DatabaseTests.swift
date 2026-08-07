@@ -15,6 +15,7 @@ final class DatabaseTests: XCTestCase {
     }
 
     override func tearDown() {
+        db?.close()
         let fm = FileManager.default
         try? fm.removeItem(atPath: tmpPath)
         try? fm.removeItem(atPath: tmpPath + "-wal")
@@ -99,7 +100,11 @@ final class DatabaseTests: XCTestCase {
     // 使用独立路径（setUp 的 testInstance 已建好库，迁移不会重跑）。
     func testSubscriptionIDZeroMigration() throws {
         let legacyPath = tmpPath + "-legacy.db"
-        defer { try? FileManager.default.removeItem(atPath: legacyPath) }
+        defer {
+            try? FileManager.default.removeItem(atPath: legacyPath)
+            try? FileManager.default.removeItem(atPath: legacyPath + "-wal")
+            try? FileManager.default.removeItem(atPath: legacyPath + "-shm")
+        }
         var raw: OpaquePointer?
         XCTAssertEqual(sqlite3_open_v2(legacyPath, &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
         let legacy = """
@@ -115,6 +120,7 @@ final class DatabaseTests: XCTestCase {
 
         // Open through the real migration path (fresh DB, user_version=0).
         let d = Database.testInstance(path: legacyPath)
+        defer { d.close() }
         let subs = d.subscriptions()
         XCTAssertEqual(subs.count, 1)
         XCTAssertEqual(subs.first?.name, "LegacyGo")
@@ -152,6 +158,7 @@ final class DatabaseTests: XCTestCase {
         sqlite3_close(raw)
 
         let migrated = Database.testInstance(path: legacyPath)
+        defer { migrated.close() }
         XCTAssertEqual(migrated.turnCount(), 1)
         let distinct = TurnRecord(tool: .codex, sessionID: "legacy", project: nil, model: "m",
                                   ts: 100, inputTokens: 10, outputTokens: 5,
@@ -225,7 +232,12 @@ extension DatabaseTests {
     func testUpdateSubscriptionDoesNotDuplicate() throws {
         let path = NSTemporaryDirectory() + "sub-update-\(UUID().uuidString).db"
         let db = Database.testInstance(path: path)
-        defer { try? FileManager.default.removeItem(atPath: path) }
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: path + "-wal")
+            try? FileManager.default.removeItem(atPath: path + "-shm")
+        }
 
         let created = Database.Subscription(id: 0, name: "Claude Pro", plan: "claude",
                                             startDate: 1_700_000_000, endDate: 1_702_000_000,

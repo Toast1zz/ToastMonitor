@@ -63,7 +63,7 @@
 
 ### OpenRouter
 
-- 不产生 token 行。每 5 分钟调 `/api/v1/key` + `/api/v1/credits` 快照额度/余额/用量（美元口径），只进入「实际花费」，不参与 token 统计。
+- 不产生 token 行。前台每 60 秒调 `/api/v1/key` + `/api/v1/credits` 快照额度/余额/用量（美元口径；后台停止轮询），只进入「实际花费」，不参与 token 统计。
 
 ---
 
@@ -71,7 +71,7 @@
 
 ### 本机（默认）
 
-直接读取上述本地文件/SQLite，纯轮询（5 秒一次）：
+直接读取上述本地文件/SQLite，纯轮询（1 秒一次，仅前台——popover/面板可见时；后台完全停止）：
 
 1. 列出文件 → stat (size, 纳秒 mtime, inode) 对比 `scan_state` → 有变化才读
 2. 字节偏移游标只解析新行（追加场景）；截断/替换场景从 0 重放
@@ -81,7 +81,7 @@
 ### 远程 VPS feed（可选，每工具可切换）
 
 - VPS 上 cron 每 3 分钟跑 `tm-export.py`，产出 `usage.json`（Tailscale 私有网段 HTTP(S)，App 校验 scheme/host/MIME/schema/大小）。
-- App 每 60 秒增量拉取，游标是**每工具水位线**（`remote_watermark_<tool>` = `ts:eventID`，同秒事件靠 eventID 排序）。
+- App 前台每 15 秒增量拉取（后台停止），游标是**每工具水位线**（`remote_watermark_<tool>` = `ts:eventID`，同秒事件靠 eventID 排序）。
 - 行语义按工具区分（见上表）：claude/codex 逐条事件直接插入；opencode/hermes 累计行走 delta——delta 工具的基线幂等，因此不受水位线误伤。
 - 未知工具的行拒绝导入；水位线、turns、基线同一事务提交，失败不前进。
 - **切换来源**：设置 `src_<tool> = local/remote` 即时生效。opencode 的 delta key 本机/远程共用，切换不重复计数；hermes 的基线键与本地不同（本地 `session_totals`、远程 `hm_d|...`），切换时首次远程行会把全量作为一条回填——在源切换后可能多记一次历史（已知边界）。

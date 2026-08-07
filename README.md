@@ -16,16 +16,16 @@
 | OpenRouter | 云端 API（key + credits 快照） | — |
 
 - 默认来源：Hermes=远程（用户实际部署），其余=本机；「来源与设置」Tab 里每个工具可切换。
-- 远程 feed：VPS cron 每 3 分钟跑 `tm-export.py` → `http://100.116.140.74/tm/usage.json`（Tailscale-only），App 每 60s 增量拉取（按工具的时间戳 + 事件 ID 游标，支持同秒事件）。
+- 远程 feed：VPS cron 每 3 分钟跑 `tm-export.py` → `http://100.116.140.74/tm/usage.json`（Tailscale-only），App 前台每 15s 增量拉取（按工具的时间戳 + 事件 ID 游标，支持同秒事件；后台停止）。
 
 ## 配额（内建，不依赖 opencode-quota）
 
 - **OpenCode Go 套餐**（与 OpenCode 工具是两个独立条目）：抓取 `opencode.ai/workspace/<id>/go` 的 SolidJS SSR/data-slot 数据，5h=$12 / 周=$30 / 月=$60 三条配额条 + 重置倒计时 + 历史。凭据：计划与余额页粘贴或 `--provision-go <workspaceId>` 后从 stdin 输入 cookie（可从 opencode-quota 的 opencode-go.json 取）。
-- **OpenRouter**：`/api/v1/key` + `/api/v1/credits` 每 5 分钟快照。Key：面板粘贴或 `--provision-or-key` 后从 stdin 输入；secret 只存 macOS Keychain。
+- **OpenRouter**：`/api/v1/key` + `/api/v1/credits` 前台每 60 秒快照（后台停止轮询）。Key：面板粘贴或 `--provision-or-key` 后从 stdin 输入；secret 只存 macOS Keychain。
 
 ## 架构
 
-- **纯轮询**（1s）：按文件 (size, 纳秒 mtime, inode) 增量读取，稳态扫描 ~20ms，日志变化约 1 秒内进入 UI（等价 token-monitor 的流式观感）。不用 FSEvents —— 只读打开 WAL 库会写 `-shm` 触发自激循环。UI 快照兜底 5s，配额类客户端（OpenRouter/Go/Codex）60s。
+- **纯轮询**（1s，仅前台；后台完全停止）：按文件 (size, 纳秒 mtime, inode) 增量读取，稳态扫描 ~20ms，日志变化约 1 秒内进入 UI（等价 token-monitor 的流式观感）。不用 FSEvents —— 只读打开 WAL 库会写 `-shm` 触发自激循环。UI 快照同样 1s（仅前台）；配额类客户端（OpenRouter/Go/Codex）前台 60s，后台停止。
 - 单 SQLite 库：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL 模式）。
 - 成本估算：内置常见模型价格表（Claude/GPT/DeepSeek 等），未知模型只记 token 不记价；`backfillCosts()` 幂等修正历史。
 
@@ -34,7 +34,7 @@
 ```bash
 cd ~/Projects/ToastMonitor
 swift build -c release
-./scripts/build-app.sh          # 组装 .app + 生成图标 + ad-hoc 签名
+./scripts/build-app.sh          # 组装 .app + 生成图标 + 签名（本地身份，拒绝 ad-hoc）
 open dist/ToastMonitor.app      # 或带面板: open -a dist/ToastMonitor.app --args --show-dashboard
 ```
 
@@ -54,6 +54,6 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --render-dashboard /tmp/dash.p
 
 ## 已知边界
 
-- 菜单栏显示「今日 tokens · 已确认变量支出」，估算与固定订阅在 tooltip/面板分开；点击出 popover。完整面板包含四个 Tab：概览、用量分析、计划与余额、来源与设置。弹窗只保留周期摘要与速览。
+- 菜单栏只显示「今日 tokens」（用户偏好；估算与固定订阅在 tooltip/面板分开），点击出 popover。完整面板包含四个 Tab：概览、用量分析、计划与余额、来源与设置。弹窗只保留周期摘要与速览。
 - 价格表是近似值（按官方价），OpenCode 自带 cost 字段则直接用。
-- 分发需 Developer ID 证书；当前 ad-hoc 签名仅供本机。
+- 分发需 Developer ID 证书；build-app.sh 拒绝 ad-hoc 签名（本机构建用本机 `Spotoast Local Dev` 身份或 `TM_SIGNING_IDENTITY`）。

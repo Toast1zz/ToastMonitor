@@ -185,52 +185,6 @@ struct TMPanel<Content: View>: View {
     }
 }
 
-struct TMMetric: View {
-    let title: String
-    let value: String
-    var detail: String?
-    var emphasis: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(TMDesign.quiet)
-            Text(value)
-                .font(emphasis ? .system(size: 30, weight: .semibold, design: .rounded) : .system(size: 18, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            if let detail {
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(TMDesign.faint)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct TMKeyValue: View {
-    let label: String
-    let value: String
-    var valueColor: Color = .primary
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(label)
-                .foregroundStyle(TMDesign.quiet)
-            Spacer(minLength: 8)
-            Text(value)
-                .fontDesign(.monospaced)
-                .monospacedDigit()
-                .foregroundStyle(valueColor)
-        }
-        .font(.subheadline)
-    }
-}
-
 struct TMProgressBar: View {
     let value: Double
     var tint: Color = TMDesign.accent
@@ -268,55 +222,7 @@ struct TMStatusLabel: View {
     }
 }
 
-struct TMSourceIcon: View {
-    let tool: ToolKind
-    var size: CGFloat = 24
-
-    var body: some View {
-        Image(systemName: tool.symbol)
-            .font(.system(size: size * 0.48, weight: .medium))
-            .foregroundStyle(tool.color)
-            .frame(width: size, height: size)
-            .background(tool.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .accessibilityHidden(true)
-    }
-}
-
-struct TMEmptyState: View {
-    let title: String
-    var detail: String?
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "waveform.path.ecg")
-                .font(.title2)
-                .foregroundStyle(TMDesign.faint)
-            Text(title)
-                .font(.subheadline.weight(.medium))
-            if let detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(TMDesign.quiet)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
-    }
-}
-
 extension View {
-    /// A quiet section treatment that keeps the content flat and native.
-    func tmSection() -> some View {
-        self
-            .padding(.vertical, 14)
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(TMDesign.divider)
-                    .frame(height: 1)
-            }
-    }
-
     /// A restrained elevated section for settings and service summaries.
     /// Use one surface per task group; avoid nesting these inside each other.
     func tmPanelSurface(cornerRadius: CGFloat = 12) -> some View {
@@ -327,43 +233,6 @@ extension View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(TMDesign.divider, lineWidth: 1)
             }
-    }
-
-    /// Uses Liquid Glass on macOS 26+ and the closest native material on
-    /// earlier supported systems. It is reserved for controls, never used as
-    /// a full-page card background.
-    @ViewBuilder
-    func tmGlassControl(cornerRadius: CGFloat = 8) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        } else {
-            self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        }
-    }
-
-    /// Let MenuBarExtra own the one native Liquid Glass popover surface. A
-    /// second glass/rounded background here creates a nested rounded panel.
-    @ViewBuilder
-    func tmClearPopoverContainer() -> some View {
-        if #available(macOS 15.0, *) {
-            self.containerBackground(.clear, for: .window)
-        } else {
-            self
-        }
-    }
-
-    /// macOS 26 used the larger Tahoe window geometry; macOS 27 tightened it
-    /// to the shared 20pt presentation shape. This is the presentation's one
-    /// outer radius; child content must stay un-clipped and square-edged.
-    @ViewBuilder
-    func tmPopoverPresentation() -> some View {
-        if #available(macOS 27.0, *) {
-            self.presentationCornerRadius(20)
-        } else if #available(macOS 26.0, *) {
-            self.presentationCornerRadius(26)
-        } else {
-            self
-        }
     }
 }
 import SwiftUI

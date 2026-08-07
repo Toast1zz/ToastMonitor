@@ -1,38 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Preference key: the SwiftUI root reports its natural layout height.
-struct PanelContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-/// Height of the pinned period selector (outside the scroll view).
-struct PanelPinnedHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// Height of the popover header row.
-struct PanelHeaderHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// Height of the popover footer row.
-struct PanelFooterHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 /// Tusi-style floating panel: borderless NSPanel whose content is a
 /// visual-effect container clipped to a 20pt continuous corner radius
 /// (matches neko1chau/Tusi Theme.cornerRadius = 20, the modern macOS
@@ -155,8 +123,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// the menu bar's bottom edge (visible.maxY) — Tusi's approach. It never
     /// follows the status button's Y (unreliable in NSStatusBarWindow) and
     /// can therefore never cover the status bar. Only the bottom moves.
-    private var panelTopY: CGFloat = 0
-
     private func show() {
         guard let button = statusItem?.button, let win = button.window else { return }
         let buttonFrame = win.convertToScreen(button.convert(button.bounds, to: nil))
@@ -166,7 +132,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         // level (above the menu bar), so keep the top edge just below it.
         // 6pt matches Tusi; 14pt was a safety margin but left a visible gap.
         let topY = visible.maxY - 6
-        panelTopY = topY
         let maxH = max(120, topY - visible.minY - 8)
         let h = min(max(panel.frame.height, 120), maxH)
         let w = panel.frame.width
@@ -190,7 +155,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard let screen = (statusItem?.button?.window?.screen) ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         let topY = visible.maxY - 6
-        panelTopY = topY
         let maxH = max(120, topY - visible.minY - 8)
         let target = min(max(h, 120), maxH)
         logPanel("applyHeight: reported=\(h) topY=\(topY) maxH=\(maxH) target=\(target) currentFrame=\(panel.frame)")
@@ -211,8 +175,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     /// Append a line to /tmp/tm-panel.log (diagnostics while the panel
-    /// positioning bug is being chased).
+    /// positioning bug is being chased). Debug-only: shipped builds must
+    /// never append to /tmp.
     private func logPanel(_ msg: String) {
+        guard DebugLog.enabled else { return }
         let path = "/tmp/tm-panel.log"
         if !FileManager.default.fileExists(atPath: path) {
             FileManager.default.createFile(atPath: path, contents: nil)
@@ -248,8 +214,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// Height of the pinned period selector as measured by the SwiftUI view.
     private var pinnedSliceHeight: CGFloat = 0
 
-    /// Fixed chrome: header + dividers + footer ≈ 108pt (see
-    /// PopoverRootView.panelChromeHeight).
+    /// Fixed chrome: header + dividers + footer ≈ 108pt.
     @objc private func applyMergedHeight() {
         let total = bodySliceHeight + pinnedSliceHeight + 108
         applyHeight(total)

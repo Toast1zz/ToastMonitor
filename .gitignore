@@ -6,6 +6,8 @@ dist/
 # User data & credentials — NEVER commit
 backups/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 *.keychain

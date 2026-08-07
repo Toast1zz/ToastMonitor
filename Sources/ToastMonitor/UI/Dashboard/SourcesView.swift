@@ -7,6 +7,10 @@ struct SourcesView: View {
     @ObservedObject private var remote = HermesRemoteClient.shared
     @State private var testing = false
     @State private var testResult: String?
+    /// True when the last test ended in a completed scan (colors the result).
+    @State private var testOK = false
+    /// Bumped per test start; stale 10s timeouts check it before firing.
+    @State private var testGeneration = 0
 
     private let tools: [ToolKind] = [.claude, .codex, .opencode, .hermes]
 
@@ -20,14 +24,19 @@ struct SourcesView: View {
                     Spacer()
                     Button {
                         testing = true
+                        testOK = false
                         testResult = nil
-                        let baseline = health.sources.map(\.lastScan).max() ?? 0
                         CollectorEngine.shared.scheduleScan()
                         HermesRemoteClient.shared.poll()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        testGeneration += 1
+                        let gen = testGeneration
+                        // No fixed 3s guess: wait for the collector's
+                        // didCollect (listener below), with a 10s ceiling.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                            guard gen == testGeneration else { return }
                             testing = false
-                            let scanned = health.sources.contains { $0.lastScan > baseline }
-                            testResult = scanned ? "扫描完成" : "尚未收到扫描心跳"
+                            testOK = false
+                            testResult = "10 秒内未收到扫描心跳"
                         }
                     } label: {
                         if testing {
@@ -48,7 +57,7 @@ struct SourcesView: View {
                 if let tr = testResult {
                     Text(tr)
                         .font(.system(size: 11))
-                        .foregroundStyle(TMDesign.accent)
+                        .foregroundStyle(testOK ? TMDesign.accent : TMDesign.danger)
                 }
 
                 ForEach(tools) { t in
@@ -58,6 +67,15 @@ struct SourcesView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CollectorEngine.didCollect)) { _ in
+            // A scan cycle completed. Only react when a test is in flight;
+            // success invalidates the pending 10s timeout.
+            guard testing else { return }
+            testGeneration += 1
+            testing = false
+            testOK = true
+            testResult = "扫描完成"
         }
     }
 

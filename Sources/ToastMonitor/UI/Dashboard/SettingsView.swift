@@ -205,6 +205,7 @@ struct SubscriptionSettingsSection: View {
     @State private var cycle = "monthly"
     @State private var price = ""
     @State private var priceError = false
+    @State private var dateError = false
     @State private var databaseError: String?
     @State private var pendingDelete: Database.Subscription?
 
@@ -361,6 +362,14 @@ struct SubscriptionSettingsSection: View {
                                 return
                             }
                             priceError = false
+                            // 结束日期不得早于开始日期，否则会静默存出一条无效订阅。
+                            let startDay = Calendar.current.startOfDay(for: startDate)
+                            let endDay = Calendar.current.startOfDay(for: endDate)
+                            guard !hasEndDate || endDay >= startDay else {
+                                dateError = true
+                                return
+                            }
+                            dateError = false
                             var sub = Database.Subscription(
                                 id: editID > 0 ? editID : (editing?.id ?? 0),
                                 name: name.trimmingCharacters(in: .whitespaces),
@@ -386,6 +395,11 @@ struct SubscriptionSettingsSection: View {
                         .font(.system(size: 12))
                         if priceError {
                             Text("费用无效（需 ≥ 0 的数字）")
+                                .font(.system(size: 10))
+                                .foregroundStyle(TMDesign.danger)
+                        }
+                        if dateError {
+                            Text("结束日期不能早于开始日期")
                                 .font(.system(size: 10))
                                 .foregroundStyle(TMDesign.danger)
                         }
