@@ -30,6 +30,9 @@ final class UsageQueryService {
         var costToday: CostQuality
         var costWeek: CostQuality
         var costMonth: CostQuality
+        var apiValueToday: Double
+        var apiValueWeek: Double
+        var apiValueMonth: Double
         var modelAggs: [Database.ModelAgg]
         var modelAggsToday: [Database.ModelAgg]
         var modelAggsMonth: [Database.ModelAgg]
@@ -120,6 +123,9 @@ final class UsageQueryService {
             costToday: costQuality(from: todayStart, to: nowTs),
             costWeek: costQuality(from: weekStart, to: nowTs),
             costMonth: costQuality(from: monthStart, to: nowTs),
+            apiValueToday: Database.shared.apiValue(from: todayStart, to: nowTs),
+            apiValueWeek: Database.shared.apiValue(from: weekStart, to: nowTs),
+            apiValueMonth: Database.shared.apiValue(from: monthStart, to: nowTs),
             modelAggs: Database.shared.modelAggregates(from: weekStart, to: nowTs),
             modelAggsToday: Database.shared.modelAggregates(from: todayStart, to: nowTs),
             modelAggsMonth: Database.shared.modelAggregates(from: monthStart, to: nowTs),

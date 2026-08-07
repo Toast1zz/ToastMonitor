@@ -124,6 +124,15 @@ struct OverviewView: View {
         }
     }
 
+    /// 这些 token 按 API 官方单价价值多少钱（全部工具，含 hermes）。
+    private var apiValue: Double {
+        switch period {
+        case .today: return app.apiValueToday
+        case .week: return app.apiValueWeek
+        case .month: return app.apiValueMonth
+        }
+    }
+
     /// 实际花了多少钱 = 账单/直连实际 + OpenRouter 实际 + 订阅按天分摊。
     private var actualSpend: Double {
         let orUsage: Double
@@ -165,7 +174,7 @@ struct OverviewView: View {
             HStack(spacing: 24) {
                 heroMini("调用", Format.count(periodCalls))
                 heroMini("实际花费", Format.money(actualSpend))
-                heroMini("API 价值", Format.money(periodCost.estimated))
+                heroMini("API 价值", Format.money(apiValue))
             }
         }
     }

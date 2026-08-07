@@ -1250,6 +1250,29 @@ final class Database {
         return out
     }
 
+    /// API 价值：全部工具（含 hermes）的所有 turns 按模型官方单价重估。
+    /// 与实际账单无关——回答「这些 token 按 API 价值多少钱」。
+    func apiValue(from: Int64, to: Int64) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return 0 }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE ts BETWEEN ? AND ?;", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        sqlite3_bind_int64(stmt, 1, from)
+        sqlite3_bind_int64(stmt, 2, to)
+        var total = 0.0
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let model = sqlite3_column_type(stmt, 0) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 0))
+            guard let cost = Pricing.estimate(model: model,
+                                              input: sqlite3_column_int64(stmt, 1),
+                                              output: sqlite3_column_int64(stmt, 2),
+                                              cacheRead: sqlite3_column_int64(stmt, 3),
+                                              cacheWrite: sqlite3_column_int64(stmt, 4)) else { continue }
+            total += cost
+        }
+        sqlite3_finalize(stmt)
+        return total
+    }
+
     // MARK: - queries
 
     func turnCount() -> Int {

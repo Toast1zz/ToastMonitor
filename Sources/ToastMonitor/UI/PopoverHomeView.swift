@@ -234,9 +234,13 @@ struct PopoverHomeView: View {
         cost.actual + periodOrUsage + subsAmortized
     }
 
-    /// 估算成本 = turns 估算（订阅已计入实际支出，不重复）。
+    /// API 价值 = 全部工具（含 hermes）turns 按模型官方单价重估。
     private var estimatedShown: Double {
-        cost.estimated
+        switch period {
+        case .today: return app.apiValueToday
+        case .week: return app.apiValueWeek
+        case .month: return app.apiValueMonth
+        }
     }
 
     private var periodOrUsage: Double {

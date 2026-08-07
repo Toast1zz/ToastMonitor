@@ -16,6 +16,9 @@ final class AppState: ObservableObject {
     @Published var byToolToday: [Database.ToolTotals] = []
     @Published var byToolWeek: [Database.ToolTotals] = []
     @Published var byToolMonth: [Database.ToolTotals] = []
+    @Published var apiValueToday: Double = 0
+    @Published var apiValueWeek: Double = 0
+    @Published var apiValueMonth: Double = 0
     @Published var costToday = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var costWeek = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var costMonth = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
@@ -76,6 +79,9 @@ final class AppState: ObservableObject {
             self.costToday = snap.costToday
             self.costWeek = snap.costWeek
             self.costMonth = snap.costMonth
+            self.apiValueToday = snap.apiValueToday
+            self.apiValueWeek = snap.apiValueWeek
+            self.apiValueMonth = snap.apiValueMonth
             self.modelAggs = snap.modelAggs
             self.modelAggsToday = snap.modelAggsToday
             self.modelAggsMonth = snap.modelAggsMonth
