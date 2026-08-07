@@ -76,7 +76,15 @@ struct PopoverHomeView: View {
                 .background(
                     GeometryReader { geo in
                         Color.clear
-                            .onAppear { postPanelHeight(kind: "pinned", height: geo.size.height) }
+                            .onAppear {
+                                // Defer past the first layout pass: the initial
+                                // size can be a stale viewport value, which
+                                // made the panel height wrong until a period
+                                // switch re-measured it.
+                                DispatchQueue.main.async {
+                                    postPanelHeight(kind: "pinned", height: geo.size.height)
+                                }
+                            }
                             .onChange(of: geo.size.height) { h in
                                 postPanelHeight(kind: "pinned", height: h)
                             }
@@ -104,7 +112,11 @@ struct PopoverHomeView: View {
                 .background(
                     GeometryReader { geo in
                         Color.clear
-                            .onAppear { postPanelHeight(kind: "body", height: geo.size.height) }
+                            .onAppear {
+                                DispatchQueue.main.async {
+                                    postPanelHeight(kind: "body", height: geo.size.height)
+                                }
+                            }
                             .onChange(of: geo.size.height) { h in
                                 postPanelHeight(kind: "body", height: h)
                             }

@@ -176,6 +176,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         logPanel("show setFrame: finalFrame=\(panel.frame)")
         panel.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
+        // First-layout height reports can arrive before SwiftUI settles;
+        // re-apply the merged height once the panel is on screen so the
+        // initial size matches the content instead of the viewport.
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(applyMergedHeight), object: nil)
+        perform(#selector(applyMergedHeight), with: nil, afterDelay: 0.4)
     }
 
     /// Grow/shrink the panel to fit the reported content height. The top
