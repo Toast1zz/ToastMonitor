@@ -59,14 +59,14 @@ enum TMDesign {
     /// (same approach as OpenRouter's usage page). One model always maps to
     /// the same color across chart, legend and table.
     static let modelPalette: [Color] = [
-        Color(red: 0.36, green: 0.55, blue: 0.94),   // blue
-        Color(red: 0.66, green: 0.47, blue: 0.91),   // violet
-        Color(red: 0.96, green: 0.62, blue: 0.42),   // orange
-        Color(red: 0.29, green: 0.78, blue: 0.56),   // green
-        Color(red: 0.95, green: 0.79, blue: 0.41),   // yellow
-        Color(red: 0.90, green: 0.43, blue: 0.54),   // rose
-        Color(red: 0.42, green: 0.77, blue: 0.82),   // cyan
-        Color(red: 0.72, green: 0.75, blue: 0.79),   // gray
+        Color(red: 0.93, green: 0.55, blue: 0.30),   // orange
+        Color(red: 0.88, green: 0.73, blue: 0.28),   // yellow
+        Color(red: 0.32, green: 0.72, blue: 0.50),   // green
+        Color(red: 0.25, green: 0.66, blue: 0.63),   // teal
+        Color(red: 0.35, green: 0.55, blue: 0.88),   // blue
+        Color(red: 0.63, green: 0.47, blue: 0.86),   // violet
+        Color(red: 0.88, green: 0.45, blue: 0.60),   // pink
+        Color(red: 0.60, green: 0.63, blue: 0.68),   // gray
     ]
 
     /// Accent lightness layers for distinguishing sources/models without

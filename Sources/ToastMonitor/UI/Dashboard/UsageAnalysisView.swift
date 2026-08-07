@@ -31,6 +31,9 @@ struct UsageAnalysisView: View {
     @State private var loadID = UUID()
     @State private var hoveredDayIdx: Int?
     @State private var hoveredCostIdx: Int?
+    /// Model -> color, assigned by usage rank so distinct models always get
+    /// distinct palette entries (hash-based mapping collided).
+    @State private var modelColors: [String: Color] = [:]
 
     /// 归一化行：(day, groupKey, input, output, cacheRead, cost)
     private var rows: [(day: Int64, key: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)] {
@@ -95,10 +98,25 @@ struct UsageAnalysisView: View {
             UsageQueryService.shared.loadDailyAggsByModel(days: range.days) { aggs in
                 guard loadID == requestID else { return }
                 self.modelAggs = aggs
+                self.modelColors = Self.assignModelColors(aggs)
                 self.aggs = []
                 self.loading = false
             }
         }
+    }
+
+    /// Rank models by total tokens (descending) and hand each the next
+    /// palette color — the top model gets the first color, no collisions.
+    private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)]) -> [String: Color] {
+        let totals: [String: Int64] = aggs.reduce(into: [:]) { acc, row in
+            acc[row.model, default: 0] += row.input + row.output + row.cacheRead
+        }
+        let ranked = totals.sorted { $0.value > $1.value }.map(\.key)
+        var map: [String: Color] = [:]
+        for (i, name) in ranked.enumerated() {
+            map[name] = TMDesign.modelPalette[i % TMDesign.modelPalette.count]
+        }
+        return map
     }
 
     private var controls: some View {
@@ -414,10 +432,9 @@ struct UsageAnalysisView: View {
         if grouping == .byTool {
             return ToolKind(rawValue: name)?.color ?? TMDesign.accent
         }
-        // 模型色：固定色板（色相均匀、明度统一），按名字稳定映射——
-        // 同一模型在图表/图例/表格里永远同色。
-        let h = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
-        return TMDesign.modelPalette[h % TMDesign.modelPalette.count]
+        // 模型色：按用量排名预分配（assignModelColors），同一模型在
+        // 图表/图例/表格里永远同色；新出现的模型兜底第一个色。
+        return modelColors[name] ?? TMDesign.modelPalette[0]
     }
 
     /// Month labels for chart x-axes (yyyymmdd keys, one tick per month).
