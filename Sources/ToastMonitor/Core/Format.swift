@@ -27,6 +27,15 @@ enum Format {
         return String(format: "$%.3f", v)
     }
 
+    /// yyyymmdd 整数键（热力图/聚合图）→ "2026-08-05"。不要用 day(_:)——
+    /// 那是 Unix 时间戳格式化，把 yyyymmdd 当秒会得到 1970 年的日期。
+    static func dayKeyString(_ key: Int64) -> String {
+        let y = Int(key) / 10_000
+        let m = (Int(key) / 100) % 100
+        let d = Int(key) % 100
+        return String(format: "%04d-%02d-%02d", y, m, d)
+    }
+
     /// "2026-08-05 14:23"
     static func dateTime(_ ts: Int64) -> String {
         let d = Date(timeIntervalSince1970: TimeInterval(ts))

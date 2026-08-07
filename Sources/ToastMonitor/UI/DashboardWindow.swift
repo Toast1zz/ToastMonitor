@@ -65,15 +65,6 @@ struct DashboardView: View {
         case sources = "来源与设置"
 
         var id: String { rawValue }
-
-        var icon: String {
-            switch self {
-            case .overview: "rectangle.3.group"
-            case .analysis: "chart.xyaxis.line"
-            case .plans: "creditcard"
-            case .sources: "slider.horizontal.3"
-            }
-        }
     }
 
     var body: some View {
@@ -88,15 +79,17 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TMDesign.canvas)
         .toolbar {
-            // Native macOS pattern (Activity Monitor, Console): page switch
-            // lives in the toolbar, not a sidebar list.
+            // Native macOS pattern (Calendar/Activity Monitor): page switch
+            // is a text-only segmented control in the toolbar (HIG: avoid
+            // mixing icons and text in one control).
             ToolbarItemGroup(placement: .principal) {
                 Picker("页面", selection: $tab) {
                     ForEach(Tab.allCases) { item in
-                        Label(item.rawValue, systemImage: item.icon).tag(item)
+                        Text(item.rawValue).tag(item)
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .fixedSize()
             }
             ToolbarItemGroup(placement: .automatic) {

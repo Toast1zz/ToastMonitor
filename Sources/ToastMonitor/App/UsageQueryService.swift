@@ -20,22 +20,28 @@ final class UsageQueryService {
         var today: Database.ToolTotals
         var week: Database.ToolTotals
         var month: Database.ToolTotals
+        var all: Database.ToolTotals
         /// 主 token 口径（输入 + 输出；缓存命中为独立明细）。
         var todayTokens: Int64
         var weekTokens: Int64
         var monthTokens: Int64
+        var allTokens: Int64
         var byToolToday: [Database.ToolTotals]
         var byToolWeek: [Database.ToolTotals]
         var byToolMonth: [Database.ToolTotals]
+        var byToolAll: [Database.ToolTotals]
         var costToday: CostQuality
         var costWeek: CostQuality
         var costMonth: CostQuality
+        var costAll: CostQuality
         var apiValueToday: Double
         var apiValueWeek: Double
         var apiValueMonth: Double
+        var apiValueAll: Double
         var modelAggs: [Database.ModelAgg]
         var modelAggsToday: [Database.ModelAgg]
         var modelAggsMonth: [Database.ModelAgg]
+        var modelAggsAll: [Database.ModelAgg]
         var dailyAggs: [Database.DayAgg]
         var heatmap: [Int64: Int64]
         var heatmapCost: [Int64: Double]
@@ -108,27 +114,34 @@ final class UsageQueryService {
         let byToolToday = Database.shared.totalsByTool(from: todayStart, to: nowTs)
         let byToolWeek = Database.shared.totalsByTool(from: weekStart, to: nowTs)
         let byToolMonth = Database.shared.totalsByTool(from: monthStart, to: nowTs)
+        let byToolAll = Database.shared.totalsByTool(from: 0, to: nowTs)
         let dailyAggs = Database.shared.dailyAggregates(days: 35)
         let annualAggs = Database.shared.dailyAggregates(days: 371)
         return Snapshot(
             today: today,
             week: Database.shared.totals(from: weekStart, to: nowTs),
             month: Database.shared.totals(from: monthStart, to: nowTs),
+            all: Database.shared.totals(from: 0, to: nowTs),
             todayTokens: Self.totalTokens(byToolToday),
             weekTokens: Self.totalTokens(byToolWeek),
             monthTokens: Self.totalTokens(byToolMonth),
+            allTokens: Self.totalTokens(byToolAll),
             byToolToday: byToolToday,
             byToolWeek: byToolWeek,
             byToolMonth: byToolMonth,
+            byToolAll: byToolAll,
             costToday: costQuality(from: todayStart, to: nowTs),
             costWeek: costQuality(from: weekStart, to: nowTs),
             costMonth: costQuality(from: monthStart, to: nowTs),
+            costAll: costQuality(from: 0, to: nowTs),
             apiValueToday: Database.shared.apiValue(from: todayStart, to: nowTs),
             apiValueWeek: Database.shared.apiValue(from: weekStart, to: nowTs),
             apiValueMonth: Database.shared.apiValue(from: monthStart, to: nowTs),
+            apiValueAll: Database.shared.apiValue(from: 0, to: nowTs),
             modelAggs: Database.shared.modelAggregates(from: weekStart, to: nowTs),
             modelAggsToday: Database.shared.modelAggregates(from: todayStart, to: nowTs),
             modelAggsMonth: Database.shared.modelAggregates(from: monthStart, to: nowTs),
+            modelAggsAll: Database.shared.modelAggregates(from: 0, to: nowTs),
             dailyAggs: dailyAggs,
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),

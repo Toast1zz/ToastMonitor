@@ -55,6 +55,20 @@ enum TMDesign {
         Color(nsColor: NSColor(calibratedHue: hue / 360, saturation: sat, brightness: bri, alpha: 1))
     }
 
+    /// Model category palette: evenly spaced hues, unified mid-lightness
+    /// (same approach as OpenRouter's usage page). One model always maps to
+    /// the same color across chart, legend and table.
+    static let modelPalette: [Color] = [
+        Color(red: 0.36, green: 0.55, blue: 0.94),   // blue
+        Color(red: 0.66, green: 0.47, blue: 0.91),   // violet
+        Color(red: 0.96, green: 0.62, blue: 0.42),   // orange
+        Color(red: 0.29, green: 0.78, blue: 0.56),   // green
+        Color(red: 0.95, green: 0.79, blue: 0.41),   // yellow
+        Color(red: 0.90, green: 0.43, blue: 0.54),   // rose
+        Color(red: 0.42, green: 0.77, blue: 0.82),   // cyan
+        Color(red: 0.72, green: 0.75, blue: 0.79),   // gray
+    ]
+
     /// Accent lightness layers for distinguishing sources/models without
     /// adding hues: 0 = pure accent, 1 = strongly lightened.
     static func accentShade(_ fraction: Double) -> Color {

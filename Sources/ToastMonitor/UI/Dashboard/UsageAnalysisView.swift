@@ -29,6 +29,8 @@ struct UsageAnalysisView: View {
     @State private var modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)] = []
     @State private var loading = true
     @State private var loadID = UUID()
+    @State private var hoveredDayIdx: Int?
+    @State private var hoveredCostIdx: Int?
 
     /// 归一化行：(day, groupKey, input, output, cacheRead, cost)
     private var rows: [(day: Int64, key: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)] {
@@ -133,24 +135,43 @@ struct UsageAnalysisView: View {
             } else {
                 let maxV = days.flatMap { $0.segments.map(\.value) }.max() ?? 1
                 let axisH: CGFloat = 14
+                if let idx = hoveredDayIdx, idx < days.count {
+                    tokenHoverLine(days[idx])
+                } else {
+                    Color.clear.frame(height: 14)
+                }
                 GeometryReader { geo in
                     let width = geo.size.width
                     let barW = max(2, width / CGFloat(days.count) - 2)
-                    Canvas { ctx, size in
-                        let chartH = size.height - axisH
-                        for (di, day) in days.enumerated() {
-                            var y = chartH
-                            for seg in day.segments {
-                                let h = max(0.5, chartH * CGFloat(seg.value) / CGFloat(maxV))
-                                let rect = CGRect(x: CGFloat(di) * (barW + 2), y: y - h, width: barW, height: h)
-                                ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(seg.color.opacity(0.85)))
-                                y -= h
+                    ZStack(alignment: .topLeading) {
+                        Canvas { ctx, size in
+                            let chartH = size.height - axisH
+                            for (di, day) in days.enumerated() {
+                                var y = chartH
+                                for seg in day.segments {
+                                    let h = max(0.5, chartH * CGFloat(seg.value) / CGFloat(maxV))
+                                    let rect = CGRect(x: CGFloat(di) * (barW + 2), y: y - h, width: barW, height: h)
+                                    ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(seg.color.opacity(0.85)))
+                                    y -= h
+                                }
+                            }
+                            for (idx, label) in monthTickIndices(days.map(\.date)) {
+                                let x = CGFloat(idx) * (barW + 2) + barW / 2
+                                ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
+                                         at: CGPoint(x: x, y: chartH + 6))
                             }
                         }
-                        for (idx, label) in monthTickIndices(days.map(\.date)) {
-                            let x = CGFloat(idx) * (barW + 2) + barW / 2
-                            ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
-                                     at: CGPoint(x: x, y: chartH + 6))
+                        // Invisible per-day hover capture layer.
+                        HStack(spacing: 2) {
+                            ForEach(days.indices, id: \.self) { di in
+                                Color.clear
+                                    .frame(width: barW)
+                                    .contentShape(Rectangle())
+                                    .onHover { hovering in
+                                        if hovering { hoveredDayIdx = di }
+                                        else if hoveredDayIdx == di { hoveredDayIdx = nil }
+                                    }
+                            }
                         }
                     }
                 }
@@ -166,6 +187,19 @@ struct UsageAnalysisView: View {
         }
     }
 
+    private func tokenHoverLine(_ day: DaySegments) -> some View {
+        let total = day.segments.reduce(Int64(0)) { $0 + $1.value }
+        let parts = day.segments.map { "\($0.name) \(Format.compact($0.value))" }
+        return Text("\(Format.dayKeyString(day.date)) · \(Format.compact(total)) tokens"
+                    + (parts.isEmpty ? "" : " · " + parts.joined(separator: " · ")))
+            .font(.system(size: TMType.caption, design: .monospaced))
+            .monospacedDigit()
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 14)
+    }
+
     // MARK: - 成本图（按天单 series，不允许跨工具连线）
 
     private var costChart: some View {
@@ -178,13 +212,34 @@ struct UsageAnalysisView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             } else {
+                let keys = days.keys.sorted()
                 let maxV = max(days.values.max() ?? 0, 0.001)
                 let axisH: CGFloat = 14
+                if let idx = hoveredCostIdx, idx < keys.count {
+                    let k = keys[idx]
+                    Text("\(Format.dayKeyString(k)) · \(Format.money(days[k] ?? 0))")
+                        .font(.system(size: TMType.caption, design: .monospaced))
+                        .monospacedDigit()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: 14)
+                } else {
+                    Color.clear.frame(height: 14)
+                }
                 GeometryReader { _ in
                     Canvas { ctx, size in
-                        let keys = days.keys.sorted()
                         guard keys.count >= 2 else { return }
                         let chartH = size.height - axisH
+                        // Y grid: 4 ticks with labels (0 / ⅓ / ⅔ / max).
+                        for step in 0...3 {
+                            let y = chartH * CGFloat(step) / 3
+                            var grid = Path()
+                            grid.move(to: CGPoint(x: 0, y: y))
+                            grid.addLine(to: CGPoint(x: size.width, y: y))
+                            ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.05)), lineWidth: 1)
+                            let v = maxV * Double(3 - step) / 3
+                            ctx.draw(Text(Format.moneyShort(v)).font(.system(size: 9)).foregroundStyle(.secondary),
+                                     at: CGPoint(x: 2, y: y - 7))
+                        }
                         var path = Path()
                         for (i, k) in keys.enumerated() {
                             let x = CGFloat(i) / CGFloat(keys.count - 1) * size.width
@@ -202,6 +257,17 @@ struct UsageAnalysisView: View {
                             let x = keys.count > 1 ? CGFloat(idx) / CGFloat(keys.count - 1) * size.width : 0
                             ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
                                      at: CGPoint(x: x, y: chartH + 6))
+                        }
+                    }
+                    // Per-day hover capture.
+                    HStack(spacing: 0) {
+                        ForEach(keys.indices, id: \.self) { i in
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onHover { hovering in
+                                    if hovering { hoveredCostIdx = i }
+                                    else if hoveredCostIdx == i { hoveredCostIdx = nil }
+                                }
                         }
                     }
                 }
@@ -236,11 +302,11 @@ struct UsageAnalysisView: View {
                                 .font(.system(size: 11.5, weight: .medium))
                                 .frame(width: 150, alignment: .leading)
                                 .lineLimit(1)
-                            Text("\(Format.count(r.calls)) 次调用")
+                            Text(r.cost > 0 ? Format.moneyShort(r.cost) : "—")
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
-                                .frame(width: 80, alignment: .trailing)
+                                .frame(width: 70, alignment: .trailing)
                             Spacer()
                             Text(Format.compact(r.tokens))
                                 .font(.system(size: 11, design: .monospaced))
@@ -348,9 +414,10 @@ struct UsageAnalysisView: View {
         if grouping == .byTool {
             return ToolKind(rawValue: name)?.color ?? TMDesign.accent
         }
-        // 模型色：accent 明度分层（不引入新色相）。
-        let h = Double(name.unicodeScalars.reduce(0) { $0 + Int($1.value) })
-        return TMDesign.accentShade((h.truncatingRemainder(dividingBy: 100)) / 100)
+        // 模型色：固定色板（色相均匀、明度统一），按名字稳定映射——
+        // 同一模型在图表/图例/表格里永远同色。
+        let h = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return TMDesign.modelPalette[h % TMDesign.modelPalette.count]
     }
 
     /// Month labels for chart x-axes (yyyymmdd keys, one tick per month).
@@ -368,12 +435,13 @@ struct UsageAnalysisView: View {
     }
 
     private var legend: some View {
-        let names = Set(groupMap().keys)
+        // Sorted by usage (aggregateRows is descending), top 6.
+        let top = aggregateRows().prefix(6)
         return HStack(spacing: 12) {
-            ForEach(Array(names).sorted(), id: \.self) { n in
+            ForEach(top, id: \.name) { r in
                 HStack(spacing: 4) {
-                    Circle().fill(color(for: n)).frame(width: 6, height: 6)
-                    Text(n)
+                    Circle().fill(r.color).frame(width: 6, height: 6)
+                    Text(r.name)
                         .font(.system(size: TMType.micro))
                         .foregroundStyle(.secondary)
                 }

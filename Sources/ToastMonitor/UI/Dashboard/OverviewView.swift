@@ -17,6 +17,7 @@ struct OverviewView: View {
         case today = "今日"
         case week = "近 7 天"
         case month = "近 30 天"
+        case all = "全部"
         var id: String { rawValue }
     }
 
@@ -60,36 +61,18 @@ struct OverviewView: View {
         .padding(.bottom, 14)
     }
 
-    /// Custom period switch: raised capsule selection (matches the popover's
-    /// control), smooth slide between states, quiet unselected labels.
+    /// Period switch: native macOS segmented control (HIG — Calendar's
+    /// Day/Week/Month/Year pattern: text labels, equal segments, one
+    /// persistent selection). No custom chrome.
     private var periodControl: some View {
-        HStack(spacing: 3) {
+        Picker("周期", selection: $period) {
             ForEach(Period.allCases) { p in
-                Button {
-                    withAnimation(.snappy(duration: 0.18)) { period = p }
-                } label: {
-                    Text(p.rawValue)
-                        .font(.system(size: 12, weight: period == p ? .semibold : .regular))
-                        .foregroundStyle(period == p ? .primary : TMDesign.quiet)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(period == p ? TMDesign.surface : .clear)
-                                .shadow(color: .black.opacity(period == p ? 0.10 : 0),
-                                        radius: 1.5, y: 0.5)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(p.rawValue)
+                Text(p.rawValue).tag(p)
             }
         }
-        .padding(3)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
-        )
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 264)
     }
 
     private var periodTitle: String {
@@ -97,6 +80,7 @@ struct OverviewView: View {
         case .today: return "今日用量"
         case .week: return "近 7 天用量"
         case .month: return "近 30 天用量"
+        case .all: return "全部用量"
         }
     }
 
@@ -105,6 +89,7 @@ struct OverviewView: View {
         case .today: return app.todayTokens
         case .week: return app.weekTokens
         case .month: return app.monthTokens
+        case .all: return app.allTokens
         }
     }
 
@@ -113,6 +98,7 @@ struct OverviewView: View {
         case .today: return app.today.count
         case .week: return app.week.count
         case .month: return app.month.count
+        case .all: return app.all.count
         }
     }
 
@@ -121,6 +107,7 @@ struct OverviewView: View {
         case .today: return app.costToday
         case .week: return app.costWeek
         case .month: return app.costMonth
+        case .all: return app.costAll
         }
     }
 
@@ -130,22 +117,19 @@ struct OverviewView: View {
         case .today: return app.apiValueToday
         case .week: return app.apiValueWeek
         case .month: return app.apiValueMonth
+        case .all: return app.apiValueAll
         }
     }
 
     /// 实际花了多少钱 = 账单/直连实际 + OpenRouter 实际 + 订阅按天分摊。
     private var actualSpend: Double {
         let orUsage: Double
-        switch period {
-        case .today: orUsage = orClient.state.usageDaily
-        case .week: orUsage = orClient.state.usageWeekly
-        case .month: orUsage = orClient.state.usageMonthly
-        }
         let days: Int
         switch period {
-        case .today: days = 1
-        case .week: days = 7
-        case .month: days = 30
+        case .today: orUsage = orClient.state.usageDaily; days = 1
+        case .week: orUsage = orClient.state.usageWeekly; days = 7
+        case .month: orUsage = orClient.state.usageMonthly; days = 30
+        case .all: orUsage = orClient.state.usageMonthly; days = 30 // OpenRouter 只给月窗口，全部时按最近月近似
         }
         return periodCost.actual + orUsage
             + SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
@@ -221,7 +205,7 @@ struct OverviewView: View {
             TMSectionHeader("活动")
             HStack {
                 if let h = hoveredDay {
-                    Text("\(dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
+                    Text("\(Format.dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
                          + (h.cost > 0 ? " · \(Format.money(h.cost))" : ""))
                         .font(.system(size: TMType.caption, weight: .medium))
                         .monospacedDigit()
@@ -299,16 +283,6 @@ struct OverviewView: View {
         return weeks
     }
 
-    /// Heatmap keys are yyyymmdd integers, NOT unix timestamps. Formatting
-    /// them via Format.day (which treats input as seconds since 1970) would
-    /// show dates in 1970.
-    private func dayKeyString(_ key: Int64) -> String {
-        let y = Int(key) / 10_000
-        let m = (Int(key) / 100) % 100
-        let d = Int(key) % 100
-        return String(format: "%04d-%02d-%02d", y, m, d)
-    }
-
     /// First week whose Monday falls in a new month gets that month's label.
     /// January also carries the (2-digit) year so the year boundary is
     /// visible in a 53-week span.
@@ -368,6 +342,7 @@ struct OverviewView: View {
         case .today: aggs = app.modelAggsToday
         case .week: aggs = app.modelAggs
         case .month: aggs = app.modelAggsMonth
+        case .all: aggs = app.modelAggsAll
         }
         return aggs.sorted {
             (ToolKind(rawValue: $0.tool)?.totalTokens(input: $0.input, output: $0.output, cacheRead: $0.cacheRead) ?? $0.input + $0.output) >
@@ -384,6 +359,7 @@ struct OverviewView: View {
         case .today: rows = app.byToolToday
         case .week: rows = app.byToolWeek
         case .month: rows = app.byToolMonth
+        case .all: rows = app.byToolAll
         }
         return rows.sorted {
             (ToolKind(rawValue: $0.tool)?.totalTokens($0) ?? $0.input + $0.output) >
