@@ -225,6 +225,7 @@ struct SubscriptionSettingsSection: View {
                     Label("添加", systemImage: "plus")
                 }
                 .font(.system(size: 12))
+                .disabled(showForm)
                 Button {
                     editing = nil
                     name = "OpenCode Go"
@@ -239,6 +240,7 @@ struct SubscriptionSettingsSection: View {
                     Text("Go 模板")
                 }
                 .font(.system(size: 12))
+                .disabled(showForm)
                 .help("填入 OpenCode Go $10/月 模板")
             }
 
@@ -305,7 +307,7 @@ struct SubscriptionSettingsSection: View {
 
             if showForm {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(editing == nil ? "添加订阅" : "编辑订阅")
+                    Text(editing == nil ? "添加订阅" : "编辑订阅 · \(editing?.name ?? "")")
                         .font(.system(size: 12, weight: .semibold))
                     HStack(spacing: 10) {
                         TextField("名称（如 Codex / Claude Pro）", text: $name)

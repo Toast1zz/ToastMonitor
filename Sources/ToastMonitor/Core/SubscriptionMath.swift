@@ -75,14 +75,30 @@ enum SubscriptionMath {
         return f.string(from: d)
     }
 
-    /// 订阅金额按周期天数分摊到给定天数（实际花费口径的一部分）。
+    /// 订阅金额按「窗口与订阅期重叠天数 × 日均价」分摊（实际花费口径）。
+    /// 已结束的订阅同样计入——它在窗口内覆盖过的天数就是你真实付过
+    /// 的钱。日均价取真实周期长度（active 用 cycleInfo），已结束的
+    /// 订阅无法再算周期，用 30/365 近似。
     static func amortized(days: Int, subscriptions: [Database.Subscription], now: Date = Date()) -> Double {
         var t = 0.0
+        let windowStart = now.addingTimeInterval(-Double(days) * 86400)
         for sub in subscriptions {
-            // Ended subscriptions contribute nothing; an end inside the
-            // current cycle is handled by cycleInfo truncating the window.
+            let start = Date(timeIntervalSince1970: TimeInterval(sub.startDate))
+            let end = sub.endDate > 0 ? Date(timeIntervalSince1970: TimeInterval(sub.endDate)) : now
+            let daily: Double
             if let info = cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle, now: now) {
-                t += sub.price / Double(info.totalDays) * Double(days)
+                daily = sub.price / Double(info.totalDays)
+            } else if sub.endDate > 0 {
+                // Ended subscription: use its actual span so the full price
+                // lands exactly when the window covers the whole period.
+                let spanDays = max(end.timeIntervalSince(start) / 86400.0, 1.0)
+                daily = sub.price / spanDays
+            } else {
+                daily = sub.price / Double(sub.cycle == "yearly" ? 365 : 30)
+            }
+            let overlap = min(end, now).timeIntervalSince(max(start, windowStart))
+            if overlap > 0 {
+                t += overlap / 86400 * daily
             }
         }
         return t

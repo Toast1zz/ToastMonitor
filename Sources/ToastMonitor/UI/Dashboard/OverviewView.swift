@@ -129,7 +129,7 @@ struct OverviewView: View {
         case .today: orUsage = orClient.state.usageDaily; days = 1
         case .week: orUsage = orClient.state.usageWeekly; days = 7
         case .month: orUsage = orClient.state.usageMonthly; days = 30
-        case .all: orUsage = orClient.state.usageMonthly; days = 30 // OpenRouter 只给月窗口，全部时按最近月近似
+        case .all: orUsage = orClient.state.usageMonthly; days = 3650 // OpenRouter 只给月窗口；10 年窗口覆盖全部订阅期
         }
         return periodCost.actual + orUsage
             + SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)

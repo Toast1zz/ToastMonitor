@@ -31,7 +31,7 @@ final class CollectorEngine {
 
     private func installTimer() {
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.schedule(deadline: .now() + 3, repeating: 3)
         t.setEventHandler { [weak self] in self?.runScan() }
         t.resume()
         timer = t

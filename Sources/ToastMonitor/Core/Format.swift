@@ -12,6 +12,18 @@ enum Format {
         return "\(n)"
     }
 
+    /// 完整数字（千分位分组）：1,234,567。流式刷新时看数字增长用。
+    static let fullFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.usesGroupingSeparator = true
+        return f
+    }()
+
+    static func full(_ n: Int64) -> String {
+        fullFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
     /// Money in USD with adaptive precision.
     static func money(_ v: Double) -> String {
         if v == 0 { return "$0.00" }

@@ -22,6 +22,9 @@ struct PopoverHomeView: View {
     @State private var period: Period = .today
     /// Drives countdown refresh (resets etc.) once a minute.
     @State private var now = Date()
+    /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
+    /// counter tick up during streaming.
+    @AppStorage("popoverFullTokens") private var fullTokens = false
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var totals: Database.ToolTotals {
@@ -135,12 +138,24 @@ struct PopoverHomeView: View {
     private var hero: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(Format.compact(tokens))
+                Text(fullTokens ? Format.full(tokens) : Format.compact(tokens))
                     .font(.system(size: 34, weight: .bold))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 Text("tokens")
-                    .font(.caption)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(TMDesign.quiet)
+                Button {
+                    fullTokens.toggle()
+                } label: {
+                    Image(systemName: fullTokens ? "number.circle.fill" : "number.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(TMDesign.faint)
+                }
+                .buttonStyle(.borderless)
+                .help(fullTokens ? "当前为完整数字，点击切换为缩写 (1.2M)" : "当前为缩写，点击切换为完整数字")
+                .accessibilityLabel("切换数字格式")
             }
             Text("\(Format.count(totals.count)) 次调用")
                 .font(.caption2)
@@ -265,8 +280,8 @@ struct PopoverHomeView: View {
         case .today: days = 1
         case .week: days = 7
         case .month: days = 30
-        // 全部时无明确天数，按最近 30 天近似（与概览一致）。
-        case .all: days = 30
+        // 全部：10 年窗口覆盖全部订阅期（含已结束的），全额计入。
+        case .all: days = 3650
         }
         return SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
     }
