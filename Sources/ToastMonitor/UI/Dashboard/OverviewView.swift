@@ -28,16 +28,21 @@ struct OverviewView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 intro
-                heroSection
-                    .padding(.bottom, 18)
+                // Hero totals and the distribution share one panel: the
+                // period figure reads as the header of the breakdown below.
+                TMPanel {
+                    VStack(alignment: .leading, spacing: 0) {
+                        heroSection
+                        Divider()
+                            .padding(.vertical, 14)
+                        rankings
+                    }
+                }
+                .padding(.bottom, 12)
                 statusLine
                     .padding(.bottom, 14)
                 TMPanel {
                     heatmapSection
-                }
-                .padding(.bottom, 14)
-                TMPanel {
-                    rankings
                 }
                 .padding(.bottom, 28)
             }
@@ -50,18 +55,42 @@ struct OverviewView: View {
             Text("概览")
                 .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
             Spacer()
-            Picker("周期", selection: $period) {
-                ForEach(Period.allCases) { p in
-                    Text(p.rawValue).tag(p)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .controlSize(.small)
+            periodControl
         }
         .padding(.top, 22)
         .padding(.bottom, 14)
+    }
+
+    /// Custom period switch: raised capsule selection (matches the popover's
+    /// control), smooth slide between states, quiet unselected labels.
+    private var periodControl: some View {
+        HStack(spacing: 3) {
+            ForEach(Period.allCases) { p in
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) { period = p }
+                } label: {
+                    Text(p.rawValue)
+                        .font(.system(size: 12, weight: period == p ? .semibold : .regular))
+                        .foregroundStyle(period == p ? .primary : TMDesign.quiet)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(period == p ? TMDesign.surface : .clear)
+                                .shadow(color: .black.opacity(period == p ? 0.10 : 0),
+                                        radius: 1.5, y: 0.5)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(p.rawValue)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
     }
 
     private var periodTitle: String {
@@ -99,27 +128,24 @@ struct OverviewView: View {
     // MARK: - Hero: today's usage + capacity ring
 
     private var heroSection: some View {
-        HStack(alignment: .center, spacing: 36) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(periodTitle)
-                    .font(.system(size: TMType.section, weight: .semibold))
-                    .foregroundStyle(TMDesign.quiet)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(periodTitle)
+                .font(.system(size: TMType.section, weight: .semibold))
+                .foregroundStyle(TMDesign.quiet)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(Format.compact(periodTokens))
                     .font(.system(size: TMType.hero, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
-                Text("tokens · 输入 + 输出 + 缓存命中")
+                Text("tokens")
                     .font(.system(size: TMType.caption))
-                    .foregroundStyle(TMDesign.faint)
-                HStack(spacing: 22) {
-                    heroMini("调用", Format.count(periodCalls))
-                    heroMini("已确认支出", Format.money(periodCost.actual))
-                    heroMini("估算", Format.money(periodCost.estimated))
-                }
-                .padding(.top, 4)
+                    .foregroundStyle(TMDesign.quiet)
             }
-            Spacer(minLength: 20)
-            gauge
+            HStack(spacing: 24) {
+                heroMini("调用", Format.count(periodCalls))
+                heroMini("已确认支出", Format.money(periodCost.actual))
+                heroMini("估算", Format.money(periodCost.estimated))
+            }
         }
     }
 
@@ -141,41 +167,6 @@ struct OverviewView: View {
         }
     }
 
-    /// Today's tokens against the trailing-30-day daily average.
-    private var gauge: some View {
-        let avg = dailyAverage30d
-        let ratio = avg > 0 ? Double(app.todayTokens) / avg : 0
-        let caption = avg > 0
-            ? String(format: "%.1f×", ratio)
-            : (app.todayTokens > 0 ? "新" : "—")
-        return ZStack {
-            TMGauge(progress: ratio)
-                .frame(width: 118, height: 118)
-            VStack(spacing: 1) {
-                Text(caption)
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                Text("今日 · vs 近 30 天日均")
-                    .font(.system(size: TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
-            }
-        }
-        .padding(.trailing, 8)
-        .help(avg > 0 ? "今日用量是近 30 天日均的 \(String(format: "%.1f", ratio)) 倍" : "暂无足够历史计算日均")
-    }
-
-    private var dailyAverage30d: Double {
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: Date())
-        var sum: Double = 0
-        for offset in 1...30 {
-            guard let d = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
-            let c = cal.dateComponents([.year, .month, .day], from: d)
-            let key = Int64((c.year ?? 0) * 10_000 + (c.month ?? 0) * 100 + (c.day ?? 0))
-            sum += Double(app.heatmap[key] ?? 0)
-        }
-        return sum / 30
-    }
 
     private var statusLine: some View {
         let broken = health.sources.filter { $0.error != nil }
@@ -332,7 +323,7 @@ struct OverviewView: View {
     // MARK: - Attribution (same trailing-7d window on both columns)
 
     private var rankings: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             TMSectionHeader("来源分布")
             HStack(alignment: .top, spacing: 32) {
                 rankingColumn(title: "模型", rows: modelRows(period))

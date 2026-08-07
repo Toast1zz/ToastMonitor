@@ -90,35 +90,6 @@ enum TMType {
     static let micro: CGFloat = 10
 }
 
-/// Ring gauge — the overview's signature element: today's usage against the
-/// trailing 30-day daily average. Reads as a capacity meter, not a card.
-struct TMGauge: View {
-    let progress: Double
-    var lineWidth: CGFloat = 10
-    var tint: Color = TMDesign.accent
-    var track: Color = Color.primary.opacity(0.08)
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(track, style: StrokeStyle(lineWidth: lineWidth))
-            Circle()
-                .trim(from: 0, to: min(max(progress, 0), 1))
-                .stroke(
-                    AngularGradient(
-                        colors: [tint.opacity(0.55), tint],
-                        center: .center,
-                        startAngle: .degrees(-90),
-                        endAngle: .degrees(270)
-                    ),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
-        .accessibilityValue(Text("\(Int(min(max(progress, 0), 1) * 100))%"))
-    }
-}
-
 struct TMSectionHeader: View {
     let title: String
     var action: (() -> Void)?
