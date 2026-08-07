@@ -11,10 +11,12 @@ enum SubscriptionMath {
         let progress: Double // 0...1
     }
 
-    static func cycleInfo(start: Int64, cycle: String, now: Date = Date()) -> CycleInfo? {
+    static func cycleInfo(start: Int64, end: Int64 = 0, cycle: String, now: Date = Date()) -> CycleInfo? {
         guard start > 0 else { return nil }
         let cal = Calendar.current
         let startDate = Date(timeIntervalSince1970: TimeInterval(start))
+        let endDate = end > 0 ? Date(timeIntervalSince1970: TimeInterval(end)) : nil
+        if let endDate, now >= endDate { return nil } // ended subscription: no active cycle
         let step: Calendar.Component = cycle == "yearly" ? .year : (cycle == "weekly" ? .weekOfYear : .month)
         let stepCount = cycle == "yearly" ? 1 : (cycle == "weekly" ? 1 : 1)
 
@@ -26,6 +28,11 @@ enum SubscriptionMath {
             windowStart = windowEnd
             windowEnd = cal.date(byAdding: step, value: stepCount, to: windowStart)!
             guardCount += 1
+        }
+        // An end date inside the window truncates it (no amortization past
+        // the end of the subscription).
+        if let endDate, endDate < windowEnd {
+            windowEnd = endDate
         }
         let totalDays = max(cal.dateComponents([.day], from: cal.startOfDay(for: windowStart),
                                                to: cal.startOfDay(for: windowEnd)).day ?? 30, 1)
@@ -51,6 +58,12 @@ enum SubscriptionMath {
             return pct / 100 * OpenCodeGoClient.monthlyLimitUSD
         case "openrouter":
             return Database.shared.orSpendSince(Int64(cycleStart.timeIntervalSince1970))
+        case "claude":
+            // Claude Pro bills the Claude Code traffic; value = what those
+            // turns cost at API list prices inside the cycle.
+            return Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
+                                            to: Int64(Date().timeIntervalSince1970),
+                                            tool: "claude")
         default:
             return nil
         }
@@ -63,10 +76,12 @@ enum SubscriptionMath {
     }
 
     /// 订阅金额按周期天数分摊到给定天数（实际花费口径的一部分）。
-    static func amortized(days: Int, subscriptions: [Database.Subscription]) -> Double {
+    static func amortized(days: Int, subscriptions: [Database.Subscription], now: Date = Date()) -> Double {
         var t = 0.0
         for sub in subscriptions {
-            if let info = cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+            // Ended subscriptions contribute nothing; an end inside the
+            // current cycle is handled by cycleInfo truncating the window.
+            if let info = cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle, now: now) {
                 t += sub.price / Double(info.totalDays) * Double(days)
             }
         }
@@ -124,6 +139,15 @@ enum SubscriptionMath {
             }
             return Forecast(used: used, dailyRate: rate, limit: balance,
                             projectedEnd: nil, exhaustDate: exhaust, isBreakeven: false)
+        case "claude":
+            // Claude Pro: value = Claude Code turns at API list prices.
+            let used = Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
+                                                to: Int64(now.timeIntervalSince1970),
+                                                tool: "claude")
+            let rate = used / Double(daysElapsed)
+            let projected = used + rate * Double(daysLeft)
+            return Forecast(used: used, dailyRate: rate, limit: projected,
+                            projectedEnd: projected, exhaustDate: nil, isBreakeven: false)
         default:
             return nil
         }

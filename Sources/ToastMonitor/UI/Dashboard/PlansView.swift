@@ -122,7 +122,7 @@ struct PlansView: View {
                     windowRow("5 小时窗口", pct: go.rollingPct, reset: go.rollingReset)
                     windowRow("本周窗口", pct: go.weeklyPct, reset: go.weeklyReset)
 
-                    if let sub = subForGo, let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                    if let sub = subForGo, let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
                         Divider()
                         HStack(spacing: 8) {
                             Text("固定订阅")
@@ -356,7 +356,7 @@ struct PlansView: View {
                             Text(sub.name)
                                 .font(.system(size: TMType.body, weight: .medium))
                             if !sub.plan.isEmpty {
-                                Text(sub.plan == "go" ? "关联 Go" : (sub.plan == "openrouter" ? "关联 OpenRouter" : ""))
+                                Text(sub.plan == "go" ? "关联 Go" : (sub.plan == "openrouter" ? "关联 OpenRouter" : (sub.plan == "claude" ? "关联 Claude Pro" : "")))
                                     .font(.system(size: TMType.micro))
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
@@ -369,9 +369,10 @@ struct PlansView: View {
                                 .monospacedDigit()
                         }
                         .padding(.vertical, 5)
-                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
                             HStack(spacing: 8) {
-                                Text("第 \(info.dayOfCycle)/\(info.totalDays) 天 · 续期 \(SubscriptionMath.dateStr(info.end)) · 日均 \(Format.money(sub.price / Double(info.totalDays)))")
+                                Text("第 \(info.dayOfCycle)/\(info.totalDays) 天 · 续期 \(SubscriptionMath.dateStr(info.end)) · 日均 \(Format.money(sub.price / Double(info.totalDays)))"
+                                     + (sub.endDate > 0 ? " · 至 \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))" : ""))
                                     .font(.system(size: TMType.caption, design: .monospaced))
                                     .monospacedDigit()
                                     .foregroundStyle(TMDesign.quiet)

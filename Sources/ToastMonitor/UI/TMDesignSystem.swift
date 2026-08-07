@@ -383,6 +383,8 @@ enum ForecastText {
                 return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate)) → 约 \(date(exhaust)) 耗尽", .warn)
             }
             return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate)) · 无耗尽风险", .ok)
+        case "claude":
+            return ("Claude 用量价值 \(Format.money(fc.used)) · 日均 \(Format.money(fc.dailyRate)) → 期末 \(Format.money(fc.projectedEnd ?? 0))", .ok)
         default:
             return ("已付 \(Format.money(fc.used)) · 未关联用量源", .neutral)
         }
@@ -402,6 +404,8 @@ enum ForecastText {
                 return ("余额 \(Format.money(fc.limit)) · 约 \(date(exhaust)) 耗尽", .warn)
             }
             return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate))", .ok)
+        case "claude":
+            return ("Claude 价值 \(Format.money(fc.used)) · 日均 \(Format.money(fc.dailyRate))", .ok)
         default:
             return ("已付 \(Format.money(fc.used)) · 未关联用量源", .neutral)
         }

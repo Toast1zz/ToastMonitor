@@ -17,7 +17,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
         case .hermes: return "Hermes"
-        case .omp: return "OMP"
+        case .omp: return "Oh My Pi"
         case .openrouter: return "OpenRouter"
         }
     }

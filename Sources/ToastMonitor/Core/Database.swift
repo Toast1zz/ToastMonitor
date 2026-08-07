@@ -67,6 +67,8 @@ final class Database {
         exec("PRAGMA foreign_keys=ON;")
         migrate()
         migrateDropLegacyTurnsUnique()
+        // Legacy databases predate the subscriptions.end_date column.
+        ensureColumn("end_date", "INTEGER NOT NULL DEFAULT 0", table: "subscriptions")
         // OpenCode upstream stored `model` as a JSON object
         // ({"id":...,"providerID":...}) in some versions; normalize any
         // already-imported rows once (idempotent, no-op afterwards).
@@ -305,6 +307,7 @@ final class Database {
           name TEXT NOT NULL,
           plan TEXT NOT NULL DEFAULT '',
           start_date INTEGER NOT NULL DEFAULT 0,
+          end_date INTEGER NOT NULL DEFAULT 0,
           cycle TEXT NOT NULL DEFAULT 'monthly',
           price REAL NOT NULL DEFAULT 0,
           currency TEXT NOT NULL DEFAULT 'USD'
@@ -1077,8 +1080,9 @@ final class Database {
     struct Subscription: Identifiable, Equatable {
         let id: Int64
         var name: String
-        var plan: String      // "" | "go" | "openrouter"
+        var plan: String      // "" | "go" | "openrouter" | "claude"
         var startDate: Int64  // unix seconds
+        var endDate: Int64 = 0 // 0 = active; unix seconds when it ended/stops
         var cycle: String     // "monthly" | "yearly"
         var price: Double
         var currency: String
@@ -1089,7 +1093,7 @@ final class Database {
         var out: [Subscription] = []
         guard let db else { return out }
         var stmt: OpaquePointer?
-        let sql = "SELECT id, name, plan, start_date, cycle, price, currency FROM subscriptions ORDER BY start_date;"
+        let sql = "SELECT id, name, plan, start_date, end_date, cycle, price, currency FROM subscriptions ORDER BY start_date;"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(Subscription(
@@ -1097,9 +1101,10 @@ final class Database {
                 name: String(cString: sqlite3_column_text(stmt, 1)),
                 plan: String(cString: sqlite3_column_text(stmt, 2)),
                 startDate: sqlite3_column_int64(stmt, 3),
-                cycle: String(cString: sqlite3_column_text(stmt, 4)),
-                price: sqlite3_column_double(stmt, 5),
-                currency: String(cString: sqlite3_column_text(stmt, 6))))
+                endDate: sqlite3_column_int64(stmt, 4),
+                cycle: String(cString: sqlite3_column_text(stmt, 5)),
+                price: sqlite3_column_double(stmt, 6),
+                currency: String(cString: sqlite3_column_text(stmt, 7))))
         }
         sqlite3_finalize(stmt)
         return out
@@ -1112,14 +1117,15 @@ final class Database {
         var stmt: OpaquePointer?
         if s.id == 0 {
             // New record: let SQLite assign the id (P0-9).
-            let sql = "INSERT INTO subscriptions (name, plan, start_date, cycle, price, currency) VALUES (?,?,?,?,?,?);"
+            let sql = "INSERT INTO subscriptions (name, plan, start_date, end_date, cycle, price, currency) VALUES (?,?,?,?,?,?,?);"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { markTransactionWriteFailure(); return false }
             sqlite3_bind_text(stmt, 1, (s.name as NSString).utf8String, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 2, (s.plan as NSString).utf8String, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int64(stmt, 3, s.startDate)
-            sqlite3_bind_text(stmt, 4, (s.cycle as NSString).utf8String, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_double(stmt, 5, s.price)
-            sqlite3_bind_text(stmt, 6, (s.currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 4, s.endDate)
+            sqlite3_bind_text(stmt, 5, (s.cycle as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_double(stmt, 6, s.price)
+            sqlite3_bind_text(stmt, 7, (s.currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
             let rc = sqlite3_step(stmt)
             sqlite3_finalize(stmt)
             guard rc == SQLITE_DONE else { markTransactionWriteFailure(); return false }
@@ -1127,19 +1133,21 @@ final class Database {
             return true
         }
         let sql = """
-        INSERT INTO subscriptions (id, name, plan, start_date, cycle, price, currency)
-        VALUES (?,?,?,?,?,?,?)
+        INSERT INTO subscriptions (id, name, plan, start_date, end_date, cycle, price, currency)
+        VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET name=excluded.name, plan=excluded.plan,
-          start_date=excluded.start_date, cycle=excluded.cycle, price=excluded.price, currency=excluded.currency;
+          start_date=excluded.start_date, end_date=excluded.end_date,
+          cycle=excluded.cycle, price=excluded.price, currency=excluded.currency;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { markTransactionWriteFailure(); return false }
         sqlite3_bind_int64(stmt, 1, s.id)
         sqlite3_bind_text(stmt, 2, (s.name as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 3, (s.plan as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_int64(stmt, 4, s.startDate)
-        sqlite3_bind_text(stmt, 5, (s.cycle as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_double(stmt, 6, s.price)
-        sqlite3_bind_text(stmt, 7, (s.currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 5, s.endDate)
+        sqlite3_bind_text(stmt, 6, (s.cycle as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 7, s.price)
+        sqlite3_bind_text(stmt, 8, (s.currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         guard rc == SQLITE_DONE else { markTransactionWriteFailure(); return false }
@@ -1252,13 +1260,22 @@ final class Database {
 
     /// API 价值：全部工具（含 hermes）的所有 turns 按模型官方单价重估。
     /// 与实际账单无关——回答「这些 token 按 API 价值多少钱」。
-    func apiValue(from: Int64, to: Int64) -> Double {
+    func apiValue(from: Int64, to: Int64, tool: String? = nil) -> Double {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return 0 }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE ts BETWEEN ? AND ?;", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        let sql: String
+        if let tool {
+            sql = "SELECT model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE ts BETWEEN ? AND ? AND tool = ?;"
+        } else {
+            sql = "SELECT model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE ts BETWEEN ? AND ?;"
+        }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
         sqlite3_bind_int64(stmt, 1, from)
         sqlite3_bind_int64(stmt, 2, to)
+        if let tool {
+            sqlite3_bind_text(stmt, 3, (tool as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        }
         var total = 0.0
         while sqlite3_step(stmt) == SQLITE_ROW {
             let model = sqlite3_column_type(stmt, 0) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 0))

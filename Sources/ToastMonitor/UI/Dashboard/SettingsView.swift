@@ -197,6 +197,8 @@ struct SubscriptionSettingsSection: View {
     @State private var name = ""
     @State private var plan = ""
     @State private var startDate = Date()
+    @State private var hasEndDate = false
+    @State private var endDate = Date()
     @State private var cycle = "monthly"
     @State private var price = ""
     @State private var priceError = false
@@ -214,6 +216,8 @@ struct SubscriptionSettingsSection: View {
                     name = ""
                     plan = ""
                     startDate = Date()
+                    hasEndDate = false
+                    endDate = Date()
                     cycle = "monthly"
                     price = ""
                     showForm = true
@@ -226,6 +230,8 @@ struct SubscriptionSettingsSection: View {
                     name = "OpenCode Go"
                     plan = "go"
                     startDate = Date()
+                    hasEndDate = false
+                    endDate = Date()
                     cycle = "monthly"
                     price = "10"
                     showForm = true
@@ -249,10 +255,11 @@ struct SubscriptionSettingsSection: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(sub.name)
                                 .font(.system(size: 12, weight: .medium))
-                            Text("\(Format.dateTime(sub.startDate)) 起 · \(sub.cycle == "yearly" ? "年度" : "月度") · \(Format.money(sub.price))/期")
+                            Text("\(Format.dateTime(sub.startDate)) 起 · \(sub.cycle == "yearly" ? "年度" : "月度") · \(Format.money(sub.price))/期"
+                                 + (sub.endDate > 0 ? " · 至 \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))" : ""))
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
-                            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
                                 HStack(spacing: 6) {
                                     Text("第 \(info.dayOfCycle)/\(info.totalDays) 天 · 续期 \(SubscriptionMath.dateStr(info.end)) · 日均 \(Format.money(sub.price / Double(info.totalDays)))")
                                         .font(.system(size: 10, design: .monospaced))
@@ -274,6 +281,8 @@ struct SubscriptionSettingsSection: View {
                             name = sub.name
                             plan = sub.plan
                             startDate = Date(timeIntervalSince1970: TimeInterval(sub.startDate))
+                            hasEndDate = sub.endDate > 0
+                            endDate = sub.endDate > 0 ? Date(timeIntervalSince1970: TimeInterval(sub.endDate)) : Date()
                             cycle = sub.cycle
                             price = "\(sub.price)"
                             showForm = true
@@ -306,6 +315,7 @@ struct SubscriptionSettingsSection: View {
                             Text("不关联").tag("")
                             Text("OpenCode Go").tag("go")
                             Text("OpenRouter").tag("openrouter")
+                            Text("Claude Pro").tag("claude")
                         }
                         .pickerStyle(.menu)
                         .frame(width: 140)
@@ -313,6 +323,13 @@ struct SubscriptionSettingsSection: View {
                     HStack(spacing: 10) {
                         DatePicker("开始日期", selection: $startDate, displayedComponents: .date)
                             .font(.system(size: 11.5))
+                        Toggle("结束时间", isOn: $hasEndDate)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 11.5))
+                        if hasEndDate {
+                            DatePicker("", selection: $endDate, displayedComponents: .date)
+                                .font(.system(size: 11.5))
+                        }
                         Picker("周期", selection: $cycle) {
                             Text("月度").tag("monthly")
                             Text("年度").tag("yearly")
@@ -341,6 +358,7 @@ struct SubscriptionSettingsSection: View {
                                 name: name.trimmingCharacters(in: .whitespaces),
                                 plan: plan,
                                 startDate: Int64(startDate.timeIntervalSince1970),
+                                endDate: hasEndDate ? Int64(endDate.timeIntervalSince1970) : 0,
                                 cycle: cycle,
                                 price: p,
                                 currency: "USD")
@@ -405,10 +423,10 @@ struct SubscriptionSettingsSection: View {
     }
 
     private func planIcon(_ p: String) -> String {
-        p == "go" ? "g.circle.fill" : (p == "openrouter" ? ToolKind.openrouter.symbol : "calendar")
+        p == "go" ? "g.circle.fill" : (p == "openrouter" ? ToolKind.openrouter.symbol : (p == "claude" ? ToolKind.claude.symbol : "calendar"))
     }
 
     private func planColor(_ p: String) -> Color {
-        p == "go" ? TMDesign.accent : (p == "openrouter" ? ToolKind.openrouter.color : .gray)
+        p == "go" ? TMDesign.accent : (p == "openrouter" ? ToolKind.openrouter.color : (p == "claude" ? ToolKind.claude.color : .gray))
     }
 }

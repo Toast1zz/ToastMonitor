@@ -311,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let app = AppState.shared
         for sub in app.subscriptions {
             guard sub.startDate <= Int64(Date().timeIntervalSince1970) else { continue }
-            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
                 t += sub.price / Double(info.totalDays)
             }
         }
