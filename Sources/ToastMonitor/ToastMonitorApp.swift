@@ -285,10 +285,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let img = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil) {
             let attach = NSTextAttachment()
             attach.image = img
+            // 与 macOS 系统时间同级的菜单栏排版：等宽数字 13pt，
+            // 图标按按钮中线垂直居中（bounds Y 微调抵消基线偏移）。
+            let size = img.size
+            let scale: CGFloat = 13 / 16
+            let h = size.height * scale
+            let w = size.width * scale
+            attach.bounds = NSRect(x: 0, y: -round((h - 13) / 2) - 1, width: w, height: h)
             attr.append(NSAttributedString(attachment: attach))
         }
         attr.append(NSAttributedString(string: " \(text)", attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular),
             .foregroundColor: NSColor.labelColor,
         ]))
         button.attributedTitle = attr
