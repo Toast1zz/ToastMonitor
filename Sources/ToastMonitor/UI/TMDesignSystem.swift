@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+/// Cross-surface notification names (foreground state, tab selection).
+/// Defined at top level so non-main-actor code can reference them.
+enum TMNotifications {
+    static let popoverVisibility = Notification.Name("tmPopoverVisibility")
+    static let dashboardVisibility = Notification.Name("tmDashboardVisibility")
+}
+
 /// Shared visual language for the menu bar surface and the dashboard.
 ///
 /// The app intentionally avoids a web-style card stack. macOS already gives us

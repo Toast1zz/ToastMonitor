@@ -335,61 +335,11 @@ struct PlansView: View {
         .padding(.top, 4)
     }
 
-    // MARK: - 固定订阅（只读摘要，管理在设置）
+    // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
 
     private var subsCard: some View {
         serviceCard(title: "固定订阅", icon: "calendar", color: .gray) {
-            if app.subscriptions.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("暂无订阅")
-                        .font(.system(size: TMType.caption))
-                        .foregroundStyle(TMDesign.quiet)
-                    Button("在设置中添加订阅") {
-                        NotificationCenter.default.post(name: DashboardView.selectTab, object: DashboardView.Tab.sources)
-                    }
-                    .font(.system(size: TMType.caption))
-                }
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(app.subscriptions) { sub in
-                        HStack(spacing: 8) {
-                            Text(sub.name)
-                                .font(.system(size: TMType.body, weight: .medium))
-                            if !sub.plan.isEmpty {
-                                Text(sub.plan == "go" ? "关联 Go" : (sub.plan == "openrouter" ? "关联 OpenRouter" : (sub.plan == "claude" ? "关联 Claude Pro" : "")))
-                                    .font(.system(size: TMType.micro))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(Capsule().fill(Color.primary.opacity(0.06)))
-                                    .foregroundStyle(TMDesign.quiet)
-                            }
-                            Spacer()
-                            Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "月" : "年")")
-                                .font(.system(size: TMType.body, weight: .semibold, design: .monospaced))
-                                .monospacedDigit()
-                        }
-                        .padding(.vertical, 5)
-                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
-                            HStack(spacing: 8) {
-                                Text("第 \(info.dayOfCycle)/\(info.totalDays) 天 · 续期 \(SubscriptionMath.dateStr(info.end)) · 日均 \(Format.money(sub.price / Double(info.totalDays)))"
-                                     + (sub.endDate > 0 ? " · 至 \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))" : ""))
-                                    .font(.system(size: TMType.caption, design: .monospaced))
-                                    .monospacedDigit()
-                                    .foregroundStyle(TMDesign.quiet)
-                                if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                    let line = ForecastText.compact(for: fc, plan: sub.plan)
-                                    Text(line.text)
-                                        .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
-                                        .monospacedDigit()
-                                        .foregroundStyle(ForecastText.color(line.status))
-                                }
-                                Spacer()
-                            }
-                        }
-                        if sub.id != app.subscriptions.last?.id { Divider().padding(.vertical, 3) }
-                    }
-                }
-            }
+            SubscriptionSettingsSection()
         }
     }
 

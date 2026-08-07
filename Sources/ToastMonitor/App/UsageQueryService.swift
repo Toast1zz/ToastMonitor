@@ -56,7 +56,12 @@ final class UsageQueryService {
 
     func loadSnapshot(completion: @escaping (Snapshot) -> Void) {
         queue.async {
+            let t0 = CFAbsoluteTimeGetCurrent()
             let snap = self.compute()
+            let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            if ms > 200 {
+                NSLog("[ToastMonitor] snapshot computed in %dms", ms)
+            }
             DispatchQueue.main.async { completion(snap) }
         }
     }

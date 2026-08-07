@@ -355,7 +355,7 @@ struct SubscriptionSettingsSection: View {
                                 return
                             }
                             priceError = false
-                            let sub = Database.Subscription(
+                            var sub = Database.Subscription(
                                 id: editing?.id ?? 0,
                                 name: name.trimmingCharacters(in: .whitespaces),
                                 plan: plan,
@@ -365,7 +365,7 @@ struct SubscriptionSettingsSection: View {
                                 price: p,
                                 currency: "USD")
                             DispatchQueue.global(qos: .userInitiated).async {
-                                let ok = Database.shared.upsertSubscription(sub)
+                                let ok = Self.persist(sub)
                                 DispatchQueue.main.async {
                                     if ok {
                                         app.refresh()
@@ -422,6 +422,24 @@ struct SubscriptionSettingsSection: View {
             } message: {
                 Text(pendingDelete.map { "将删除「\($0.name)」及其周期/预测记录。" } ?? "")
             }
+    }
+
+    /// Defensive persistence: if the edit context lost its id, match by
+    /// (name, startDate) so saving an edit never inserts a duplicate row.
+    private static func persist(_ sub: Database.Subscription) -> Bool {
+        var s = sub
+        if s.id <= 0 {
+            let existing = Database.shared.subscriptions().first { row in
+                row.name == s.name && row.startDate == s.startDate
+            }
+            if let existing {
+                s = Database.Subscription(id: existing.id, name: s.name, plan: s.plan,
+                                          startDate: s.startDate, endDate: s.endDate,
+                                          cycle: s.cycle, price: s.price, currency: s.currency)
+            }
+            NSLog("[ToastMonitor] subscription save without id; matched existing id=%lld or inserting", s.id)
+        }
+        return Database.shared.upsertSubscription(s)
     }
 
     private func planIcon(_ p: String) -> String {

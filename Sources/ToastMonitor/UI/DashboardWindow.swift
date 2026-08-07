@@ -9,9 +9,12 @@ final class WindowManager {
 
     private init() {}
 
+    static let visibilityNotification = TMNotifications.dashboardVisibility
+
     func toggle() {
         if let window, window.isVisible {
             window.orderOut(nil)
+            NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
         } else {
             show()
         }
@@ -21,6 +24,7 @@ final class WindowManager {
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
             if let tab {
                 NotificationCenter.default.post(name: DashboardView.selectTab, object: tab)
             }
@@ -42,6 +46,7 @@ final class WindowManager {
         self.window = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
     }
 }
 

@@ -57,7 +57,7 @@ final class HermesRemoteClient: ObservableObject {
         if remoteSourcesEnabled {
             queue.async { [weak self] in self?.poll() } // never blocks main
         }
-        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.queue.async { self.poll() }
         }
@@ -71,7 +71,7 @@ final class HermesRemoteClient: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             let now = Int64(Date().timeIntervalSince1970)
-            guard now - self.lastPoll > 55 else { return }
+            guard now - self.lastPoll > 13 else { return }
             self.poll()
         }
     }

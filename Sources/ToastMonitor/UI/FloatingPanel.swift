@@ -139,6 +139,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel.isVisible }
 
+    /// Foreground signal: the menu bar surface being expanded means the user
+    /// is looking at numbers — collectors and the UI snapshot speed up.
+    static let visibilityNotification = TMNotifications.popoverVisibility
+
     func toggle() {
         if panel.isVisible {
             hide()
@@ -171,6 +175,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.setFrame(NSRect(x: x, y: topY - h, width: w, height: h), display: true)
         logPanel("show setFrame: finalFrame=\(panel.frame)")
         panel.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
     }
 
     /// Grow/shrink the panel to fit the reported content height. The top
@@ -247,6 +252,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func hide() {
         panel.orderOut(nil)
+        NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
     }
 
     deinit {

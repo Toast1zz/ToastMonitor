@@ -220,3 +220,30 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(subs.first?.name, "A2")
     }
 }
+
+extension DatabaseTests {
+    func testUpdateSubscriptionDoesNotDuplicate() throws {
+        let path = NSTemporaryDirectory() + "sub-update-\(UUID().uuidString).db"
+        let db = Database.testInstance(path: path)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let created = Database.Subscription(id: 0, name: "Claude Pro", plan: "claude",
+                                            startDate: 1_700_000_000, endDate: 1_702_000_000,
+                                            cycle: "monthly", price: 23.2, currency: "USD")
+        XCTAssertTrue(db.upsertSubscription(created))
+        var rows = db.subscriptions()
+        XCTAssertEqual(rows.count, 1)
+        let realID = rows[0].id
+        XCTAssertGreaterThan(realID, 0, "insert must return a real id")
+
+        // Edit the same row: same id, new price/name.
+        let edited = Database.Subscription(id: realID, name: "Claude Pro (edited)", plan: "claude",
+                                           startDate: 1_700_000_000, endDate: 1_702_000_000,
+                                           cycle: "monthly", price: 25.0, currency: "USD")
+        XCTAssertTrue(db.upsertSubscription(edited))
+        rows = db.subscriptions()
+        XCTAssertEqual(rows.count, 1, "updating an existing id must not insert a new row")
+        XCTAssertEqual(rows[0].name, "Claude Pro (edited)")
+        XCTAssertEqual(rows[0].price, 25.0)
+    }
+}

@@ -16,8 +16,31 @@ final class CollectorEngine {
 
     /// Coalescing: at most one scan per 2s.
     private var lastScanStart: CFAbsoluteTime = 0
+    /// Foreground (popover/dashboard visible) scans every 1s; background 3s.
+    private var foreground = false
 
-    private init() {}
+    private init() {
+        for name in [PanelController.visibilityNotification, WindowManager.visibilityNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self else { return }
+                let visible = (note.object as? Bool) ?? false
+                if visible {
+                    self.setForeground(true)
+                } else {
+                    self.setForeground(false)
+                }
+            }
+        }
+    }
+
+    func setForeground(_ fg: Bool) {
+        queue.async { [self] in
+            guard fg != foreground else { return }
+            foreground = fg
+            installTimer() // rebuild with the new interval
+            if fg { runScan() } // activation moment: scan immediately
+        }
+    }
 
     func start() {
         queue.async { [self] in

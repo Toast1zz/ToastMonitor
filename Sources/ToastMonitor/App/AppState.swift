@@ -43,8 +43,23 @@ final class AppState: ObservableObject {
 
     private var refreshTimer: Timer?
     private var refreshInFlight = false
+    private var popoverVisible = false
+    private var dashboardVisible = false
+    private var foreground = false
 
     private init() {
+        for name in [PanelController.visibilityNotification, WindowManager.visibilityNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self else { return }
+                let visible = (note.object as? Bool) ?? false
+                if name == PanelController.visibilityNotification {
+                    self.popoverVisible = visible
+                } else {
+                    self.dashboardVisible = visible
+                }
+                self.updateForeground()
+            }
+        }
         NotificationCenter.default.addObserver(forName: CollectorEngine.didCollect, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refresh()
@@ -57,13 +72,31 @@ final class AppState: ObservableObject {
 
     func start() {
         refresh()
-        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
+        updateForeground()
+    }
+
+    /// Foreground = popover expanded or dashboard window visible. While the
+    /// user is looking, snapshot every second and refresh immediately on
+    /// activation; when everything is hidden the UI stops polling (the
+    /// collector's didCollect notification still lands fresh data).
+    private func updateForeground() {
+        let fg = popoverVisible || dashboardVisible
+        guard fg != foreground else { return }
+        foreground = fg
+        if let t = refreshTimer {
+            t.invalidate()
+            refreshTimer = nil
         }
-        RunLoop.main.add(t, forMode: .common)
-        refreshTimer = t
+        if fg {
+            let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refresh()
+                }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            refreshTimer = t
+            refresh() // activation moment: show the latest numbers instantly
+        }
     }
 
     /// Coalesced: at most one background snapshot in flight.
