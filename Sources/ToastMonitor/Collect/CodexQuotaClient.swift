@@ -30,7 +30,7 @@ final class CodexQuotaClient: ObservableObject {
     func start() {
         guard timer == nil else { return }
         refresh()
-        let t = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)

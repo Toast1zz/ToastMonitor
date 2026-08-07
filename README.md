@@ -25,7 +25,7 @@
 
 ## 架构
 
-- **纯轮询**（5s）：按文件 (size, 纳秒 mtime, inode) 增量读取，稳态扫描 ~20ms。不用 FSEvents —— 只读打开 WAL 库会写 `-shm` 触发自激循环。
+- **纯轮询**（1s）：按文件 (size, 纳秒 mtime, inode) 增量读取，稳态扫描 ~20ms，日志变化约 1 秒内进入 UI（等价 token-monitor 的流式观感）。不用 FSEvents —— 只读打开 WAL 库会写 `-shm` 触发自激循环。UI 快照兜底 5s，配额类客户端（OpenRouter/Go/Codex）60s。
 - 单 SQLite 库：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL 模式）。
 - 成本估算：内置常见模型价格表（Claude/GPT/DeepSeek 等），未知模型只记 token 不记价；`backfillCosts()` 幂等修正历史。
 

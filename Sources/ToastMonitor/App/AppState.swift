@@ -57,7 +57,7 @@ final class AppState: ObservableObject {
 
     func start() {
         refresh()
-        let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refresh()
             }

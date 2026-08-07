@@ -197,7 +197,7 @@ final class OpenRouterClient: ObservableObject {
 
     func start() {
         refresh()
-        let t = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             self?.refresh()
         }
         RunLoop.main.add(t, forMode: .common)
