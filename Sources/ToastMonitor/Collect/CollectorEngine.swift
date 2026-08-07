@@ -19,22 +19,29 @@ final class CollectorEngine {
     /// Foreground (popover/dashboard visible) scans every 1s; background is
     /// fully stopped — no source refreshes while nothing is on screen.
     private var foreground = false
+    private var popoverVisible = false
+    private var dashboardVisible = false
 
     private init() {
         for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let self else { return }
                 let visible = (note.object as? Bool) ?? false
-                if visible {
-                    self.setForeground(true)
+                if name == TMNotifications.popoverVisibility {
+                    self.popoverVisible = visible
                 } else {
-                    self.setForeground(false)
+                    self.dashboardVisible = visible
                 }
+                self.updateForeground()
             }
         }
     }
 
-    func setForeground(_ fg: Bool) {
+    /// OR semantics: either surface being visible keeps the collector
+    /// foregrounded; one closing must not stop collection while the other
+    /// is still on screen.
+    private func updateForeground() {
+        let fg = popoverVisible || dashboardVisible
         queue.async { [self] in
             guard fg != foreground else { return }
             foreground = fg

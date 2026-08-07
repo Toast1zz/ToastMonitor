@@ -25,6 +25,7 @@ final class CodexQuotaClient: ObservableObject {
     private var timer: Timer?
     private var started = false
     private var inFlight = false
+    private var refreshGeneration: UInt64 = 0
 
     private init() {
         observeForeground()
@@ -80,8 +81,6 @@ final class CodexQuotaClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
-        inFlight = true
-        defer { inFlight = false }
 
         let home = FileManager.default.homeDirectoryForCurrentUser
         let authPath = home.appendingPathComponent(".codex/auth.json").path
@@ -93,6 +92,10 @@ final class CodexQuotaClient: ObservableObject {
             return
         }
 
+        inFlight = true
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+
         guard let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else { return }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         req.httpMethod = "GET"
@@ -103,6 +106,8 @@ final class CodexQuotaClient: ObservableObject {
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
             Task { @MainActor in
                 guard let self else { return }
+                self.inFlight = false
+                guard self.refreshGeneration == generation else { return }
                 if let err {
                     self.state.error = err.localizedDescription
                     return

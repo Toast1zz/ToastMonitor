@@ -21,12 +21,15 @@ enum SubscriptionMath {
         let stepCount = cycle == "yearly" ? 1 : (cycle == "weekly" ? 1 : 1)
 
         // Find the current cycle window: roll forward from start until end > now.
-        var windowStart = startDate
-        var windowEnd = cal.date(byAdding: step, value: stepCount, to: windowStart)!
+        // date(byAdding:) returns nil for out-of-range dates; bail out
+        // instead of crashing the subscriptions list.
+        guard var windowStart = Optional(startDate),
+              var windowEnd = cal.date(byAdding: step, value: stepCount, to: windowStart) else { return nil }
         var guardCount = 0
         while windowEnd <= now && guardCount < 1200 {
+            guard let next = cal.date(byAdding: step, value: stepCount, to: windowEnd) else { return nil }
             windowStart = windowEnd
-            windowEnd = cal.date(byAdding: step, value: stepCount, to: windowStart)!
+            windowEnd = next
             guardCount += 1
         }
         // An end date inside the window truncates it (no amortization past

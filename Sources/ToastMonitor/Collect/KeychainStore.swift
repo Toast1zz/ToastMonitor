@@ -14,7 +14,29 @@ enum KeychainStore {
 
     static func set(_ value: String, account: String, allowPrompt: Bool = false) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
+        // Transactional: snapshot the old value, delete, add; restore on
+        // failure so a locked/unavailable keychain never destroys the only
+        // durable copy of a credential (callers keep plaintext recovery
+        // copies only while the keychain write is unconfirmed).
+        let old = get(account: account)
         delete(account: account) // avoid errSecDuplicateItem
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let ok = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        if !ok, let old {
+            _ = setRaw(old, account: account)
+        }
+        return ok
+    }
+
+    private static func setRaw(_ value: String, account: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        delete(account: account)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

@@ -52,6 +52,11 @@ enum FileScanner {
     /// Returns parsed JSON objects with their absolute byte offsets (stable
     /// event identity, P0-3) and the new offset. Partial trailing lines are
     /// not consumed; shrunken files rescan from 0.
+    ///
+    /// NOTE for callers: pass fromOffset = 0 when the file's mtime changed
+    /// but its size stayed >= the cursor — an in-place rewrite (edit without
+    /// growth) is otherwise invisible and its events are lost. Event ids
+    /// derived from uuid/offset make the replay dedupe-safe.
     static func readNewJSONLines(path: String, fromOffset: Int64) -> (objects: [(offset: Int64, obj: [String: Any])], newOffset: Int64) {
         guard let fh = FileHandle(forReadingAtPath: path) else { return ([], fromOffset) }
         defer { fh.closeFile() }

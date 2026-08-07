@@ -24,7 +24,12 @@ enum ClaudeCodeParser {
 
             // Truncation can preserve an inode; a shorter file is still a
             // new byte stream and must be replayed from offset zero.
-            let sameAppendOnlyFile = prev.identity == st.identity && st.size >= prev.size
+            // mtime changed with size unchanged = in-place rewrite; replay
+            // from 0 so edited events are not silently lost (dedupe handles
+            // the already-imported ones).
+            let sameAppendOnlyFile = prev.identity == st.identity
+                && st.size > prev.size
+                && prev.mtime != 0
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
             if DebugLog.enabled {

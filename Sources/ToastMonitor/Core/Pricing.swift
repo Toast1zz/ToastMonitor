@@ -19,6 +19,12 @@ enum Pricing {
         ("claude-sonnet", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),
         ("claude-3.7", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),
         ("claude-3.5", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),
+        // Dashed variants: "claude-3-5-haiku" does NOT contain "claude-3.5"
+        // or "claude-3-haiku" — without these entries it would fall to the
+        // catch-all claude rate (3/15), pricing haiku ~12x too high.
+        ("claude-3-5-haiku", ModelPrice(input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3)),
+        ("claude-3-5-opus", ModelPrice(input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75)),
+        ("claude-3-5-sonnet", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),
         ("claude-3-haiku", ModelPrice(input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3)),
         ("claude-haiku", ModelPrice(input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3)),
         ("claude", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),

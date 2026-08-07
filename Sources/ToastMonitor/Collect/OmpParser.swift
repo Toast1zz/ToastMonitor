@@ -28,7 +28,12 @@ enum OmpParser {
             let prev = Database.shared.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
 
-            let sameAppendOnlyFile = prev.identity == st.identity && st.size >= prev.size
+            // mtime changed with size unchanged = in-place rewrite; replay
+            // from 0 so edited events are not silently lost (dedupe handles
+            // the already-imported ones).
+            let sameAppendOnlyFile = prev.identity == st.identity
+                && st.size > prev.size
+                && prev.mtime != 0
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
             if objs.isEmpty {
@@ -39,9 +44,26 @@ enum OmpParser {
             }
 
             let fileName = (file as NSString).lastPathComponent
-            let sessionID = (fileName as NSString).deletingPathExtension
+            // Session identity comes from the transcript's own `session`
+            // event UUID — subagent files named e.g. "UIAudit.jsonl" share a
+            // filename stem across top-level sessions, so using the stem
+            // would merge distinct sessions and collide event ids.
+            var sessionID = (fileName as NSString).deletingPathExtension
+            for item in objs {
+                if let o = item.obj["type"] as? String, o == "session",
+                   let sid = item.obj["id"] as? String, !sid.isEmpty {
+                    sessionID = sid
+                    break
+                }
+            }
             let project = FileScanner.lastComponentOfEncodedPath(
                 ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+            // Full relative path disambiguates subagent transcripts across
+            // sessions; the message id is only 32-bit, so the path prefix is
+            // what makes the composite id globally unique.
+            let relKey = file.hasPrefix(OmpParser.root)
+                ? String(file.dropFirst(OmpParser.root.count))
+                : fileName
             var firstTs: Int64 = 0
             var lastTs: Int64 = 0
             var sessionModel: String?
@@ -63,10 +85,11 @@ enum OmpParser {
                 // Provider-computed cost (per-request breakdown); OMP billing
                 // runs inside opencode-go plans, so treat it as an estimate.
                 let cost = (usage["cost"] as? [String: Any])?["total"] as? NSNumber
-                // Message ids are unique within a transcript; the filename
-                // carries the session uuid, so the composite id is global.
+                // Message ids are unique within a transcript; the relative
+                // path carries the session uuid, so the composite id is
+                // global even for same-named subagent transcripts.
                 let msgID = obj["id"] as? String ?? "x"
-                let eventID = "omp:\(fileName):\(msgID)"
+                let eventID = "omp:\(relKey):\(msgID)"
                 turns.append(TurnRecord(tool: .omp, sessionID: sessionID, project: project,
                                         model: model, ts: ts,
                                         inputTokens: input, outputTokens: output,

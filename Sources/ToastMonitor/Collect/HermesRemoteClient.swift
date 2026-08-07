@@ -248,6 +248,16 @@ final class HermesRemoteClient: ObservableObject {
         var unknownTools = 0
         var malformedRows = 0
         let totals = Database.shared.sessionTotals() // once per poll
+        // Running baselines within this poll: two rows sharing a delta key
+        // must compute against the previous row's write, not the stale
+        // committed value, or the cumulative delta is inserted twice.
+        var runningHermes: [String: [Int64]] = [:]
+        var runningOpenCode: [String: (tool: String, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = [:]
+        let nowTs = Int64(Date().timeIntervalSince1970)
+        // Feed rows outside this window are rejected (a future-dated row
+        // would poison the monotonic watermark and blind per-turn tools).
+        let tsLower = nowTs - 10 * 366 * 86400
+        let tsUpper = nowTs + 24 * 3600
 
         for row in rows {
             guard let sessionID = row["session_id"] as? String, !sessionID.isEmpty else {
@@ -263,18 +273,23 @@ final class HermesRemoteClient: ObservableObject {
             seenRemoteTools.insert(tool.rawValue)
 
             let lastSeen = Int64((row["last_seen"] as? NSNumber)?.doubleValue ?? 0)
-            guard lastSeen > 0 else {
+            // Normalize units once (feed sometimes carries milliseconds),
+            // then validate the range in SECONDS against now ± skew.
+            let lastSeenS = lastSeen > 1_000_000_000_000 ? lastSeen / 1000 : lastSeen
+            guard lastSeenS >= tsLower && lastSeenS <= tsUpper else {
                 malformedRows += 1
                 continue
             }
             let firstSeen = Int64((row["first_seen"] as? NSNumber)?.doubleValue ?? Double(lastSeen))
             let model = row["model"] as? String
-            let input = (row["input_tokens"] as? NSNumber)?.int64Value ?? 0
-            let output = (row["output_tokens"] as? NSNumber)?.int64Value ?? 0
-            let reasoning = (row["reasoning_tokens"] as? NSNumber)?.int64Value ?? 0
-            let cacheRead = (row["cache_read_tokens"] as? NSNumber)?.int64Value ?? 0
-            let cacheWrite = (row["cache_write_tokens"] as? NSNumber)?.int64Value ?? 0
-            let cost = (row["cost_usd"] as? NSNumber)?.doubleValue ?? 0
+            // All values are clamped to >= 0: negative feed rows would skew
+            // SUM-based aggregates and cost breakdowns.
+            let input = max((row["input_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
+            let output = max((row["output_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
+            let reasoning = max((row["reasoning_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
+            let cacheRead = max((row["cache_read_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
+            let cacheWrite = max((row["cache_write_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
+            let cost = max((row["cost_usd"] as? NSNumber)?.doubleValue ?? 0, 0)
             let title = row["title"] as? String
             let project = row["project"] as? String
 
@@ -284,9 +299,16 @@ final class HermesRemoteClient: ObservableObject {
             var dCacheWrite = cacheWrite
             var dCost = cost
             var costQuality = "estimated"
-            let eventID = row["event_id"] as? String
-                ?? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
-                                         lastSeen: lastSeen, firstSeen: firstSeen)
+            var rawEventID = row["event_id"] as? String ?? ""
+            // Cap upstream event ids: a bloated id would explode the unique
+            // index and the watermark setting on every poll.
+            if rawEventID.count > 512 {
+                rawEventID = String(rawEventID.prefix(512))
+            }
+            let eventID = rawEventID.isEmpty
+                ? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
+                                       lastSeen: lastSeenS, firstSeen: firstSeen)
+                : rawEventID
             let previousCursor = cursor(tool)
             // Watermark guard applies only to per-turn tools. Hermes/OpenCode
             // rows are cumulative baselines: their deltas are idempotent via
@@ -298,8 +320,11 @@ final class HermesRemoteClient: ObservableObject {
             case .hermes, .opencode:
                 break
             default:
-                guard lastSeen > previousCursor.ts
-                        || (lastSeen == previousCursor.ts && eventID > previousCursor.eventID) else { continue }
+                // Use the NORMALIZED second timestamp for the cursor so a
+                // feed mixing ms and s units cannot advance past future
+                // second-unit rows.
+                guard lastSeenS > previousCursor.ts
+                        || (lastSeenS == previousCursor.ts && eventID > previousCursor.eventID) else { continue }
             }
             var isFirstRow = false // 首行 = 该 session 的累计基线 → 归 firstSeen 日期
 
@@ -319,7 +344,8 @@ final class HermesRemoteClient: ObservableObject {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 let key = "hm_d|\(sessionID)|\(model ?? "")|\(provider)|\(baseURL)"
                 let totalIn = input + reasoning
-                let prev = (Database.shared.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
+                let prev = runningHermes[key]
+                    ?? (Database.shared.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
                 isFirstRow = prev.count != 5
                 if prev.count == 5 {
                     dInput = max(totalIn - prev[0], 0)
@@ -327,12 +353,13 @@ final class HermesRemoteClient: ObservableObject {
                     dCacheRead = max(cacheRead - prev[2], 0)
                     dCacheWrite = max(cacheWrite - prev[3], 0)
                 }
+                runningHermes[key] = [totalIn, output, cacheRead, cacheWrite, 0]
                 pendingHermesBaselines.append((key, "\(totalIn),\(output),\(cacheRead),\(cacheWrite),0"))
                 dCost = 0
                 costQuality = "unknown"
             case .opencode:
                 let totalsKey = "opencode|\(sessionID)"
-                let prev = totals[totalsKey]
+                let prev = runningOpenCode[totalsKey] ?? totals[totalsKey]
                 isFirstRow = prev == nil
                 if let prev {
                     dInput = max(input + reasoning - prev.input, 0)
@@ -341,8 +368,9 @@ final class HermesRemoteClient: ObservableObject {
                     dCacheWrite = max(cacheWrite - prev.cacheWrite, 0)
                     dCost = max(cost - prev.cost, 0)
                 }
+                runningOpenCode[totalsKey] = ("opencode", input + reasoning, output, cacheRead, cacheWrite, cost)
                 pendingOpenCodeTotals.append((totalsKey, input + reasoning, output, cacheRead,
-                                              cacheWrite, cost, lastSeen))
+                                              cacheWrite, cost, lastSeenS))
                 costQuality = "actual"
             default:
                 break // per-turn events: insert as-is
@@ -351,9 +379,8 @@ final class HermesRemoteClient: ObservableObject {
             if dInput > 0 || dOutput > 0 || dCacheRead > 0 || dCacheWrite > 0 {
                 // First-seen rows are cumulative baselines: attribute them to
                 // the session's start date, not "now" (spec: 历史累计不得归入今天).
-                var ts = (isFirstRow && firstSeen > 0) ? firstSeen : lastSeen
-                // 毫秒归一: feed timestamps are sometimes milliseconds (opencode).
-                if ts > 1_000_000_000_000 { ts /= 1000 }
+                let firstSeenS = firstSeen > 1_000_000_000_000 ? firstSeen / 1000 : firstSeen
+                let ts = (isFirstRow && firstSeenS > 0) ? firstSeenS : lastSeenS
                 turns.append(TurnRecord(tool: tool, sessionID: sessionID, project: project,
                                         model: model, ts: ts,
                                         inputTokens: dInput, outputTokens: dOutput,
@@ -363,8 +390,8 @@ final class HermesRemoteClient: ObservableObject {
             sessions["\(tool.rawValue)|\(sessionID)"] = SessionInfo(tool: tool, sessionID: sessionID, title: title,
                                                                     project: project, model: model,
                                                                     created: firstSeen > 1_000_000_000_000 ? firstSeen / 1000 : firstSeen,
-                                                                    updated: lastSeen > 1_000_000_000_000 ? lastSeen / 1000 : lastSeen)
-            let candidate = Cursor(ts: lastSeen, eventID: eventID)
+                                                                    updated: lastSeenS)
+            let candidate = Cursor(ts: lastSeenS, eventID: eventID)
             if let previous = pendingWatermarks[tool] {
                 if candidate.ts > previous.ts || (candidate.ts == previous.ts && candidate.eventID > previous.eventID) {
                     pendingWatermarks[tool] = candidate

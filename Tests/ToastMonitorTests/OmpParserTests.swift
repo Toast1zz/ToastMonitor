@@ -22,8 +22,8 @@ final class OmpParserTests: XCTestCase {
         XCTAssertEqual(first.model, "deepseek-v4-flash")
         XCTAssertEqual(first.cost, 0.0027, accuracy: 0.0001)
         XCTAssertEqual(first.costQuality, "estimated")
-        // Session id derives from the transcript filename.
-        XCTAssertEqual(first.sessionID, "omp-sample")
+        // Session id derives from the transcript's session event UUID.
+        XCTAssertEqual(first.sessionID, "019f0000-0000-7000-0000-000000000001")
         XCTAssertEqual(first.project, "Fixtures") // encoded parent dir last component
         // The second turn carries cacheRead separately from input.
         XCTAssertEqual(turns[1].cacheRead, 18816)

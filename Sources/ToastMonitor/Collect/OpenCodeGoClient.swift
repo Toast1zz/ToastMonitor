@@ -34,6 +34,8 @@ final class OpenCodeGoClient: ObservableObject {
     @Published private(set) var configured = false
 
     private let session: URLSession
+    /// Retained: URLSession holds its delegate weakly.
+    private let redirectBlocker = NoRedirectDelegate()
     private var timer: Timer?
     private var started = false
     private var inFlight = false
@@ -43,7 +45,8 @@ final class OpenCodeGoClient: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 40
-        session = URLSession(configuration: cfg)
+        // Credential-bearing request (auth cookie) — never follow redirects.
+        session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
         // Credential lookup may wait for the login/keychain agent. It is
         // loaded asynchronously after the UI has started.
         configured = false
@@ -262,6 +265,10 @@ final class OpenCodeGoClient: ObservableObject {
                 }
                 guard let http = resp as? HTTPURLResponse else {
                     self.state.error = "无 HTTP 响应"
+                    return
+                }
+                if (300..<400).contains(http.statusCode) {
+                    self.state.error = "拒绝重定向 (HTTP \(http.statusCode))"
                     return
                 }
                 // Reject oversized responses from the header before buffering.

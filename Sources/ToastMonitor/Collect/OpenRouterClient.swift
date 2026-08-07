@@ -44,6 +44,8 @@ final class OpenRouterClient: ObservableObject {
     @Published private(set) var hasKey = false
 
     private let session: URLSession
+    /// Retained: URLSession holds its delegate weakly.
+    private let redirectBlocker = NoRedirectDelegate()
     private var timer: Timer?
     private var started = false
     private var refreshGeneration: UInt64 = 0
@@ -72,7 +74,9 @@ final class OpenRouterClient: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
-        session = URLSession(configuration: cfg)
+        // Credential-bearing requests must never be redirected: a downgrade
+        // or cross-host redirect would forward the Bearer token.
+        session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
         // Keychain reads can wait for the login/keychain agent. Never perform
         // one while SwiftUI is constructing the menu bar scene.
         hasKey = false
@@ -309,11 +313,20 @@ final class OpenRouterClient: ObservableObject {
             }
         }
 
+        // Admin endpoints (credits/keys) require a Management key; a regular
+        // sk-or-… key gets 401 on them by design. Detect management status
+        // from the /api/v1/key responses first, and treat 401/403 on the
+        // admin probes as informational — never as a refresh failure.
+        let isManagementKey = results.values.contains { json in
+            (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
+        }
+        if isManagementKey {
         // Account-level credits (works with a regular key).
         group.enter()
         fetch("/api/v1/credits", key: keys[0]) { json, err in
             guard self.refreshGeneration == generation else { group.leave(); return }
-            if let err { failures.append("账户额度: \(err)") }
+            // 401/403 on admin probes are expected for expired/non-admin keys;
+            // they are deliberately NOT recorded as refresh failures.
             if let json, let data = json["data"] as? [String: Any] {
                 let total = (data["total_credits"] as? NSNumber)?.doubleValue
                 let used = (data["total_usage"] as? NSNumber)?.doubleValue
@@ -335,7 +348,6 @@ final class OpenRouterClient: ObservableObject {
         group.enter()
         fetch("/api/v1/keys", key: keys[0]) { json, err in
             guard self.refreshGeneration == generation else { group.leave(); return }
-            if let err, !err.isEmpty { failures.append("管理 key: \(err)") }
             if let json, let data = json["data"] as? [[String: Any]] {
                 self.state.isManagementKey = true
                 self.state.keys = data.compactMap { k in
@@ -354,6 +366,7 @@ final class OpenRouterClient: ObservableObject {
                 self.state.keyCount = keys.count
             }
             group.leave()
+        }
         }
 
         group.notify(queue: .main) { [weak self] in
@@ -428,6 +441,10 @@ final class OpenRouterClient: ObservableObject {
             }
             guard let http = resp as? HTTPURLResponse else {
                 DispatchQueue.main.async { completion(nil, "无 HTTP 响应") }
+                return
+            }
+            if (300..<400).contains(http.statusCode) {
+                DispatchQueue.main.async { completion(nil, "拒绝重定向 (HTTP \(http.statusCode))") }
                 return
             }
             if http.statusCode == 401 {

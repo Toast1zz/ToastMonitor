@@ -46,7 +46,10 @@ final class Database {
     private func openLocked(_ path: String) {
         let fm = FileManager.default
         let dir = (path as NSString).deletingLastPathComponent
-        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        // Create with the private mode up front (attributesForDirectory) so
+        // there is no window where the dir/file is world-readable.
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
         // Usage metadata can reveal project names; keep the store private to
         // the current user even when the directory pre-existed.
         try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
@@ -466,7 +469,16 @@ final class Database {
                 return true
             }
             NSLog("[ToastMonitor] ingestion COMMIT failed")
-            sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+            if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
+                // Both COMMIT and ROLLBACK failed (persistent I/O error): the
+                // connection is stuck in an open transaction. Every later
+                // inTransaction would silently JOIN it and lose its writes,
+                // so poison the connection instead — subsequent operations
+                // fail loudly until the next open().
+                NSLog("[ToastMonitor] ROLLBACK failed too; poisoning connection")
+                sqlite3_close(db)
+                self.db = nil
+            }
         } else {
             NSLog("[ToastMonitor] ingestion transaction rolled back")
             sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
@@ -1114,6 +1126,17 @@ final class Database {
     func upsertSubscription(_ s: Subscription) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return false }
+        // Persistence-layer validation: the UI constrains inputs, but the DB
+        // must not accept values that would crash calendar math or produce
+        // meaningless records (negative price, absurd magnitude, end < start,
+        // unknown cycle).
+        guard s.price.isFinite, s.price >= 0, s.price < 1_000_000,
+              s.startDate > 0,
+              s.endDate == 0 || s.endDate > s.startDate,
+              s.cycle == "monthly" || s.cycle == "yearly" || s.cycle == "weekly",
+              s.startDate < 4_102_444_800 else { // year 2100
+            return false
+        }
         var stmt: OpaquePointer?
         if s.id == 0 {
             // New record: let SQLite assign the id (P0-9).
