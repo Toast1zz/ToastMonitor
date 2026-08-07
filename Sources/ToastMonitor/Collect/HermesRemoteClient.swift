@@ -391,7 +391,11 @@ final class HermesRemoteClient: ObservableObject {
                                                                     project: project, model: model,
                                                                     created: firstSeen > 1_000_000_000_000 ? firstSeen / 1000 : firstSeen,
                                                                     updated: lastSeenS)
-            let candidate = Cursor(ts: lastSeenS, eventID: eventID)
+            // Clamp the cursor to now: a future-dated row (within the +24h
+            // acceptance window) must not advance the watermark past the
+            // present, or it would blind per-turn import until the feed
+            // catches up.
+            let candidate = Cursor(ts: min(lastSeenS, nowTs), eventID: eventID)
             if let previous = pendingWatermarks[tool] {
                 if candidate.ts > previous.ts || (candidate.ts == previous.ts && candidate.eventID > previous.eventID) {
                     pendingWatermarks[tool] = candidate

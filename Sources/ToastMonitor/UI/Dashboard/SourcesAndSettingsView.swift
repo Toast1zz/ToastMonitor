@@ -14,9 +14,6 @@ struct SourcesAndSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("来源与设置")
-                    .font(.title2.weight(.semibold))
-                Spacer()
                 Picker("部分", selection: $section) {
                     ForEach(Section.allCases) { item in
                         Text(item.rawValue).tag(item)

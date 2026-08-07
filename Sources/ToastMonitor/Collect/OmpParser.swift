@@ -47,8 +47,12 @@ enum OmpParser {
             // Session identity comes from the transcript's own `session`
             // event UUID — subagent files named e.g. "UIAudit.jsonl" share a
             // filename stem across top-level sessions, so using the stem
-            // would merge distinct sessions and collide event ids.
-            var sessionID = (fileName as NSString).deletingPathExtension
+            // would merge distinct sessions and collide event ids. The UUID
+            // lives in the file HEADER, which incremental scans never re-read,
+            // so it is persisted in scan_state.context and restored here.
+            var sessionID = prev.context.flatMap { ctxData in
+                (try? JSONSerialization.jsonObject(with: Data(ctxData.utf8))) as? [String: Any]
+            }?["sid"] as? String ?? (fileName as NSString).deletingPathExtension
             for item in objs {
                 if let o = item.obj["type"] as? String, o == "session",
                    let sid = item.obj["id"] as? String, !sid.isEmpty {
@@ -106,7 +110,10 @@ enum OmpParser {
                                             project: project, model: sessionModel,
                                             created: firstTs, updated: lastTs))
             }
-            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity)
+            let ctx = ["sid": sessionID]
+            let ctxJSON = (try? JSONSerialization.data(withJSONObject: ctx))
+                .flatMap { String(data: $0, encoding: .utf8) }
+            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity, context: ctxJSON)
         }
         return (turns, sessions)
     }

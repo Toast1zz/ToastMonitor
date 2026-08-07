@@ -313,104 +313,118 @@ final class OpenRouterClient: ObservableObject {
             }
         }
 
-        // Admin endpoints (credits/keys) require a Management key; a regular
-        // sk-or-… key gets 401 on them by design. Detect management status
-        // from the /api/v1/key responses first, and treat 401/403 on the
-        // admin probes as informational — never as a refresh failure.
-        let isManagementKey = results.values.contains { json in
-            (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
-        }
-        if isManagementKey {
-        // Account-level credits (works with a regular key).
-        group.enter()
-        fetch("/api/v1/credits", key: keys[0]) { json, err in
-            guard self.refreshGeneration == generation else { group.leave(); return }
-            // 401/403 on admin probes are expected for expired/non-admin keys;
-            // they are deliberately NOT recorded as refresh failures.
-            if let json, let data = json["data"] as? [String: Any] {
-                let total = (data["total_credits"] as? NSNumber)?.doubleValue
-                let used = (data["total_usage"] as? NSNumber)?.doubleValue
-                self.state.creditsTotal = total
-                self.state.creditsUsage = used
-                self.state.accountUsage = used
-                // Available balance ≠ purchased credits (P0-7): credits minus
-                // cumulative usage across ALL keys.
-                if let total, let used {
-                    self.state.accountBalance = max(total - used, 0)
-                }
-            } else if err == nil {
-                failures.append("账户额度响应缺少 data")
-            }
-            group.leave()
-        }
-
-        // Management key: enumerate all account keys.
-        group.enter()
-        fetch("/api/v1/keys", key: keys[0]) { json, err in
-            guard self.refreshGeneration == generation else { group.leave(); return }
-            if let json, let data = json["data"] as? [[String: Any]] {
-                self.state.isManagementKey = true
-                self.state.keys = data.compactMap { k in
-                    guard let label = k["label"] as? String else { return nil }
-                    return KeyInfo(
-                        label: label,
-                        usageDaily: (k["usage_daily"] as? NSNumber)?.doubleValue ?? 0,
-                        usageWeekly: (k["usage_weekly"] as? NSNumber)?.doubleValue ?? 0,
-                        usageMonthly: (k["usage_monthly"] as? NSNumber)?.doubleValue ?? 0)
-                }
-                self.state.keyCount = self.state.keys.count
-            } else {
-                if err == nil { failures.append("管理 key 响应缺少 data") }
-                self.state.isManagementKey = false
-                self.state.keys = []
-                self.state.keyCount = keys.count
-            }
-            group.leave()
-        }
-        }
-
+        // Two-phase: the admin endpoints (credits/keys) require a Management
+        // key. Detect management status from the resolved /api/v1/key
+        // responses BEFORE deciding whether to call them; a regular key's
+        // 401 on the probes is informational, never a refresh failure.
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
             guard self.refreshGeneration == generation else { return }
-            self.state.isLoading = false
-            if results.isEmpty {
-                self.state.error = failures.first ?? "查询失败"
-                return
+            let isManagementKey = results.values.contains { json in
+                (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
             }
-            var usage: Double = 0, daily: Double = 0, weekly: Double = 0, monthly: Double = 0
-            var limit: Double?, remaining: Double?, reset: String?
-            var freeTier = false
-            var invalidKeyResponses = 0
-            for (_, json) in results {
-                guard let data = json["data"] as? [String: Any] else {
-                    invalidKeyResponses += 1
-                    continue
+            if isManagementKey {
+                let adminGroup = DispatchGroup()
+                // Account-level credits (works with a regular key).
+                adminGroup.enter()
+                self.fetch("/api/v1/credits", key: keys[0]) { json, err in
+                    guard self.refreshGeneration == generation else { adminGroup.leave(); return }
+                    if let json, let data = json["data"] as? [String: Any] {
+                        let total = (data["total_credits"] as? NSNumber)?.doubleValue
+                        let used = (data["total_usage"] as? NSNumber)?.doubleValue
+                        self.state.creditsTotal = total
+                        self.state.creditsUsage = used
+                        self.state.accountUsage = used
+                        // Available balance ≠ purchased credits (P0-7):
+                        // credits minus cumulative usage across ALL keys.
+                        if let total, let used {
+                            self.state.accountBalance = max(total - used, 0)
+                        }
+                    } else if err == nil {
+                        failures.append("账户额度响应缺少 data")
+                    }
+                    adminGroup.leave()
                 }
-                usage += (data["usage"] as? NSNumber)?.doubleValue ?? 0
-                daily += (data["usage_daily"] as? NSNumber)?.doubleValue ?? 0
-                weekly += (data["usage_weekly"] as? NSNumber)?.doubleValue ?? 0
-                monthly += (data["usage_monthly"] as? NSNumber)?.doubleValue ?? 0
-                if let v = data["limit"] as? NSNumber { limit = v.doubleValue }
-                if let v = data["limit_remaining"] as? NSNumber { remaining = v.doubleValue }
-                if let r = data["limit_reset"] as? String { reset = r }
-                if (data["is_free_tier"] as? NSNumber)?.boolValue == true { freeTier = true }
+
+                // Management key: enumerate all account keys.
+                adminGroup.enter()
+                self.fetch("/api/v1/keys", key: keys[0]) { json, err in
+                    guard self.refreshGeneration == generation else { adminGroup.leave(); return }
+                    if let json, let data = json["data"] as? [[String: Any]] {
+                        self.state.isManagementKey = true
+                        self.state.keys = data.compactMap { k in
+                            guard let label = k["label"] as? String else { return nil }
+                            return KeyInfo(
+                                label: label,
+                                usageDaily: (k["usage_daily"] as? NSNumber)?.doubleValue ?? 0,
+                                usageWeekly: (k["usage_weekly"] as? NSNumber)?.doubleValue ?? 0,
+                                usageMonthly: (k["usage_monthly"] as? NSNumber)?.doubleValue ?? 0)
+                        }
+                        self.state.keyCount = self.state.keys.count
+                    } else {
+                        if err == nil { failures.append("管理 key 响应缺少 data") }
+                        self.state.isManagementKey = false
+                        self.state.keys = []
+                        self.state.keyCount = keys.count
+                    }
+                    adminGroup.leave()
+                }
+
+                adminGroup.notify(queue: .main) { [weak self] in
+                    guard let self else { return }
+                    guard self.refreshGeneration == generation else { return }
+                    self.finishRefresh(results: results, failures: failures)
+                }
+            } else {
+                self.finishRefresh(results: results, failures: failures)
             }
-            if invalidKeyResponses > 0 {
-                failures.append("\(invalidKeyResponses) 个 key 响应无用量数据")
-            }
-            self.state.usage = usage
-            self.state.usageDaily = daily
-            self.state.usageWeekly = weekly
-            self.state.usageMonthly = monthly
-            self.state.limit = limit
-            self.state.limitRemaining = remaining
-            self.state.limitReset = reset
-            self.state.isFreeTier = freeTier
-            // accountUsage/accountBalance already set by the credits call.
-            self.state.lastOK = Int64(Date().timeIntervalSince1970)
-            self.state.error = failures.isEmpty ? nil : "部分数据获取失败：\(failures.prefix(2).joined(separator: "；"))"
-            self.persist()
         }
+    }
+
+    /// Aggregates the /api/v1/key results into state (admin fields were
+    /// already populated by the credits/keys calls, if any).
+    private func finishRefresh(results: [String: [String: Any]], failures: [String]) {
+        state.isLoading = false
+        if results.isEmpty {
+            state.error = failures.first ?? "查询失败"
+            return
+        }
+        var usage: Double = 0, daily: Double = 0, weekly: Double = 0, monthly: Double = 0
+        var limit: Double?, remaining: Double?, reset: String?
+        var freeTier = false
+        var invalidKeyResponses = 0
+        for (_, json) in results {
+            guard let data = json["data"] as? [String: Any] else {
+                invalidKeyResponses += 1
+                continue
+            }
+            usage += (data["usage"] as? NSNumber)?.doubleValue ?? 0
+            daily += (data["usage_daily"] as? NSNumber)?.doubleValue ?? 0
+            weekly += (data["usage_weekly"] as? NSNumber)?.doubleValue ?? 0
+            monthly += (data["usage_monthly"] as? NSNumber)?.doubleValue ?? 0
+            if let v = data["limit"] as? NSNumber { limit = v.doubleValue }
+            if let v = data["limit_remaining"] as? NSNumber { remaining = v.doubleValue }
+            if let r = data["limit_reset"] as? String { reset = r }
+            if (data["is_free_tier"] as? NSNumber)?.boolValue == true { freeTier = true }
+        }
+        if invalidKeyResponses > 0 {
+            var f = failures
+            f.append("\(invalidKeyResponses) 个 key 响应无用量数据")
+            state.error = f.isEmpty ? nil : "部分数据获取失败：\(f.prefix(2).joined(separator: "；"))"
+        } else {
+            state.error = failures.isEmpty ? nil : "部分数据获取失败：\(failures.prefix(2).joined(separator: "；"))"
+        }
+        state.usage = usage
+        state.usageDaily = daily
+        state.usageWeekly = weekly
+        state.usageMonthly = monthly
+        state.limit = limit
+        state.limitRemaining = remaining
+        state.limitReset = reset
+        state.isFreeTier = freeTier
+        // accountUsage/accountBalance already set by the credits call.
+        state.lastOK = Int64(Date().timeIntervalSince1970)
+        persist()
     }
 
     private func persist() {

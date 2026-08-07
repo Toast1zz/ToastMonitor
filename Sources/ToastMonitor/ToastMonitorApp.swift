@@ -185,8 +185,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Headless UI verification: render the popover root to a PNG.
         // Usage: ToastMonitor --render-popover /tmp/popover.png [height]
         if let flag = args.firstIndex(of: "--render-popover") {
+            guard flag + 1 < args.count else { print("--render-popover 缺少输出路径"); exit(1) }
             let outPath = args[flag + 1]
             let height = (flag + 2 < args.count) ? (Double(args[flag + 2]) ?? 620) : 620
+            guard height.isFinite, height > 0 else { print("--render-popover 高度无效"); exit(1) }
             Database.shared.open()
             ensureDefaultSubscriptions()
             AppState.shared.start()
@@ -205,9 +207,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // window or Keychain access (OpenRouter/Go clients are not started).
         // Usage: ToastMonitor --render-dashboard /tmp/dash.png
         if let flag = args.firstIndex(of: "--render-dashboard") {
+            guard flag + 1 < args.count else { print("--render-dashboard 缺少输出路径"); exit(1) }
             let outPath = args[flag + 1]
             let height = (flag + 2 < args.count) ? (Double(args[flag + 2]) ?? 720) : 720
             let width = (flag + 3 < args.count) ? (Double(args[flag + 3]) ?? 1120) : 1120
+            guard height.isFinite, height > 0, width.isFinite, width > 0 else { print("--render-dashboard 尺寸无效"); exit(1) }
             let tabName = flag + 4 < args.count ? args[flag + 4] : "overview"
             let tab: DashboardView.Tab? = {
                 switch tabName {

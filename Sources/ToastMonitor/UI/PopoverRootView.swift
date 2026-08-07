@@ -56,16 +56,16 @@ struct PopoverRootView: View {
         let title: String
         let symbol: String
         if broken > 0 {
-            title = "\(broken) 个异常"
+            title = "\(broken) 个来源异常"
             symbol = "exclamationmark.triangle.fill"
         } else if stale > 0 {
-            title = "\(stale) 个过期"
+            title = "\(stale) 个来源过期"
             symbol = "clock.badge.exclamationmark"
         } else if app.lastScan > 0 {
-            title = "已同步"
+            title = "数据已同步"
             symbol = "checkmark.circle.fill"
         } else {
-            title = "等待同步"
+            title = "等待首次扫描"
             symbol = "circle.dashed"
         }
         return TMStatusLabel(text: title, color: color, symbol: symbol)

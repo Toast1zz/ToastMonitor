@@ -70,12 +70,21 @@ struct SourcesView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: CollectorEngine.didCollect)) { _ in
             // A scan cycle completed. Only react when a test is in flight;
-            // success invalidates the pending 10s timeout.
+            // success invalidates the pending 10s timeout. The result
+            // reflects the actual source health, so the failure path is
+            // reachable (any source in error/stale state).
             guard testing else { return }
             testGeneration += 1
             testing = false
-            testOK = true
-            testResult = "扫描完成"
+            let broken = health.sources.filter { $0.error != nil }.count
+            let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
+            if broken > 0 || stale > 0 {
+                testOK = false
+                testResult = "\(broken) 个来源异常，\(stale) 个过期"
+            } else {
+                testOK = true
+                testResult = "扫描完成"
+            }
         }
     }
 
