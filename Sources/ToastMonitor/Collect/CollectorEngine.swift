@@ -16,11 +16,12 @@ final class CollectorEngine {
 
     /// Coalescing: at most one scan per 2s.
     private var lastScanStart: CFAbsoluteTime = 0
-    /// Foreground (popover/dashboard visible) scans every 1s; background 3s.
+    /// Foreground (popover/dashboard visible) scans every 1s; background is
+    /// fully stopped — no source refreshes while nothing is on screen.
     private var foreground = false
 
     private init() {
-        for name in [PanelController.visibilityNotification, WindowManager.visibilityNotification] {
+        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let self else { return }
                 let visible = (note.object as? Bool) ?? false
@@ -53,8 +54,11 @@ final class CollectorEngine {
     }
 
     private func installTimer() {
+        timer?.cancel()
+        timer = nil
+        guard foreground else { return } // background: no polling at all
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 3, repeating: 3)
+        t.schedule(deadline: .now() + 1, repeating: 1)
         t.setEventHandler { [weak self] in self?.runScan() }
         t.resume()
         timer = t

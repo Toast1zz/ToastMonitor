@@ -28,6 +28,9 @@ final class AppState: ObservableObject {
     @Published var costMonth = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var costAll = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var isRefreshing: Bool = false
+    /// True only while a USER-initiated refresh is in flight — the toolbar
+    /// spinner reacts to this, never to automatic refreshes.
+    @Published var manualRefreshing: Bool = false
     @Published var modelAggs: [Database.ModelAgg] = []
     @Published var modelAggsToday: [Database.ModelAgg] = []
     @Published var modelAggsMonth: [Database.ModelAgg] = []
@@ -48,7 +51,7 @@ final class AppState: ObservableObject {
     private var foreground = false
 
     private init() {
-        for name in [PanelController.visibilityNotification, WindowManager.visibilityNotification] {
+        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let self else { return }
                 let visible = (note.object as? Bool) ?? false
@@ -100,10 +103,13 @@ final class AppState: ObservableObject {
     }
 
     /// Coalesced: at most one background snapshot in flight.
-    func refresh() {
+    /// `manual` marks user-initiated refreshes (toolbar button) so the
+    /// spinner shows only for those.
+    func refresh(manual: Bool = false) {
         guard !refreshInFlight else { return }
         refreshInFlight = true
         isRefreshing = true
+        if manual { manualRefreshing = true }
         UsageQueryService.shared.loadSnapshot { [weak self] snap in
             guard let self else { return }
             self.today = snap.today
@@ -140,6 +146,7 @@ final class AppState: ObservableObject {
             self.snapshotFetchedAt = snap.fetchedAt
             self.refreshInFlight = false
             self.isRefreshing = false
+            self.manualRefreshing = false
         }
     }
 }

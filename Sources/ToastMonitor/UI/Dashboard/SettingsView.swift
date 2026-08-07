@@ -194,6 +194,9 @@ struct SubscriptionSettingsSection: View {
     @ObservedObject private var app = AppState.shared
     @State private var showForm = false
     @State private var editing: Database.Subscription?
+    /// The row id captured at edit time; saving uses this instead of
+    /// re-deriving it from `editing` so an edit can never fall back to id 0.
+    @State private var editID: Int64 = 0
     @State private var name = ""
     @State private var plan = ""
     @State private var startDate = Date()
@@ -213,6 +216,7 @@ struct SubscriptionSettingsSection: View {
                 Spacer()
                 Button {
                     editing = nil
+                    editID = 0
                     name = ""
                     plan = ""
                     startDate = Date()
@@ -228,6 +232,7 @@ struct SubscriptionSettingsSection: View {
                 .disabled(showForm)
                 Button {
                     editing = nil
+                    editID = 0
                     name = "OpenCode Go"
                     plan = "go"
                     startDate = Date()
@@ -280,6 +285,7 @@ struct SubscriptionSettingsSection: View {
                         Spacer()
                         Button("编辑") {
                             editing = sub
+                            editID = sub.id
                             name = sub.name
                             plan = sub.plan
                             startDate = Date(timeIntervalSince1970: TimeInterval(sub.startDate))
@@ -356,7 +362,7 @@ struct SubscriptionSettingsSection: View {
                             }
                             priceError = false
                             var sub = Database.Subscription(
-                                id: editing?.id ?? 0,
+                                id: editID > 0 ? editID : (editing?.id ?? 0),
                                 name: name.trimmingCharacters(in: .whitespaces),
                                 plan: plan,
                                 startDate: Int64(startDate.timeIntervalSince1970),

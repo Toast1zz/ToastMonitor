@@ -30,7 +30,41 @@ final class HermesRemoteClient: ObservableObject {
     private var inFlight = false
     private var started = false
 
-    private init() {}
+    private init() {
+        observeForeground()
+    }
+
+    private var popoverVisible = false
+    private var dashboardVisible = false
+    private var foreground = false
+
+    private func updateForeground() {
+        let fg = popoverVisible || dashboardVisible
+        guard fg != foreground else { return }
+        foreground = fg
+        if fg {
+            startTimer()
+            queue.async { [weak self] in self?.poll() }
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    private func observeForeground() {
+        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self else { return }
+                let visible = (note.object as? Bool) ?? false
+                if name == TMNotifications.popoverVisibility {
+                    self.popoverVisible = visible
+                } else {
+                    self.dashboardVisible = visible
+                }
+                self.updateForeground()
+            }
+        }
+    }
 
     /// Remote ingestion is opt-in. A local Mac installation therefore stays
     /// fully usable without a Tailscale/VPS connection.
@@ -54,9 +88,11 @@ final class HermesRemoteClient: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        if remoteSourcesEnabled {
-            queue.async { [weak self] in self?.poll() } // never blocks main
-        }
+        updateForeground()
+    }
+
+    private func startTimer() {
+        timer?.invalidate()
         let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.queue.async { self.poll() }

@@ -35,6 +35,7 @@ final class OpenCodeGoClient: ObservableObject {
 
     private let session: URLSession
     private var timer: Timer?
+    private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
 
@@ -46,6 +47,7 @@ final class OpenCodeGoClient: ObservableObject {
         // Credential lookup may wait for the login/keychain agent. It is
         // loaded asynchronously after the UI has started.
         configured = false
+        observeForeground()
     }
 
     /// Credentials live in the Keychain (P0-5); legacy SQLite values are
@@ -138,12 +140,53 @@ final class OpenCodeGoClient: ObservableObject {
     }
 
     func start() {
-        refresh()
+        guard !started else { return }
+        started = true
+        refresh() // one initial snapshot
+        updateForeground()
+    }
+
+    private func startTimer() {
+        timer?.invalidate()
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             self?.refresh()
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    private func refreshNow() { refresh() }
+
+    private var popoverVisible = false
+    private var dashboardVisible = false
+    private var foreground = false
+
+    private func updateForeground() {
+        let fg = popoverVisible || dashboardVisible
+        guard fg != foreground else { return }
+        foreground = fg
+        if fg {
+            startTimer()
+            refreshNow()
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    private func observeForeground() {
+        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self else { return }
+                let visible = (note.object as? Bool) ?? false
+                if name == TMNotifications.popoverVisibility {
+                    self.popoverVisible = visible
+                } else {
+                    self.dashboardVisible = visible
+                }
+                self.updateForeground()
+            }
+        }
     }
 
     func refresh() {

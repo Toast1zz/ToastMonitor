@@ -304,26 +304,18 @@ struct PopoverHomeView: View {
         return "成本暂无覆盖"
     }
 
-    /// 来源分段条 + 每来源一行。悬停条上某段时，条上方显示该来源占比
-    /// （popover 内系统 tooltip 不可靠，用 onHover + 文字行）。
-    @State private var hoveredSource: (name: String, pct: Int)?
+    /// 来源分段条 + 每来源一行（行尾直接显示占比，无隐式交互）。
     private var sourceBar: some View {
         let rows = sortedRows
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             if rows.isEmpty {
                 Text("暂无来源数据")
                     .font(.caption)
                     .foregroundStyle(TMDesign.quiet)
             } else {
-                Text(hoveredSource.map { "\($0.name) 占 \($0.pct)%" } ?? " ")
-                    .font(.caption2)
-                    .foregroundStyle(TMDesign.quiet)
-                    .frame(height: 13, alignment: .leading)
-                    .animation(.easeOut(duration: 0.1), value: hoveredSource?.name)
-
                 GeometryReader { geo in
                     HStack(spacing: 0) {
                         ForEach(rows, id: \.tool) { row in
@@ -332,12 +324,6 @@ struct PopoverHomeView: View {
                             Rectangle()
                                 .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
                                 .frame(width: geo.size.width * ratio)
-                                .contentShape(Rectangle())
-                                .onHover { hovering in
-                                    hoveredSource = hovering
-                                        ? (ToolKind(rawValue: row.tool)?.displayName ?? row.tool, Int(ratio * 100))
-                                        : nil
-                                }
                         }
                     }
                 }
@@ -355,10 +341,22 @@ struct PopoverHomeView: View {
                         Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(TMDesign.quiet)
+                        // 百分比右对齐，宽度按最长条目（"100.0%"）预留，保证逐行对齐。
+                        Text(percentText(row, total: total))
+                            .font(.caption.monospacedDigit())
+                            .monospacedDigit()
+                            .foregroundStyle(TMDesign.quiet)
+                            .frame(width: 46, alignment: .trailing)
                     }
                 }
             }
         }
+    }
+
+    private func percentText(_ row: Database.ToolTotals, total: Int64) -> String {
+        let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
+        let ratio = total > 0 ? Double(value) / Double(total) : 0
+        return String(format: "%.1f%%", ratio * 100)
     }
 
     private var sortedRows: [Database.ToolTotals] {

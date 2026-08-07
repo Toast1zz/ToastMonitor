@@ -100,15 +100,15 @@ struct DashboardView: View {
             ToolbarItemGroup(placement: .automatic) {
                 statusToolbar
                 Button {
-                    app.refresh()
+                    app.refresh(manual: true)
                     CollectorEngine.shared.scheduleScan()
                     OpenRouterClient.shared.refresh()
                     OpenCodeGoClient.shared.refresh()
                 } label: {
-                    Image(systemName: app.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    Image(systemName: app.manualRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
                 }
-                .symbolEffect(.pulse, isActive: app.isRefreshing)
-                .disabled(app.isRefreshing)
+                .symbolEffect(.pulse, isActive: app.manualRefreshing)
+                .disabled(app.manualRefreshing)
                 .help("刷新数据")
             }
         }

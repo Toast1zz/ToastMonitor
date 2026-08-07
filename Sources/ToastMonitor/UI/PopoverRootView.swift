@@ -36,7 +36,7 @@ struct PopoverRootView: View {
             Spacer()
             status
             Button(action: refresh) {
-                if app.isRefreshing {
+                if app.manualRefreshing {
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: 12, height: 12)
@@ -45,7 +45,7 @@ struct PopoverRootView: View {
                 }
             }
             .buttonStyle(.borderless)
-            .disabled(app.isRefreshing)
+            .disabled(app.manualRefreshing)
             .help("刷新数据")
             .accessibilityLabel("刷新数据")
         }
@@ -107,7 +107,7 @@ struct PopoverRootView: View {
     }
 
     private func refresh() {
-        app.refresh()
+        app.refresh(manual: true)
         CollectorEngine.shared.scheduleScan()
         OpenRouterClient.shared.refresh()
         OpenCodeGoClient.shared.refresh()
