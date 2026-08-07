@@ -339,16 +339,14 @@ struct PopoverHomeView: View {
                             .frame(width: 6, height: 6)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
                             .font(.caption.weight(.medium))
+                        Text("(\(percentText(row, total: total)))")
+                            .font(.caption.monospacedDigit())
+                            .monospacedDigit()
+                            .foregroundStyle(TMDesign.quiet)
                         Spacer()
                         Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(TMDesign.quiet)
-                        // 百分比右对齐，宽度按最长条目（"100.0%"）预留，保证逐行对齐。
-                        Text(percentText(row, total: total))
-                            .font(.caption.monospacedDigit())
-                            .monospacedDigit()
-                            .foregroundStyle(TMDesign.quiet)
-                            .frame(width: 46, alignment: .trailing)
                     }
                 }
             }
