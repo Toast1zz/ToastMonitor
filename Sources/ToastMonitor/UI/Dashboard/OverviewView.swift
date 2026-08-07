@@ -168,7 +168,7 @@ struct OverviewView: View {
             }
             HStack {
                 if let h = hoveredDay {
-                    Text("\(Format.day(h.key)) · \(Format.compact(h.tokens)) tokens"
+                    Text("\(dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
                          + (h.cost > 0 ? " · \(Format.money(h.cost))" : ""))
                         .font(.system(size: TMType.caption, weight: .medium))
                         .monospacedDigit()
@@ -246,16 +246,35 @@ struct OverviewView: View {
         return weeks
     }
 
+    /// Heatmap keys are yyyymmdd integers, NOT unix timestamps. Formatting
+    /// them via Format.day (which treats input as seconds since 1970) would
+    /// show dates in 1970.
+    private func dayKeyString(_ key: Int64) -> String {
+        let y = Int(key) / 10_000
+        let m = (Int(key) / 100) % 100
+        let d = Int(key) % 100
+        return String(format: "%04d-%02d-%02d", y, m, d)
+    }
+
     /// First week whose Monday falls in a new month gets that month's label.
+    /// January also carries the (2-digit) year so the year boundary is
+    /// visible in a 53-week span.
     private var monthLabels: [(index: Int, label: String)] {
         var out: [(Int, String)] = []
         var lastMonth = -1
+        var lastYear = -1
         for (wi, week) in heatmapWeeks.enumerated() {
             guard let first = week.compactMap({ $0 }).first else { continue }
+            let year = Int(first) / 10_000
             let month = (Int(first) / 100) % 100
-            if month != lastMonth {
-                out.append((wi, "\(month)月"))
+            if month != lastMonth || year != lastYear {
+                if month == 1 {
+                    out.append((wi, "\(year % 100)年1月"))
+                } else {
+                    out.append((wi, "\(month)月"))
+                }
                 lastMonth = month
+                lastYear = year
             }
         }
         return out
