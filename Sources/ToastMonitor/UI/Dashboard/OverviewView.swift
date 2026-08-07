@@ -7,9 +7,12 @@ struct OverviewView: View {
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
     @State private var hoveredDay: (key: Int64, tokens: Int64, cost: Double)?
-    @State private var distPeriod: DistPeriod = .week
+    @State private var period: Period = .today
 
-    enum DistPeriod: String, CaseIterable, Identifiable {
+    /// Page-wide period: hero totals and the distribution section follow it.
+    /// The heatmap (one year) and the gauge (today vs daily average) are
+    /// deliberately independent — they answer different questions.
+    enum Period: String, CaseIterable, Identifiable {
         case today = "今日"
         case week = "近 7 天"
         case month = "近 30 天"
@@ -43,7 +46,54 @@ struct OverviewView: View {
     }
 
     private var intro: some View {
-        TMPageHeader("概览")
+        HStack(alignment: .center, spacing: 12) {
+            Text("概览")
+                .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
+            Spacer()
+            Picker("周期", selection: $period) {
+                ForEach(Period.allCases) { p in
+                    Text(p.rawValue).tag(p)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .controlSize(.small)
+        }
+        .padding(.top, 22)
+        .padding(.bottom, 14)
+    }
+
+    private var periodTitle: String {
+        switch period {
+        case .today: return "今日用量"
+        case .week: return "近 7 天用量"
+        case .month: return "近 30 天用量"
+        }
+    }
+
+    private var periodTokens: Int64 {
+        switch period {
+        case .today: return app.todayTokens
+        case .week: return app.weekTokens
+        case .month: return app.monthTokens
+        }
+    }
+
+    private var periodCalls: Int64 {
+        switch period {
+        case .today: return app.today.count
+        case .week: return app.week.count
+        case .month: return app.month.count
+        }
+    }
+
+    private var periodCost: UsageQueryService.CostQuality {
+        switch period {
+        case .today: return app.costToday
+        case .week: return app.costWeek
+        case .month: return app.costMonth
+        }
     }
 
     // MARK: - Hero: today's usage + capacity ring
@@ -51,10 +101,10 @@ struct OverviewView: View {
     private var heroSection: some View {
         HStack(alignment: .center, spacing: 36) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("今日用量")
+                Text(periodTitle)
                     .font(.system(size: TMType.section, weight: .semibold))
                     .foregroundStyle(TMDesign.quiet)
-                Text(Format.compact(app.todayTokens))
+                Text(Format.compact(periodTokens))
                     .font(.system(size: TMType.hero, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -62,10 +112,9 @@ struct OverviewView: View {
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.faint)
                 HStack(spacing: 22) {
-                    heroMini("本周", Format.compact(app.weekTokens), unit: "tokens")
-                    heroMini("本月", Format.compact(app.monthTokens), unit: "tokens")
-                    heroMini("已确认支出", Format.money(app.costToday.actual))
-                    heroMini("估算", Format.money(app.costToday.estimated))
+                    heroMini("调用", Format.count(periodCalls))
+                    heroMini("已确认支出", Format.money(periodCost.actual))
+                    heroMini("估算", Format.money(periodCost.estimated))
                 }
                 .padding(.top, 4)
             }
@@ -106,7 +155,7 @@ struct OverviewView: View {
                 Text(caption)
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                Text("vs 近 30 天日均")
+                Text("今日 · vs 近 30 天日均")
                     .font(.system(size: TMType.micro))
                     .foregroundStyle(TMDesign.faint)
             }
@@ -284,27 +333,15 @@ struct OverviewView: View {
 
     private var rankings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                TMSectionHeader("来源分布")
-                Spacer()
-                Picker("周期", selection: $distPeriod) {
-                    ForEach(DistPeriod.allCases) { p in
-                        Text(p.rawValue).tag(p)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .controlSize(.small)
-            }
+            TMSectionHeader("来源分布")
             HStack(alignment: .top, spacing: 32) {
-                rankingColumn(title: "模型", rows: modelRows(distPeriod))
-                rankingColumn(title: "工具", rows: toolRows(distPeriod))
+                rankingColumn(title: "模型", rows: modelRows(period))
+                rankingColumn(title: "工具", rows: toolRows(period))
             }
         }
     }
 
-    private func modelRows(_ period: DistPeriod) -> [(String, Int64, Double, Color)] {
+    private func modelRows(_ period: Period) -> [(String, Int64, Double, Color)] {
         let aggs: [Database.ModelAgg]
         switch period {
         case .today: aggs = app.modelAggsToday
@@ -320,7 +357,7 @@ struct OverviewView: View {
         }
     }
 
-    private func toolRows(_ period: DistPeriod) -> [(String, Int64, Double, Color)] {
+    private func toolRows(_ period: Period) -> [(String, Int64, Double, Color)] {
         let rows: [Database.ToolTotals]
         switch period {
         case .today: rows = app.byToolToday
