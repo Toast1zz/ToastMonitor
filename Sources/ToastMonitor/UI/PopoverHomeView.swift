@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
 /// how much was used, where it came from, and whether a limit needs attention.
@@ -365,56 +366,56 @@ struct PopoverHomeView: View {
         }
     }
 
+    // MARK: - 额度状态（实时账户快照，与所选周期无关）
+
+    /// Quota/balance is a live account snapshot — it only changes as time
+    /// passes, never with the selected period. Showing it inside the period
+    /// switcher implied it varied per dimension, so it now lives in its own
+    /// fixed section below the period content, labelled as such.
     private var quotaSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TMSectionHeader("计划与余额")
-            goQuota
-            Divider()
-            if let sub = app.subscriptions.first(where: { $0.plan == "codex" }) {
-                codexRow(sub)
-                Divider()
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("额度状态")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("实时 · 与周期无关")
+                    .font(.system(size: TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
             }
-            routerQuota
+            goStatusRow
+            codexStatusRow
+            routerStatusRow
         }
     }
 
-    /// Codex Plus：固定月费订阅 + 官方周限额（wham/usage API）。与 OCG
-    /// 同构：名称行 → 进度条 → 明细行（月成本 + 重置）。
-    private func codexRow(_ sub: Database.Subscription) -> some View {
-        let state = codexQuota.state
-        let pct = Double(state.primaryPct ?? 0)
-        let hasQuota = state.primaryPct != nil
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Text("Codex Plus")
-                    .font(.headline.weight(.semibold))
-                Spacer()
-                if hasQuota {
-                    let remaining = 100 - Int(pct)
-                    Text("周限额剩余 \(remaining)%")
-                        .font(.subheadline.monospacedDigit().weight(.medium))
-                        .foregroundStyle(remaining < 20 ? .red : (remaining < 40 ? .orange : .green))
-                } else if state.error != nil {
-                    Text("限额读取失败")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .help(state.error ?? "")
+    private func remainingColor(_ remaining: Double?) -> Color {
+        guard let remaining else { return TMDesign.quiet }
+        if remaining < 20 { return .red }
+        if remaining < 40 { return .orange }
+        return .green
+    }
+
+    private func resetText(_ at: Int64?) -> String? {
+        guard let at, at > Int64(now.timeIntervalSince1970) else { return nil }
+        return "\(Format.remaining(at - Int64(now.timeIntervalSince1970))) 后重置"
+    }
+
+    private var goStatusRow: some View {
+        let state = goClient.state
+        let remaining = state.monthlyPct.map { 100 - $0 }
+        var status = "未配置"
+        if goClient.configured {
+            if let remaining {
+                status = "剩余 \(Int(remaining))%"
+                if let r = resetText(state.monthlyReset.map { state.lastSync + $0 }) {
+                    status += " · \(r)"
                 }
-            }
-            if hasQuota {
-                let remaining = 100 - Int(pct)
-                TMProgressBar(value: Double(remaining) / 100, tint: remaining < 20 ? .red : (remaining < 40 ? .orange : .green), height: 4)
-                HStack {
-                    Text("\(Format.money(sub.price))/月 固定订阅")
-                    Spacer()
-                    if let reset = state.resetAt {
-                        Text("\(Format.remaining(reset - Int64(now.timeIntervalSince1970))) 后重置")
-                    }
-                }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(TMDesign.quiet)
+            } else {
+                status = state.error != nil ? "读取失败" : "同步中"
             }
         }
+        return statusRow(icon: "g.circle.fill", color: .orange,
+                         name: "OpenCode Go", status: status,
+                         statusColor: remainingColor(remaining))
     }
 
     /// 窗口标签由 limit_window_seconds 决定：604800 = 每周（Plus 现状）。
@@ -426,64 +427,66 @@ struct PopoverHomeView: View {
         return "限额"
     }
 
-    private var goQuota: some View {
-        let state = goClient.state
-        let goSub = app.subscriptions.first { $0.plan == "go" }
-        let goPrice = goSub?.price ?? OpenCodeGoClient.monthlyPriceUSD
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("OpenCode Go")
-                        .font(.headline.weight(.semibold))
-                    if !goClient.configured {
-                        Text("尚未配置")
-                            .font(.caption2)
-                            .foregroundStyle(TMDesign.quiet)
-                    }
-                }
-                Spacer()
-                if let pct = state.monthlyPct {
-                    let remaining = Int(100 - pct)
-                    Text("月限额剩余 \(remaining)%")
-                        .font(.subheadline.monospacedDigit().weight(.medium))
-                        .foregroundStyle(remaining < 20 ? .red : (remaining < 40 ? .orange : .green))
-                }
+    private var codexStatusRow: some View {
+        let state = codexQuota.state
+        let remaining = state.primaryPct.map { 100 - Double($0) }
+        let sub = app.subscriptions.first { $0.plan == "codex" }
+        var status = "未订阅"
+        if state.primaryPct != nil, let remaining {
+            status = "\(windowLabel)剩余 \(Int(remaining))%"
+            if let r = resetText(state.resetAt) {
+                status += " · \(r)"
             }
-            if let pct = state.monthlyPct {
-                let remaining = Int(100 - pct)
-                TMProgressBar(value: Double(remaining) / 100, tint: remaining < 20 ? .red : (remaining < 40 ? .orange : .green), height: 4)
-                HStack {
-                    Text("\(Format.money(goPrice))/月 · 已用 \(Format.money(pct / 100 * OpenCodeGoClient.monthlyLimitUSD))/\(Format.money(OpenCodeGoClient.monthlyLimitUSD))")
-                    Spacer()
-                    if let reset = state.monthlyReset, state.lastSync > 0 {
-                        Text("\(Format.remaining(state.lastSync + reset - Int64(now.timeIntervalSince1970))) 后重置")
-                    }
-                }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(TMDesign.quiet)
-            }
+        } else if state.error != nil {
+            status = "限额读取失败"
+        } else if let sub {
+            status = "已订阅 \(Format.money(sub.price))/月"
         }
+        return statusRow(icon: "chevron.left.forwardslash.chevron.right", color: ToolKind.codex.color,
+                         name: "Codex Plus", status: status,
+                         statusColor: state.primaryPct != nil ? remainingColor(remaining) : TMDesign.quiet)
     }
 
-    private var routerQuota: some View {
+    private var routerStatusRow: some View {
         let state = orClient.state
-        return HStack(spacing: 9) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("OpenRouter")
-                    .font(.headline.weight(.semibold))
-                Text(orClient.hasKey ? "本月实际使用" : "尚未配置 API key")
-                    .font(.caption2)
-                    .foregroundStyle(TMDesign.quiet)
-            }
-            Spacer()
-            if orClient.hasKey {
-                Text(Format.money(state.usageMonthly))
-                    .font(.subheadline.monospacedDigit().weight(.medium))
-            } else {
-                Text("—")
+        let status = orClient.hasKey
+            ? "余额 \(Format.money(state.accountBalance ?? 0))"
+            : "未配置"
+        return statusRow(icon: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color,
+                         name: "OpenRouter", status: status,
+                         statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
+    }
+
+    private func statusRow(icon: String, color: Color, name: String,
+                           status: String, statusColor: Color) -> some View {
+        Button(action: openPlans) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(color)
+                    .frame(width: 18)
+                Text(name)
+                    .font(.system(size: TMType.body, weight: .medium))
+                Spacer()
+                Text(status)
+                    .font(.system(size: TMType.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(TMDesign.faint)
             }
+            .contentShape(Rectangle())
+            .padding(.vertical, 2)
         }
+        .buttonStyle(.plain)
+        .help("打开计划与余额")
+    }
+
+    private func openPlans() {
+        WindowManager.shared.show(tab: .plans)
+        NSApp.keyWindow?.close()
     }
 
     /// Post a measured height slice straight to the panel controller.

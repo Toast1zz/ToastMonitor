@@ -138,6 +138,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("diagnostics export failed")
             exit(1)
         }
+        // Headless UI verification: render the popover root to a PNG.
+        // Usage: ToastMonitor --render-popover /tmp/popover.png [height]
+        if let flag = args.firstIndex(of: "--render-popover") {
+            let outPath = args[flag + 1]
+            let height = (flag + 2 < args.count) ? (Double(args[flag + 2]) ?? 620) : 620
+            Database.shared.open()
+            ensureDefaultSubscriptions()
+            AppState.shared.start()
+            let deadline = Date().addingTimeInterval(10)
+            while AppState.shared.snapshotFetchedAt == 0 && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            // Opaque backdrop: off-screen cacheDisplay skips drawing for
+            // transparent views (the real panel draws on NSVisualEffectView).
+            renderSnapshot(PopoverRootView().background(Color(nsColor: .windowBackgroundColor)),
+                           to: outPath, height: height, width: 400)
+            exit(0)
+        }
         // Headless UI verification: render the dashboard to a PNG without a
         // window or Keychain access (OpenRouter/Go clients are not started).
         // Usage: ToastMonitor --render-dashboard /tmp/dash.png
@@ -189,6 +208,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (used by --render-dashboard; no window server round-trip needed).
     private func renderDashboard(to path: String, height: CGFloat = 720, width: CGFloat = 1120, tab: DashboardView.Tab? = nil) {
         let root = DashboardView(initialTab: tab).environmentObject(AppState.shared)
+        renderSnapshot(root, to: path, height: height, width: width)
+    }
+
+    private func renderSnapshot<V: View>(_ root: V, to path: String, height: CGFloat, width: CGFloat) {
         let hosting = NSHostingView(rootView: root)
         if path.contains("dark") {
             hosting.appearance = NSAppearance(named: .darkAqua)
