@@ -10,6 +10,7 @@ struct PopoverHomeView: View {
         case today = "今日"
         case week = "7 天"
         case month = "近 30 天"
+        case all = "全部"
         var id: String { rawValue }
     }
 
@@ -28,6 +29,7 @@ struct PopoverHomeView: View {
         case .today: app.today
         case .week: app.week
         case .month: app.month
+        case .all: app.all
         }
     }
 
@@ -36,6 +38,7 @@ struct PopoverHomeView: View {
         case .today: app.todayTokens
         case .week: app.weekTokens
         case .month: app.monthTokens
+        case .all: app.allTokens
         }
     }
 
@@ -44,6 +47,7 @@ struct PopoverHomeView: View {
         case .today: app.costToday
         case .week: app.costWeek
         case .month: app.costMonth
+        case .all: app.costAll
         }
     }
 
@@ -52,6 +56,7 @@ struct PopoverHomeView: View {
         case .today: app.byToolToday
         case .week: app.byToolWeek
         case .month: app.byToolMonth
+        case .all: app.byToolAll
         }
     }
 
@@ -240,6 +245,7 @@ struct PopoverHomeView: View {
         case .today: return app.apiValueToday
         case .week: return app.apiValueWeek
         case .month: return app.apiValueMonth
+        case .all: return app.apiValueAll
         }
     }
 
@@ -248,6 +254,8 @@ struct PopoverHomeView: View {
         case .today: orClient.state.usageDaily
         case .week: orClient.state.usageWeekly
         case .month: orClient.state.usageMonthly
+        // OpenRouter 只提供月窗口；全部时按最近月近似。
+        case .all: orClient.state.usageMonthly
         }
     }
 
@@ -257,6 +265,8 @@ struct PopoverHomeView: View {
         case .today: days = 1
         case .week: days = 7
         case .month: days = 30
+        // 全部时无明确天数，按最近 30 天近似（与概览一致）。
+        case .all: days = 30
         }
         return SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
     }
