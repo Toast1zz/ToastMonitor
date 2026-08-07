@@ -62,6 +62,17 @@ enum SubscriptionMath {
         return f.string(from: d)
     }
 
+    /// 订阅金额按周期天数分摊到给定天数（实际花费口径的一部分）。
+    static func amortized(days: Int, subscriptions: [Database.Subscription]) -> Double {
+        var t = 0.0
+        for sub in subscriptions {
+            if let info = cycleInfo(start: sub.startDate, cycle: sub.cycle) {
+                t += sub.price / Double(info.totalDays) * Double(days)
+            }
+        }
+        return t
+    }
+
     // MARK: - 用量预测（用完/用不完）
 
     struct Forecast {

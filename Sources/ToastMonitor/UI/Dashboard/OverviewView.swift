@@ -6,6 +6,7 @@ import SwiftUI
 struct OverviewView: View {
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
+    @ObservedObject private var orClient = OpenRouterClient.shared
     @State private var hoveredDay: (key: Int64, tokens: Int64, cost: Double)?
     @State private var period: Period = .today
 
@@ -38,9 +39,7 @@ struct OverviewView: View {
                         rankings
                     }
                 }
-                .padding(.bottom, 12)
-                statusLine
-                    .padding(.bottom, 14)
+                .padding(.bottom, 14)
                 TMPanel {
                     heatmapSection
                 }
@@ -125,13 +124,35 @@ struct OverviewView: View {
         }
     }
 
+    /// 实际花了多少钱 = 账单/直连实际 + OpenRouter 实际 + 订阅按天分摊。
+    private var actualSpend: Double {
+        let orUsage: Double
+        switch period {
+        case .today: orUsage = orClient.state.usageDaily
+        case .week: orUsage = orClient.state.usageWeekly
+        case .month: orUsage = orClient.state.usageMonthly
+        }
+        let days: Int
+        switch period {
+        case .today: days = 1
+        case .week: days = 7
+        case .month: days = 30
+        }
+        return periodCost.actual + orUsage
+            + SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
+    }
+
     // MARK: - Hero: today's usage + capacity ring
 
     private var heroSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(periodTitle)
-                .font(.system(size: TMType.section, weight: .semibold))
-                .foregroundStyle(TMDesign.quiet)
+            HStack(alignment: .center, spacing: 8) {
+                Text(periodTitle)
+                    .font(.system(size: TMType.section, weight: .semibold))
+                    .foregroundStyle(TMDesign.quiet)
+                Spacer()
+                statusLine
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(Format.compact(periodTokens))
                     .font(.system(size: TMType.hero, weight: .semibold, design: .rounded))
@@ -143,8 +164,8 @@ struct OverviewView: View {
             }
             HStack(spacing: 24) {
                 heroMini("调用", Format.count(periodCalls))
-                heroMini("已确认支出", Format.money(periodCost.actual))
-                heroMini("估算", Format.money(periodCost.estimated))
+                heroMini("实际花费", Format.money(actualSpend))
+                heroMini("API 价值", Format.money(periodCost.estimated))
             }
         }
     }

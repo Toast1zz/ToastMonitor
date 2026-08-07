@@ -78,7 +78,7 @@ struct PopoverHomeView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     hero
-                        .padding(.bottom, 10)
+                        .padding(.bottom, 6)
                     sourceBar
                         .padding(.bottom, 12)
                     metricsTable
@@ -178,10 +178,10 @@ struct PopoverHomeView: View {
     private var metricsTable: some View {
         VStack(spacing: 8) {
             metricPair("输入", Format.compact(totals.input),
-                       "实际支出", actualShown > 0 ? Format.money(actualShown) : "—")
+                       "实际花费", actualShown > 0 ? Format.money(actualShown) : "—")
             Divider()
             metricPair("输出", Format.compact(totals.output),
-                       "估算成本", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
+                       "API 价值", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
             Divider()
             metricPair("缓存命中", Format.compact(totals.cacheRead),
                        "缓存率", cacheRateText)
@@ -248,19 +248,13 @@ struct PopoverHomeView: View {
     }
 
     private var subsAmortized: Double {
-        let days: Double
+        let days: Int
         switch period {
         case .today: days = 1
         case .week: days = 7
         case .month: days = 30
         }
-        var t = 0.0
-        for sub in app.subscriptions {
-            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, cycle: sub.cycle) {
-                t += sub.price / Double(info.totalDays) * days
-            }
-        }
-        return t
+        return SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
     }
 
     private func compactMetric(_ label: String, _ value: String) -> some View {
@@ -289,7 +283,7 @@ struct PopoverHomeView: View {
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             if rows.isEmpty {
                 Text("暂无来源数据")
                     .font(.caption)
@@ -298,7 +292,7 @@ struct PopoverHomeView: View {
                 Text(hoveredSource.map { "\($0.name) 占 \($0.pct)%" } ?? " ")
                     .font(.caption2)
                     .foregroundStyle(TMDesign.quiet)
-                    .frame(height: 14, alignment: .leading)
+                    .frame(height: 12, alignment: .leading)
                     .animation(.easeOut(duration: 0.1), value: hoveredSource?.name)
 
                 GeometryReader { geo in
@@ -382,13 +376,6 @@ struct PopoverHomeView: View {
         }
     }
 
-    private func remainingColor(_ remaining: Double?) -> Color {
-        guard let remaining else { return TMDesign.quiet }
-        if remaining < 20 { return TMDesign.danger }
-        if remaining < 40 { return TMDesign.accent }
-        return TMDesign.quiet
-    }
-
     private func resetText(_ at: Int64?) -> String? {
         guard let at, at > Int64(now.timeIntervalSince1970) else { return nil }
         return "\(Format.remaining(at - Int64(now.timeIntervalSince1970))) 后重置"
@@ -409,7 +396,7 @@ struct PopoverHomeView: View {
             }
         }
         return statusRow(name: "OpenCode Go", status: status,
-                         statusColor: remainingColor(remaining),
+                         statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false)
     }
 
@@ -438,7 +425,7 @@ struct PopoverHomeView: View {
             status = "已订阅 \(Format.money(sub.price))/月"
         }
         return statusRow(name: "Codex Plus", status: status,
-                         statusColor: state.primaryPct != nil ? remainingColor(remaining) : TMDesign.quiet,
+                         statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false)
     }
 
@@ -458,15 +445,11 @@ struct PopoverHomeView: View {
                 Text(name)
                     .font(.system(size: TMType.body, weight: .medium))
                 Spacer()
-                if critical {
-                    TMStatusCapsule(text: status)
-                } else {
-                    Text(status)
-                        .font(.system(size: TMType.caption, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundStyle(statusColor)
-                        .lineLimit(1)
-                }
+                Text(status + (critical ? " ★" : ""))
+                    .font(.system(size: TMType.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(TMDesign.faint)

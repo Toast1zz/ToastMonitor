@@ -146,24 +146,6 @@ struct TMStatusPill: View {
     }
 }
 
-/// Critical status text with a filled capsule behind it — stays legible
-/// over any backdrop (e.g. a black terminal showing through the popover).
-struct TMStatusCapsule: View {
-    let text: String
-    var textColor: Color = TMDesign.danger
-    var fill: Color = TMDesign.dangerFill
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .monospacedDigit()
-            .foregroundStyle(textColor)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(fill, in: Capsule(style: .continuous))
-    }
-}
-
 struct TMPanel<Content: View>: View {
     let content: Content
 
