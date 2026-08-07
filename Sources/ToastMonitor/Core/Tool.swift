@@ -6,6 +6,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
     case codex = "codex"
     case opencode = "opencode"
     case hermes = "hermes"
+    case omp = "omp"
     case openrouter = "openrouter"
 
     var id: String { rawValue }
@@ -16,6 +17,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
         case .hermes: return "Hermes"
+        case .omp: return "OMP"
         case .openrouter: return "OpenRouter"
         }
     }
@@ -26,6 +28,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .codex: return "chevron.left.forwardslash.chevron.right"
         case .opencode: return "terminal.fill"
         case .hermes: return "wand.and.stars"
+        case .omp: return "cpu"
         case .openrouter: return "arrow.triangle.2.circlepath"
         }
     }
@@ -39,6 +42,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .codex: return TMDesign.toolColor(hue: 214, sat: 0.60, bri: 0.74)
         case .opencode: return TMDesign.toolColor(hue: 150, sat: 0.50, bri: 0.72)
         case .hermes: return TMDesign.toolColor(hue: 272, sat: 0.48, bri: 0.78)
+        case .omp: return TMDesign.toolColor(hue: 190, sat: 0.52, bri: 0.72)
         case .openrouter: return TMDesign.toolColor(hue: 356, sat: 0.62, bri: 0.72)
         }
     }

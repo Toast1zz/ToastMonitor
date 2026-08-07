@@ -1,0 +1,6 @@
+{"type":"title","v":1,"title":"Sample session"}
+{"type":"session","version":3,"id":"019f0000-0000-7000-0000-000000000001","timestamp":"2026-08-07T10:00:00.000Z","cwd":"/Users/test/MyProject"}
+{"type":"model_change","id":"m1","timestamp":"2026-08-07T10:00:01.000Z","model":"opencode-go/deepseek-v4-flash"}
+{"type":"message","id":"msg1","parentId":null,"timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"message","id":"msg2","parentId":null,"timestamp":"2026-08-07T10:00:05.000Z","message":{"role":"assistant","model":"deepseek-v4-flash","usage":{"input":18585,"output":241,"cacheRead":0,"cacheWrite":0,"totalTokens":18826,"reasoningTokens":175,"cost":{"input":0.0026,"output":0.0001,"cacheRead":0,"cacheWrite":0,"total":0.0027}},"content":[{"type":"text","text":"hi"}]}}
+{"type":"message","id":"msg3","parentId":null,"timestamp":"2026-08-07T10:00:08.000Z","message":{"role":"assistant","model":"deepseek-v4-flash","usage":{"input":22,"output":309,"cacheRead":18816,"cacheWrite":0,"totalTokens":19147,"reasoningTokens":183,"cost":{"input":0.0,"output":0.0001,"cacheRead":0,"cacheWrite":0,"total":0.0001}},"content":[{"type":"text","text":"more"}]}}

@@ -108,7 +108,11 @@ final class CollectorEngine {
         // 4) Hermes (no-op on machines without a local install)
         ingest("hermes") { HermesParser.scan() }
 
-        // 5) Hermes remote (VPS usage feed, rate-limited to 60s)
+        // 5) OMP (Oh My Pi, local transcripts only)
+        let ompFiles = FileScanner.listFiles(OmpParser.root, maxDepth: 3)
+        ingest("omp") { OmpParser.scan(knownPaths: ompFiles) }
+
+        // 6) Hermes remote (VPS usage feed, rate-limited to 60s)
         HermesRemoteClient.shared.maybePoll()
 
         Database.shared.backfillCosts()

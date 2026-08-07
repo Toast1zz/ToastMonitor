@@ -53,6 +53,14 @@
 - **成本**：Hermes 流量在 OpenCode Go / OpenRouter / Codex 订阅套餐内计费，token 照记、**成本永远为 0**（`cost_quality = 'unknown'`）。
 - **远程 feed**：`session_model_usage` 聚合行，按 (session, model, provider, base_url) 做基线 delta——同一把 key 让 route 变化不会重复计数。
 
+### OMP（Oh My Pi）
+
+- **本机路径**：`~/.omp/agent/sessions/**/*.jsonl`（顶层会话 `<cwd>/<session>.jsonl`，子代理会话 `<session>/<agent>.jsonl`）。
+- **解析**：事件流里的 `message` 事件（`role == "assistant"`）携带 `message.usage`：`input`、`output`、`cacheRead`、`cacheWrite`、`cost`（按请求的成本分解）。结构与 Claude Code 的 JSONL 类似，因此复用同一套增量机制（size/mtime/inode + 字节偏移游标）。
+- **口径**：`input` 是不含缓存命中的部分；`cacheRead` 是命中部分（来自 opencode-go 上游，按 8-token 块粒度报告——与 Hermes 同源，值为真实 tokens）。`cost` 由 provider 计算，OMP 计费在 opencode-go 套餐内，标 `estimated`。
+- **去重**：事件 ID = `omp:<文件名>:<消息 id>`（文件名含会话 UUID，全局唯一；消息 id 稳定，重放可去重）。
+- **远程 feed**：无（OMP 只在本机运行）。
+
 ### OpenRouter
 
 - 不产生 token 行。每 5 分钟调 `/api/v1/key` + `/api/v1/credits` 快照额度/余额/用量（美元口径），只进入「实际花费」，不参与 token 统计。

@@ -12,6 +12,7 @@
 | Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | VPS feed（同结构） |
 | OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed（opencode.db session 累计值） |
 | Hermes | `~/.hermes/state.db`（列自省） | VPS feed（`session_model_usage` 聚合） |
+| OMP | `~/.omp/agent/sessions/**/*.jsonl`（assistant 消息的 usage 事件） | —（本机专用） |
 | OpenRouter | 云端 API（key + credits 快照） | — |
 
 - 默认来源：Hermes=远程（用户实际部署），其余=本机；「来源与设置」Tab 里每个工具可切换。
