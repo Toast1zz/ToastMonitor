@@ -78,7 +78,7 @@ struct PopoverHomeView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     hero
-                        .padding(.bottom, 6)
+                        .padding(.bottom, 8)
                     sourceBar
                         .padding(.bottom, 12)
                     metricsTable
@@ -287,7 +287,7 @@ struct PopoverHomeView: View {
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 8) {
             if rows.isEmpty {
                 Text("暂无来源数据")
                     .font(.caption)
@@ -296,7 +296,7 @@ struct PopoverHomeView: View {
                 Text(hoveredSource.map { "\($0.name) 占 \($0.pct)%" } ?? " ")
                     .font(.caption2)
                     .foregroundStyle(TMDesign.quiet)
-                    .frame(height: 12, alignment: .leading)
+                    .frame(height: 13, alignment: .leading)
                     .animation(.easeOut(duration: 0.1), value: hoveredSource?.name)
 
                 GeometryReader { geo in
@@ -449,7 +449,7 @@ struct PopoverHomeView: View {
                 Text(name)
                     .font(.system(size: TMType.body, weight: .medium))
                 Spacer()
-                Text(status + (critical ? " ★" : ""))
+                Text((critical ? "★ " : "") + status)
                     .font(.system(size: TMType.caption, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(statusColor)
