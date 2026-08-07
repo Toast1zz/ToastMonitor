@@ -6,15 +6,8 @@ import SwiftUI
 struct OverviewView: View {
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
-    @State private var heatMetric: HeatMetric = .tokens
     @State private var hoveredDay: (key: Int64, tokens: Int64, cost: Double)?
     @State private var distPeriod: DistPeriod = .week
-
-    enum HeatMetric: String, CaseIterable, Identifiable {
-        case tokens = "Tokens"
-        case cost = "成本"
-        var id: String { rawValue }
-    }
 
     enum DistPeriod: String, CaseIterable, Identifiable {
         case today = "今日"
@@ -155,17 +148,7 @@ struct OverviewView: View {
 
     private var heatmapSection: some View {
         VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .firstTextBaseline) {
-                TMSectionHeader("活动")
-                Spacer()
-                Picker("指标", selection: $heatMetric) {
-                    ForEach(HeatMetric.allCases) { metric in
-                        Text(metric.rawValue).tag(metric)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-            }
+            TMSectionHeader("活动")
             HStack {
                 if let h = hoveredDay {
                     Text("\(dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
@@ -281,8 +264,8 @@ struct OverviewView: View {
     }
 
     private func heatCell(_ day: Int64?) -> some View {
-        let value = day.flatMap { heatMetric == .tokens ? Double(app.heatmap[$0] ?? 0) : app.heatmapCost[$0] } ?? 0
-        let maxValue = heatMetric == .tokens ? Double(app.heatmap.values.max() ?? 0) : (app.heatmapCost.values.max() ?? 0)
+        let value = day.flatMap { Double(app.heatmap[$0] ?? 0) } ?? 0
+        let maxValue = Double(app.heatmap.values.max() ?? 0)
         let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
         return RoundedRectangle(cornerRadius: 2.5, style: .continuous)
             .fill(value > 0 ? TMDesign.accent.opacity(0.18 + intensity * 0.72) : Color.primary.opacity(0.07))
@@ -301,7 +284,7 @@ struct OverviewView: View {
 
     private var rankings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .center, spacing: 12) {
                 TMSectionHeader("来源分布")
                 Spacer()
                 Picker("周期", selection: $distPeriod) {
@@ -311,7 +294,8 @@ struct OverviewView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 200)
+                .fixedSize()
+                .controlSize(.small)
             }
             HStack(alignment: .top, spacing: 32) {
                 rankingColumn(title: "模型", rows: modelRows(distPeriod))
@@ -332,7 +316,7 @@ struct OverviewView: View {
                 (ToolKind(rawValue: $1.tool)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead) ?? $1.input + $1.output)
         }.prefix(6).map { row in
             let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead) ?? row.input + row.output
-            return ("\(ToolKind(rawValue: row.tool)?.displayName ?? row.tool) · \(row.model)", value, row.cost, ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+            return (row.model, value, row.cost, ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
         }
     }
 
