@@ -143,6 +143,8 @@ struct PopoverHomeView: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
+                    .contentTransition(.numericText(value: Double(tokens)))
+                    .animation(.easeOut(duration: 0.35), value: tokens)
                 Text("tokens")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(TMDesign.quiet)

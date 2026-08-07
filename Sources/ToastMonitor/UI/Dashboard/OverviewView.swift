@@ -151,6 +151,8 @@ struct OverviewView: View {
                     .font(.system(size: TMType.hero, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
+                    .contentTransition(.numericText(value: Double(periodTokens)))
+                    .animation(.easeOut(duration: 0.35), value: periodTokens)
                 Text("tokens")
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
