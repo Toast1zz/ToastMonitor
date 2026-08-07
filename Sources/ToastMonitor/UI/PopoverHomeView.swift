@@ -86,7 +86,7 @@ struct PopoverHomeView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     hero
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 12)
                     sourceBar
                         .padding(.bottom, 12)
                     metricsTable
@@ -310,7 +310,7 @@ struct PopoverHomeView: View {
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 10) {
             if rows.isEmpty {
                 Text("暂无来源数据")
                     .font(.caption)
