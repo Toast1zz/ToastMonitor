@@ -31,6 +31,8 @@ final class UsageQueryService {
         var costWeek: CostQuality
         var costMonth: CostQuality
         var modelAggs: [Database.ModelAgg]
+        var modelAggsToday: [Database.ModelAgg]
+        var modelAggsMonth: [Database.ModelAgg]
         var dailyAggs: [Database.DayAgg]
         var heatmap: [Int64: Int64]
         var heatmapCost: [Int64: Double]
@@ -119,6 +121,8 @@ final class UsageQueryService {
             costWeek: costQuality(from: weekStart, to: nowTs),
             costMonth: costQuality(from: monthStart, to: nowTs),
             modelAggs: Database.shared.modelAggregates(from: weekStart, to: nowTs),
+            modelAggsToday: Database.shared.modelAggregates(from: todayStart, to: nowTs),
+            modelAggsMonth: Database.shared.modelAggregates(from: monthStart, to: nowTs),
             dailyAggs: dailyAggs,
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),

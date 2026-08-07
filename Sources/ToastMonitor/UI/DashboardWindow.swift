@@ -77,39 +77,6 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
-        }
-        .navigationSplitViewStyle(.balanced)
-        .background(TMDesign.canvas)
-        .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in
-            if let requested = note.object as? Tab { tab = requested }
-        }
-    }
-
-    private var sidebar: some View {
-        List(selection: $tab) {
-            ForEach(Tab.allCases) { item in
-                Label {
-                    Text(item.rawValue)
-                        .font(.system(size: TMType.body))
-                } icon: {
-                    Image(systemName: item.icon)
-                        .foregroundStyle(item == tab ? TMDesign.accent : TMDesign.quiet)
-                }
-                .tag(item)
-                .padding(.vertical, 4)
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-        .navigationTitle("ToastMonitor")
-        .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
-    }
-
-    private var detail: some View {
         Group {
             switch tab {
             case .overview: OverviewView()
@@ -120,8 +87,18 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TMDesign.canvas)
-        .navigationTitle(tab.rawValue)
         .toolbar {
+            // Native macOS pattern (Activity Monitor, Console): page switch
+            // lives in the toolbar, not a sidebar list.
+            ToolbarItemGroup(placement: .principal) {
+                Picker("页面", selection: $tab) {
+                    ForEach(Tab.allCases) { item in
+                        Label(item.rawValue, systemImage: item.icon).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+            }
             ToolbarItemGroup(placement: .automatic) {
                 statusToolbar
                 Button {
@@ -136,6 +113,9 @@ struct DashboardView: View {
                 .disabled(app.isRefreshing)
                 .help("刷新数据")
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in
+            if let requested = note.object as? Tab { tab = requested }
         }
     }
 

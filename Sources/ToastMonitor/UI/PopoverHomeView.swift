@@ -409,7 +409,8 @@ struct PopoverHomeView: View {
             }
         }
         return statusRow(name: "OpenCode Go", status: status,
-                         statusColor: remainingColor(remaining))
+                         statusColor: remainingColor(remaining),
+                         critical: remaining.map { $0 < 20 } ?? false)
     }
 
     /// 窗口标签由 limit_window_seconds 决定：604800 = 每周（Plus 现状）。
@@ -437,7 +438,8 @@ struct PopoverHomeView: View {
             status = "已订阅 \(Format.money(sub.price))/月"
         }
         return statusRow(name: "Codex Plus", status: status,
-                         statusColor: state.primaryPct != nil ? remainingColor(remaining) : TMDesign.quiet)
+                         statusColor: state.primaryPct != nil ? remainingColor(remaining) : TMDesign.quiet,
+                         critical: remaining.map { $0 < 20 } ?? false)
     }
 
     private var routerStatusRow: some View {
@@ -449,17 +451,22 @@ struct PopoverHomeView: View {
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
     }
 
-    private func statusRow(name: String, status: String, statusColor: Color) -> some View {
+    private func statusRow(name: String, status: String, statusColor: Color,
+                           critical: Bool = false) -> some View {
         Button(action: openPlans) {
             HStack(spacing: 8) {
                 Text(name)
                     .font(.system(size: TMType.body, weight: .medium))
                 Spacer()
-                Text(status)
-                    .font(.system(size: TMType.caption, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(statusColor)
-                    .lineLimit(1)
+                if critical {
+                    TMStatusCapsule(text: status)
+                } else {
+                    Text(status)
+                        .font(.system(size: TMType.caption, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(statusColor)
+                        .lineLimit(1)
+                }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(TMDesign.faint)

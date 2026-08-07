@@ -29,15 +29,31 @@ enum TMDesign {
     static let faint = Color.primary.opacity(0.36)
     static let radius: CGFloat = 12
 
-    /// The one semantic color: anomalies/danger. Muted red tuned for gray
-    /// glass backgrounds in both appearances — system red/green are harsh
-    /// there and read poorly.
+    /// The one semantic color: anomalies/danger. Dark mode uses a bright
+    /// coral-red (WCAG: lightened reds read on dark/glass backgrounds; pure
+    /// saturated red fails even when it looks bright). Critical status text
+    /// also gets a filled capsule behind it (see TMStatusCapsule) so it
+    /// stays legible over any backdrop, e.g. a black terminal behind the
+    /// popover.
     static let danger = Color(nsColor: NSColor(name: nil) { appearance in
         if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-            return NSColor(calibratedRed: 0.92, green: 0.40, blue: 0.42, alpha: 1)
+            return NSColor(calibratedRed: 1.00, green: 0.55, blue: 0.58, alpha: 1)
         }
-        return NSColor(calibratedRed: 0.80, green: 0.27, blue: 0.30, alpha: 1)
+        return NSColor(calibratedRed: 0.78, green: 0.24, blue: 0.27, alpha: 1)
     })
+    /// Filled background for critical status text (readable on any backdrop).
+    static let dangerFill = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedRed: 0.42, green: 0.10, blue: 0.12, alpha: 1)
+        }
+        return NSColor(calibratedRed: 0.94, green: 0.86, blue: 0.86, alpha: 1)
+    })
+
+    /// Brand hues share one saturation/brightness family so multi-product
+    /// pages stay harmonious in both appearances.
+    static func toolColor(hue: CGFloat, sat: CGFloat, bri: CGFloat) -> Color {
+        Color(nsColor: NSColor(calibratedHue: hue / 360, saturation: sat, brightness: bri, alpha: 1))
+    }
 
     /// Accent lightness layers for distinguishing sources/models without
     /// adding hues: 0 = pure accent, 1 = strongly lightened.
@@ -156,6 +172,24 @@ struct TMStatusPill: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(color.opacity(0.10), in: Capsule(style: .continuous))
+    }
+}
+
+/// Critical status text with a filled capsule behind it — stays legible
+/// over any backdrop (e.g. a black terminal showing through the popover).
+struct TMStatusCapsule: View {
+    let text: String
+    var textColor: Color = TMDesign.danger
+    var fill: Color = TMDesign.dangerFill
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .monospacedDigit()
+            .foregroundStyle(textColor)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(fill, in: Capsule(style: .continuous))
     }
 }
 

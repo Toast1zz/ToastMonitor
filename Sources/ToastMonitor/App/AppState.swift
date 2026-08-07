@@ -21,6 +21,8 @@ final class AppState: ObservableObject {
     @Published var costMonth = UsageQueryService.CostQuality(estimated: 0, actual: 0, knownCount: 0, totalCount: 0)
     @Published var isRefreshing: Bool = false
     @Published var modelAggs: [Database.ModelAgg] = []
+    @Published var modelAggsToday: [Database.ModelAgg] = []
+    @Published var modelAggsMonth: [Database.ModelAgg] = []
     @Published var dailyAggs: [Database.DayAgg] = []
     @Published var heatmap: [Int64: Int64] = [:]
     @Published var heatmapCost: [Int64: Double] = [:]
@@ -75,6 +77,8 @@ final class AppState: ObservableObject {
             self.costWeek = snap.costWeek
             self.costMonth = snap.costMonth
             self.modelAggs = snap.modelAggs
+            self.modelAggsToday = snap.modelAggsToday
+            self.modelAggsMonth = snap.modelAggsMonth
             self.dailyAggs = snap.dailyAggs
             self.heatmap = snap.heatmap
             self.heatmapCost = snap.heatmapCost

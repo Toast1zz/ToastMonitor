@@ -112,6 +112,10 @@ final class CollectorEngine {
         HermesRemoteClient.shared.maybePoll()
 
         Database.shared.backfillCosts()
+        // Heartbeat: scan_state.last_scan only advances when a file changed;
+        // an idle collector would otherwise freeze "数据已更新" at the last
+        // change. This stamp reflects the actual scan time.
+        Database.shared.setSetting("last_scan_heartbeat", "\(Int64(Date().timeIntervalSince1970))")
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
         if turns.count > 0 || sessions.count > 0 || elapsed > 0.05 {

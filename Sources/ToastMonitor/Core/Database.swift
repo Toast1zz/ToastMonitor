@@ -1337,7 +1337,10 @@ final class Database {
         var out: Int64 = 0
         if sqlite3_step(stmt) == SQLITE_ROW { out = sqlite3_column_int64(stmt, 0) }
         sqlite3_finalize(stmt)
-        return out
+        // CollectorEngine stamps a heartbeat on every scan (idle or not);
+        // take the newer of the two so the UI reports real freshness.
+        let beat = Int64(setting("last_scan_heartbeat") ?? "0") ?? 0
+        return max(out, beat)
     }
 }
 

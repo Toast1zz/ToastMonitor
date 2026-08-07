@@ -31,14 +31,15 @@ enum ToolKind: String, CaseIterable, Identifiable {
     }
 
     var color: Color {
-        // One accent, lightness layers only — no multi-brand hues (palette
-        // rule: accent + danger + neutral grays).
+        // Each product keeps its brand hue; all share one saturation/
+        // brightness family so the page reads harmoniously in both
+        // appearances (see Tool.swift palette comment).
         switch self {
-        case .claude: return TMDesign.accentShade(0)
-        case .codex: return TMDesign.accentShade(0.25)
-        case .opencode: return TMDesign.accentShade(0.45)
-        case .hermes: return TMDesign.accentShade(0.65)
-        case .openrouter: return TMDesign.accentShade(0.85)
+        case .claude: return TMDesign.toolColor(hue: 22, sat: 0.55, bri: 0.74)
+        case .codex: return TMDesign.toolColor(hue: 214, sat: 0.60, bri: 0.74)
+        case .opencode: return TMDesign.toolColor(hue: 150, sat: 0.50, bri: 0.72)
+        case .hermes: return TMDesign.toolColor(hue: 272, sat: 0.48, bri: 0.78)
+        case .openrouter: return TMDesign.toolColor(hue: 356, sat: 0.62, bri: 0.72)
         }
     }
 
