@@ -281,21 +281,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // in the popover and tooltip.
         let text = Format.compact(app.todayTokens)
 
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         let attr = NSMutableAttributedString()
         if let img = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil) {
             let attach = NSTextAttachment()
             attach.image = img
-            // 与 macOS 系统时间同级的菜单栏排版：等宽数字 13pt，
-            // 图标按按钮中线垂直居中（bounds Y 微调抵消基线偏移）。
+            // 与系统时间同级排版：等宽数字 13pt；图标（16pt SF Symbol）
+            // 中心对齐文字 cap 高度中心 —— bounds.y 是相对基线的偏移，
+            // 下沉 (图标高 - capHeight)/2 让两者视觉共线。
             let size = img.size
-            let scale: CGFloat = 13 / 16
-            let h = size.height * scale
-            let w = size.width * scale
-            attach.bounds = NSRect(x: 0, y: -round((h - 13) / 2) - 1, width: w, height: h)
+            attach.bounds = NSRect(x: 0,
+                                   y: -round((size.height - font.capHeight) / 2),
+                                   width: size.width,
+                                   height: size.height)
             attr.append(NSAttributedString(attachment: attach))
         }
         attr.append(NSAttributedString(string: " \(text)", attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular),
+            .font: font,
             .foregroundColor: NSColor.labelColor,
         ]))
         button.attributedTitle = attr
