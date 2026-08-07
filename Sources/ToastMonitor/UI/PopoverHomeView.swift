@@ -136,7 +136,7 @@ struct PopoverHomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(Format.compact(tokens))
-                    .font(.system(size: 32, weight: .bold))
+                    .font(.system(size: 34, weight: .bold))
                     .monospacedDigit()
                 Text("tokens")
                     .font(.caption)

@@ -2,9 +2,11 @@ import Foundation
 
 /// Compact human formatting for tokens and money.
 enum Format {
-    /// 1234 -> "1.2k", 1234567 -> "1.2M", 123 -> "123" (k/M only)
+    /// 1234 -> "1.2k", 1.2M, 4.15B, 1.02T（B/T 用两位小数保留精度）。
     static func compact(_ n: Int64) -> String {
         let d = Double(n)
+        if d >= 1_000_000_000_000 { return String(format: "%.2fT", d / 1_000_000_000_000) }
+        if d >= 1_000_000_000 { return String(format: "%.2fB", d / 1_000_000_000) }
         if d >= 1_000_000 { return String(format: "%.1fM", d / 1_000_000) }
         if d >= 1_000 { return String(format: "%.1fk", d / 1_000) }
         return "\(n)"
@@ -51,8 +53,10 @@ enum Format {
         return f.string(from: d)
     }
 
-    /// 1.2k / 34 这类计数缩写。
+    /// 1.2k / 34 这类计数缩写（与 compact 同单位体系）。
     static func count(_ n: Int64) -> String {
+        if n >= 1_000_000_000_000 { return String(format: "%.2fT", Double(n) / 1_000_000_000_000) }
+        if n >= 1_000_000_000 { return String(format: "%.2fB", Double(n) / 1_000_000_000) }
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000 { return String(format: "%.1fk", Double(n) / 1_000) }
         return "\(n)"
