@@ -291,7 +291,6 @@ final class PanelContainerView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
         // 材质与整个容器强制深色外观：玻璃采样呈深色系，不跟随系统浅色。
         appearance = NSAppearance(named: .darkAqua)
@@ -306,7 +305,6 @@ final class PanelContainerView: NSView {
         // 按容器半径圆角，裁剪线与边缘重合，消除暗环。
         effect.wantsLayer = true
         effect.layer?.cornerRadius = cornerRadius
-        effect.layer?.cornerCurve = .continuous
         effect.layer?.masksToBounds = true
         // 玻璃强度由 Popover 设置页的滑块控制（effect 层 alpha）。
         effect.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
@@ -331,13 +329,11 @@ final class PanelContainerView: NSView {
         rimLine.lineWidth = 0.5
         layer?.addSublayer(rimLine)
 
-        // 边缘光晕：同路径宽线低 alpha + 白色 shadow（模糊外晕，贴合圆角）。
+        // 边缘光晕：宽线低 alpha（柔和扩散感）。不用 shadow——容器
+        // masksToBounds 会把外侧光晕裁掉，只剩内侧半边，效果不对称。
         rimGlow.fillColor = nil
-        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.22).cgColor
-        rimGlow.lineWidth = 3
-        rimGlow.shadowColor = NSColor.white.cgColor
-        rimGlow.shadowOpacity = 0.45
-        rimGlow.shadowRadius = 3
+        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        rimGlow.lineWidth = 4
         layer?.addSublayer(rimGlow)
 
         // 顶部光源：上 40% 高度白色微光（控制中心玻璃的顶部反射感）。
@@ -362,14 +358,13 @@ final class PanelContainerView: NSView {
             cornerWidth: r, cornerHeight: r, transform: nil
         )
         let glowPath = CGPath(
-            roundedRect: bounds.insetBy(dx: 1, dy: 1),
-            cornerWidth: max(r - 0.5, 0), cornerHeight: max(r - 0.5, 0), transform: nil
+            roundedRect: bounds.insetBy(dx: 2, dy: 2),
+            cornerWidth: max(r - 2, 0), cornerHeight: max(r - 2, 0), transform: nil
         )
         rimLine.frame = bounds
         rimLine.path = linePath
         rimGlow.frame = bounds
         rimGlow.path = glowPath
-        rimGlow.shadowPath = glowPath
         CATransaction.commit()
     }
 
