@@ -166,28 +166,36 @@ struct PlansView: View {
         }
     }
 
+    /// 月度用量历史按「周期内的每一天」绘制：快照每 60s 一条，直接画
+    /// 会把横轴挤成小时级刻度。每天取当天最后一条快照作为该日值。
     private var goHistory: some View {
-        let data = goSnapshots.filter { $0.monthlyPct != nil }
+        let daily = Self.dailySeries(goSnapshots, month: \.monthlyPct, week: \.weeklyPct)
         return VStack(alignment: .leading, spacing: 6) {
-            if data.count >= 2 {
-                Text("月度用量历史")
+            if daily.count >= 2 {
+                Text("月度用量历史（按天）")
                     .font(.system(size: TMType.caption, weight: .semibold))
-                Chart(data.reversed()) { s in
-                    if let pct = s.monthlyPct {
+                Chart(daily) { point in
+                    if let pct = point.month {
                         LineMark(
-                            x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                            x: .value("日期", Date(timeIntervalSince1970: TimeInterval(point.day))),
                             y: .value("用量 %", pct)
                         )
                         .foregroundStyle(TMDesign.accent.opacity(0.85))
                         .interpolationMethod(.catmullRom)
                     }
-                    if let pct = s.weeklyPct {
+                    if let pct = point.week {
                         LineMark(
-                            x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                            x: .value("日期", Date(timeIntervalSince1970: TimeInterval(point.day))),
                             y: .value("用量 %", pct)
                         )
                         .foregroundStyle(TMDesign.accentShade(0.6).opacity(0.8))
                         .interpolationMethod(.catmullRom)
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: max(daily.count / 6, 1))) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     }
                 }
                 .chartYAxis {
@@ -206,6 +214,26 @@ struct PlansView: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    private struct DailyPoint: Identifiable {
+        let day: Int64
+        let month: Double?
+        let week: Double?
+        var id: Int64 { day }
+    }
+
+    /// Last snapshot per calendar day (monthly/weekly pct).
+    private static func dailySeries(_ snaps: [Database.OGSnapshot],
+                                    month: KeyPath<Database.OGSnapshot, Double?>,
+                                    week: KeyPath<Database.OGSnapshot, Double?>) -> [DailyPoint] {
+        var byDay: [Int64: (month: Double?, week: Double?)] = [:]
+        for s in snaps {
+            let day = Int64(Calendar.current.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(s.ts))).timeIntervalSince1970)
+            byDay[day] = (s[keyPath: month], s[keyPath: week])
+        }
+        return byDay.map { DailyPoint(day: $0.key, month: $0.value.month, week: $0.value.week) }
+            .sorted { $0.day < $1.day }
     }
 
     private var subForGo: Database.Subscription? {
@@ -540,4 +568,5 @@ struct PlansView: View {
                 .stroke(TMDesign.divider, lineWidth: 1)
         }
     }
+
 }

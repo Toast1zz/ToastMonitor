@@ -387,6 +387,7 @@ private struct HeatmapGrid: View {
                 }
                 .padding(.vertical, 5)
             }
+            .defaultScrollAnchor(.trailing)
             heatLegend
         }
     }

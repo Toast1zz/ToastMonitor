@@ -90,11 +90,11 @@ struct PopoverRootView: View {
                 WindowManager.shared.show()
                 NSApp.keyWindow?.close()
             } label: {
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 28, height: 24)
+                Label("打开主面板", systemImage: "arrow.up.right")
+                    .font(.system(size: 12, weight: .medium))
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
             .help("打开完整面板")
             .accessibilityLabel("打开完整面板")
         }

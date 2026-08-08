@@ -115,7 +115,6 @@ struct DashboardView: View {
                 .fixedSize()
             }
             ToolbarItemGroup(placement: .automatic) {
-                statusToolbar
                 Button {
                     app.refresh(manual: true)
                     CollectorEngine.shared.scheduleScan()
@@ -134,17 +133,5 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in
             if let requested = note.object as? Tab { tab = requested }
         }
-    }
-
-    private var statusToolbar: some View {
-        let broken = health.sources.filter { $0.error != nil }.count
-        let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
-        if broken > 0 {
-            return AnyView(TMStatusLabel(text: "\(broken) 个来源异常", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill"))
-        }
-        if stale > 0 {
-            return AnyView(TMStatusLabel(text: "\(stale) 个来源过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark"))
-        }
-        return AnyView(TMStatusLabel(text: app.lastScan > 0 ? "数据已同步" : "等待首次扫描", color: TMDesign.quiet, symbol: app.lastScan > 0 ? "checkmark.circle.fill" : "circle.dashed"))
     }
 }
