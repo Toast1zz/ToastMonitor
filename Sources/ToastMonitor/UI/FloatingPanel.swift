@@ -276,6 +276,10 @@ final class PanelContainerView: NSView {
     /// 0.25 黑 tint 兜底，保证白字可读。磨砂端 = 深玻璃 + 暗底；
     /// 通透端 = 近透明玻璃 + 轻暗底。
     private let tint = NSView()
+    /// 顶部光源（Tusi topLight 移植）：Liquid Glass 边缘高光的 AppKit 近似
+    /// ——1px 白色 hairline 描边 + 顶部白色微光渐变，盖住 behindWindow 玻璃
+    /// 在圆角裁剪边缘的固有暗边（截图里的黑框）。
+    private let topLight = CAGradientLayer()
     private var cancellable: AnyCancellable?
 
     init(cornerRadius: CGFloat) {
@@ -303,6 +307,27 @@ final class PanelContainerView: NSView {
         tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
         tint.autoresizingMask = [.width, .height]
         addSubview(tint)
+
+        // 高光边缘：白色 hairline 描边（圆角连续曲线跟随）。
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        // 顶部光源：上 40% 高度白色微光（控制中心玻璃的顶部反射感）。
+        topLight.startPoint = CGPoint(x: 0.5, y: 1)
+        topLight.endPoint = CGPoint(x: 0.5, y: 0.6)
+        topLight.colors = [
+            NSColor.white.withAlphaComponent(0.13).cgColor,
+            NSColor.white.withAlphaComponent(0).cgColor,
+        ]
+        layer?.addSublayer(topLight)
+    }
+
+    override func layout() {
+        super.layout()
+        // 渐变是裸 layer：resize 时禁用隐式动画，避免滞后一帧。
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        topLight.frame = bounds
+        CATransaction.commit()
     }
 
     required init?(coder: NSCoder) {
