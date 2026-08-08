@@ -25,9 +25,10 @@ struct PopoverRootView: View {
             } else {
                 VStack(spacing: 0) {
                     header
-                    Divider().opacity(0.7)
+                    // 留白分区：不再横贯硬分割线，仅保留低对比 hairline。
+                    Divider().opacity(0.25)
                     PopoverHomeView()
-                    Divider().opacity(0.7)
+                    Divider().opacity(0.25)
                     footer
                 }
                 .transition(.asymmetric(
@@ -37,9 +38,6 @@ struct PopoverRootView: View {
             }
         }
         .frame(width: 400)
-        // 控制中心模式：popover 永远深色外观（玻璃 + 白字），与容器层
-        // 的 darkAqua 一致；不跟随系统浅色，避免黑字叠透明玻璃。
-        .preferredColorScheme(.dark)
         // Height slices (scroll body + pinned period selector) are posted as
         // notifications directly by PopoverHomeView's geometry readers —
         // SwiftUI preference propagation is unreliable across ScrollView
@@ -103,27 +101,13 @@ struct PopoverRootView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Button {
+            FooterIconButton(systemName: "power", help: "退出 ToastMonitor") {
                 NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 28, height: 24)
             }
-            .buttonStyle(.borderless)
-            .help("退出 ToastMonitor")
-            .accessibilityLabel("退出 ToastMonitor")
 
-            Button {
+            FooterIconButton(systemName: "gearshape", help: "Popover 设置") {
                 withAnimation(.snappy(duration: 0.25)) { showSettings = true }
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 28, height: 24)
             }
-            .buttonStyle(.borderless)
-            .help("Popover 设置")
-            .accessibilityLabel("Popover 设置")
 
             Spacer()
 
@@ -152,5 +136,37 @@ struct PopoverRootView: View {
         OpenRouterClient.shared.refresh()
         OpenCodeGoClient.shared.refresh()
         HermesRemoteClient.shared.maybePoll()
+    }
+}
+
+
+/// 底部工具栏图标按钮：静止无装饰，hover 轻填充。
+private struct FooterIconButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+    @State private var pressed = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 28, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(hovering ? Color.primary.opacity(0.07) : .clear)
+                )
+                .contentShape(Rectangle())
+                .scaleEffect(pressed ? 0.96 : 1)
+                .animation(.easeOut(duration: 0.1), value: pressed)
+                .onHover { hovering = $0 }
+        }
+        .buttonStyle(.borderless)
+        .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity,
+                            pressing: { pressing in pressed = pressing },
+                            perform: {})
+        .help(help)
+        .accessibilityLabel(help)
     }
 }

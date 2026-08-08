@@ -307,6 +307,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             content: PopoverRootView(),
             size: NSSize(width: 400, height: 600)
         )
+
+        // 真实运行截图钩子（重设计验收用）：--show-panel 显示 popover，
+        // --backdrop white|dark 在背后垫一个大窗口模拟亮/暗桌面背景，
+        // --capture <path> 让 app 自己把窗口保存成 PNG（窗口真实显示，
+        // 玻璃采样到背后窗口；screencapture 受会话隔离不可靠）。
+        let args = CommandLine.arguments
+        if args.contains("--show-panel") {
+            var backdrop: NSWindow?
+            if let bi = args.firstIndex(of: "--backdrop"), bi + 1 < args.count {
+                let bg = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 960),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+                bg.backgroundColor = args[bi + 1] == "dark" ? .black : .white
+                bg.isOpaque = true
+                bg.level = .normal
+                bg.orderFront(nil)
+                backdrop = bg
+            }
+            let capturePath = args.firstIndex(of: "--capture").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self, let panel = self.panelController else { return }
+                panel.toggle()
+                if let capturePath {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        if let view = panel.panelContent,
+                           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                            view.cacheDisplay(in: view.bounds, to: rep)
+                            if let data = rep.representation(using: .png, properties: [:]) {
+                                try? data.write(to: URL(fileURLWithPath: capturePath))
+                                print("captured \(capturePath)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Codex Plus is a fixed monthly subscription (like OpenCode Go): it is

@@ -49,23 +49,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false // we close on resign-key ourselves
         panel.delegate = self
-        // 控制中心模式：popover 永远深色玻璃 + 白字（无论系统外观）。
-        // 浅色系统下黑字叠透明玻璃对比度不可控；深色外观让所有
-        // primary/secondary 文字自动白系，配合容器内的恒定暗基底。
-        panel.appearance = NSAppearance(named: .darkAqua)
 
-        // Container: .popover material + 20pt continuous corners.
-        let container = PanelContainerView(cornerRadius: Self.cornerRadius)
-        container.translatesAutoresizingMaskIntoConstraints = false
+        // 单层原生玻璃外壳（重设计规格）：macOS 26+ 用 NSGlassEffectView，
+        // 旧系统降级单层 NSVisualEffectView。跟随系统外观——语义前景色
+        // 在亮/暗桌面背景上自动保持可读。
         let host = NSHostingView(rootView: content)
         host.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            host.topAnchor.constraint(equalTo: container.topAnchor),
-            host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
+        let container = PanelContainerView(cornerRadius: Self.cornerRadius, content: host)
+        container.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = container
 
         // Close when the panel resigns key (click elsewhere / Cmd-Tab away).
@@ -131,6 +122,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     var isVisible: Bool { panel.isVisible }
+
+    /// 内容容器（--capture 截图钩子用）。
+    var panelContent: NSView? { panel.contentView }
 
     /// Foreground signal: the menu bar surface being expanded means the user
     /// is looking at numbers — collectors and the UI snapshot speed up.
@@ -271,133 +265,65 @@ final class PanelController: NSObject, NSWindowDelegate {
 
 /// Visual-effect container clipped to a continuous corner radius.
 final class PanelContainerView: NSView {
-    private let effect = NSVisualEffectView()
-    /// 恒定暗基底（控制中心同款）：玻璃透明度再低，内容之下始终有一层
-    /// 0.25 黑 tint 兜底，保证白字可读。磨砂端 = 深玻璃 + 暗底；
-    /// 通透端 = 近透明玻璃 + 轻暗底。
-    private let tint = NSView()
-    /// 顶部光源（Tusi topLight 移植）：Liquid Glass 边缘高光的 AppKit 近似
-    /// ——1px 白色 hairline 描边 + 顶部白色微光渐变，盖住 behindWindow 玻璃
-    /// 在圆角裁剪边缘的固有暗边（截图里的黑框）。
-    private let topLight = CAGradientLayer()
-    /// 高光细线：CAShapeLayer 路径描边（CALayer.border 对连续圆角的抗锯齿
-    /// 差，圆角处毛刺严重；shape layer 的描边平滑且精确跟随圆角路径）。
-    private let rimLine = CAShapeLayer()
-    /// 边缘折射光晕：宽线低 alpha（玻璃边缘受光折射的柔光，浅色背景下
-    /// 是「玻璃边」而不是黑边的关键——亮度要高到能压过深色玻璃）。
-    private let rimGlow = CAShapeLayer()
-    /// 厚度暗线：紧贴光晕内侧的薄暗线——玻璃截面的厚度阴影（2.5D 厚度感）。
-    private let rimShadow = CAShapeLayer()
-    /// 底部暗影：光从上方来，玻璃底部是暗面（厚度/立体感的下半）。
-    private let bottomShadow = CAGradientLayer()
+    /// macOS 26+ 原生 Liquid Glass 外壳（NSGlassEffectView；基类存储绕开
+    /// 存储属性 availability 限制，使用处 cast）。
+    private var glass: NSView?
+    /// 降级路径（macOS 14–25）：单层 NSVisualEffectView。
+    private var effect: NSVisualEffectView?
     private var cancellable: AnyCancellable?
 
-    init(cornerRadius: CGFloat) {
+    /// 单一连续圆角外壳。内容嵌入唯一的主玻璃层；禁止 glass-on-glass——
+    /// 内容层只能使用极轻的 system fill 表达分组（见内容视图）。
+    init(cornerRadius: CGFloat, content: NSView) {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = cornerRadius
-        layer?.masksToBounds = true
-        // 材质与整个容器强制深色外观：玻璃采样呈深色系，不跟随系统浅色。
-        appearance = NSAppearance(named: .darkAqua)
+        // 悬浮阴影（柔软扩散）：Y -12，blur 28，黑 0.15。
+        // 容器不裁剪：阴影投影在 bounds 外；圆角由玻璃视图自身负责。
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.15
+        layer?.shadowOffset = NSSize(width: 0, height: -12)
+        layer?.shadowRadius = 28
 
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.autoresizingMask = [.width, .height]
-        effect.appearance = NSAppearance(named: .darkAqua)
-        // effect 自身圆角：behindWindow 材质在容器 masksToBounds 的裁剪
-        // 边界处会退化出一条固有暗环（亮背景下的「黑边」）；让 effect 自己
-        // 按容器半径圆角，裁剪线与边缘重合，消除暗环。
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = cornerRadius
-        effect.layer?.masksToBounds = true
-        // 玻璃强度由 Popover 设置页的滑块控制（effect 层 alpha）。
-        effect.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
-        cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
-            self?.effect.alphaValue = GlassSettings.alpha(for: v)
+        if #available(macOS 26.0, *) {
+            let g = NSGlassEffectView()
+            g.style = .regular
+            g.cornerRadius = cornerRadius
+            g.contentView = content
+            g.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(g)
+            NSLayoutConstraint.activate([
+                g.leadingAnchor.constraint(equalTo: leadingAnchor),
+                g.trailingAnchor.constraint(equalTo: trailingAnchor),
+                g.topAnchor.constraint(equalTo: topAnchor),
+                g.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
+            // 玻璃通透度滑块 → tintColor 强度（通透 = 弱 tint，磨砂 = 强 tint）。
+            g.tintColor = NSColor.black.withAlphaComponent(GlassSettings.tint(for: GlassSettings.shared.intensity))
+            cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
+                (self?.glass as? NSGlassEffectView)?.tintColor = NSColor.black.withAlphaComponent(GlassSettings.tint(for: v))
+            }
+            glass = g
+        } else {
+            let e = NSVisualEffectView()
+            e.material = .popover
+            e.blendingMode = .behindWindow
+            e.state = .active
+            e.wantsLayer = true
+            e.layer?.cornerRadius = cornerRadius
+            e.layer?.masksToBounds = true
+            // 降级只允许一条 0.5pt hairline（规格：不多画）。
+            e.layer?.borderWidth = 0.5
+            e.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+            e.autoresizingMask = [.width, .height]
+            addSubview(e)
+            content.autoresizingMask = [.width, .height]
+            addSubview(content)
+            e.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
+            cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
+                self?.effect?.alphaValue = GlassSettings.alpha(for: v)
+            }
+            effect = e
         }
-        addSubview(effect)
-
-        tint.wantsLayer = true
-        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
-        tint.autoresizingMask = [.width, .height]
-        // tint 内缩 + 自身圆角：黑色基底不铺到边缘，留出 ~2pt 高光带。
-        // 之前 tint 直铺到圆角边，边缘一圈就是黑——浅色背景下的「黑边」。
-        tint.layer?.cornerRadius = max(cornerRadius - 2, 0)
-        tint.layer?.masksToBounds = true
-        addSubview(tint)
-
-        // 玻璃厚度层次（2.5D）：
-        // 1) 外缘细亮线（受光边缘）——CAShapeLayer 描边平滑抗锯齿。
-        rimLine.fillColor = nil
-        rimLine.strokeColor = NSColor.white.withAlphaComponent(0.95).cgColor
-        rimLine.lineWidth = 0.5
-        layer?.addSublayer(rimLine)
-
-        // 2) 边缘折射光晕：宽线低 alpha，亮度足够压过深色玻璃——
-        //    浅色背景下它就是「玻璃边缘」，不是黑边。
-        rimGlow.fillColor = nil
-        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.16).cgColor
-        rimGlow.lineWidth = 5
-        layer?.addSublayer(rimGlow)
-
-        // 3) 厚度暗线：光晕内侧的薄暗影（玻璃截面暗部）——厚度感。
-        rimShadow.fillColor = nil
-        rimShadow.strokeColor = NSColor.black.withAlphaComponent(0.22).cgColor
-        rimShadow.lineWidth = 2
-        layer?.addSublayer(rimShadow)
-
-        // 顶部光源：上 40% 高度白色微光（控制中心玻璃的顶部反射感）。
-        topLight.startPoint = CGPoint(x: 0.5, y: 1)
-        topLight.endPoint = CGPoint(x: 0.5, y: 0.6)
-        topLight.colors = [
-            NSColor.white.withAlphaComponent(0.22).cgColor,
-            NSColor.white.withAlphaComponent(0).cgColor,
-        ]
-        layer?.addSublayer(topLight)
-
-        // 底部暗影：底部 25% 黑色渐变（玻璃暗面，厚度感的下半）。
-        bottomShadow.startPoint = CGPoint(x: 0.5, y: 0)
-        bottomShadow.endPoint = CGPoint(x: 0.5, y: 0.25)
-        bottomShadow.colors = [
-            NSColor.black.withAlphaComponent(0).cgColor,
-            NSColor.black.withAlphaComponent(0.18).cgColor,
-        ]
-        layer?.addSublayer(bottomShadow)
-    }
-
-    override func layout() {
-        super.layout()
-        // 渐变是裸 layer：resize 时禁用隐式动画，避免滞后一帧。
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        topLight.frame = bounds
-        bottomShadow.frame = bounds
-        let r = Self.radiusHint(bounds, layerCorner: layer?.cornerRadius ?? 20)
-        let linePath = CGPath(
-            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-            cornerWidth: r, cornerHeight: r, transform: nil
-        )
-        let glowPath = CGPath(
-            roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5),
-            cornerWidth: max(r - 1.5, 0), cornerHeight: max(r - 1.5, 0), transform: nil
-        )
-        let shadowPath = CGPath(
-            roundedRect: bounds.insetBy(dx: 3.5, dy: 3.5),
-            cornerWidth: max(r - 3.5, 0), cornerHeight: max(r - 3.5, 0), transform: nil
-        )
-        rimLine.frame = bounds
-        rimLine.path = linePath
-        rimGlow.frame = bounds
-        rimGlow.path = glowPath
-        rimShadow.frame = bounds
-        rimShadow.path = shadowPath
-        CATransaction.commit()
-    }
-
-    /// 圆角半径不能超过内缩后的短边一半，否则 CGPath 断言崩溃。
-    private static func radiusHint(_ bounds: CGRect, layerCorner: CGFloat) -> CGFloat {
-        min(layerCorner, min(bounds.width, bounds.height) / 2 - 1)
     }
 
     required init?(coder: NSCoder) {

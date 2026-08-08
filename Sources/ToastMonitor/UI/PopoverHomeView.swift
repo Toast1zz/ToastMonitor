@@ -98,7 +98,7 @@ struct PopoverHomeView: View {
                         .padding(.bottom, 12)
                     metricsTable
                         .padding(.bottom, 14)
-                    Divider()
+                    Divider().opacity(0.4)
                     quotaSection
                         .padding(.top, 14)
                 }
@@ -150,7 +150,7 @@ struct PopoverHomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(fullTokens ? Format.full(tokens) : Format.compact(tokens))
-                    .font(.system(size: 34, weight: .bold))
+                    .font(.system(size: 34, weight: .semibold))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -158,7 +158,7 @@ struct PopoverHomeView: View {
                     .animation(.easeOut(duration: 0.35), value: tokens)
                 Text("tokens")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(TMDesign.quiet)
+                    .foregroundStyle(.tertiary)
                 Button {
                     fullTokens.toggle()
                 } label: {
@@ -172,7 +172,7 @@ struct PopoverHomeView: View {
             }
             Text("\(Format.count(totals.count)) 次调用")
                 .font(.caption2)
-                .foregroundStyle(TMDesign.quiet)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -186,9 +186,9 @@ struct PopoverHomeView: View {
                         .font(.subheadline.weight(period == p ? .semibold : .regular))
                         .foregroundStyle(period == p ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
+                        .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
                                 .fill(period == p ? Color.primary.opacity(0.10) : .clear)
                         )
                         .contentShape(Rectangle())
@@ -199,8 +199,8 @@ struct PopoverHomeView: View {
         }
         .padding(3)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
         )
     }
 
@@ -212,22 +212,22 @@ struct PopoverHomeView: View {
         VStack(spacing: 8) {
             metricPair("输入", Format.compact(totals.input),
                        "实际花费", actualShown > 0 ? Format.money(actualShown) : "—")
-            Divider()
+            Divider().opacity(0.4)
             metricPair("输出", Format.compact(totals.output),
                        "API 价值", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
-            Divider()
+            Divider().opacity(0.4)
             metricPair("缓存命中", Format.compact(totals.cacheRead),
                        "缓存率", cacheRateText)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.03))
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(0.015))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.04), lineWidth: 0.5)
         )
         .help("缓存率：缓存命中 token 占全部 token 的比例")
     }
@@ -253,11 +253,12 @@ struct PopoverHomeView: View {
         HStack(spacing: 8) {
             Text(label)
                 .font(.system(size: 13))
-                .foregroundStyle(TMDesign.quiet)
+                .foregroundStyle(.secondary)
             Spacer(minLength: 4)
             Text(value)
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
+                .foregroundStyle(.primary)
         }
         .frame(maxWidth: .infinity)
     }
@@ -312,18 +313,22 @@ struct PopoverHomeView: View {
                     .foregroundStyle(TMDesign.quiet)
             } else {
                 GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        ForEach(rows, id: \.tool) { row in
-                            let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
-                            let ratio = total > 0 ? CGFloat(value) / CGFloat(total) : 0
-                            Rectangle()
-                                .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
-                                .frame(width: geo.size.width * ratio)
+                    ZStack(alignment: .leading) {
+                        // 轨道：系统低层级填充（不发光）
+                        Capsule().fill(Color.primary.opacity(0.06))
+                        HStack(spacing: 0) {
+                            ForEach(rows, id: \.tool) { row in
+                                let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
+                                let ratio = total > 0 ? CGFloat(value) / CGFloat(total) : 0
+                                Rectangle()
+                                    .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+                                    .frame(width: geo.size.width * ratio)
+                            }
                         }
+                        .clipShape(Capsule())
                     }
                 }
                 .frame(height: 6)
-                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
 
                 ForEach(rows, id: \.tool) { row in
                     HStack(spacing: 6) {
@@ -332,14 +337,15 @@ struct PopoverHomeView: View {
                             .frame(width: 6, height: 6)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
                             .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
                         Text("(\(percentText(row, total: total)))")
                             .font(.caption.monospacedDigit())
                             .monospacedDigit()
-                            .foregroundStyle(TMDesign.quiet)
+                            .foregroundStyle(.secondary)
                         Spacer()
                         Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(TMDesign.quiet)
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -369,6 +375,7 @@ struct PopoverHomeView: View {
         VStack(alignment: .leading, spacing: 9) {
             Text("额度状态")
                 .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
             goStatusRow
             codexStatusRow
             routerStatusRow
@@ -439,25 +446,8 @@ struct PopoverHomeView: View {
 
     private func statusRow(name: String, status: String, statusColor: Color,
                            critical: Bool = false) -> some View {
-        Button(action: openPlans) {
-            HStack(spacing: 8) {
-                Text(name)
-                    .font(.system(size: TMType.body, weight: .medium))
-                Spacer()
-                Text((critical ? "★ " : "") + status)
-                    .font(.system(size: TMType.caption, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(statusColor)
-                    .lineLimit(1)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(TMDesign.faint)
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 2)
-        }
-        .buttonStyle(.plain)
-        .help("打开计划与余额")
+        StatusRow(name: name, status: status, statusColor: statusColor,
+                  critical: critical, action: openPlans)
     }
 
     private func openPlans() {
@@ -475,5 +465,45 @@ struct PopoverHomeView: View {
             object: nil,
             userInfo: ["kind": kind, "height": height]
         )
+    }
+}
+
+
+/// 额度状态行：默认无卡片，hover 轻填充；名称 primary、状态 secondary。
+private struct StatusRow: View {
+    let name: String
+    let status: String
+    let statusColor: Color
+    var critical = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(name)
+                    .font(.system(size: TMType.body, weight: .medium))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text((critical ? "★ " : "") + status)
+                    .font(.system(size: TMType.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering ? Color.primary.opacity(0.06) : .clear)
+            )
+            .onHover { hovering = $0 }
+        }
+        .buttonStyle(.plain)
+        .help("打开计划与余额")
     }
 }

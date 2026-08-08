@@ -25,6 +25,13 @@ final class GlassSettings: ObservableObject {
         intensity = Self.clamp(stored)
     }
 
+    /// 滑块值 → 原生玻璃的 tint 强度（macOS 26+ NSGlassEffectView）。
+    /// 通透端 = 无 tint（系统玻璃自适应），磨砂端 = 0.3 黑 tint。
+    nonisolated static func tint(for slider: Double) -> Double {
+        let t = min(max((slider - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+        return t * 0.3
+    }
+
     /// 纯函数，无状态：测试可同步调用。
     nonisolated static func clamp(_ v: Double) -> Double {
         min(max(v, range.lowerBound), range.upperBound)
@@ -78,7 +85,6 @@ struct PopoverSettingsView: View {
         }
         .frame(width: 400)
         .environment(\.controlSize, .small)
-        .preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: PanelController.settingsBackNotification)) { _ in
             onBack()
         }
