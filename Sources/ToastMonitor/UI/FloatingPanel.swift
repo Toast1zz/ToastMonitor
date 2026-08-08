@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 /// Tusi-style floating panel: borderless NSPanel whose content is a
 /// visual-effect container clipped to a 20pt continuous corner radius
@@ -21,6 +22,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     /// can reset the scroll view to the top (Codex's scroll-reset design).
     static let resetScrollNotification = Notification.Name("tmPanelResetScroll")
     private var scrollResetObserver: NSObjectProtocol?
+    /// Popover 设置页开关状态（userInfo["open"]: Bool）——Esc 先返回再关闭。
+    static let settingsVisibilityNotification = Notification.Name("tmPanelSettingsVisibility")
+    /// Esc 在设置页时请求返回首页。
+    static let settingsBackNotification = Notification.Name("tmPanelSettingsBack")
+    private var settingsOpenObserver: NSObjectProtocol?
+    private var settingsOpen = false
 
     /// 20pt continuous corner radius — matches Tusi's Theme.cornerRadius.
     static let cornerRadius: CGFloat = 20
@@ -96,9 +103,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
 
         // Esc closes.
+        // Esc 关闭；若设置在 Popover 设置页，先返回首页再按一次关闭
+        // （与 Tusi 的 Esc 行为一致）。
+        settingsOpenObserver = NotificationCenter.default.addObserver(
+            forName: Self.settingsVisibilityNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            self?.settingsOpen = (note.userInfo?["open"] as? Bool) ?? false
+        }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53, let self, self.panel.isVisible {
-                self.hide()
+                if self.settingsOpen {
+                    self.settingsOpen = false
+                    NotificationCenter.default.post(name: Self.settingsBackNotification, object: nil)
+                } else {
+                    self.hide()
+                }
                 return nil
             }
             return event
@@ -235,6 +256,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let scrollResetObserver {
             NotificationCenter.default.removeObserver(scrollResetObserver)
         }
+        if let settingsOpenObserver {
+            NotificationCenter.default.removeObserver(settingsOpenObserver)
+        }
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
         }
@@ -244,6 +268,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 /// Visual-effect container clipped to a continuous corner radius.
 final class PanelContainerView: NSView {
     private let effect = NSVisualEffectView()
+    private var cancellable: AnyCancellable?
 
     init(cornerRadius: CGFloat) {
         super.init(frame: .zero)
@@ -256,6 +281,11 @@ final class PanelContainerView: NSView {
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.autoresizingMask = [.width, .height]
+        // 玻璃强度由 Popover 设置页的滑块控制（effect 层 alpha）。
+        effect.alphaValue = GlassSettings.shared.intensity
+        cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
+            self?.effect.alphaValue = v
+        }
         addSubview(effect)
     }
 

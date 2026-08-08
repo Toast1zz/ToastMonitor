@@ -8,13 +8,33 @@ struct PopoverRootView: View {
     @ObservedObject private var app = AppState.shared
     @ObservedObject private var health = SourceHealthHub.shared
 
+    /// Popover 内嵌设置页（Tusi 式第二页：同一面板切换，无新窗口）。
+    /// 渲染快照钩子：环境变量 TM_POPOVER_SETTINGS=1 时直接落在设置页。
+    @State private var showSettings = ProcessInfo.processInfo.environment["TM_POPOVER_SETTINGS"] == "1"
+
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().opacity(0.7)
-            PopoverHomeView()
-            Divider().opacity(0.7)
-            footer
+        ZStack(alignment: .top) {
+            if showSettings {
+                PopoverSettingsView {
+                    withAnimation(.snappy(duration: 0.25)) { showSettings = false }
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity)
+                ))
+            } else {
+                VStack(spacing: 0) {
+                    header
+                    Divider().opacity(0.7)
+                    PopoverHomeView()
+                    Divider().opacity(0.7)
+                    footer
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .leading).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+            }
         }
         .frame(width: 400)
         // Height slices (scroll body + pinned period selector) are posted as
@@ -23,6 +43,13 @@ struct PopoverRootView: View {
         // boundaries, which left the pinned slice stuck at 0 and cut the
         // bottom rows (OpenRouter) off.
         .environment(\.controlSize, .small)
+        .onChange(of: showSettings) { _, open in
+            NotificationCenter.default.post(
+                name: PanelController.settingsVisibilityNotification,
+                object: nil,
+                userInfo: ["open": open]
+            )
+        }
     }
 
     private var header: some View {
@@ -83,6 +110,17 @@ struct PopoverRootView: View {
             .buttonStyle(.borderless)
             .help("退出 ToastMonitor")
             .accessibilityLabel("退出 ToastMonitor")
+
+            Button {
+                withAnimation(.snappy(duration: 0.25)) { showSettings = true }
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .help("Popover 设置")
+            .accessibilityLabel("Popover 设置")
 
             Spacer()
 
