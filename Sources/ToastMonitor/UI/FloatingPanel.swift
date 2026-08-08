@@ -280,8 +280,10 @@ final class PanelContainerView: NSView {
     /// ——1px 白色 hairline 描边 + 顶部白色微光渐变，盖住 behindWindow 玻璃
     /// 在圆角裁剪边缘的固有暗边（截图里的黑框）。
     private let topLight = CAGradientLayer()
-    /// 内侧辉光：控制中心的高光是玻璃内边缘的光晕（不只是外描边）。
-    /// 白背景上外侧描边会融入背景，内侧辉光始终在深色玻璃上可见。
+    /// 高光细线：CAShapeLayer 路径描边（CALayer.border 对连续圆角的抗锯齿
+    /// 差，圆角处毛刺严重；shape layer 的描边平滑且精确跟随圆角路径）。
+    private let rimLine = CAShapeLayer()
+    /// 边缘模糊光晕：同路径的宽线 + 白色 shadow，光晕贴合圆角（用户要求）。
     private let rimGlow = CAShapeLayer()
     private var cancellable: AnyCancellable?
 
@@ -322,11 +324,22 @@ final class PanelContainerView: NSView {
         tint.layer?.masksToBounds = true
         addSubview(tint)
 
-        // 高光边缘：细（0.5pt = Retina 1 物理像素）+ 亮（0.9 白）。
-        // 控制中心的 Liquid Glass 高光是玻璃边缘的细亮线，不是粗描边；
-        // 粗线 + 中灰 alpha 之前显得「白边太粗 / 没高光感」。
-        layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        // 高光边缘：CAShapeLayer 细亮线（0.5pt，白 0.9）+ 模糊光晕。
+        // 不用 CALayer.border：它对 continuous 圆角的抗锯齿差，四角毛刺。
+        rimLine.fillColor = nil
+        rimLine.strokeColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        rimLine.lineWidth = 0.5
+        layer?.addSublayer(rimLine)
+
+        // 边缘光晕：同路径宽线低 alpha + 白色 shadow（模糊外晕，贴合圆角）。
+        rimGlow.fillColor = nil
+        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        rimGlow.lineWidth = 3
+        rimGlow.shadowColor = NSColor.white.cgColor
+        rimGlow.shadowOpacity = 0.45
+        rimGlow.shadowRadius = 3
+        layer?.addSublayer(rimGlow)
+
         // 顶部光源：上 40% 高度白色微光（控制中心玻璃的顶部反射感）。
         topLight.startPoint = CGPoint(x: 0.5, y: 1)
         topLight.endPoint = CGPoint(x: 0.5, y: 0.6)
@@ -335,12 +348,6 @@ final class PanelContainerView: NSView {
             NSColor.white.withAlphaComponent(0).cgColor,
         ]
         layer?.addSublayer(topLight)
-
-        // 内侧辉光：微弱的 1pt 细线（0.18），只补光感，不再喧宾夺主。
-        rimGlow.fillColor = nil
-        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.18).cgColor
-        rimGlow.lineWidth = 1
-        layer?.addSublayer(rimGlow)
     }
 
     override func layout() {
@@ -349,13 +356,20 @@ final class PanelContainerView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         topLight.frame = bounds
-        rimGlow.frame = bounds
-        rimGlow.path = CGPath(
-            roundedRect: bounds.insetBy(dx: 1, dy: 1),
-            cornerWidth: Self.radiusHint(bounds, layerCorner: layer?.cornerRadius ?? 20),
-            cornerHeight: Self.radiusHint(bounds, layerCorner: layer?.cornerRadius ?? 20),
-            transform: nil
+        let r = Self.radiusHint(bounds, layerCorner: layer?.cornerRadius ?? 20)
+        let linePath = CGPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            cornerWidth: r, cornerHeight: r, transform: nil
         )
+        let glowPath = CGPath(
+            roundedRect: bounds.insetBy(dx: 1, dy: 1),
+            cornerWidth: max(r - 0.5, 0), cornerHeight: max(r - 0.5, 0), transform: nil
+        )
+        rimLine.frame = bounds
+        rimLine.path = linePath
+        rimGlow.frame = bounds
+        rimGlow.path = glowPath
+        rimGlow.shadowPath = glowPath
         CATransaction.commit()
     }
 
