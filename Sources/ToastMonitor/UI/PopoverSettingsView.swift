@@ -36,12 +36,12 @@ final class GlassSettings: ObservableObject {
     /// ~0.8 以下磨砂视觉就消失了，导致滑块中低段全是死区（用户实测
     /// 「到 80% 就完全 clear，再拖没区别」）。用 gamma 曲线把视觉变化
     /// 摊平到整个滑块行程：
-    /// - 0% 滑块 → alpha 0.75（完全通透，再低内容没有可读背景）
+    /// - 0% 滑块 → alpha 0.2（几乎全透——「最通透」端要真的通透）
     /// - 100% 滑块 → alpha 1.0（满磨砂）
-    /// - 中段按 pow(t, 0.6) 过渡，低段变化更快（从 clear 快速进入磨砂）。
+    /// - 中段按 pow(t, 0.6) 过渡，低段变化最快（离开通透端立刻出现磨砂）。
     nonisolated static func alpha(for slider: Double) -> Double {
         let t = min(max((slider - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
-        let low: Double = 0.75
+        let low: Double = 0.2
         return low + (1 - low) * pow(t, 0.6)
     }
 }
