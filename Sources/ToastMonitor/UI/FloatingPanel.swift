@@ -60,13 +60,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         // 阴影必须投影在窗口（bounds）之外，而容器需要 masksToBounds 才能
         // 裁出圆角窗口形状（否则玻璃圆角外露出矩形窗口角 = 方角套圆角）。
         // 拆成两层：wrapper 只画阴影不裁剪，容器负责圆角裁剪。
-        let wrapper = NSView(frame: container.bounds)
-        wrapper.wantsLayer = true
-        wrapper.layer?.shadowColor = NSColor.black.cgColor
-        wrapper.layer?.shadowOpacity = 0.15
-        wrapper.layer?.shadowOffset = NSSize(width: 0, height: -12)
-        wrapper.layer?.shadowRadius = 28
-        wrapper.autoresizingMask = [.width, .height]
+        let wrapper = ShadowHostView(frame: container.bounds, pathCorner: Self.cornerRadius)
         wrapper.addSubview(container)
         NSLayoutConstraint.activate([
             container.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
@@ -343,5 +337,37 @@ final class PanelContainerView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+}
+
+
+/// 阴影宿主：不裁剪（阴影投影到 bounds 外），shadowPath 跟随圆角形状——
+/// 没有 shadowPath 时阴影是矩形，会在圆角玻璃外露出一圈矩形轮廓
+/// （浅色背景下清晰的「方角套圆角」）。
+private final class ShadowHostView: NSView {
+    private let pathCorner: CGFloat
+
+    init(frame: NSRect, pathCorner: CGFloat) {
+        self.pathCorner = pathCorner
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.15
+        layer?.shadowOffset = NSSize(width: 0, height: -12)
+        layer?.shadowRadius = 28
+        autoresizingMask = [.width, .height]
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: pathCorner,
+                                   cornerHeight: pathCorner, transform: nil)
+        CATransaction.commit()
     }
 }
