@@ -90,11 +90,14 @@ struct PopoverRootView: View {
                 WindowManager.shared.show()
                 NSApp.keyWindow?.close()
             } label: {
-                Label("打开主面板", systemImage: "arrow.up.right")
+                // Claude 风格：无图标、无边框，纯文字入口（参考 claude-statusbar
+                // 的 statusLine —— 只有文字与细符号，从不使用外链箭头）。
+                Text("打开主面板")
                     .font(.system(size: 12, weight: .medium))
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.plain)
             .help("打开完整面板")
             .accessibilityLabel("打开完整面板")
         }
