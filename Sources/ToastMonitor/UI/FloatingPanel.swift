@@ -282,9 +282,9 @@ final class PanelContainerView: NSView {
         effect.state = .active
         effect.autoresizingMask = [.width, .height]
         // 玻璃强度由 Popover 设置页的滑块控制（effect 层 alpha）。
-        effect.alphaValue = GlassSettings.shared.intensity
+        effect.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
         cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
-            self?.effect.alphaValue = v
+            self?.effect.alphaValue = GlassSettings.alpha(for: v)
         }
         addSubview(effect)
     }

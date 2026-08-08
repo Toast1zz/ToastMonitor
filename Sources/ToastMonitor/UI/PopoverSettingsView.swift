@@ -29,6 +29,21 @@ final class GlassSettings: ObservableObject {
     nonisolated static func clamp(_ v: Double) -> Double {
         min(max(v, range.lowerBound), range.upperBound)
     }
+
+    /// 滑块值 → NSVisualEffectView 的 alpha。
+    ///
+    /// 直接线性映射不线性：behindWindow 磨砂的感知区间很窄，alpha 降到
+    /// ~0.8 以下磨砂视觉就消失了，导致滑块中低段全是死区（用户实测
+    /// 「到 80% 就完全 clear，再拖没区别」）。用 gamma 曲线把视觉变化
+    /// 摊平到整个滑块行程：
+    /// - 0% 滑块 → alpha 0.75（完全通透，再低内容没有可读背景）
+    /// - 100% 滑块 → alpha 1.0（满磨砂）
+    /// - 中段按 pow(t, 0.6) 过渡，低段变化更快（从 clear 快速进入磨砂）。
+    nonisolated static func alpha(for slider: Double) -> Double {
+        let t = min(max((slider - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+        let low: Double = 0.75
+        return low + (1 - low) * pow(t, 0.6)
+    }
 }
 
 // MARK: - Popover 内嵌设置页
@@ -112,7 +127,7 @@ struct PopoverSettingsView: View {
                     Text("玻璃通透度")
                         .font(.system(size: 12.5, weight: .medium))
                     Spacer()
-                    Text("\(Int(glass.intensity * 100))%")
+                    Text("\(Int((glass.intensity - GlassSettings.range.lowerBound) / (GlassSettings.range.upperBound - GlassSettings.range.lowerBound) * 100))%")
                         .font(.system(size: 12, design: .monospaced))
                         .monospacedDigit()
                         .foregroundStyle(TMDesign.quiet)

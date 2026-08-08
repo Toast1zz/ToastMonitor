@@ -22,6 +22,27 @@ final class GlassSettingsTests: XCTestCase {
         XCTAssertEqual(GlassSettings.clamp(loaded), 0.6, accuracy: 0.0001)
     }
 
+    func testAlphaMappingEndpoints() {
+        XCTAssertEqual(GlassSettings.alpha(for: 0.25), 0.75, accuracy: 0.0001, "最通透端固定 0.75")
+        XCTAssertEqual(GlassSettings.alpha(for: 1.0), 1.0, accuracy: 0.0001, "满磨砂端 = 1.0")
+    }
+
+    func testAlphaMappingMonotonicAndCentered() {
+        let lo = GlassSettings.alpha(for: 0.25)
+        let mid = GlassSettings.alpha(for: 0.625)  // 滑块中点
+        let hi = GlassSettings.alpha(for: 1.0)
+        XCTAssertLessThan(lo, mid)
+        XCTAssertLessThan(mid, hi)
+        // 中点应明显偏向磨砂侧（gamma 0.6 让低段变化快，中段即有 0.9+）
+        XCTAssertGreaterThan(mid, 0.85, "滑块中段就应该有明确的磨砂感知")
+        XCTAssertLessThan(mid, 0.95)
+    }
+
+    func testAlphaClampsOutOfRangeSlider() {
+        XCTAssertEqual(GlassSettings.alpha(for: 0.0), GlassSettings.alpha(for: 0.25), "低于下限等同最通透端")
+        XCTAssertEqual(GlassSettings.alpha(for: 2.0), 1.0, "高于上限等同满磨砂")
+    }
+
     func testMissingValueDefaultsToFullIntensity() {
         let suite = "test-glass-missing"
         let ud = UserDefaults(suiteName: suite)!
