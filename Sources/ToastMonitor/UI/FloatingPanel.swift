@@ -44,7 +44,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // 系统窗口阴影关闭：borderless NSPanel 的系统阴影轮廓是矩形的，
+        // 会在圆角玻璃底部外露出一对「方角」；悬浮阴影由 ShadowHostView
+        // 的圆角 shadowPath 负责。
+        panel.hasShadow = false
         panel.level = .statusBar
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false // we close on resign-key ourselves
