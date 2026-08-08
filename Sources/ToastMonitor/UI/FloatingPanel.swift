@@ -280,6 +280,9 @@ final class PanelContainerView: NSView {
     /// ——1px 白色 hairline 描边 + 顶部白色微光渐变，盖住 behindWindow 玻璃
     /// 在圆角裁剪边缘的固有暗边（截图里的黑框）。
     private let topLight = CAGradientLayer()
+    /// 内侧辉光：控制中心的高光是玻璃内边缘的光晕（不只是外描边）。
+    /// 白背景上外侧描边会融入背景，内侧辉光始终在深色玻璃上可见。
+    private let rimGlow = CAShapeLayer()
     private var cancellable: AnyCancellable?
 
     init(cornerRadius: CGFloat) {
@@ -296,6 +299,13 @@ final class PanelContainerView: NSView {
         effect.state = .active
         effect.autoresizingMask = [.width, .height]
         effect.appearance = NSAppearance(named: .darkAqua)
+        // effect 自身圆角：behindWindow 材质在容器 masksToBounds 的裁剪
+        // 边界处会退化出一条固有暗环（亮背景下的「黑边」）；让 effect 自己
+        // 按容器半径圆角，裁剪线与边缘重合，消除暗环。
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.cornerCurve = .continuous
+        effect.layer?.masksToBounds = true
         // 玻璃强度由 Popover 设置页的滑块控制（effect 层 alpha）。
         effect.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
         cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
@@ -308,17 +318,25 @@ final class PanelContainerView: NSView {
         tint.autoresizingMask = [.width, .height]
         addSubview(tint)
 
-        // 高光边缘：白色 hairline 描边（圆角连续曲线跟随）。
+        // 高光边缘：1px 白色 hairline（控制中心 Liquid Glass 的高光边）。
+        // alpha 0.22 太弱——叠加在深灰玻璃上只有 ~86 灰度，看起来仍是黑框；
+        // 0.75 在任何背景下都是可见的亮线（layer 绘制不参与玻璃采样）。
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.75).cgColor
         // 顶部光源：上 40% 高度白色微光（控制中心玻璃的顶部反射感）。
         topLight.startPoint = CGPoint(x: 0.5, y: 1)
         topLight.endPoint = CGPoint(x: 0.5, y: 0.6)
         topLight.colors = [
-            NSColor.white.withAlphaComponent(0.13).cgColor,
+            NSColor.white.withAlphaComponent(0.16).cgColor,
             NSColor.white.withAlphaComponent(0).cgColor,
         ]
         layer?.addSublayer(topLight)
+
+        // 内侧辉光：圆角矩形内描边（白 0.4，宽 2pt，向内 1pt）。
+        rimGlow.fillColor = nil
+        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.4).cgColor
+        rimGlow.lineWidth = 2
+        layer?.addSublayer(rimGlow)
     }
 
     override func layout() {
@@ -327,7 +345,19 @@ final class PanelContainerView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         topLight.frame = bounds
+        rimGlow.frame = bounds
+        rimGlow.path = CGPath(
+            roundedRect: bounds.insetBy(dx: 1, dy: 1),
+            cornerWidth: Self.radiusHint(bounds, layerCorner: layer?.cornerRadius ?? 20),
+            cornerHeight: Self.radiusHint(bounds, layerCorner: layer?.cornerRadius ?? 20),
+            transform: nil
+        )
         CATransaction.commit()
+    }
+
+    /// 圆角半径不能超过内缩后的短边一半，否则 CGPath 断言崩溃。
+    private static func radiusHint(_ bounds: CGRect, layerCorner: CGFloat) -> CGFloat {
+        min(layerCorner, min(bounds.width, bounds.height) / 2 - 1)
     }
 
     required init?(coder: NSCoder) {
