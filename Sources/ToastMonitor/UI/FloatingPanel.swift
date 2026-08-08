@@ -316,13 +316,17 @@ final class PanelContainerView: NSView {
         tint.wantsLayer = true
         tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
         tint.autoresizingMask = [.width, .height]
+        // tint 内缩 + 自身圆角：黑色基底不铺到边缘，留出 ~2pt 高光带。
+        // 之前 tint 直铺到圆角边，边缘一圈就是黑——浅色背景下的「黑边」。
+        tint.layer?.cornerRadius = max(cornerRadius - 2, 0)
+        tint.layer?.masksToBounds = true
         addSubview(tint)
 
-        // 高光边缘：1px 白色 hairline（控制中心 Liquid Glass 的高光边）。
-        // alpha 0.22 太弱——叠加在深灰玻璃上只有 ~86 灰度，看起来仍是黑框；
-        // 0.75 在任何背景下都是可见的亮线（layer 绘制不参与玻璃采样）。
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.75).cgColor
+        // 高光边缘：细（0.5pt = Retina 1 物理像素）+ 亮（0.9 白）。
+        // 控制中心的 Liquid Glass 高光是玻璃边缘的细亮线，不是粗描边；
+        // 粗线 + 中灰 alpha 之前显得「白边太粗 / 没高光感」。
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
         // 顶部光源：上 40% 高度白色微光（控制中心玻璃的顶部反射感）。
         topLight.startPoint = CGPoint(x: 0.5, y: 1)
         topLight.endPoint = CGPoint(x: 0.5, y: 0.6)
@@ -332,10 +336,10 @@ final class PanelContainerView: NSView {
         ]
         layer?.addSublayer(topLight)
 
-        // 内侧辉光：圆角矩形内描边（白 0.4，宽 2pt，向内 1pt）。
+        // 内侧辉光：微弱的 1pt 细线（0.18），只补光感，不再喧宾夺主。
         rimGlow.fillColor = nil
-        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.4).cgColor
-        rimGlow.lineWidth = 2
+        rimGlow.strokeColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        rimGlow.lineWidth = 1
         layer?.addSublayer(rimGlow)
     }
 
