@@ -159,22 +159,37 @@ struct UsageAnalysisView: View {
                     Color.clear.frame(height: 14)
                 }
                 GeometryReader { geo in
-                    let width = geo.size.width
+                    let yAxisW: CGFloat = 34
+                    let width = max(geo.size.width - yAxisW, 10)
                     let barW = max(2, width / CGFloat(days.count) - 2)
                     ZStack(alignment: .topLeading) {
                         Canvas { ctx, size in
                             let chartH = size.height - axisH
+                            // Y 轴：0 基线 + 4 档网格与刻度（open code data 惯例：
+                            // 纵轴从 0 起、有梯度、数值缩写）。标签画在网格线
+                            // 下方，顶部最大值不被裁掉。
+                            for step in 0...3 {
+                                let y = chartH * CGFloat(step) / 3
+                                var grid = Path()
+                                grid.move(to: CGPoint(x: yAxisW, y: y))
+                                grid.addLine(to: CGPoint(x: size.width, y: y))
+                                ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.045)), lineWidth: 1)
+                                let v = Double(maxV) * Double(3 - step) / 3
+                                let labelY = step == 0 ? y + 4 : (step == 3 ? y - 4 : y + 4)
+                                ctx.draw(Text(Format.compact(Int64(v))).font(.system(size: 9)).foregroundStyle(.secondary),
+                                         at: CGPoint(x: 2, y: labelY))
+                            }
                             for (di, day) in days.enumerated() {
                                 var y = chartH
                                 for seg in day.segments {
                                     let h = max(0.5, chartH * CGFloat(seg.value) / CGFloat(maxV))
-                                    let rect = CGRect(x: CGFloat(di) * (barW + 2), y: y - h, width: barW, height: h)
+                                    let rect = CGRect(x: yAxisW + CGFloat(di) * (barW + 2), y: y - h, width: barW, height: h)
                                     ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(seg.color.opacity(0.85)))
                                     y -= h
                                 }
                             }
                             for (idx, label) in monthTickIndices(days.map(\.date)) {
-                                let x = CGFloat(idx) * (barW + 2) + barW / 2
+                                let x = yAxisW + CGFloat(idx) * (barW + 2) + barW / 2
                                 ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
                                          at: CGPoint(x: x, y: chartH + 6))
                             }
@@ -243,24 +258,28 @@ struct UsageAnalysisView: View {
                 } else {
                     Color.clear.frame(height: 14)
                 }
-                GeometryReader { _ in
+                GeometryReader { geo in
+                    let yAxisW: CGFloat = 34
                     Canvas { ctx, size in
                         guard keys.count >= 2 else { return }
                         let chartH = size.height - axisH
-                        // Y grid: 4 ticks with labels (0 / ⅓ / ⅔ / max).
+                        // Y grid: 4 ticks with labels (0 / ⅓ / ⅔ / max)。
+                        // 标签画在网格线下方（顶部 max 不再被裁掉），0 基线
+                        // 更实——open code data 的纵轴惯例：从 0 起、有梯度。
                         for step in 0...3 {
                             let y = chartH * CGFloat(step) / 3
                             var grid = Path()
-                            grid.move(to: CGPoint(x: 0, y: y))
+                            grid.move(to: CGPoint(x: yAxisW, y: y))
                             grid.addLine(to: CGPoint(x: size.width, y: y))
-                            ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.05)), lineWidth: 1)
+                            ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.045)), lineWidth: 1)
                             let v = maxV * Double(3 - step) / 3
+                            let labelY = step == 3 ? y - 4 : y + 4
                             ctx.draw(Text(Format.moneyShort(v)).font(.system(size: 9)).foregroundStyle(.secondary),
-                                     at: CGPoint(x: 2, y: y - 7))
+                                     at: CGPoint(x: 2, y: labelY))
                         }
                         var path = Path()
                         for (i, k) in keys.enumerated() {
-                            let x = CGFloat(i) / CGFloat(keys.count - 1) * size.width
+                            let x = yAxisW + CGFloat(i) / CGFloat(keys.count - 1) * (size.width - yAxisW)
                             let y = chartH - chartH * CGFloat(days[k] ?? 0) / CGFloat(maxV)
                             if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                             else { path.addLine(to: CGPoint(x: x, y: y)) }
@@ -268,11 +287,11 @@ struct UsageAnalysisView: View {
                         ctx.stroke(path, with: .color(TMDesign.accent), lineWidth: 1.6)
                         var area = path
                         area.addLine(to: CGPoint(x: size.width, y: chartH))
-                        area.addLine(to: CGPoint(x: 0, y: chartH))
+                        area.addLine(to: CGPoint(x: yAxisW, y: chartH))
                         area.closeSubpath()
                         ctx.fill(area, with: .color(TMDesign.accent.opacity(0.12)))
                         for (idx, label) in monthTickIndices(keys) {
-                            let x = keys.count > 1 ? CGFloat(idx) / CGFloat(keys.count - 1) * size.width : 0
+                            let x = keys.count > 1 ? yAxisW + CGFloat(idx) / CGFloat(keys.count - 1) * (size.width - yAxisW) : yAxisW
                             ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
                                      at: CGPoint(x: x, y: chartH + 6))
                         }
