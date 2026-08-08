@@ -17,9 +17,26 @@ enum TMDesign {
     // Palette rule: at most three families — one product accent, one danger
     // red for anomalies, and neutral grays. Tool/model distinction uses
     // lightness layers of the accent (accentShade), never extra hues.
-    static let accent = Color(red: 0.78, green: 0.32, blue: 0.16)
-    static let accentSoft = Color(red: 0.78, green: 0.32, blue: 0.16).opacity(0.12)
-    static let accentWash = Color(red: 0.78, green: 0.32, blue: 0.16).opacity(0.06)
+    static let accent = Color(nsColor: NSColor(name: nil) { appearance in
+        // 深色分支浅化：popover 现在永远深色玻璃，原 0.78/0.32/0.16 在
+        // 深底上偏暗。同色相提亮（暖橙 → 亮铜橙），保持品牌色族。
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedRed: 0.92, green: 0.51, blue: 0.30, alpha: 1)
+        }
+        return NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.16, alpha: 1)
+    })
+    static let accentSoft = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedRed: 0.92, green: 0.51, blue: 0.30, alpha: 0.16)
+        }
+        return NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.16, alpha: 0.12)
+    })
+    static let accentWash = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedRed: 0.92, green: 0.51, blue: 0.30, alpha: 0.08)
+        }
+        return NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.16, alpha: 0.06)
+    })
     static let canvas = Color(nsColor: .windowBackgroundColor)
     static let secondaryCanvas = Color(nsColor: .underPageBackgroundColor)
     /// Card surface. The system controlBackgroundColor barely separates from
@@ -79,10 +96,13 @@ enum TMDesign {
     /// Accent lightness layers for distinguishing sources/models without
     /// adding hues: 0 = pure accent, 1 = strongly lightened.
     static func accentShade(_ fraction: Double) -> Color {
-        let base = NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.16, alpha: 1)
-        let f = min(max(fraction, 0), 1)
-        let light = base.blended(withFraction: f * 0.55, of: .white) ?? base
-        return Color(nsColor: light)
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let base = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedRed: 0.92, green: 0.51, blue: 0.30, alpha: 1)
+                : NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.16, alpha: 1)
+            let f = min(max(fraction, 0), 1)
+            return base.blended(withFraction: f * 0.55, of: .white) ?? base
+        })
     }
 
     /// Normal states are neutral; only anomalies get color (danger), and

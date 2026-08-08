@@ -78,6 +78,7 @@ struct PopoverSettingsView: View {
         }
         .frame(width: 400)
         .environment(\.controlSize, .small)
+        .preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: PanelController.settingsBackNotification)) { _ in
             onBack()
         }

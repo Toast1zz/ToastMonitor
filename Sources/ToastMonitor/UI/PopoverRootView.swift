@@ -37,6 +37,9 @@ struct PopoverRootView: View {
             }
         }
         .frame(width: 400)
+        // 控制中心模式：popover 永远深色外观（玻璃 + 白字），与容器层
+        // 的 darkAqua 一致；不跟随系统浅色，避免黑字叠透明玻璃。
+        .preferredColorScheme(.dark)
         // Height slices (scroll body + pinned period selector) are posted as
         // notifications directly by PopoverHomeView's geometry readers —
         // SwiftUI preference propagation is unreliable across ScrollView

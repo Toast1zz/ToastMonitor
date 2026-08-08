@@ -49,6 +49,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false // we close on resign-key ourselves
         panel.delegate = self
+        // 控制中心模式：popover 永远深色玻璃 + 白字（无论系统外观）。
+        // 浅色系统下黑字叠透明玻璃对比度不可控；深色外观让所有
+        // primary/secondary 文字自动白系，配合容器内的恒定暗基底。
+        panel.appearance = NSAppearance(named: .darkAqua)
 
         // Container: .popover material + 20pt continuous corners.
         let container = PanelContainerView(cornerRadius: Self.cornerRadius)
@@ -268,6 +272,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 /// Visual-effect container clipped to a continuous corner radius.
 final class PanelContainerView: NSView {
     private let effect = NSVisualEffectView()
+    /// 恒定暗基底（控制中心同款）：玻璃透明度再低，内容之下始终有一层
+    /// 0.25 黑 tint 兜底，保证白字可读。磨砂端 = 深玻璃 + 暗底；
+    /// 通透端 = 近透明玻璃 + 轻暗底。
+    private let tint = NSView()
     private var cancellable: AnyCancellable?
 
     init(cornerRadius: CGFloat) {
@@ -276,17 +284,25 @@ final class PanelContainerView: NSView {
         layer?.cornerRadius = cornerRadius
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
+        // 材质与整个容器强制深色外观：玻璃采样呈深色系，不跟随系统浅色。
+        appearance = NSAppearance(named: .darkAqua)
 
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.autoresizingMask = [.width, .height]
+        effect.appearance = NSAppearance(named: .darkAqua)
         // 玻璃强度由 Popover 设置页的滑块控制（effect 层 alpha）。
         effect.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
         cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
             self?.effect.alphaValue = GlassSettings.alpha(for: v)
         }
         addSubview(effect)
+
+        tint.wantsLayer = true
+        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
+        tint.autoresizingMask = [.width, .height]
+        addSubview(tint)
     }
 
     required init?(coder: NSCoder) {
