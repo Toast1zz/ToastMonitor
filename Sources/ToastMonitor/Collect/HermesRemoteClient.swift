@@ -353,8 +353,18 @@ final class HermesRemoteClient: ObservableObject {
                     dCacheRead = max(cacheRead - prev[2], 0)
                     dCacheWrite = max(cacheWrite - prev[3], 0)
                 }
-                runningHermes[key] = [totalIn, output, cacheRead, cacheWrite, 0]
-                pendingHermesBaselines.append((key, "\(totalIn),\(output),\(cacheRead),\(cacheWrite),0"))
+                // 基线只增不减：feed 偶发回退行（例如 cache_read 从 2304 掉回 0）
+                // 若直接覆盖基线，下一行累计快照会整体重计（量级级重复）。
+                // max(cur, prev) 保证回退行既不计入 delta 也不清空已推进的基线。
+                let safeBase: [Int64]
+                if prev.count == 5 {
+                    safeBase = [max(totalIn, prev[0]), max(output, prev[1]),
+                                max(cacheRead, prev[2]), max(cacheWrite, prev[3]), 0]
+                } else {
+                    safeBase = [totalIn, output, cacheRead, cacheWrite, 0]
+                }
+                runningHermes[key] = safeBase
+                pendingHermesBaselines.append((key, safeBase.map(String.init).joined(separator: ",")))
                 dCost = 0
                 costQuality = "unknown"
             case .opencode:
@@ -368,9 +378,15 @@ final class HermesRemoteClient: ObservableObject {
                     dCacheWrite = max(cacheWrite - prev.cacheWrite, 0)
                     dCost = max(cost - prev.cost, 0)
                 }
-                runningOpenCode[totalsKey] = ("opencode", input + reasoning, output, cacheRead, cacheWrite, cost)
-                pendingOpenCodeTotals.append((totalsKey, input + reasoning, output, cacheRead,
-                                              cacheWrite, cost, lastSeenS))
+                // 与 Hermes 相同：基线只增不减，回退行不覆盖已推进值。
+                let safeInput = prev.map { max(input + reasoning, $0.input) } ?? (input + reasoning)
+                let safeOutput = prev.map { max(output, $0.output) } ?? output
+                let safeRead = prev.map { max(cacheRead, $0.cacheRead) } ?? cacheRead
+                let safeWrite = prev.map { max(cacheWrite, $0.cacheWrite) } ?? cacheWrite
+                let safeCost = prev.map { max(cost, $0.cost) } ?? cost
+                runningOpenCode[totalsKey] = ("opencode", safeInput, safeOutput, safeRead, safeWrite, safeCost)
+                pendingOpenCodeTotals.append((totalsKey, safeInput, safeOutput, safeRead,
+                                              safeWrite, safeCost, lastSeenS))
                 costQuality = "actual"
             default:
                 break // per-turn events: insert as-is
