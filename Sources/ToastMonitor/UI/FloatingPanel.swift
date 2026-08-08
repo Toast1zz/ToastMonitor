@@ -57,7 +57,24 @@ final class PanelController: NSObject, NSWindowDelegate {
         host.translatesAutoresizingMaskIntoConstraints = false
         let container = PanelContainerView(cornerRadius: Self.cornerRadius, content: host)
         container.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView = container
+        // 阴影必须投影在窗口（bounds）之外，而容器需要 masksToBounds 才能
+        // 裁出圆角窗口形状（否则玻璃圆角外露出矩形窗口角 = 方角套圆角）。
+        // 拆成两层：wrapper 只画阴影不裁剪，容器负责圆角裁剪。
+        let wrapper = NSView(frame: container.bounds)
+        wrapper.wantsLayer = true
+        wrapper.layer?.shadowColor = NSColor.black.cgColor
+        wrapper.layer?.shadowOpacity = 0.15
+        wrapper.layer?.shadowOffset = NSSize(width: 0, height: -12)
+        wrapper.layer?.shadowRadius = 28
+        wrapper.autoresizingMask = [.width, .height]
+        wrapper.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            container.topAnchor.constraint(equalTo: wrapper.topAnchor),
+            container.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+        ])
+        panel.contentView = wrapper
 
         // Close when the panel resigns key (click elsewhere / Cmd-Tab away).
         resignObserver = NotificationCenter.default.addObserver(
@@ -277,12 +294,10 @@ final class PanelContainerView: NSView {
     init(cornerRadius: CGFloat, content: NSView) {
         super.init(frame: .zero)
         wantsLayer = true
-        // 悬浮阴影（柔软扩散）：Y -12，blur 28，黑 0.15。
-        // 容器不裁剪：阴影投影在 bounds 外；圆角由玻璃视图自身负责。
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.15
-        layer?.shadowOffset = NSSize(width: 0, height: -12)
-        layer?.shadowRadius = 28
+        // 容器圆角裁剪：把窗口裁成连续圆角形状（阴影由外层 wrapper 负责，
+        // 因此这里的 masksToBounds 不会裁掉它）。
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
 
         if #available(macOS 26.0, *) {
             let g = NSGlassEffectView()
