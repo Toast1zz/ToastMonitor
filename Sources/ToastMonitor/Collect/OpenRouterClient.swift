@@ -313,40 +313,41 @@ final class OpenRouterClient: ObservableObject {
             }
         }
 
-        // Two-phase: the admin endpoints (credits/keys) require a Management
-        // key. Detect management status from the resolved /api/v1/key
-        // responses BEFORE deciding whether to call them; a regular key's
-        // 401 on the probes is informational, never a refresh failure.
+        // Two-phase: resolve /api/v1/key responses first. credits is an
+        // account-level endpoint that ALSO works with a regular key (verified
+        // against the live API), so it must NOT be gated on management
+        // status — gating it zeroed the balance for every non-management key.
+        // Only the /api/v1/keys listing is management-only.
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
             guard self.refreshGeneration == generation else { return }
             let isManagementKey = results.values.contains { json in
                 (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
             }
-            if isManagementKey {
-                let adminGroup = DispatchGroup()
-                // Account-level credits (works with a regular key).
-                adminGroup.enter()
-                self.fetch("/api/v1/credits", key: keys[0]) { json, err in
-                    guard self.refreshGeneration == generation else { adminGroup.leave(); return }
-                    if let json, let data = json["data"] as? [String: Any] {
-                        let total = (data["total_credits"] as? NSNumber)?.doubleValue
-                        let used = (data["total_usage"] as? NSNumber)?.doubleValue
-                        self.state.creditsTotal = total
-                        self.state.creditsUsage = used
-                        self.state.accountUsage = used
-                        // Available balance ≠ purchased credits (P0-7):
-                        // credits minus cumulative usage across ALL keys.
-                        if let total, let used {
-                            self.state.accountBalance = max(total - used, 0)
-                        }
-                    } else if err == nil {
-                        failures.append("账户额度响应缺少 data")
+            let adminGroup = DispatchGroup()
+            // Account-level credits (works with a regular key).
+            adminGroup.enter()
+            self.fetch("/api/v1/credits", key: keys[0]) { json, err in
+                guard self.refreshGeneration == generation else { adminGroup.leave(); return }
+                if let json, let data = json["data"] as? [String: Any] {
+                    let total = (data["total_credits"] as? NSNumber)?.doubleValue
+                    let used = (data["total_usage"] as? NSNumber)?.doubleValue
+                    self.state.creditsTotal = total
+                    self.state.creditsUsage = used
+                    self.state.accountUsage = used
+                    // Available balance ≠ purchased credits (P0-7):
+                    // credits minus cumulative usage across ALL keys.
+                    if let total, let used {
+                        self.state.accountBalance = max(total - used, 0)
                     }
-                    adminGroup.leave()
+                } else if err == nil {
+                    failures.append("账户额度响应缺少 data")
                 }
+                adminGroup.leave()
+            }
 
-                // Management key: enumerate all account keys.
+            // Management key: enumerate all account keys (management-only).
+            if isManagementKey {
                 adminGroup.enter()
                 self.fetch("/api/v1/keys", key: keys[0]) { json, err in
                     guard self.refreshGeneration == generation else { adminGroup.leave(); return }
@@ -369,13 +370,14 @@ final class OpenRouterClient: ObservableObject {
                     }
                     adminGroup.leave()
                 }
+            }
 
-                adminGroup.notify(queue: .main) { [weak self] in
-                    guard let self else { return }
-                    guard self.refreshGeneration == generation else { return }
-                    self.finishRefresh(results: results, failures: failures)
-                }
-            } else {
+            // 统一在 adminGroup 完成后收尾：credits 是异步的，不能因为
+            // 非管理 key 就直接 finishRefresh（会抢在 balance 设置前
+            // persist，余额恒 0）。
+            adminGroup.notify(queue: .main) { [weak self] in
+                guard let self else { return }
+                guard self.refreshGeneration == generation else { return }
                 self.finishRefresh(results: results, failures: failures)
             }
         }
