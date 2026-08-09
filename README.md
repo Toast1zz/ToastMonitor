@@ -16,7 +16,7 @@
 | OpenRouter | 云端 API（key + credits 快照） | — |
 
 - 默认来源：Hermes=远程（用户实际部署），其余=本机；「来源与设置」Tab 里每个工具可切换。
-- 远程 feed：VPS cron 每 3 分钟跑 `tm-export.py` → `http://100.116.140.74/tm/usage.json`（Tailscale-only），App 前台每 15s 增量拉取（按工具的时间戳 + 事件 ID 游标，支持同秒事件；后台停止）。
+- 远程 feed：VPS cron 每 3 分钟跑 `tm-export.py` → `http://100.116.140.74/tm/usage.json`（Tailscale-only），App 每约 15s 增量拉取（按工具的时间戳 + 事件 ID 游标，支持同秒事件）。
 
 ## 配额（内建，不依赖 opencode-quota）
 
@@ -25,7 +25,7 @@
 
 ## 架构
 
-- **纯轮询**（1s，仅前台；后台完全停止）：按文件 (size, 纳秒 mtime, inode) 增量读取，稳态扫描 ~20ms，日志变化约 1 秒内进入 UI（等价 token-monitor 的流式观感）。不用 FSEvents —— 只读打开 WAL 库会写 `-shm` 触发自激循环。UI 快照同样 1s（仅前台）；配额类客户端（OpenRouter/Go/Codex）前台 60s，后台停止。
+- 单一采集调度：Popover/主页面可见时每 1s 扫描，全部隐藏时每 5s 扫描以持续刷新状态栏 token；按文件 (size, 纳秒 mtime, inode) 增量读取，稳态仅做 stat 检查。远程 feed 由同一循环限速到约 15s；OpenRouter/Go/Codex 配额客户端仅在界面可见时轮询。
 - 单 SQLite 库：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL 模式）。
 - 成本估算：内置常见模型价格表（Claude/GPT/DeepSeek 等），未知模型只记 token 不记价；`backfillCosts()` 幂等修正历史。
 

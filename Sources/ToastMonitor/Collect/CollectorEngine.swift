@@ -1,9 +1,8 @@
 import Foundation
 
-/// Orchestrates collection. Poll-only design (no FSEvents): a 5s timer with
-/// cheap per-file stat checks means scans are sub-millisecond when idle, and
-/// we avoid the FSEvents feedback loop (our own SQLite -shm side effects
-/// landing inside watched directories re-triggering scans).
+/// Orchestrates collection. A 1s foreground / 5s background poll uses cheap
+/// per-file stat checks, keeps the menu-bar token count fresh while the
+/// popover is hidden, and avoids FSEvents feedback from SQLite sidecars.
 final class CollectorEngine {
     static let shared = CollectorEngine()
 
@@ -16,8 +15,8 @@ final class CollectorEngine {
 
     /// Coalescing: at most one scan per 2s.
     private var lastScanStart: CFAbsoluteTime = 0
-    /// Foreground (popover/dashboard visible) scans every 1s; background is
-    /// fully stopped — no source refreshes while nothing is on screen.
+    /// Visible surfaces scan every 1s; when both are hidden, scan every 5s
+    /// so the menu-bar token count continues to advance.
     private var foreground = false
     private var popoverVisible = false
     private var dashboardVisible = false
@@ -63,9 +62,9 @@ final class CollectorEngine {
     private func installTimer() {
         timer?.cancel()
         timer = nil
-        guard foreground else { return } // background: no polling at all
+        let interval: DispatchTimeInterval = foreground ? .seconds(1) : .seconds(5)
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.schedule(deadline: .now() + interval, repeating: interval)
         t.setEventHandler { [weak self] in self?.runScan() }
         t.resume()
         timer = t

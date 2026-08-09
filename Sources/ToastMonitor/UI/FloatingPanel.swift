@@ -44,10 +44,11 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // 系统窗口阴影关闭：borderless NSPanel 的系统阴影轮廓是矩形的，
-        // 会在圆角玻璃底部外露出一对「方角」；悬浮阴影由 ShadowHostView
-        // 的圆角 shadowPath 负责。
-        panel.hasShadow = false
+        // Let WindowServer derive the shadow from the window's alpha mask.
+        // A CALayer shadow inside the rectangular content bounds gives every
+        // corner a non-zero alpha; window screenshots then reveal a pale
+        // square behind the rounded glass.
+        panel.hasShadow = true
         panel.level = .statusBar
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false // we close on resign-key ourselves
@@ -59,19 +60,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         let host = NSHostingView(rootView: content)
         host.translatesAutoresizingMaskIntoConstraints = false
         let container = PanelContainerView(cornerRadius: Self.cornerRadius, content: host)
-        container.translatesAutoresizingMaskIntoConstraints = false
-        // 阴影必须投影在窗口（bounds）之外，而容器需要 masksToBounds 才能
-        // 裁出圆角窗口形状（否则玻璃圆角外露出矩形窗口角 = 方角套圆角）。
-        // 拆成两层：wrapper 只画阴影不裁剪，容器负责圆角裁剪。
-        let wrapper = ShadowHostView(frame: container.bounds, pathCorner: Self.cornerRadius)
-        wrapper.addSubview(container)
-        NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
-            container.topAnchor.constraint(equalTo: wrapper.topAnchor),
-            container.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
-        ])
-        panel.contentView = wrapper
+        // The clipped container is the window's root content view. There is
+        // no rectangular wrapper behind it, so pixels outside the continuous
+        // corner are genuinely transparent in the window surface.
+        container.frame = NSRect(origin: .zero, size: size)
+        container.autoresizingMask = [.width, .height]
+        panel.contentView = container
 
         // Close when the panel resigns key (click elsewhere / Cmd-Tab away).
         resignObserver = NotificationCenter.default.addObserver(
@@ -172,6 +166,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         logPanel("show: visible=\(visible) screenFrame=\(screen.frame) topY=\(topY) h=\(h) x=\(x) buttonFrame=\(buttonFrame)")
         panel.setFrame(NSRect(x: x, y: topY - h, width: w, height: h), display: true)
         logPanel("show setFrame: finalFrame=\(panel.frame)")
+        panel.invalidateShadow()
         panel.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
         // First-layout height reports can arrive before SwiftUI settles;
@@ -204,6 +199,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().setFrame(frame, display: true)
         }
+        panel.invalidateShadow()
         logPanel("applyHeight setFrame: finalFrame=\(panel.frame)")
     }
 
@@ -291,9 +287,10 @@ final class PanelContainerView: NSView {
     init(cornerRadius: CGFloat, content: NSView) {
         super.init(frame: .zero)
         wantsLayer = true
-        // 容器圆角裁剪：把窗口裁成连续圆角形状（阴影由外层 wrapper 负责，
-        // 因此这里的 masksToBounds 不会裁掉它）。
+        // This root layer is also the window's alpha mask: outside the
+        // continuous rounded rect the backing surface remains transparent.
         layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
 
         if #available(macOS 26.0, *) {
@@ -340,37 +337,5 @@ final class PanelContainerView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
-    }
-}
-
-
-/// 阴影宿主：不裁剪（阴影投影到 bounds 外），shadowPath 跟随圆角形状——
-/// 没有 shadowPath 时阴影是矩形，会在圆角玻璃外露出一圈矩形轮廓
-/// （浅色背景下清晰的「方角套圆角」）。
-private final class ShadowHostView: NSView {
-    private let pathCorner: CGFloat
-
-    init(frame: NSRect, pathCorner: CGFloat) {
-        self.pathCorner = pathCorner
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.15
-        layer?.shadowOffset = NSSize(width: 0, height: -12)
-        layer?.shadowRadius = 28
-        autoresizingMask = [.width, .height]
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: pathCorner,
-                                   cornerHeight: pathCorner, transform: nil)
-        CATransaction.commit()
     }
 }
