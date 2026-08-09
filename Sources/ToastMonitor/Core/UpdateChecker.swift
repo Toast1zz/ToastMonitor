@@ -176,7 +176,7 @@ enum UpdateChecker {
         var request = URLRequest(url: url)
         request.timeoutInterval = boundedTimeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let delegate = HTTPSRedirectDelegate()
+        let delegate = HTTPSRedirectDelegate(maxBytes: Int64(limit))
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = boundedTimeout
@@ -235,9 +235,13 @@ enum UpdateChecker {
         }
     }
 
-    private final class HTTPSRedirectDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownloadDelegate {
+    private final class HTTPSRedirectDelegate: NSObject, URLSessionTaskDelegate,
+                                               URLSessionDownloadDelegate,
+                                               URLSessionDataDelegate, @unchecked Sendable {
         private let maxBytes: Int64?
         private let limitState = LimitState()
+        private let dataLock = NSLock()
+        private var dataBytes: [Int: Int64] = [:]
 
         var exceededLimit: Bool {
             limitState.value
@@ -253,15 +257,54 @@ enum UpdateChecker {
             completionHandler(.performDefaultHandling, nil)
         }
 
+        private func handleResponse(_ response: URLResponse, taskID: Int,
+                                    completionHandler: (URLSession.ResponseDisposition) -> Void) {
+            if let maxBytes {
+                if response.expectedContentLength > maxBytes {
+                    limitState.markExceeded()
+                    completionHandler(.cancel)
+                    return
+                }
+                dataLock.lock()
+                dataBytes[taskID] = 0
+                dataLock.unlock()
+            }
+            completionHandler(.allow)
+        }
+
         func urlSession(_ session: URLSession, task: URLSessionTask,
                         didReceive response: URLResponse,
                         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-            if let maxBytes, response.expectedContentLength > maxBytes {
-                limitState.markExceeded()
-                completionHandler(.cancel)
-            } else {
-                completionHandler(.allow)
+            handleResponse(response, taskID: task.taskIdentifier, completionHandler: completionHandler)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            handleResponse(response, taskID: dataTask.taskIdentifier, completionHandler: completionHandler)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive data: Data) {
+            guard let maxBytes else { return }
+            dataLock.lock()
+            let current = dataBytes[dataTask.taskIdentifier] ?? 0
+            let exceeds = data.count > Int(max(0, maxBytes - current))
+            if !exceeds {
+                dataBytes[dataTask.taskIdentifier] = current + Int64(data.count)
             }
+            dataLock.unlock()
+            if exceeds {
+                limitState.markExceeded()
+                dataTask.cancel()
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didCompleteWithError error: Error?) {
+            dataLock.lock()
+            dataBytes.removeValue(forKey: task.taskIdentifier)
+            dataLock.unlock()
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask,

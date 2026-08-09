@@ -58,9 +58,4 @@ final class FileScannerTests: XCTestCase {
         XCTAssertEqual(files, [accepted.appendingPathComponent("usage.jsonl").path])
     }
 
-    func testRemoteReplayWindowIncludesLateRowsAndExcludesOldRows() {
-        XCTAssertTrue(HermesRemoteClient.isWithinReplayWindow(timestamp: 1_000, cursorTimestamp: 1_000))
-        XCTAssertTrue(HermesRemoteClient.isWithinReplayWindow(timestamp: 700, cursorTimestamp: 1_000))
-        XCTAssertFalse(HermesRemoteClient.isWithinReplayWindow(timestamp: 699, cursorTimestamp: 1_000))
-    }
 }

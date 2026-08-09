@@ -12,17 +12,15 @@ import CryptoKit
 ///  - claude:   per-turn events (real ts) — direct insert
 ///  - codex:    per-turn events (real ts) — direct insert
 ///
-/// Incremental via a per-tool watermark (max ts already imported).
+/// Event IDs provide idempotency; timestamp watermarks are retained only for
+/// diagnostics and never exclude a valid per-turn event.
 final class HermesRemoteClient: ObservableObject {
     nonisolated(unsafe) static let shared = HermesRemoteClient()
-    static let replayLookback: Int64 = 300
     static let maxFeedURLLength = 2_048
+    static let maxFeedBytes = 10_000_000
     static let maxFeedRows = 50_000
     static let maxFieldLength = 512
     static let maxProviderLength = 256
-    static func isWithinReplayWindow(timestamp: Int64, cursorTimestamp: Int64) -> Bool {
-        timestamp >= max(cursorTimestamp - replayLookback, 0)
-    }
 
     struct SyncStatus {
         var lastSync: Int64 = 0
@@ -33,12 +31,20 @@ final class HermesRemoteClient: ObservableObject {
     @Published private(set) var status = SyncStatus()
 
     private let queue = DispatchQueue(label: "toastmonitor.remote", qos: .utility)
+    private let session: URLSession
+    /// Retained: URLSession keeps its delegate weakly.
+    private let redirectBlocker = NoRedirectDelegate()
     private var lastPoll: Int64 = 0
     private var timer: Timer?
     private var inFlight = false
     private var started = false
 
     private init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        session = URLSession(configuration: configuration,
+                             delegate: redirectBlocker, delegateQueue: nil)
         observeForeground()
     }
 
@@ -180,7 +186,8 @@ final class HermesRemoteClient: ObservableObject {
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+        redirectBlocker.boundedDataTask(in: session, request: req,
+                                        maxBytes: Self.maxFeedBytes) { [weak self] data, resp, err in
             guard let self else { return }
             self.queue.async {
                 defer { self.inFlight = false }
@@ -192,15 +199,15 @@ final class HermesRemoteClient: ObservableObject {
                     self.publishStatus { $0.error = "无 HTTP 响应" }
                     return
                 }
-                // URLSession follows redirects; the allowlist checked above
-                // covers only the initial URL, so re-check the final one.
+                // Redirects are cancelled by the delegate; retain this
+                // final-URL check for custom URL loading implementations.
                 if !Self.isAllowedFeedURL(http.url ?? url) {
                     self.publishStatus { $0.error = "重定向到不允许的地址，已拒绝" }
                     return
                 }
                 // Reject oversized responses from the Content-Length header
                 // before the body finishes buffering.
-                if http.expectedContentLength > 10_000_000 {
+                if http.expectedContentLength > Int64(Self.maxFeedBytes) {
                     self.publishStatus { $0.error = "响应过大 (>10MB)" }
                     return
                 }
@@ -208,7 +215,7 @@ final class HermesRemoteClient: ObservableObject {
                     self.publishStatus { $0.error = "HTTP \(http.statusCode)" }
                     return
                 }
-                guard let data, data.count <= 10_000_000 else {
+                guard let data, data.count <= Self.maxFeedBytes else {
                     self.publishStatus { $0.error = "响应过大 (>10MB)" }
                     return
                 }
@@ -231,8 +238,7 @@ final class HermesRemoteClient: ObservableObject {
             update(&self.status)
         }
     }
-
-    private func importFeed(_ result: [String: Any]) {
+    func importFeed(_ result: [String: Any], database: Database = .shared) {
         guard let rows = result["rows"] as? [[String: Any]],
               rows.count <= Self.maxFeedRows else {
             publishStatus { $0.error = "feed 格式异常或行数过多" }
@@ -246,20 +252,12 @@ final class HermesRemoteClient: ObservableObject {
             .prefix(8).map { String(format: "%02x", $0) }.joined()
         let sourceInstance = "remote:\(sourceDigest)"
 
-        // Per-tool cursors (timestamp + stable tie-breaker): switching a
-        // source to remote never reuses another tool's cursor, and two rows
-        // with the same second are both importable.
+        // Retain a monotonic watermark for diagnostics and migration
+        // visibility, but never use it to decide whether a per-turn event is
+        // eligible: event_id is the durable deduplication boundary.
         struct Cursor {
             var ts: Int64
             var eventID: String
-        }
-        func cursor(_ tool: ToolKind) -> Cursor {
-            let raw = Database.shared.setting("remote_watermark_\(tool.rawValue)") ?? "0"
-            guard let separator = raw.firstIndex(of: ":"),
-                  let ts = Int64(raw[..<separator]) else {
-                return Cursor(ts: Int64(raw) ?? 0, eventID: "")
-            }
-            return Cursor(ts: ts, eventID: String(raw[raw.index(after: separator)...]))
         }
 
         var turns: [TurnRecord] = []
@@ -270,8 +268,7 @@ final class HermesRemoteClient: ObservableObject {
         var seenRemoteTools: Set<String> = []
         var unknownTools = 0
         var malformedRows = 0
-        let totals = Database.shared.sessionTotals() // once per poll
-        // Running baselines within this poll: two rows sharing a delta key
+        let totals = database.sessionTotals() // once per poll
         // must compute against the previous row's write, not the stale
         // committed value, or the cumulative delta is inserted twice.
         var runningHermes: [String: [Int64]] = [:]
@@ -288,7 +285,7 @@ final class HermesRemoteClient: ObservableObject {
                 unknownTools += 1
                 continue
             }
-            guard tool.sourceIsRemote else { continue }
+            guard (database.setting(tool.sourceKey) ?? tool.defaultSource) == "remote" else { continue }
             seenRemoteTools.insert(tool.rawValue)
             guard let rawSession = row["session_id"] as? String,
                   !rawSession.isEmpty, rawSession.count <= Self.maxFieldLength,
@@ -355,23 +352,12 @@ final class HermesRemoteClient: ObservableObject {
                 ? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
                                        lastSeen: lastSeenS, firstSeen: firstSeenS)
                 : rawEventID
-            let previousCursor = cursor(tool)
-            // Watermark guard applies only to per-turn tools. Hermes/OpenCode
-            // rows are cumulative baselines: their deltas are idempotent via
-            // session_totals/baseline settings, and a ts+content-hash cursor
-            // would permanently skip never-imported keys (e.g. a fresh
-            // (session, model, provider) route-change row with lastSeen at or
-            // below the watermark).
-            switch tool {
-            case .hermes, .opencode:
-                break
-            default:
-                // Replay a bounded tail on every poll. Event ids make this
-                // idempotent, while the overlap admits rows that arrived a few
-                // minutes late behind the producer's current watermark.
-                guard Self.isWithinReplayWindow(timestamp: lastSeenS,
-                                                cursorTimestamp: previousCursor.ts) else { continue }
-            }
+            // Event identity, not a timestamp watermark, is the idempotency
+            // boundary for per-turn rows. A producer can append a valid event
+            // older than the current cursor; re-reading it is cheap and
+            // INSERT ... ON CONFLICT DO NOTHING keeps the import exact.
+            // Cumulative Hermes/OpenCode rows remain idempotent via their
+            // persisted baselines below.
             var isFirstRow = false // 首行 = 该 session 的累计基线 → 归 firstSeen 日期
 
             switch tool {
@@ -390,7 +376,7 @@ final class HermesRemoteClient: ObservableObject {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 let key = "hm_d|\(sessionID)|\(model ?? "")|\(provider)|\(baseURL)"
                 let prev = runningHermes[key]
-                    ?? (Database.shared.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
+                    ?? (database.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
                 isFirstRow = prev.count != 5 && prev.count != 6
                 if prev.count == 6 {
                     dInput = max(input - prev[0], 0)
@@ -483,21 +469,22 @@ final class HermesRemoteClient: ObservableObject {
 
         // Atomic commit: turns + sessions + cumulative baselines + watermarks
         // are one unit. A failed write must leave the feed replayable.
-        let ok = Database.shared.inTransaction {
-            var writesOK = Database.shared.insertTurns(turns)
-            writesOK = Database.shared.upsertSessions(Array(sessions.values)) && writesOK
+        let ok = database.inTransaction {
+            var writesOK = database.insertTurns(turns)
+            writesOK = database.upsertSessions(Array(sessions.values)) && writesOK
             for p in pendingHermesBaselines {
-                writesOK = Database.shared.setSetting(p.key, p.value) && writesOK
+                writesOK = database.setSetting(p.key, p.value) && writesOK
             }
             for p in pendingOpenCodeTotals {
-                writesOK = Database.shared.setSessionTotals(p.key, tool: "opencode",
-                                                            input: p.input, output: p.output,
-                                                            reasoning: p.reasoning,
-                                                            cacheRead: p.cacheRead, cacheWrite: p.cacheWrite,
-                                                            cost: p.cost, updated: p.updated) && writesOK
+                writesOK = database.setSessionTotals(p.key, tool: "opencode",
+                                                      input: p.input, output: p.output,
+                                                      reasoning: p.reasoning,
+                                                      cacheRead: p.cacheRead, cacheWrite: p.cacheWrite,
+                                                      cost: p.cost, updated: p.updated) && writesOK
             }
             for (tool, value) in pendingWatermarks {
-                writesOK = Database.shared.setSetting("remote_watermark_\(tool.rawValue)", "\(value.ts):\(value.eventID)") && writesOK
+                writesOK = database.setSetting("remote_watermark_\(tool.rawValue)",
+                                               "\(value.ts):\(value.eventID)") && writesOK
             }
             return writesOK
         }

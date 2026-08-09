@@ -267,7 +267,8 @@ final class OpenCodeGoClient: ObservableObject {
         req.setValue("text/html", forHTTPHeaderField: "Accept")
         req.setValue("auth=\(creds.cookie)", forHTTPHeaderField: "Cookie")
 
-        session.dataTask(with: req) { [weak self] data, resp, err in
+        redirectBlocker.boundedDataTask(in: session, request: req,
+                                        maxBytes: Self.maxHTMLLength) { [weak self] data, resp, err in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.refreshGeneration == generation else { return }

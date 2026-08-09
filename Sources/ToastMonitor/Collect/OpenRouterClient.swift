@@ -466,7 +466,8 @@ final class OpenRouterClient: ObservableObject {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        session.dataTask(with: req) { data, resp, err in
+        redirectBlocker.boundedDataTask(in: session, request: req,
+                                        maxBytes: 10_000_000) { data, resp, err in
             if let err {
                 DispatchQueue.main.async { completion(nil, err.localizedDescription) }
                 return

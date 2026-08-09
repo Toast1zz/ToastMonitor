@@ -11,7 +11,7 @@ import Combine
 @MainActor
 final class CodexQuotaClient: ObservableObject {
     static let shared = CodexQuotaClient()
-
+    static let maxResponseBytes = 10_000_000
     struct State {
         var planType: String?
         var primaryPct: Int?       // primary_window used_percent
@@ -138,8 +138,8 @@ final class CodexQuotaClient: ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("ToastMonitor", forHTTPHeaderField: "User-Agent")
 
-        session.dataTask(with: req) { [weak self] data, resp, err in
-            Task { @MainActor in
+        redirectBlocker.boundedDataTask(in: session, request: req,
+                                        maxBytes: Self.maxResponseBytes) { [weak self] data, resp, err in
                 guard let self else { return }
                 self.inFlight = false
                 guard self.refreshGeneration == generation else { return }
@@ -183,7 +183,6 @@ final class CodexQuotaClient: ObservableObject {
                 }
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
-            }
         }.resume()
     }
 }

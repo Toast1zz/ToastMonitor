@@ -1,15 +1,112 @@
 import Foundation
 
-/// URLSessionTaskDelegate that cancels every redirect. Credential-bearing
-/// clients use it so a Bearer token / auth cookie can never be forwarded to
-/// a redirect target (https→http downgrade or cross-host redirect).
+/// URLSession delegate that cancels every redirect and bounds response bodies.
+/// Credential-bearing clients use it so a Bearer token / auth cookie can never
+/// be forwarded to a redirect target (https→http downgrade or cross-host
+/// redirect). It also rejects chunked/unknown-length bodies once their
+/// accumulated bytes exceed the caller's cap; Content-Length alone is not a
+/// sufficient memory boundary.
+///
 /// URLSession keeps a weak reference to its delegate, so each client must
 /// retain the instance it creates.
-final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private final class TaskState {
+        let maxBytes: Int
+        let completion: (Data?, URLResponse?, Error?) -> Void
+        var response: URLResponse?
+        var data = Data()
+        var overflowed = false
+
+        init(maxBytes: Int, completion: @escaping (Data?, URLResponse?, Error?) -> Void) {
+            self.maxBytes = max(1, maxBytes)
+            self.completion = completion
+        }
+    }
+
+    private let lock = NSLock()
+    private var tasks: [Int: TaskState] = [:]
+
+    /// Creates and registers a task before it can deliver any delegate
+    /// callbacks. The returned task must be resumed by the caller.
+    @discardableResult
+    func boundedDataTask(in session: URLSession, request: URLRequest,
+                         maxBytes: Int,
+                         completion: @escaping (Data?, URLResponse?, Error?) -> Void)
+        -> URLSessionDataTask {
+        let task = session.dataTask(with: request)
+        lock.lock()
+        tasks[task.taskIdentifier] = TaskState(maxBytes: maxBytes, completion: completion)
+        lock.unlock()
+        return task
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        let state = tasks[dataTask.taskIdentifier]
+        if let state {
+            state.response = response
+            if response.expectedContentLength > Int64(state.maxBytes) {
+                state.overflowed = true
+            }
+        }
+        let overflowed = state?.overflowed ?? false
+        lock.unlock()
+
+        if overflowed {
+            completionHandler(.cancel)
+        } else {
+            completionHandler(.allow)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive data: Data) {
+        lock.lock()
+        guard let state = tasks[dataTask.taskIdentifier] else {
+            lock.unlock()
+            return
+        }
+        let remaining = state.maxBytes - state.data.count
+        if data.count > remaining {
+            state.overflowed = true
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        state.data.append(data)
+        lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        lock.lock()
+        guard let state = tasks.removeValue(forKey: task.taskIdentifier) else {
+            lock.unlock()
+            return
+        }
+        let response = state.response
+        let data = state.overflowed ? nil : state.data
+        let overflowed = state.overflowed
+        let completion = state.completion
+        let maxBytes = state.maxBytes
+        lock.unlock()
+
+        if overflowed {
+            completion(nil, response, NSError(
+                domain: "ToastMonitor.Network",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "响应过大（超过 \(maxBytes) 字节）"]))
+        } else {
+            completion(data, response, error)
+        }
     }
 }
