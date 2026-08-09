@@ -508,6 +508,9 @@ final class HermesRemoteClient: ObservableObject {
         let ignoredRows = unknownTools + malformedRows
         let errorText = ignoredRows > 0 ? "\(ignoredRows) 行无效/未知记录已忽略" : nil
         let syncTime = Int64(Date().timeIntervalSince1970)
+        let importedByTool = turns.reduce(into: [String: Int]()) { counts, turn in
+            counts[turn.tool.rawValue, default: 0] += 1
+        }
         publishStatus {
             $0.lastSync = syncTime
             $0.lastRows = turns.count
@@ -515,7 +518,7 @@ final class HermesRemoteClient: ObservableObject {
         }
         Task { @MainActor in
             for tool in seenRemoteTools {
-                let imported = turns.reduce(0) { $0 + ($1.tool.rawValue == tool ? 1 : 0) }
+                let imported = importedByTool[tool] ?? 0
                 SourceHealthHub.shared.record(tool: tool, rows: imported, failed: 0,
                                               durationMs: 0, error: nil)
             }
