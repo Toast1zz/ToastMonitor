@@ -114,6 +114,52 @@ enum TMDesign {
     }
 }
 
+/// Shared wording and iconography for aggregate source freshness.
+enum TMHealthStatus {
+    case failed(Int)
+    case stale(Int)
+    case synced
+    case waiting
+
+    init(brokenCount: Int, staleCount: Int, lastScan: Int64) {
+        if brokenCount > 0 {
+            self = .failed(brokenCount)
+        } else if staleCount > 0 {
+            self = .stale(staleCount)
+        } else if lastScan > 0 {
+            self = .synced
+        } else {
+            self = .waiting
+        }
+    }
+
+    var text: String {
+        switch self {
+        case .failed(let count): return "\(count) 个来源异常"
+        case .stale(let count): return "\(count) 个来源过期"
+        case .synced: return "已同步"
+        case .waiting: return "等待首次扫描"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .failed: return TMDesign.danger
+        case .stale: return TMDesign.accent
+        case .synced, .waiting: return TMDesign.quiet
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .failed: return "exclamationmark.triangle.fill"
+        case .stale: return "clock.badge.exclamationmark"
+        case .synced: return "checkmark.circle.fill"
+        case .waiting: return "circle.dashed"
+        }
+    }
+}
+
 /// Type scale for the dashboard. Data-heavy surfaces keep the floor at 11pt;
 /// nothing below that is used for readable copy.
 enum TMType {

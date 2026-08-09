@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private var statusItem: NSStatusItem?
     @MainActor private var panelController: PanelController?
     @MainActor private var appStateObserver: Any?
+    private var debugBackdrop: NSWindow?
     /// Read secrets from stdin so they never appear in argv/`ps` output or
     /// shell history. Callers may pipe one line or an EOF-terminated value.
     private func readSecretFromStdin(_ label: String) -> String? {
@@ -33,6 +34,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         return value
     }
+    private func boundedRenderDimension(_ args: [String], index: Int,
+                                        defaultValue: Double,
+                                        range: ClosedRange<Double>,
+                                        label: String) -> Double {
+        guard args.indices.contains(index) else { return defaultValue }
+        guard let value = Double(args[index]),
+              value.isFinite, range.contains(value) else {
+            print("\(label) 尺寸无效（范围 \(range.lowerBound)-\(range.upperBound)）")
+            exit(1)
+        }
+        return value
+    }
+
 
     // MARK: - Crash reporting (minimal)
 
@@ -77,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Headless CLI modes (used for provisioning the keychain over SSH).
         let args = CommandLine.arguments
         if args.contains("--version") {
-            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0 (dev)"
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0 (dev)"
             print("ToastMonitor \(version)")
             exit(0)
         }
@@ -106,9 +120,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
         if args.contains("--set-or-key") {
+            Database.shared.open()
             guard let key = readSecretFromStdin("OpenRouter API key (stdin):"),
-                  KeychainStore.set(key, account: "or-keys") else {
-                print("key store failed (Keychain unavailable; no plaintext fallback)")
+                  OpenRouterClient.shared.setKey(key) else {
+                print("key store failed (Keychain unavailable or key invalid; no plaintext fallback)")
                 exit(1)
             }
             print("key stored")
@@ -147,7 +162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("key provision failed: Keychain unavailable")
             exit(1)
         }
-        if let flag = args.firstIndex(of: "--provision-go"), flag + 1 < args.count {
+        if let flag = args.firstIndex(of: "--provision-go") {
+            guard flag + 1 < args.count, !args[flag + 1].isEmpty else {
+                print("--provision-go 缺少 workspace ID")
+                exit(1)
+            }
             Database.shared.open()
             let workspaceID = args[flag + 1]
             guard let cookie = readSecretFromStdin("OpenCode Go auth cookie (stdin):") else {
@@ -158,10 +177,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("go provisioned")
                 exit(0)
             }
-            print("go provision failed: Keychain unavailable")
+            print("go provision failed: Keychain unavailable or credentials invalid")
             exit(1)
         }
-        if let flag = args.firstIndex(of: "--provision-hermes"), flag + 1 < args.count {
+        if let flag = args.firstIndex(of: "--provision-hermes") {
+            guard flag + 1 < args.count, !args[flag + 1].isEmpty else {
+                print("--provision-hermes 缺少 URL")
+                exit(1)
+            }
             Database.shared.open()
             if HermesRemoteClient.shared.provision(url: args[flag + 1]) {
                 print("hermes provisioned")
@@ -170,12 +193,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("hermes provision failed: URL must be HTTPS or private network")
             exit(1)
         }
-        if let flag = args.firstIndex(of: "--export-diagnostics"), flag + 1 < args.count {
+        if let flag = args.firstIndex(of: "--export-diagnostics") {
+            guard flag + 1 < args.count, !args[flag + 1].isEmpty else {
+                print("--export-diagnostics 缺少输出路径")
+                exit(1)
+            }
             Database.shared.open()
             let summary = Database.shared.diagnosticsSummary()
             let outPath = args[flag + 1]
-            if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted]) {
-                try? data.write(to: URL(fileURLWithPath: outPath))
+            if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted]),
+               (try? data.write(to: URL(fileURLWithPath: outPath))) != nil {
                 print("diagnostics written to \(outPath)")
                 exit(0)
             }
@@ -187,10 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let flag = args.firstIndex(of: "--render-popover") {
             guard flag + 1 < args.count else { print("--render-popover 缺少输出路径"); exit(1) }
             let outPath = args[flag + 1]
-            let height = (flag + 2 < args.count) ? (Double(args[flag + 2]) ?? 620) : 620
-            guard height.isFinite, height > 0 else { print("--render-popover 高度无效"); exit(1) }
+            let height = boundedRenderDimension(args, index: flag + 2,
+                                                defaultValue: 620, range: 64...10_000,
+                                                label: "--render-popover")
             Database.shared.open()
-            ensureDefaultSubscriptions()
             AppState.shared.start()
             let deadline = Date().addingTimeInterval(10)
             while AppState.shared.snapshotFetchedAt == 0 && Date() < deadline {
@@ -209,9 +236,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let flag = args.firstIndex(of: "--render-dashboard") {
             guard flag + 1 < args.count else { print("--render-dashboard 缺少输出路径"); exit(1) }
             let outPath = args[flag + 1]
-            let height = (flag + 2 < args.count) ? (Double(args[flag + 2]) ?? 720) : 720
-            let width = (flag + 3 < args.count) ? (Double(args[flag + 3]) ?? 1120) : 1120
-            guard height.isFinite, height > 0, width.isFinite, width > 0 else { print("--render-dashboard 尺寸无效"); exit(1) }
+            let height = boundedRenderDimension(args, index: flag + 2,
+                                                defaultValue: 720, range: 200...10_000,
+                                                label: "--render-dashboard 高度")
+            let width = boundedRenderDimension(args, index: flag + 3,
+                                               defaultValue: 1120, range: 320...20_000,
+                                               label: "--render-dashboard 宽度")
             let tabName = flag + 4 < args.count ? args[flag + 4] : "overview"
             let tab: DashboardView.Tab? = {
                 switch tabName {
@@ -222,7 +252,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }()
             Database.shared.open()
-            ensureDefaultSubscriptions()
             AppState.shared.start()
             let deadline = Date().addingTimeInterval(10)
             while AppState.shared.snapshotFetchedAt == 0 && Date() < deadline {
@@ -235,8 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
         Database.shared.open() // synchronous — needed before any DB reads
-        _ = KeychainStore.migrateLegacyVaultIfNeeded() // one-time: legacy vault file → login keychain
-        ensureDefaultSubscriptions()
+        KeychainStore.migrateLegacyVaultIfNeeded() // one-time: legacy vault file → login keychain
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()
@@ -278,8 +306,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("render failed: no PNG data")
             exit(1)
         }
-        try? data.write(to: URL(fileURLWithPath: path))
-        print("rendered \(path)")
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            print("rendered \(path)")
+        } catch {
+            print("render failed: cannot write \(path): \(error.localizedDescription)")
+            exit(1)
+        }
     }
 
     /// Custom status item + floating panel (Tusi-style 20pt corners).
@@ -314,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 玻璃采样到背后窗口；screencapture 受会话隔离不可靠）。
         let args = CommandLine.arguments
         if args.contains("--show-panel") {
-            var backdrop: NSWindow?
+            debugBackdrop = nil
             if let bi = args.firstIndex(of: "--backdrop"), bi + 1 < args.count {
                 let bg = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 960),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
@@ -322,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bg.isOpaque = true
                 bg.level = .normal
                 bg.orderFront(nil)
-                backdrop = bg
+                debugBackdrop = bg
             }
             let capturePath = args.firstIndex(of: "--capture").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -344,19 +377,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Codex Plus is a fixed monthly subscription (like OpenCode Go): it is
-    /// NOT variable API spend, so it never lands in "实际支出"; it IS counted
-    /// in the estimated column and in the hero total. Price is editable in
-    /// Settings; deleting the record removes it everywhere.
-    private func ensureDefaultSubscriptions() {
-        let db = Database.shared
-        if !db.subscriptions().contains(where: { $0.plan == "codex" }) {
-            db.upsertSubscription(Database.Subscription(
-                id: 0, name: "Codex Plus", plan: "codex",
-                startDate: Int64(Date().timeIntervalSince1970),
-                cycle: "monthly", price: 20, currency: "USD"))
-        }
-    }
 
     private func updateStatusLabel(_ button: NSStatusBarButton) {
         let app = AppState.shared
@@ -384,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .foregroundColor: NSColor.labelColor,
         ]))
         button.attributedTitle = attr
+        button.setAccessibilityValue("今日 \(text) tokens")
 
         let or = OpenRouterClient.shared
         let todayActual = app.costToday.actual + or.state.usageDaily

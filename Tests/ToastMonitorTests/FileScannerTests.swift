@@ -41,4 +41,26 @@ final class FileScannerTests: XCTestCase {
         XCTAssertEqual(second.objects.first?.obj["type"] as? String, "partial")
         XCTAssertEqual(second.newOffset, Int64(prefix.count + 2))
     }
+
+    func testListFilesOnlyReturnsJSONLWithinDepthBoundary() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-tree-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let accepted = root.appendingPathComponent("session/subagent")
+        let tooDeep = accepted.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: tooDeep, withIntermediateDirectories: true)
+        try Data().write(to: accepted.appendingPathComponent("usage.jsonl"))
+        try Data().write(to: accepted.appendingPathComponent("debug.log"))
+        try Data().write(to: root.appendingPathComponent("notes.md"))
+        try Data().write(to: tooDeep.appendingPathComponent("too-deep.jsonl"))
+
+        let files = FileScanner.listFiles(root.path, maxDepth: 3)
+        XCTAssertEqual(files, [accepted.appendingPathComponent("usage.jsonl").path])
+    }
+
+    func testRemoteReplayWindowIncludesLateRowsAndExcludesOldRows() {
+        XCTAssertTrue(HermesRemoteClient.isWithinReplayWindow(timestamp: 1_000, cursorTimestamp: 1_000))
+        XCTAssertTrue(HermesRemoteClient.isWithinReplayWindow(timestamp: 700, cursorTimestamp: 1_000))
+        XCTAssertFalse(HermesRemoteClient.isWithinReplayWindow(timestamp: 699, cursorTimestamp: 1_000))
+    }
 }

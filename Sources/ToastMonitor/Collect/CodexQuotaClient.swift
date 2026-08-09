@@ -21,13 +21,42 @@ final class CodexQuotaClient: ObservableObject {
         var error: String?
     }
 
+    private static func boundedPercent(_ value: NSNumber?) -> Int? {
+        guard let value else { return nil }
+        let d = value.doubleValue
+        guard d.isFinite, d >= 0, d <= 100 else { return nil }
+        return Int(d.rounded())
+    }
+
+    private static func boundedWindow(_ value: NSNumber?) -> Int? {
+        guard let value else { return nil }
+        let d = value.doubleValue
+        guard d.isFinite, d >= 0, d <= 366 * 86400 else { return nil }
+        return Int(d.rounded())
+    }
+
+    private static func boundedReset(_ value: NSNumber?) -> Int64? {
+        guard let value else { return nil }
+        let d = value.doubleValue
+        let now = Date().timeIntervalSince1970
+        guard d.isFinite, d >= now - 10 * 365 * 86400, d <= now + 366 * 86400 else { return nil }
+        return Int64(d)
+    }
     @Published private(set) var state = State()
     private var timer: Timer?
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
 
+    private let session: URLSession
+    /// Retained because URLSession delegates are weak.
+    private let redirectBlocker = NoRedirectDelegate()
+
     private init() {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 15
+        cfg.timeoutIntervalForResource = 30
+        session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
         observeForeground()
     }
 
@@ -51,17 +80,20 @@ final class CodexQuotaClient: ObservableObject {
     private func observeForeground() {
         for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let self else { return }
                 let visible = (note.object as? Bool) ?? false
-                if name == TMNotifications.popoverVisibility {
-                    self.popoverVisible = visible
-                } else {
-                    self.dashboardVisible = visible
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if name == TMNotifications.popoverVisibility {
+                        self.popoverVisible = visible
+                    } else {
+                        self.dashboardVisible = visible
+                    }
+                    self.updateForeground()
                 }
-                self.updateForeground()
             }
         }
     }
+
 
     func start() {
         guard !started else { return }
@@ -81,13 +113,16 @@ final class CodexQuotaClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
-
         let home = FileManager.default.homeDirectoryForCurrentUser
         let authPath = home.appendingPathComponent(".codex/auth.json").path
+
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: authPath)),
+              data.count <= 1_000_000,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tokens = json["tokens"] as? [String: Any],
-              let accessToken = tokens["access_token"] as? String, !accessToken.isEmpty else {
+              let accessToken = tokens["access_token"] as? String,
+              !accessToken.isEmpty, accessToken.count <= 16_384,
+              accessToken.rangeOfCharacter(from: .controlCharacters) == nil else {
             state.error = "未找到 Codex 登录态（运行 codex 登录后自动恢复）"
             return
         }
@@ -103,7 +138,7 @@ final class CodexQuotaClient: ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("ToastMonitor", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+        session.dataTask(with: req) { [weak self] data, resp, err in
             Task { @MainActor in
                 guard let self else { return }
                 self.inFlight = false
@@ -116,27 +151,35 @@ final class CodexQuotaClient: ObservableObject {
                     self.state.error = "无 HTTP 响应"
                     return
                 }
+                if (300..<400).contains(http.statusCode) {
+                    self.state.error = "拒绝重定向 (HTTP \(http.statusCode))"
+                    return
+                }
                 guard http.statusCode == 200 else {
                     self.state.error = "usage API HTTP \(http.statusCode)"
                     return
                 }
-                guard let data,
+                guard http.expectedContentLength <= 10_000_000,
+                      let data, data.count <= 10_000_000,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     self.state.error = "usage 响应解析失败"
                     return
                 }
-                if let pt = json["plan_type"] as? String {
-                    self.state.planType = pt
+                if let rawPlan = json["plan_type"] as? String,
+                   rawPlan.count <= 128,
+                   rawPlan.rangeOfCharacter(from: .controlCharacters) == nil {
+                    self.state.planType = rawPlan
+                } else {
+                    self.state.planType = nil
                 }
-                if let rl = json["rate_limit"] as? [String: Any] {
-                    if let pw = rl["primary_window"] as? [String: Any] {
-                        self.state.primaryPct = pw["used_percent"] as? Int
-                        self.state.windowSeconds = pw["limit_window_seconds"] as? Int
-                        if let reset = pw["reset_at"] as? Int {
-                            self.state.resetAt = Int64(reset)
-                        }
-                    }
-                    // secondary_window is null on Plus plans (weekly-only).
+                self.state.primaryPct = nil
+                self.state.windowSeconds = nil
+                self.state.resetAt = nil
+                if let rl = json["rate_limit"] as? [String: Any],
+                   let pw = rl["primary_window"] as? [String: Any] {
+                    self.state.primaryPct = Self.boundedPercent(pw["used_percent"] as? NSNumber)
+                    self.state.windowSeconds = Self.boundedWindow(pw["limit_window_seconds"] as? NSNumber)
+                    self.state.resetAt = Self.boundedReset(pw["reset_at"] as? NSNumber)
                 }
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil

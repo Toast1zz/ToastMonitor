@@ -24,6 +24,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var scrollResetObserver: NSObjectProtocol?
     /// Popover 设置页开关状态（userInfo["open"]: Bool）——Esc 先返回再关闭。
     static let settingsVisibilityNotification = Notification.Name("tmPanelSettingsVisibility")
+    /// Requests hiding the menu-bar panel without closing whichever window
+    /// becomes key while the dashboard is opening.
+    static let hideNotification = Notification.Name("tmPanelHide")
+    private var hideObserver: NSObjectProtocol?
     /// Esc 在设置页时请求返回首页。
     static let settingsBackNotification = Notification.Name("tmPanelSettingsBack")
     private var settingsOpenObserver: NSObjectProtocol?
@@ -73,7 +77,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             object: panel,
             queue: .main
         ) { [weak self] _ in
-            self?.hide()
+            Task { @MainActor [weak self] in self?.hide() }
         }
 
         // Self-size to the SwiftUI content's natural height. The home view
@@ -84,17 +88,19 @@ final class PanelController: NSObject, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let self else { return }
             guard let kind = note.userInfo?["kind"] as? String,
                   let h = note.userInfo?["height"] as? CGFloat else { return }
-            if kind == "pinned" {
-                self.pinnedSliceHeight = h
-            } else {
-                self.bodySliceHeight = h
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if kind == "pinned" {
+                    self.pinnedSliceHeight = h
+                } else {
+                    self.bodySliceHeight = h
+                }
+                NSObject.cancelPreviousPerformRequests(
+                    withTarget: self, selector: #selector(applyMergedHeight), object: nil)
+                self.perform(#selector(applyMergedHeight), with: nil, afterDelay: 0.05)
             }
-            NSObject.cancelPreviousPerformRequests(
-                withTarget: self, selector: #selector(applyMergedHeight), object: nil)
-            self.perform(#selector(applyMergedHeight), with: nil, afterDelay: 0.05)
         }
         // Period switches reset the scroll position.
         scrollResetObserver = NotificationCenter.default.addObserver(
@@ -102,7 +108,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.resetScrollToTop()
+            Task { @MainActor [weak self] in self?.resetScrollToTop() }
         }
 
         // Esc closes.
@@ -113,7 +119,15 @@ final class PanelController: NSObject, NSWindowDelegate {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            self?.settingsOpen = (note.userInfo?["open"] as? Bool) ?? false
+            let open = (note.userInfo?["open"] as? Bool) ?? false
+            Task { @MainActor [weak self] in self?.settingsOpen = open }
+        }
+        hideObserver = NotificationCenter.default.addObserver(
+            forName: Self.hideNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.hide() }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53, let self, self.panel.isVisible {
@@ -263,6 +277,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         if let scrollResetObserver {
             NotificationCenter.default.removeObserver(scrollResetObserver)
+        }
+        if let hideObserver {
+            NotificationCenter.default.removeObserver(hideObserver)
         }
         if let settingsOpenObserver {
             NotificationCenter.default.removeObserver(settingsOpenObserver)

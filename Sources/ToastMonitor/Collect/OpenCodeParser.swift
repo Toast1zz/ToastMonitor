@@ -16,6 +16,7 @@ enum OpenCodeParser {
         let title: String
         let directory: String
         let model: String?
+        let provider: String?
         let cost: Double
         let input: Int64
         let output: Int64
@@ -44,6 +45,7 @@ enum OpenCodeParser {
             let col = { (i: Int32) -> String in String(cString: sqlite3_column_text(stmt, i)) }
             let model: String? = sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : col(3)
             out.append(Row(id: col(0), title: col(1), directory: col(2), model: normalizeModel(model),
+                           provider: normalizeProvider(model),
                            cost: sqlite3_column_double(stmt, 4),
                            input: sqlite3_column_int64(stmt, 5),
                            output: sqlite3_column_int64(stmt, 6),
@@ -69,6 +71,13 @@ enum OpenCodeParser {
         return raw
     }
 
+    static func normalizeProvider(_ raw: String?) -> String? {
+        guard let raw, raw.hasPrefix("{"), let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return (obj["providerID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     static func scan() -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.opencode.sourceIsRemote else { return ([], []) } // source = VPS feed
         var turns: [TurnRecord] = []
@@ -86,38 +95,43 @@ enum OpenCodeParser {
             sessions.append(SessionInfo(tool: .opencode, sessionID: row.id, title: row.title.isEmpty ? nil : row.title,
                                         project: project, model: row.model, created: sec(row.timeCreated), updated: sec(row.timeUpdated)))
 
-            let totalInput = row.input + row.reasoning
+            let totalInput = row.input
             if let prev = prevTotals[key] {
-                let dInput = totalInput - prev.input
+                let legacyCombinedInput = prev.reasoning == 0
+                    && row.reasoning > 0 && prev.input == row.input + row.reasoning
+                let dInput = (legacyCombinedInput ? row.input + row.reasoning : totalInput) - prev.input
                 let dOutput = row.output - prev.output
+                let dReasoning = legacyCombinedInput ? 0 : row.reasoning - prev.reasoning
                 let dCacheRead = row.cacheRead - prev.cacheRead
                 let dCacheWrite = row.cacheWrite - prev.cacheWrite
                 let dCost = row.cost - prev.cost
-                // Per-field reset protection: a field that shrank (upstream
-                // reset) yields 0, never a negative token count (P1).
                 let turn = TurnRecord(tool: .opencode, sessionID: row.id, project: project,
                                       model: row.model, ts: sec(row.timeUpdated),
                                       inputTokens: max(dInput, 0), outputTokens: max(dOutput, 0),
+                                      reasoningTokens: max(dReasoning, 0),
                                       cacheRead: max(dCacheRead, 0), cacheWrite: max(dCacheWrite, 0),
-                                      cost: max(dCost, 0),
-                                      eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.cacheRead):\(row.cacheWrite)",
+                                      cost: max(dCost, 0), provider: row.provider,
+                                      eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
                                       costQuality: "actual")
-                if turn.inputTokens + turn.outputTokens + turn.cacheRead + turn.cacheWrite > 0 {
+                if turn.inputTokens + turn.outputTokens + turn.reasoningTokens + turn.cacheRead + turn.cacheWrite > 0 {
                     turns.append(turn)
                 }
-            } else if totalInput > 0 || row.output > 0 {
+            } else if totalInput > 0 || row.output > 0 || row.reasoning > 0 {
                 // First sighting: record the full totals as one turn (backfill).
                 // ts uses the REAL last-update time so history lands on its
                 // true day instead of today (P1).
                 turns.append(TurnRecord(tool: .opencode, sessionID: row.id, project: project,
                                         model: row.model, ts: sec(row.timeUpdated),
                                         inputTokens: totalInput, outputTokens: row.output,
+                                        reasoningTokens: row.reasoning,
                                         cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, cost: row.cost,
-                                        eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.cacheRead):\(row.cacheWrite)",
+                                        provider: row.provider,
+                                        eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
                                         costQuality: "actual"))
             }
             Database.shared.setSessionTotals(key, tool: "opencode",
                                              input: totalInput, output: row.output,
+                                             reasoning: row.reasoning,
                                              cacheRead: row.cacheRead, cacheWrite: row.cacheWrite,
                                              cost: row.cost, updated: sec(row.timeUpdated))
         }

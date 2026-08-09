@@ -16,7 +16,7 @@ enum OmpParser {
     /// Returns (turns, sessions) parsed from all changed files.
     /// Depth 3 covers both top-level transcripts (<cwd>/<session>.jsonl)
     /// and subagent transcripts (<cwd>/<session>/<agent>.jsonl).
-    static func scan(knownPaths: [String]) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(knownPaths: [String], database: Database = .shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.omp.sourceIsRemote else { return ([], []) } // local-only source
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
@@ -25,21 +25,27 @@ enum OmpParser {
 
         for file in knownPaths {
             guard let st = FileScanner.fileStat(file) else { continue }
-            let prev = Database.shared.scanState(file)
+            let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
 
             // mtime changed with size unchanged = in-place rewrite; replay
             // from 0 so edited events are not silently lost (dedupe handles
             // the already-imported ones).
+            let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
             let sameAppendOnlyFile = prev.identity == st.identity
                 && st.size > prev.size
                 && prev.mtime != 0
+                && !pendingRewrite
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
             if objs.isEmpty {
-                // Record the offset so a file whose new content is only a
-                // partial line is not re-read.
-                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity)
+                // Preserve header-derived identity while a trailing JSON line
+                // is incomplete. `newOffset` remains before that line, so the
+                // next append retries it instead of losing the record.
+                let pending = st.size < prev.size || pendingRewrite
+                database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                      identity: st.identity,
+                                      context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
                 continue
             }
 
@@ -50,7 +56,8 @@ enum OmpParser {
             // would merge distinct sessions and collide event ids. The UUID
             // lives in the file HEADER, which incremental scans never re-read,
             // so it is persisted in scan_state.context and restored here.
-            var sessionID = prev.context.flatMap { ctxData in
+            let persistedContext = pendingRewrite ? nil : prev.context
+            var sessionID = persistedContext.flatMap { ctxData in
                 (try? JSONSerialization.jsonObject(with: Data(ctxData.utf8))) as? [String: Any]
             }?["sid"] as? String ?? (fileName as NSString).deletingPathExtension
             for item in objs {
@@ -89,11 +96,8 @@ enum OmpParser {
                 // Provider-computed cost (per-request breakdown); OMP billing
                 // runs inside opencode-go plans, so treat it as an estimate.
                 let cost = (usage["cost"] as? [String: Any])?["total"] as? NSNumber
-                // Message ids are unique within a transcript; the relative
-                // path carries the session uuid, so the composite id is
-                // global even for same-named subagent transcripts.
-                let msgID = obj["id"] as? String ?? "x"
-                let eventID = "omp:\(relKey):\(msgID)"
+                let eventID = EventIdentity.omp(relativePath: relKey, sessionID: sessionID,
+                                                object: obj, usage: usage)
                 turns.append(TurnRecord(tool: .omp, sessionID: sessionID, project: project,
                                         model: model, ts: ts,
                                         inputTokens: input, outputTokens: output,
@@ -110,10 +114,14 @@ enum OmpParser {
                                             project: project, model: sessionModel,
                                             created: firstTs, updated: lastTs))
             }
-            let ctx = ["sid": sessionID]
+            var ctx: [String: Any] = ["sid": sessionID]
+            if st.size < prev.size {
+                ctx["_full_rescan"] = true
+            }
             let ctxJSON = (try? JSONSerialization.data(withJSONObject: ctx))
                 .flatMap { String(data: $0, encoding: .utf8) }
-            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity, context: ctxJSON)
+            database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                 identity: st.identity, context: ctxJSON)
         }
         return (turns, sessions)
     }

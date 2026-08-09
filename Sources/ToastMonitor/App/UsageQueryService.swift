@@ -16,12 +16,14 @@ final class UsageQueryService {
         var coverage: Double { totalCount > 0 ? Double(knownCount) / Double(totalCount) : 0 }
     }
 
-    struct Snapshot {
+    /// Fields needed by the status bar and popover. Dashboard-only model and
+    /// calendar data is intentionally absent so a lightweight refresh never
+    /// performs the annual aggregation queries.
+    struct LightSnapshot {
         var today: Database.ToolTotals
         var week: Database.ToolTotals
         var month: Database.ToolTotals
         var all: Database.ToolTotals
-        /// 主 token 口径（输入 + 输出；缓存命中为独立明细）。
         var todayTokens: Int64
         var weekTokens: Int64
         var monthTokens: Int64
@@ -38,15 +40,21 @@ final class UsageQueryService {
         var apiValueWeek: Double
         var apiValueMonth: Double
         var apiValueAll: Double
+        var subscriptions: [Database.Subscription]
+        var lastScan: Int64
+        var fetchedAt: Int64
+    }
+
+    /// Complete dashboard snapshot. `light` is computed once and reused,
+    /// avoiding a second round of status/popover aggregate work.
+    struct Snapshot {
+        var light: LightSnapshot
         var modelAggs: [Database.ModelAgg]
         var modelAggsToday: [Database.ModelAgg]
         var modelAggsMonth: [Database.ModelAgg]
         var modelAggsAll: [Database.ModelAgg]
         var heatmap: [Int64: Int64]
         var heatmapCost: [Int64: Double]
-        var subscriptions: [Database.Subscription]
-        var lastScan: Int64
-        var fetchedAt: Int64
     }
 
     private init() {}
@@ -54,6 +62,12 @@ final class UsageQueryService {
     func loadSnapshot(completion: @escaping (Snapshot) -> Void) {
         queue.async {
             let snap = self.compute()
+            DispatchQueue.main.async { completion(snap) }
+        }
+    }
+    func loadLightSnapshot(completion: @escaping (LightSnapshot) -> Void) {
+        queue.async {
+            let snap = self.computeLight()
             DispatchQueue.main.async { completion(snap) }
         }
     }
@@ -80,44 +94,53 @@ final class UsageQueryService {
         }
     }
 
-    func loadOGSnapshots(limit: Int = 200, completion: @escaping ([Database.OGSnapshot]) -> Void) {
-        queue.async {
-            let snapshots = Database.shared.ogSnapshots(limit: limit)
-            DispatchQueue.main.async { completion(snapshots) }
-        }
-    }
-
-    func loadDailyAggsByModel(days: Int, completion: @escaping ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)]) -> Void) {
+    func loadDailyAggsByModel(days: Int, completion: @escaping ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> Void) {
         queue.async {
             let aggs = Database.shared.dailyAggregatesByModel(days: days)
             DispatchQueue.main.async { completion(aggs) }
         }
     }
+    /// Loads one quota point per local calendar day, retaining the complete
+    /// persisted history rather than a polling-frequency-dependent row limit.
+    func loadOGSnapshotsByDay(completion: @escaping ([Database.OGSnapshot]) -> Void) {
+        queue.async {
+            let snapshots = Database.shared.ogSnapshotsByDay()
+            DispatchQueue.main.async { completion(snapshots) }
+        }
+    }
 
-    private func compute() -> Snapshot {
+    func loadORSnapshotsByDay(completion: @escaping ([Database.ORSnapshot]) -> Void) {
+        queue.async {
+            let snapshots = Database.shared.orSnapshotsByDay()
+            DispatchQueue.main.async { completion(snapshots) }
+        }
+    }
+
+    private func computeLight() -> LightSnapshot {
         let cal = Calendar.current
         let now = Date()
         let nowTs = Int64(now.timeIntervalSince1970)
         let todayStart = Int64(cal.startOfDay(for: now).timeIntervalSince1970)
         let weekStart = Int64(cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now))!.timeIntervalSince1970)
-        let monthStart = nowTs - 30 * 86400 // 近 30 天（用户 2026-08-05：不要自然月）
+        let monthStart = nowTs - 30 * 86400 // 近 30 天（不要自然月）
 
         func costQuality(from: Int64, to: Int64) -> CostQuality {
             let b = Database.shared.costBreakdown(from: from, to: to)
-            return CostQuality(estimated: b.estimated, actual: b.actual, knownCount: b.knownCount, totalCount: b.totalCount)
+            return CostQuality(estimated: b.estimated, actual: b.actual,
+                               knownCount: b.knownCount, totalCount: b.totalCount)
         }
 
-        let today = Database.shared.totals(from: todayStart, to: nowTs)
+        // The grouped rows already contain every total; deriving the four
+        // period totals avoids four additional aggregate scans.
         let byToolToday = Database.shared.totalsByTool(from: todayStart, to: nowTs)
         let byToolWeek = Database.shared.totalsByTool(from: weekStart, to: nowTs)
         let byToolMonth = Database.shared.totalsByTool(from: monthStart, to: nowTs)
         let byToolAll = Database.shared.totalsByTool(from: 0, to: nowTs)
-        let annualAggs = Database.shared.dailyAggregates(days: 371)
-        return Snapshot(
-            today: today,
-            week: Database.shared.totals(from: weekStart, to: nowTs),
-            month: Database.shared.totals(from: monthStart, to: nowTs),
-            all: Database.shared.totals(from: 0, to: nowTs),
+        return LightSnapshot(
+            today: Self.aggregate(byToolToday),
+            week: Self.aggregate(byToolWeek),
+            month: Self.aggregate(byToolMonth),
+            all: Self.aggregate(byToolAll),
             todayTokens: Self.totalTokens(byToolToday),
             weekTokens: Self.totalTokens(byToolWeek),
             monthTokens: Self.totalTokens(byToolMonth),
@@ -134,16 +157,41 @@ final class UsageQueryService {
             apiValueWeek: Database.shared.apiValue(from: weekStart, to: nowTs),
             apiValueMonth: Database.shared.apiValue(from: monthStart, to: nowTs),
             apiValueAll: Database.shared.apiValue(from: 0, to: nowTs),
+            subscriptions: Database.shared.subscriptions(),
+            lastScan: Database.shared.lastScanTime(),
+            fetchedAt: nowTs)
+    }
+
+    private func compute() -> Snapshot {
+        let light = computeLight()
+        let nowTs = light.fetchedAt
+        let cal = Calendar.current
+        let now = Date(timeIntervalSince1970: TimeInterval(nowTs))
+        let todayStart = Int64(cal.startOfDay(for: now).timeIntervalSince1970)
+        let weekStart = Int64(cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now))!.timeIntervalSince1970)
+        let monthStart = nowTs - 30 * 86400
+        let annualAggs = Database.shared.dailyAggregates(days: 371)
+        return Snapshot(
+            light: light,
             modelAggs: Database.shared.modelAggregates(from: weekStart, to: nowTs),
             modelAggsToday: Database.shared.modelAggregates(from: todayStart, to: nowTs),
             modelAggsMonth: Database.shared.modelAggregates(from: monthStart, to: nowTs),
             modelAggsAll: Database.shared.modelAggregates(from: 0, to: nowTs),
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),
-            heatmapCost: Self.buildCostHeatmap(aggs: annualAggs),
-            subscriptions: Database.shared.subscriptions(),
-            lastScan: Database.shared.lastScanTime(),
-            fetchedAt: Int64(Date().timeIntervalSince1970))
+            heatmapCost: Self.buildCostHeatmap(aggs: annualAggs))
+    }
+
+    private static func aggregate(_ rows: [Database.ToolTotals]) -> Database.ToolTotals {
+        rows.reduce(Database.ToolTotals(tool: "all", input: 0, output: 0,
+                                        cacheRead: 0, cacheWrite: 0, cost: 0, count: 0)) {
+            Database.ToolTotals(tool: "all", input: $0.input + $1.input,
+                                output: $0.output + $1.output,
+                                cacheRead: $0.cacheRead + $1.cacheRead,
+                                cacheWrite: $0.cacheWrite + $1.cacheWrite,
+                                cost: $0.cost + $1.cost,
+                                count: $0.count + $1.count)
+        }
     }
 
     /// 主 token 口径：输入 + 输出 + 缓存命中（cacheRead 计入总量；

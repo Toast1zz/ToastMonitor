@@ -2,6 +2,31 @@ import Foundation
 
 /// Compact human formatting for tokens and money.
 enum Format {
+    private static let dateFormatterLock = NSLock()
+    private static var dateFormatters: [String: DateFormatter] = [:]
+
+    /// Date formatters are expensive and are reused by format and chart
+    /// refreshes. The time-zone identifier is part of the key so a system
+    /// time-zone change cannot return strings from the old zone.
+    private static func dateString(_ date: Date, format: String) -> String {
+        let timeZone = TimeZone.current
+        let key = "\(timeZone.identifier)|\(format)"
+        dateFormatterLock.lock()
+        defer { dateFormatterLock.unlock() }
+        let formatter: DateFormatter
+        if let cached = dateFormatters[key] {
+            formatter = cached
+        } else {
+            let created = DateFormatter()
+            created.locale = Locale(identifier: "en_US_POSIX")
+            created.calendar = Calendar(identifier: .gregorian)
+            created.timeZone = timeZone
+            created.dateFormat = format
+            dateFormatters[key] = created
+            formatter = created
+        }
+        return formatter.string(from: date)
+    }
     /// 1234 -> "1.2k", 1.2M, 4.15B, 1.02T（B/T 用两位小数保留精度）。
     static func compact(_ n: Int64) -> String {
         let d = Double(n)
@@ -52,19 +77,12 @@ enum Format {
 
     /// "2026-08-05 14:23"
     static func dateTime(_ ts: Int64) -> String {
-        let d = Date(timeIntervalSince1970: TimeInterval(ts))
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return f.string(from: d)
+        dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "MM-dd HH:mm")
     }
 
     static func day(_ ts: Int64) -> String {
-        let d = Date(timeIntervalSince1970: TimeInterval(ts))
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: d)
+        dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "yyyy-MM-dd")
     }
-
     /// 1.2k / 34 这类计数缩写（与 compact 同单位体系）。
     static func count(_ n: Int64) -> String {
         compact(n)

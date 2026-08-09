@@ -10,9 +10,9 @@ import Combine
 final class GlassSettings: ObservableObject {
     static let shared = GlassSettings()
 
-    static let key = "popoverGlassIntensity"
+    nonisolated static let key = "popoverGlassIntensity"
     /// 允许的范围：再低内容就没有可读背景了。
-    static let range = 0.25...1.0
+    nonisolated static let range = 0.25...1.0
 
     @Published var intensity: Double {
         didSet {
@@ -118,7 +118,7 @@ struct PopoverSettingsView: View {
     }
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0 (dev)"
     }
 
     // MARK: - 外观
@@ -141,6 +141,8 @@ struct PopoverSettingsView: View {
                 }
                 Slider(value: $glass.intensity, in: GlassSettings.range)
                     .accessibilityLabel("Popover 玻璃通透度")
+                    .accessibilityValue(Text("\(Int((glass.intensity - GlassSettings.range.lowerBound) / (GlassSettings.range.upperBound - GlassSettings.range.lowerBound) * 100))%"))
+                    .accessibilityHint("向左更通透，向右更磨砂")
                 HStack {
                     Text("更通透")
                         .font(.system(size: 11))

@@ -95,13 +95,13 @@ struct SettingsView: View {
                         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
                         HStack(spacing: 8) {
                             if broken > 0 {
-                                TMStatusPill(text: "\(broken) 个异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                                TMStatusPill(text: "\(broken) 个来源异常", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill")
                             }
                             if stale > 0 {
-                                TMStatusPill(text: "\(stale) 个过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                                TMStatusPill(text: "\(stale) 个来源过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                             }
                             if broken == 0 && stale == 0 {
-                                TMStatusPill(text: "全部正常", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
+                                TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                             }
                         }
                     }
@@ -113,7 +113,7 @@ struct SettingsView: View {
                     Text("远程 Feed")
                         .font(.system(size: 13, weight: .semibold))
                     HStack {
-                        TextField("http://100.116.140.74/tm/usage.json", text: $feedURL)
+                        TextField("HTTPS 或私有网段 Feed URL", text: $feedURL)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 11.5, design: .monospaced))
                         Button("保存") {
@@ -176,6 +176,7 @@ struct SettingsView: View {
                 .tmPanelSurface()
 
                 SubscriptionSettingsSection()
+                DataMaintenanceSection()
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
@@ -370,7 +371,7 @@ struct SubscriptionSettingsSection: View {
                                 return
                             }
                             dateError = false
-                            var sub = Database.Subscription(
+                            let sub = Database.Subscription(
                                 id: editID > 0 ? editID : (editing?.id ?? 0),
                                 name: name.trimmingCharacters(in: .whitespaces),
                                 plan: plan,
@@ -419,6 +420,13 @@ struct SubscriptionSettingsSection: View {
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.primary.opacity(0.04)))
+        .onChange(of: showForm) { _, _ in
+            // Draft validation must not survive closing and later reopening
+            // the form; especially dateError used to appear on a fresh edit.
+            priceError = false
+            dateError = false
+            databaseError = nil
+        }
         .alert("删除订阅？", isPresented: Binding(
             get: { pendingDelete != nil },
             set: { if !$0 { pendingDelete = nil } })) {
@@ -468,5 +476,113 @@ struct SubscriptionSettingsSection: View {
 
     private func planColor(_ p: String) -> Color {
         p == "go" ? TMDesign.accent : (p == "openrouter" ? ToolKind.openrouter.color : (p == "claude" ? ToolKind.claude.color : .gray))
+    }
+}
+
+private struct DataMaintenanceSection: View {
+    @ObservedObject private var app = AppState.shared
+    @State private var preview: Database.LocalRebuildPreview?
+    @State private var receipt: DataRepairReceipt?
+    @State private var message: String?
+    @State private var isWorking = false
+    @State private var confirmsRepair = false
+    @State private var confirmsRestore = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("数据维护")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("预览本机数据重建") { loadPreview() }
+                    .font(.system(size: 11))
+                    .disabled(isWorking)
+            }
+            if let preview {
+                Text("\(preview.turns) 条记录 · \(preview.sessions) 个会话 · \(Format.count(preview.tokens)) tokens")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("备份并重建", role: .destructive) { confirmsRepair = true }
+                        .disabled(isWorking || preview.turns == 0)
+                    if receipt != nil {
+                        Button("恢复修复前备份") { confirmsRestore = true }
+                            .disabled(isWorking)
+                    }
+                }
+                .font(.system(size: 11))
+            }
+            if isWorking {
+                ProgressView().controlSize(.small)
+            }
+            if let message {
+                Text(message)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .tmPanelSurface()
+        .confirmationDialog("重建本机用量数据？", isPresented: $confirmsRepair) {
+            Button("备份并重建", role: .destructive) { repair() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("仅处理当前设为“本机”的来源；先创建备份，再重新扫描原始日志。")
+        }
+        .confirmationDialog("恢复修复前备份？", isPresented: $confirmsRestore) {
+            Button("恢复备份", role: .destructive) { restore() }
+            Button("取消", role: .cancel) {}
+        }
+    }
+
+    private func loadPreview() {
+        isWorking = true
+        message = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let value = DataMaintenance.preview()
+            DispatchQueue.main.async {
+                preview = value
+                isWorking = false
+            }
+        }
+    }
+
+    private func repair() {
+        isWorking = true
+        message = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let value = try DataMaintenance.repair()
+                DispatchQueue.main.async {
+                    receipt = value
+                    message = "备份：\(value.backupPath)"
+                    CollectorEngine.shared.scheduleScan(force: true) { _ in
+                        app.refresh()
+                        loadPreview()
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    message = error.localizedDescription
+                    isWorking = false
+                }
+            }
+        }
+    }
+
+    private func restore() {
+        guard let receipt else { return }
+        isWorking = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = DataMaintenance.restore(backupPath: receipt.backupPath)
+            DispatchQueue.main.async {
+                message = ok ? "已恢复：\(receipt.backupPath)" : "恢复失败；备份仍保留"
+                isWorking = false
+                if ok {
+                    app.refresh()
+                    loadPreview()
+                }
+            }
+        }
     }
 }

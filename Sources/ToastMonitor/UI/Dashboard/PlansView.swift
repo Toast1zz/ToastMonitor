@@ -37,6 +37,18 @@ struct PlansView: View {
         .onAppear { loadSnapshots() }
         .onReceive(goClient.$state) { _ in loadOGSnapshots() }
         .onReceive(orClient.$state) { _ in loadORSnapshots() }
+        .onChange(of: showGoForm) { _, open in
+            if !open {
+                goWS = ""
+                goCookie = ""
+            }
+        }
+        .onChange(of: showORForm) { _, open in
+            if !open {
+                orKey = ""
+                orAppend = false
+            }
+        }
     }
 
     private func loadSnapshots() {
@@ -46,7 +58,7 @@ struct PlansView: View {
 
     /// Reloads only the OpenCode Go history series.
     private func loadOGSnapshots() {
-        UsageQueryService.shared.loadOGSnapshots(limit: 120) { goSnapshots = $0 }
+        UsageQueryService.shared.loadOGSnapshotsByDay { goSnapshots = $0 }
     }
 
     /// Reloads only the OpenRouter history series.
@@ -64,6 +76,7 @@ struct PlansView: View {
                     isLoading: go.isLoading,
                     configured: goClient.configured,
                     error: go.error,
+                    lastSync: go.lastOK,
                     syncedText: go.lastOK > 0 ? "更新于 \(Format.dateTime(go.lastOK))" : nil,
                     refresh: goClient.configured ? { goClient.refresh() } : nil
                 )
@@ -206,6 +219,10 @@ struct PlansView: View {
                         }
                     }
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("OpenCode Go 月度用量历史图表")
+                .accessibilityValue(Text(goHistoryAccessibilitySummary(daily)))
+                .accessibilityHint("使用 VoiceOver 浏览每日月度和每周用量")
                 .frame(height: 110)
             } else {
                 Text("快照不足")
@@ -235,6 +252,13 @@ struct PlansView: View {
         return byDay.map { DailyPoint(day: $0.key, month: $0.value.month, week: $0.value.week) }
             .sorted { $0.day < $1.day }
     }
+    private func goHistoryAccessibilitySummary(_ daily: [DailyPoint]) -> String {
+        let monthly = daily.compactMap(\.month)
+        let weekly = daily.compactMap(\.week)
+        let values = monthly + weekly
+        guard let peak = values.max() else { return "暂无数据" }
+        return "\(daily.count) 天，月度峰值 \(Int(peak))%，周度数据 \(weekly.count) 天"
+    }
 
     private var subForGo: Database.Subscription? {
         app.subscriptions.first { $0.plan == "go" }
@@ -250,6 +274,7 @@ struct PlansView: View {
                     isLoading: or.isLoading,
                     configured: orClient.hasKey,
                     error: or.error,
+                    lastSync: or.lastOK,
                     syncedText: or.lastOK > 0 ? "更新于 \(Format.dateTime(or.lastOK))" : nil,
                     refresh: orClient.hasKey ? { orClient.refresh() } : nil
                 )
@@ -311,7 +336,7 @@ struct PlansView: View {
 
                 if orClient.hasKey {
                     HStack(spacing: 24) {
-                        liveStat("现金余额", Format.money(or.accountBalance ?? 0))
+                        liveStat("现金余额", or.accountBalance.map(Format.money) ?? "未知")
                         liveStat("今日实际", Format.money(or.usageDaily))
                         liveStat("本月实际", Format.money(or.usageMonthly))
                         if let limit = or.limit {
@@ -367,6 +392,10 @@ struct PlansView: View {
                         }
                     }
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("OpenRouter 用量快照历史图表")
+                .accessibilityValue(Text(orHistoryAccessibilitySummary(orSnapshots)))
+                .accessibilityHint("使用 VoiceOver 浏览每次快照的用量和额度")
                 .frame(height: 110)
             } else {
                 Text("快照不足")
@@ -375,6 +404,11 @@ struct PlansView: View {
             }
         }
         .padding(.top, 4)
+    }
+    private func orHistoryAccessibilitySummary(_ snapshots: [Database.ORSnapshot]) -> String {
+        let values = snapshots.map(\.usage)
+        guard let peak = values.max() else { return "暂无数据" }
+        return "\(snapshots.count) 次快照，峰值 \(Format.money(peak))"
     }
 
     // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
@@ -388,19 +422,28 @@ struct PlansView: View {
     // MARK: - 容器与通用行
 
     private func statusHeader(isLoading: Bool, configured: Bool, error: String?,
-                              syncedText: String?, refresh: (() -> Void)?) -> some View {
-        HStack(spacing: 8) {
+                              lastSync: Int64, syncedText: String?,
+                              refresh: (() -> Void)?) -> some View {
+        let stale = lastSync > 0
+            && Date().timeIntervalSince1970 - TimeInterval(lastSync) > 120
+        return HStack(spacing: 8) {
             Text("状态")
                 .font(.system(size: TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
             if isLoading {
-                ProgressView().controlSize(.mini)
+                ProgressView()
+                    .controlSize(.mini)
+                    .accessibilityLabel("等待首次扫描")
             } else if !configured {
                 Text("未配置")
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             } else if error != nil {
-                TMStatusPill(text: "同步失败", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                TMStatusPill(text: "异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
+            } else if lastSync <= 0 {
+                TMStatusPill(text: "未知", color: TMDesign.quiet, symbol: "questionmark.circle")
+            } else if stale {
+                TMStatusPill(text: "过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
             } else {
                 Label("已同步", systemImage: "checkmark.circle.fill")
                     .font(.system(size: TMType.caption))
@@ -420,6 +463,8 @@ struct PlansView: View {
                 }
                 .buttonStyle(.borderless)
                 .font(.system(size: TMType.caption))
+                .accessibilityLabel("刷新服务状态")
+                .accessibilityHint("重新查询此服务的额度")
             }
         }
     }

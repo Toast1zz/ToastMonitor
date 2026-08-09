@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  SWIFT_DETERMINISTIC_HASHING: "1"
 
 jobs:
   build-and-test:
@@ -18,3 +25,55 @@ jobs:
 
       - name: Swift test
         run: swift test
+
+      # Re-open a pre-versioned fixture through the real migration path and
+      # replay canonical rows. These are deterministic, data-loss-sensitive
+      # gates rather than timing assumptions about a hosted runner.
+      - name: Migration replay gate
+        run: |
+          swift test --filter DatabaseTests.testSubscriptionIDZeroMigration
+          swift test --filter DatabaseTests.testCanonicalEventSupersedesDerivedMigrationRow
+
+      - name: Duplicate import gate
+        run: swift test --filter ClaudeCodeParserTests.testRepeatedTranscriptRowsShareMessageIdentity
+
+      # Release compilation catches optimizer-only regressions in the scanner
+      # and parser hot paths without asserting a wall-clock budget on CI.
+      - name: Release performance smoke gate
+        run: swift test -c release --filter FileScannerTests
+
+      - name: Strict concurrency gate
+        run: swift build -Xswiftc -strict-concurrency=complete
+
+  release-bundle:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-test
+    runs-on: macos-14
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate semantic release tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          [[ "$tag" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || {
+            echo "release tags must be vMAJOR.MINOR or vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          }
+
+      - name: Assemble signed app
+        if: ${{ secrets.TM_SIGNING_IDENTITY != '' }}
+        env:
+          TM_VERSION: ${{ github.ref_name }}
+          TM_BUILD_NUMBER: ${{ github.run_number }}
+          TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
+        run: ./scripts/build-app.sh
+
+      - name: Upload app bundle
+        if: ${{ secrets.TM_SIGNING_IDENTITY != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToastMonitor-${{ github.ref_name }}
+          path: dist/ToastMonitor.app

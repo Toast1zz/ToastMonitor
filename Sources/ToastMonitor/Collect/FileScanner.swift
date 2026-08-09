@@ -4,6 +4,17 @@ import Darwin
 /// Incremental JSONL utilities: tracks byte offsets so we only parse appended data.
 enum FileScanner {
 
+    private struct FileListCache {
+        let files: [String]
+        /// Every visited directory is part of the cache key. A changed
+        /// directory mtime invalidates the whole traversal, including nested
+        /// additions that do not change the root directory's mtime.
+        let directoryMTimes: [String: Int64]
+    }
+
+    private static let listCacheLock = NSLock()
+    private static var listCache: [String: FileListCache] = [:]
+
     /// Stat info for a file.
     struct Stat {
         let size: Int64
@@ -23,14 +34,30 @@ enum FileScanner {
     static func dirMT(_ path: String) -> Int64? {
         var st = stat()
         guard stat(path, &st) == 0 else { return nil }
-        return Int64(st.st_mtimespec.tv_sec)
+        return Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_mtimespec.tv_nsec)
     }
 
+    /// Lists JSONL files while reusing a traversal until any visited
+    /// directory changes. The cache is keyed by root and depth and validates
+    /// every directory mtime, so a new nested file can never remain hidden.
     static func listFiles(_ root: String, maxDepth: Int = 3) -> [String] {
+        let cacheKey = "\(root)\u{1F} \(maxDepth)"
+        listCacheLock.lock()
+        if let cached = listCache[cacheKey],
+           cached.directoryMTimes[root] != nil,
+           cached.directoryMTimes.allSatisfy({ dirMT($0.key) == $0.value }) {
+            let files = cached.files
+            listCacheLock.unlock()
+            return files
+        }
+        listCacheLock.unlock()
+
         var out: [String] = []
+        var directories: [String: Int64] = [:]
         var stack: [(String, Int)] = [(root, 0)]
         let fm = FileManager.default
         while let (dir, depth) = stack.popLast() {
+            if let mt = dirMT(dir) { directories[dir] = mt }
             guard depth < maxDepth else { continue }
             guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
             for e in entries {
@@ -45,8 +72,12 @@ enum FileScanner {
                 }
             }
         }
+        listCacheLock.lock()
+        listCache[cacheKey] = FileListCache(files: out, directoryMTimes: directories)
+        listCacheLock.unlock()
         return out
     }
+
 
     /// Reads newly appended lines from `path` given the last consumed offset.
     /// Returns parsed JSON objects with their absolute byte offsets (stable
@@ -95,9 +126,42 @@ enum FileScanner {
         return (objects, Int64(start) + Int64(consumed))
     }
 
+    /// A truncate followed by a regrow can leave the inode unchanged and the
+    /// new file larger than the last cursor. Persisting this marker in the
+    /// parser context forces the next scan to reread the header from offset 0.
+    static func contextNeedsFullRescan(_ context: String?) -> Bool {
+        guard let context,
+              let data = context.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (object["_full_rescan"] as? Bool) == true
+    }
+
+    static func contextWithFullRescan(_ context: String?, pending: Bool) -> String? {
+        var object: [String: Any] = [:]
+        if let context,
+           let data = context.data(using: .utf8),
+           let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            object = decoded
+        }
+        if pending {
+            object["_full_rescan"] = true
+        } else {
+            object.removeValue(forKey: "_full_rescan")
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoFormatterNoFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
         return f
     }()
 
@@ -105,9 +169,7 @@ enum FileScanner {
         if let d = isoFormatter.date(from: s) {
             return Int64(d.timeIntervalSince1970)
         }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        if let d = f.date(from: s) {
+        if let d = isoFormatterNoFraction.date(from: s) {
             return Int64(d.timeIntervalSince1970)
         }
         return nil

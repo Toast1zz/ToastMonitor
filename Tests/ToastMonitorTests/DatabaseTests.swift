@@ -38,6 +38,59 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(db.turnCount(), 1, "同一事件重放被重复导入")
     }
 
+    func testCanonicalEventSupersedesDerivedMigrationRow() {
+        let legacy = TurnRecord(tool: .claude, sessionID: "s1", project: "p", model: "m",
+                                ts: 100, inputTokens: 10, outputTokens: 5,
+                                cacheRead: 2, cacheWrite: 1, cost: 0)
+        let canonical = TurnRecord(tool: .claude, sessionID: "s1", project: "p", model: "m",
+                                   ts: 100, inputTokens: 10, outputTokens: 5,
+                                   cacheRead: 2, cacheWrite: 1, cost: 0,
+                                   eventID: "claude:s1:msg-1", costQuality: "estimated")
+        XCTAssertTrue(db.insertTurns([legacy]))
+        XCTAssertTrue(db.insertTurns([canonical]))
+        XCTAssertEqual(db.turnCount(), 1, "canonical replay must replace its migration-era derived row")
+        XCTAssertTrue(db.insertTurns([canonical]))
+        XCTAssertEqual(db.turnCount(), 1)
+    }
+
+    func testLocalRebuildPreviewBackupResetAndRestore() {
+        let turn = TurnRecord(tool: .claude, sessionID: "s1", project: nil, model: "m",
+                              ts: 100, inputTokens: 10, outputTokens: 5,
+                              cacheRead: 2, cacheWrite: 0, cost: 0,
+                              eventID: "claude:s1:m1")
+        XCTAssertTrue(db.insertTurns([turn]))
+        XCTAssertTrue(db.upsertSessions([
+            SessionInfo(tool: .claude, sessionID: "s1", title: nil, project: nil,
+                        model: "m", created: 100, updated: 100)
+        ]))
+        let preview = db.previewLocalRebuild(tools: [.claude])
+        XCTAssertEqual(preview.turns, 1)
+        XCTAssertEqual(preview.sessions, 1)
+        XCTAssertEqual(preview.tokens, 17)
+
+        let backup = tmpPath + ".backup"
+        defer { try? FileManager.default.removeItem(atPath: backup) }
+        XCTAssertTrue(db.backup(to: backup))
+        XCTAssertTrue(db.resetLocalUsage([(.claude, ["/tmp/claude-root"])]))
+        XCTAssertEqual(db.turnCount(), 0)
+        XCTAssertTrue(db.restore(from: backup))
+        XCTAssertEqual(db.turnCount(), 1)
+    }
+
+    func testDailyAggregatesCountCallsRatherThanDays() {
+        let turns = [
+            TurnRecord(tool: .claude, sessionID: "s1", project: nil, model: "m",
+                       ts: Int64(Date().timeIntervalSince1970), inputTokens: 1, outputTokens: 1,
+                       cacheRead: 0, cacheWrite: 0, cost: 0, eventID: "call-1"),
+            TurnRecord(tool: .claude, sessionID: "s1", project: nil, model: "m",
+                       ts: Int64(Date().timeIntervalSince1970) + 1, inputTokens: 2, outputTokens: 1,
+                       cacheRead: 0, cacheWrite: 0, cost: 0, eventID: "call-2"),
+        ]
+        XCTAssertTrue(db.insertTurns(turns))
+        XCTAssertEqual(db.dailyAggregates(days: 1).first?.count, 2)
+        XCTAssertEqual(db.dailyAggregatesByModel(days: 1).first?.count, 2)
+    }
+
     // P0-3: 同 session、同秒、相同 token 的两个不同真实事件必须都保留。
     // 现在靠上游 event_id 区分（parser 提供），不再被复合键误去重。
     func testSameSecondSameTokensSameSessionDistinctEvents() {
@@ -94,6 +147,17 @@ final class DatabaseTests: XCTestCase {
         }
         XCTAssertFalse(ok)
         XCTAssertEqual(db.turnCount(), 0)
+    }
+
+    func testSessionTotalsPersistReasoningSeparately() {
+        XCTAssertTrue(db.setSessionTotals("opencode|s1", tool: "opencode",
+                                          input: 10, output: 5, reasoning: 7,
+                                          cacheRead: 3, cacheWrite: 2,
+                                          cost: 0.1, updated: 100))
+        let totals = db.sessionTotals()["opencode|s1"]
+        XCTAssertEqual(totals?.input, 10)
+        XCTAssertEqual(totals?.output, 5)
+        XCTAssertEqual(totals?.reasoning, 7)
     }
 
     // P0-9: 旧库 id=0 记录迁移到真实自增 id，数据不丢失。

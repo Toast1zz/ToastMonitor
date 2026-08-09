@@ -53,7 +53,7 @@ final class WindowManager {
             object: window,
             queue: .main
         ) { _ in
-            NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
+            NotificationCenter.default.post(name: TMNotifications.dashboardVisibility, object: false)
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -128,6 +128,8 @@ struct DashboardView: View {
                 .symbolEffect(.pulse, isActive: app.manualRefreshing)
                 .disabled(app.manualRefreshing)
                 .help("刷新数据")
+                .accessibilityLabel("刷新数据")
+                .accessibilityValue(app.manualRefreshing ? "刷新中" : "已准备")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in

@@ -11,6 +11,7 @@ struct ModelPrice {
 }
 
 enum Pricing {
+    static let version = "2026-08-09"
     static let table: [(pattern: String, price: ModelPrice)] = [
         // Claude
         ("claude-opus-4", ModelPrice(input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75)),

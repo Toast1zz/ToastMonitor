@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
@@ -84,7 +85,7 @@ struct PopoverHomeView: View {
                                     postPanelHeight(kind: "pinned", height: geo.size.height)
                                 }
                             }
-                            .onChange(of: geo.size.height) { h in
+                            .onChange(of: geo.size.height) { _, h in
                                 postPanelHeight(kind: "pinned", height: h)
                             }
                     }
@@ -116,7 +117,7 @@ struct PopoverHomeView: View {
                                     postPanelHeight(kind: "body", height: geo.size.height)
                                 }
                             }
-                            .onChange(of: geo.size.height) { h in
+                            .onChange(of: geo.size.height) { _, h in
                                 postPanelHeight(kind: "body", height: h)
                             }
                     }
@@ -156,6 +157,8 @@ struct PopoverHomeView: View {
                     .minimumScaleFactor(0.6)
                     .contentTransition(.numericText(value: Double(tokens)))
                     .animation(.easeOut(duration: 0.35), value: tokens)
+                    .accessibilityLabel("\(period.rawValue) token 用量")
+                    .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.tertiary)
@@ -195,6 +198,8 @@ struct PopoverHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(p.rawValue)
+                .accessibilityValue(period == p ? "已选" : "未选")
+                .accessibilityAddTraits(period == p ? .isSelected : [])
             }
         }
         .padding(3)
@@ -261,6 +266,9 @@ struct PopoverHomeView: View {
                 .foregroundStyle(.primary)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
     }
 
     /// 实际支出 = turns 实际 + OpenRouter 今日实际 + 全部订阅摊销。
@@ -329,6 +337,7 @@ struct PopoverHomeView: View {
                     }
                 }
                 .frame(height: 6)
+                .accessibilityHidden(true)
 
                 ForEach(rows, id: \.tool) { row in
                     HStack(spacing: 6) {
@@ -347,6 +356,9 @@ struct PopoverHomeView: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
+                    .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens，占比 \(percentText(row, total: total))"))
                 }
             }
         }
@@ -390,15 +402,23 @@ struct PopoverHomeView: View {
     private var goStatusRow: some View {
         let state = goClient.state
         let remaining = state.monthlyPct.map { 100 - $0 }
+        let stale = state.lastSync > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = "未配置"
         if goClient.configured {
-            if let remaining {
+            if state.error != nil {
+                status = "异常"
+            } else if stale {
+                status = "过期"
+            } else if let remaining {
                 status = "剩余 \(Int(remaining))%"
                 if let r = resetText(state.monthlyReset.map { state.lastSync + $0 }) {
                     status += " · \(r)"
                 }
+            } else if state.isLoading {
+                status = "等待首次扫描"
             } else {
-                status = state.error != nil ? "读取失败" : "同步中"
+                status = "未知"
             }
         }
         return statusRow(name: "OpenCode Go", status: status,
@@ -419,16 +439,20 @@ struct PopoverHomeView: View {
         let state = codexQuota.state
         let remaining = state.primaryPct.map { 100 - Double($0) }
         let sub = app.subscriptions.first { $0.plan == "codex" }
+        let stale = state.lastSync > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = "未订阅"
-        if state.primaryPct != nil, let remaining {
+        if state.error != nil {
+            status = "异常"
+        } else if stale, state.primaryPct != nil {
+            status = "过期"
+        } else if let remaining {
             status = "\(windowLabel)剩余 \(Int(remaining))%"
             if let r = resetText(state.resetAt) {
                 status += " · \(r)"
             }
-        } else if state.error != nil {
-            status = "限额读取失败"
         } else if let sub {
-            status = "已订阅 \(Format.money(sub.price))/月"
+            status = "未知 · 已订阅 \(Format.money(sub.price))/月"
         }
         return statusRow(name: "Codex Plus", status: status,
                          statusColor: .primary,
@@ -437,9 +461,22 @@ struct PopoverHomeView: View {
 
     private var routerStatusRow: some View {
         let state = orClient.state
-        let status = orClient.hasKey
-            ? "余额 \(Format.money(state.accountBalance ?? 0))"
-            : "未配置"
+        let stale = state.lastOK > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastOK) > 120
+        let status: String
+        if !orClient.hasKey {
+            status = "未配置"
+        } else if state.error != nil {
+            status = "异常"
+        } else if stale {
+            status = "过期"
+        } else if let balance = state.accountBalance {
+            status = "余额 \(Format.money(balance))"
+        } else if state.isLoading {
+            status = "等待首次扫描"
+        } else {
+            status = "未知"
+        }
         return statusRow(name: "OpenRouter", status: status,
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
     }
@@ -452,7 +489,7 @@ struct PopoverHomeView: View {
 
     private func openPlans() {
         WindowManager.shared.show(tab: .plans)
-        NSApp.keyWindow?.close()
+        NotificationCenter.default.post(name: PanelController.hideNotification, object: nil)
     }
 
     /// Post a measured height slice straight to the panel controller.
@@ -505,5 +542,9 @@ private struct StatusRow: View {
         }
         .buttonStyle(.plain)
         .help("打开计划与余额")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(name)
+        .accessibilityValue(Text(status))
+        .accessibilityHint("打开计划与余额查看详细状态")
     }
 }

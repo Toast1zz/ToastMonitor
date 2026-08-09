@@ -148,9 +148,9 @@ enum SubscriptionMath {
                             projectedEnd: projected, exhaustDate: exhaust,
                             isBreakeven: used >= 10)
         case "openrouter":
+            guard let balance = OpenRouterClient.shared.state.accountBalance else { return nil }
             let used = Database.shared.orSpendSince(Int64(cycleStart.timeIntervalSince1970))
             let rate = used / Double(daysElapsed)
-            let balance = OpenRouterClient.shared.state.accountBalance ?? 0
             var exhaust: Date?
             if rate > 0.0005 && balance > 0 {
                 let daysToExhaust = balance / rate

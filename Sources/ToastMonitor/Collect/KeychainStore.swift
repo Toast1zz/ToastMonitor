@@ -80,42 +80,61 @@ enum KeychainStore {
     /// behind would keep credentials readable by any local process.
     static func migrateLegacyVaultIfNeeded() {
         let accounts = ["or-keys", "go-workspace-id", "go-auth-cookie"]
-        for account in accounts {
-            guard get(account: account) == nil else { continue } // already migrated
-            guard let legacy = legacyVaultValue(account: account) else { continue }
-            guard set(legacy, account: account) else {
-                return // Keychain write failed; keep the vault for a retry
-            }
-        }
-        // Every value is now in the login keychain (or was never in the
-        // vault); the obsolete file can go.
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ToastMonitor", isDirectory: true)
         let path = dir.appendingPathComponent("toastmonitor.keychain").path
-        if FileManager.default.fileExists(atPath: path) {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+
+        var safeToRemove = true
+        for account in accounts {
+            guard get(account: account) == nil else { continue }
+            switch legacyVaultValue(account: account) {
+            case .value(let legacy):
+                guard set(legacy, account: account) else {
+                    return // Keychain write failed; keep the vault for a retry
+                }
+            case .missing:
+                continue
+            case .unavailable:
+                safeToRemove = false
+            }
+        }
+        // Never delete a legacy vault whose contents could not be inspected.
+        // A locked keychain file is a recovery source, not proof of no data.
+        if safeToRemove {
             try? FileManager.default.removeItem(atPath: path)
         }
     }
 
+    private enum LegacyValue {
+        case value(String)
+        case missing
+        case unavailable
+    }
+
     /// Reads a value from the legacy vault file. Main thread only (the
     /// legacy unlock requires the main-thread UI session).
-    private static func legacyVaultValue(account: String) -> String? {
+    private static func legacyVaultValue(account: String) -> LegacyValue {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ToastMonitor", isDirectory: true)
         let path = dir.appendingPathComponent("toastmonitor.keychain").path
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        guard FileManager.default.fileExists(atPath: path) else { return .missing }
         var kc: SecKeychain?
-        guard SecKeychainOpen(path, &kc) == errSecSuccess, let kc else { return nil }
+        guard SecKeychainOpen(path, &kc) == errSecSuccess, let kc else { return .unavailable }
         let pw = "tm-local-vault-2026-08"
-        guard SecKeychainUnlock(kc, UInt32(pw.utf8.count), pw, true) == errSecSuccess else { return nil }
+        guard SecKeychainUnlock(kc, UInt32(pw.utf8.count), pw, true) == errSecSuccess else {
+            return .unavailable
+        }
         var len: UInt32 = 0
         var dataPtr: UnsafeMutableRawPointer?
         let status = SecKeychainFindGenericPassword(kc, UInt32(service.utf8.count), service,
                                                     UInt32(account.utf8.count), account,
                                                     &len, &dataPtr, nil)
-        guard status == errSecSuccess, let dataPtr else { return nil }
+        guard status != errSecItemNotFound else { return .missing }
+        guard status == errSecSuccess, let dataPtr else { return .unavailable }
         let data = Data(bytes: dataPtr, count: Int(len))
         SecKeychainItemFreeContent(nil, dataPtr)
-        return String(data: data, encoding: .utf8)
+        guard let value = String(data: data, encoding: .utf8) else { return .unavailable }
+        return .value(value)
     }
 }

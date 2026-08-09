@@ -2,6 +2,23 @@ import XCTest
 @testable import ToastMonitor
 
 final class OmpParserTests: XCTestCase {
+    private var dbPath = ""
+    private var db: Database!
+
+    override func setUp() {
+        super.setUp()
+        dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-db-\(UUID().uuidString).sqlite").path
+        db = Database.testInstance(path: dbPath)
+    }
+
+    override func tearDown() {
+        db.close()
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: dbPath + suffix)
+        }
+        super.tearDown()
+    }
 
     private var fixturePath: String {
         // swift-test-resources: Fixtures are copied into the test bundle
@@ -11,7 +28,7 @@ final class OmpParserTests: XCTestCase {
     }
 
     func testParsesAssistantUsageEvents() {
-        let (turns, sessions) = OmpParser.scan(knownPaths: [fixturePath])
+        let (turns, sessions) = OmpParser.scan(knownPaths: [fixturePath], database: db)
         // Two assistant messages carry usage; the user message is skipped.
         XCTAssertEqual(turns.count, 2, "only assistant usage events become turns")
         let first = turns[0]
@@ -50,9 +67,113 @@ final class OmpParserTests: XCTestCase {
         {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10,"output":5}}}
         {"type":"message","id":"a2","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","usage":{"input":0,"output":0}}}
         """.write(toFile: path, atomically: true, encoding: .utf8)
-        let (turns, _) = OmpParser.scan(knownPaths: [path])
+        let (turns, _) = OmpParser.scan(knownPaths: [path], database: db)
         XCTAssertEqual(turns.count, 1, "malformed lines and zero-token events are skipped")
         XCTAssertEqual(turns[0].inputTokens, 10)
         try? FileManager.default.removeItem(at: dir)
+    }
+
+    func testTrailingPartialLineRetainsSessionContextAndIsRetried() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-partial-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let header = #"{"type":"session","id":"stable-session","timestamp":"2026-08-07T10:00:00.000Z"}"# + "\n"
+        let partial = #"{"type":"message","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10"#
+        try (header + partial).write(toFile: path, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(OmpParser.scan(knownPaths: [path], database: db).turns.isEmpty)
+        XCTAssertTrue(db.scanState(path).context?.contains("stable-session") == true)
+
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data(#","output":5}}}"#.utf8))
+        try fh.write(contentsOf: Data("\n".utf8))
+        try fh.close()
+
+        let retry = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(retry.turns.count, 1)
+        XCTAssertEqual(retry.turns[0].sessionID, "stable-session")
+        XCTAssertEqual(retry.turns[0].inputTokens, 10)
+    }
+    func testAppendedBatchReusesPersistedSessionIdentity() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-append-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let initial = """
+        {"type":"session","id":"stable-session","timestamp":"2026-08-07T10:00:00.000Z"}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5}}}
+        """
+        try initial.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let first = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(first.turns.count, 1)
+        XCTAssertEqual(first.turns[0].sessionID, "stable-session")
+
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data("""
+        {"type":"message","id":"a2","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","model":"m","usage":{"input":11,"output":6}}}
+        """.utf8))
+        try fh.close()
+
+        let appended = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(appended.turns.count, 1)
+        XCTAssertEqual(appended.turns[0].sessionID, "stable-session")
+        let filename = (path as NSString).lastPathComponent
+        XCTAssertEqual(appended.turns[0].eventID, "omp:\(filename):a2")
+    }
+    func testShrinkThenRegrowRescansTranscriptHeader() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-regrow-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let initial = """
+        {"type":"session","id":"old-session","timestamp":"2026-08-07T10:00:00.000Z"}
+        {"type":"message","id":"old","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10,"output":5}}}
+        {"type":"message","id":"old2","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","usage":{"input":11,"output":6}}}
+        """
+        try initial.write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertEqual(OmpParser.scan(knownPaths: [path], database: db).turns.count, 2)
+
+        let replacement = """
+        {"type":"session","id":"new-session","timestamp":"2026-08-07T11:00:00.000Z"}
+        {"type":"message","id":"new","timestamp":"2026-08-07T11:00:01.000Z","message":{"role":"assistant","usage":{"input":20,"output":7}}}
+        """
+        let rewrite = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try rewrite.truncate(atOffset: 0)
+        try rewrite.write(contentsOf: Data(replacement.utf8))
+        try rewrite.close()
+
+        let shrunk = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(shrunk.turns.count, 1)
+        XCTAssertEqual(shrunk.turns[0].sessionID, "new-session")
+
+        let append = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try append.seekToEnd()
+        try append.write(contentsOf: Data(("\n" + """
+        {"type":"message","id":"new2","timestamp":"2026-08-07T11:00:02.000Z","message":{"role":"assistant","usage":{"input":21,"output":8}}}
+        """).utf8))
+        try append.close()
+
+        let regrown = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(regrown.turns.count, 2)
+        XCTAssertTrue(regrown.turns.allSatisfy { $0.sessionID == "new-session" })
+    }
+
+
+
+    func testMissingMessageIDsUseDistinctContentIdentity() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-no-id-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try """
+        {"type":"session","id":"s1","timestamp":"2026-08-07T10:00:00.000Z"}
+        {"type":"message","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10,"output":5}}}
+        {"type":"message","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":11,"output":5}}}
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let turns = OmpParser.scan(knownPaths: [path], database: db).turns
+        XCTAssertEqual(turns.count, 2)
+        XCTAssertNotEqual(turns[0].eventID, turns[1].eventID)
+        XCTAssertTrue(turns.allSatisfy { $0.eventID?.contains(":fallback:") == true })
     }
 }

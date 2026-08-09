@@ -93,23 +93,44 @@ struct TurnRecord: Equatable {
     let ts: Int64
     let inputTokens: Int64
     let outputTokens: Int64
+    /// Reasoning is recorded separately. Providers commonly include it in
+    /// output_tokens, so aggregate token totals must not add it a second time.
+    let reasoningTokens: Int64
     let cacheRead: Int64
     let cacheWrite: Int64
     let cost: Double
-    /// Stable upstream identity (uuid / file:offset / source:key) — P0-3.
+    let provider: String?
+    /// Stable source namespace ("local", or a hash of the remote feed URL).
+    let sourceInstance: String
+    /// Price-table revision used when costQuality == "estimated".
+    let pricingVersion: String?
+    /// Stable upstream or canonical content identity.
     let eventID: String?
-    /// 'actual' | 'estimated' | 'unknown' — money semantics (spec §5.2).
+    /// 'actual' | 'estimated' | 'unknown'.
     let costQuality: String
-}
 
-extension TurnRecord {
     init(tool: ToolKind, sessionID: String, project: String?, model: String?, ts: Int64,
-         inputTokens: Int64, outputTokens: Int64, cacheRead: Int64, cacheWrite: Int64,
-         cost: Double) {
-        self.init(tool: tool, sessionID: sessionID, project: project, model: model, ts: ts,
-                  inputTokens: inputTokens, outputTokens: outputTokens,
-                  cacheRead: cacheRead, cacheWrite: cacheWrite, cost: cost,
-                  eventID: nil, costQuality: "estimated")
+         inputTokens: Int64, outputTokens: Int64, reasoningTokens: Int64 = 0,
+         cacheRead: Int64, cacheWrite: Int64, cost: Double,
+         provider: String? = nil, sourceInstance: String = "local",
+         pricingVersion: String? = Pricing.version, eventID: String? = nil,
+         costQuality: String = "estimated") {
+        self.tool = tool
+        self.sessionID = sessionID
+        self.project = project
+        self.model = model
+        self.ts = ts
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.reasoningTokens = reasoningTokens
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+        self.cost = cost
+        self.provider = provider
+        self.sourceInstance = sourceInstance
+        self.pricingVersion = costQuality == "estimated" ? pricingVersion : nil
+        self.eventID = eventID
+        self.costQuality = costQuality
     }
 }
 

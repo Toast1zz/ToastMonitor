@@ -41,13 +41,16 @@ final class SourceHealthHub: ObservableObject {
         }
     }
 
-    /// An unchanged scan is not a successful parse. Keep the previous error
-    /// and failure count visible while updating the heartbeat timestamp.
+    /// An unchanged scan is still a successful parse. Clear an old error so a
+    /// transient failure cannot remain visible forever after recovery.
     func recordIdle(tool: String, durationMs: Double) {
         var h = sources.first { $0.tool == tool }
             ?? SourceHealth(tool: tool, mode: (ToolKind(rawValue: tool)?.sourceIsRemote ?? false) ? "remote" : "local")
         h.lastScan = Int64(Date().timeIntervalSince1970)
+        h.lastRows = 0
+        h.failedRows = 0
         h.durationMs = durationMs
+        h.error = nil
         h.mode = (ToolKind(rawValue: tool)?.sourceIsRemote ?? false) ? "remote" : "local"
         if let idx = sources.firstIndex(where: { $0.tool == tool }) {
             sources[idx] = h

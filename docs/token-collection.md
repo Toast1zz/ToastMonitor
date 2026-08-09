@@ -80,7 +80,7 @@
 
 ### 远程 VPS feed（可选，每工具可切换）
 
-- VPS 上 cron 每 3 分钟跑 `tm-export.py`，产出 `usage.json`（Tailscale 私有网段 HTTP(S)，App 校验 scheme/host/MIME/schema/大小）。
+- VPS exporter 由用户自行部署并产出 `usage.json`；应用只请求「来源与设置」中明确配置的 HTTPS（或受规则允许的私有本地网络）地址，不包含个人 IP 或默认远程主机。
 - App 前台每 15 秒增量拉取（后台停止），游标是**每工具水位线**（`remote_watermark_<tool>` = `ts:eventID`，同秒事件靠 eventID 排序）。
 - 行语义按工具区分（见上表）：claude/codex 逐条事件直接插入；opencode/hermes 累计行走 delta——delta 工具的基线幂等，因此不受水位线误伤。
 - 未知工具的行拒绝导入；水位线、turns、基线同一事务提交，失败不前进。

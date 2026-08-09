@@ -3,7 +3,7 @@ import Combine
 import CryptoKit
 
 /// Remote usage collector: pulls the usage feed exported by the VPS
-/// (cron tm-export.py → http://100.116.140.74/tm/usage.json over Tailscale)
+/// (cron exporter over a user-configured HTTPS or private-network feed)
 /// and imports turns for every tool whose source is set to "remote".
 ///
 /// Row semantics per tool (produced by tm-export.py):
@@ -15,6 +15,14 @@ import CryptoKit
 /// Incremental via a per-tool watermark (max ts already imported).
 final class HermesRemoteClient: ObservableObject {
     static let shared = HermesRemoteClient()
+    static let replayLookback: Int64 = 300
+    static let maxFeedURLLength = 2_048
+    static let maxFeedRows = 50_000
+    static let maxFieldLength = 512
+    static let maxProviderLength = 256
+    static func isWithinReplayWindow(timestamp: Int64, cursorTimestamp: Int64) -> Bool {
+        timestamp >= max(cursorTimestamp - replayLookback, 0)
+    }
 
     struct SyncStatus {
         var lastSync: Int64 = 0
@@ -73,15 +81,19 @@ final class HermesRemoteClient: ObservableObject {
     }
 
     var feedURL: String {
-        Database.shared.setting("remote_feed_url") ?? "http://100.116.140.74/tm/usage.json"
+        Database.shared.setting("remote_feed_url") ?? ""
     }
 
     @discardableResult
     func provision(url: String?) -> Bool {
-        guard let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            return Database.shared.setSetting("remote_feed_url", nil)
-        }
-        guard let parsed = URL(string: raw), Self.isAllowedFeedURL(parsed) else { return false }
+        guard let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              raw.count <= Self.maxFeedURLLength,
+              raw.rangeOfCharacter(from: .controlCharacters) == nil,
+              let parsed = URL(string: raw),
+              parsed.user == nil,
+              parsed.password == nil,
+              Self.isAllowedFeedURL(parsed) else { return false }
         return Database.shared.setSetting("remote_feed_url", parsed.absoluteString)
     }
 
@@ -112,12 +124,10 @@ final class HermesRemoteClient: ObservableObject {
         }
     }
 
-    // MARK: - Feed security (P0-6)
-
-    /// HTTPS always allowed; plain HTTP only for private/Tailscale ranges
-    /// (the VPS feed runs on 100.116.140.74 over Tailscale).
     static func isAllowedFeedURL(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased() else { return false }
+        guard let scheme = url.scheme?.lowercased(),
+              url.user == nil,
+              url.password == nil else { return false }
         if scheme == "https" { return true }
         guard scheme == "http", let host = url.host else { return false }
         // Tailscale CGNAT range 100.64.0.0/10, private ranges, localhost.
@@ -126,6 +136,16 @@ final class HermesRemoteClient: ObservableObject {
             return false
         }
         return host == "localhost"
+    }
+
+    private static func validField(_ value: Any?, maxLength: Int,
+                                   allowEmpty: Bool = true) -> Bool {
+        guard let value else { return true }
+        guard let string = value as? String,
+              (allowEmpty || !string.isEmpty),
+              string.count <= maxLength,
+              string.rangeOfCharacter(from: .controlCharacters) == nil else { return false }
+        return true
     }
 
     private struct IPv4Address {
@@ -150,7 +170,10 @@ final class HermesRemoteClient: ObservableObject {
         inFlight = true
         lastPoll = Int64(Date().timeIntervalSince1970)
 
-        guard let url = URL(string: feedURL), Self.isAllowedFeedURL(url) else {
+        guard feedURL.count <= Self.maxFeedURLLength,
+              feedURL.rangeOfCharacter(from: .controlCharacters) == nil,
+              let url = URL(string: feedURL),
+              Self.isAllowedFeedURL(url) else {
             inFlight = false
             publishStatus { $0.error = "feed URL 无效或不安全（仅允许 HTTPS 或私有网段）" }
             return
@@ -185,11 +208,7 @@ final class HermesRemoteClient: ObservableObject {
                     self.publishStatus { $0.error = "HTTP \(http.statusCode)" }
                     return
                 }
-                guard let data else {
-                    self.publishStatus { $0.error = "空响应" }
-                    return
-                }
-                guard data.count < 10_000_000 else {
+                guard let data, data.count <= 10_000_000 else {
                     self.publishStatus { $0.error = "响应过大 (>10MB)" }
                     return
                 }
@@ -214,14 +233,18 @@ final class HermesRemoteClient: ObservableObject {
     }
 
     private func importFeed(_ result: [String: Any]) {
-        guard let rows = result["rows"] as? [[String: Any]] else {
-            publishStatus { $0.error = "feed 格式异常" }
+        guard let rows = result["rows"] as? [[String: Any]],
+              rows.count <= Self.maxFeedRows else {
+            publishStatus { $0.error = "feed 格式异常或行数过多" }
             return
         }
         if let schema = result["schema"] as? Int, schema > 1 {
             publishStatus { $0.error = "feed schema v\(schema) 不受支持" }
             return
         }
+        let sourceDigest = SHA256.hash(data: Data(feedURL.utf8))
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
+        let sourceInstance = "remote:\(sourceDigest)"
 
         // Per-tool cursors (timestamp + stable tie-breaker): switching a
         // source to remote never reuses another tool's cursor, and two rows
@@ -242,7 +265,7 @@ final class HermesRemoteClient: ObservableObject {
         var turns: [TurnRecord] = []
         var sessions: [String: SessionInfo] = [:]
         var pendingHermesBaselines: [(key: String, value: String)] = []
-        var pendingOpenCodeTotals: [(key: String, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double, updated: Int64)] = []
+        var pendingOpenCodeTotals: [(key: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double, updated: Int64)] = []
         var pendingWatermarks: [ToolKind: Cursor] = [:]
         var seenRemoteTools: Set<String> = []
         var unknownTools = 0
@@ -252,7 +275,7 @@ final class HermesRemoteClient: ObservableObject {
         // must compute against the previous row's write, not the stale
         // committed value, or the cumulative delta is inserted twice.
         var runningHermes: [String: [Int64]] = [:]
-        var runningOpenCode: [String: (tool: String, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = [:]
+        var runningOpenCode: [String: (tool: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = [:]
         let nowTs = Int64(Date().timeIntervalSince1970)
         // Feed rows outside this window are rejected (a future-dated row
         // would poison the monotonic watermark and blind per-turn tools).
@@ -260,54 +283,77 @@ final class HermesRemoteClient: ObservableObject {
         let tsUpper = nowTs + 24 * 3600
 
         for row in rows {
-            guard let sessionID = row["session_id"] as? String, !sessionID.isEmpty else {
-                malformedRows += 1
-                continue
-            }
-            // Unknown tools are rejected, never silently treated as hermes (P0-6).
+            // Unknown tools are rejected, never silently treated as Hermes.
             guard let tool = ToolKind(rawValue: row["tool"] as? String ?? "") else {
                 unknownTools += 1
                 continue
             }
             guard tool.sourceIsRemote else { continue }
             seenRemoteTools.insert(tool.rawValue)
-
-            let lastSeen = Int64((row["last_seen"] as? NSNumber)?.doubleValue ?? 0)
-            // Normalize units once (feed sometimes carries milliseconds),
-            // then validate the range in SECONDS against now ± skew.
-            let lastSeenS = lastSeen > 1_000_000_000_000 ? lastSeen / 1000 : lastSeen
+            guard let rawSession = row["session_id"] as? String,
+                  !rawSession.isEmpty, rawSession.count <= Self.maxFieldLength,
+                  rawSession.rangeOfCharacter(from: .controlCharacters) == nil else {
+                malformedRows += 1
+                continue
+            }
+            guard Self.validField(row["model"], maxLength: Self.maxFieldLength),
+                  Self.validField(row["title"], maxLength: Self.maxFieldLength),
+                  Self.validField(row["project"], maxLength: Self.maxFieldLength),
+                  Self.validField(row["billing_provider"], maxLength: Self.maxProviderLength),
+                  Self.validField(row["provider"], maxLength: Self.maxProviderLength),
+                  Self.validField(row["billing_base_url"], maxLength: Self.maxFieldLength),
+                  Self.validField(row["event_id"], maxLength: Self.maxFieldLength) else {
+                malformedRows += 1
+                continue
+            }
+            let sessionID = rawSession
+            guard let rawLast = (row["last_seen"] as? NSNumber)?.doubleValue,
+                  rawLast.isFinite, rawLast >= 0, rawLast <= 4_000_000_000_000 else {
+                malformedRows += 1
+                continue
+            }
+            let lastSeenS = Int64(rawLast > 1_000_000_000_000 ? rawLast / 1000 : rawLast)
             guard lastSeenS >= tsLower && lastSeenS <= tsUpper else {
                 malformedRows += 1
                 continue
             }
-            let firstSeen = Int64((row["first_seen"] as? NSNumber)?.doubleValue ?? Double(lastSeen))
+            let rawFirst = (row["first_seen"] as? NSNumber)?.doubleValue ?? Double(lastSeenS)
+            guard rawFirst.isFinite, rawFirst >= 0, rawFirst <= 4_000_000_000_000 else {
+                malformedRows += 1
+                continue
+            }
+            let normalizedFirst = Int64(rawFirst > 1_000_000_000_000 ? rawFirst / 1000 : rawFirst)
+            let firstSeenS = min(max(normalizedFirst, tsLower), min(lastSeenS, nowTs))
             let model = row["model"] as? String
-            // All values are clamped to >= 0: negative feed rows would skew
-            // SUM-based aggregates and cost breakdowns.
-            let input = max((row["input_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
-            let output = max((row["output_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
-            let reasoning = max((row["reasoning_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
-            let cacheRead = max((row["cache_read_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
-            let cacheWrite = max((row["cache_write_tokens"] as? NSNumber)?.int64Value ?? 0, 0)
-            let cost = max((row["cost_usd"] as? NSNumber)?.doubleValue ?? 0, 0)
+            // All token values are non-negative and capped before arithmetic;
+            // malformed numbers become zero instead of overflowing Int64 sums.
+            func count(_ key: String) -> Int64 {
+                guard let n = row[key] as? NSNumber else { return 0 }
+                let d = n.doubleValue
+                guard d.isFinite else { return 0 }
+                return Int64(min(max(d, 0), 9_000_000_000_000_000))
+            }
+            let input = count("input_tokens")
+            let output = count("output_tokens")
+            let reasoning = count("reasoning_tokens")
+            let cacheRead = count("cache_read_tokens")
+            let cacheWrite = count("cache_write_tokens")
+            let rawCost = (row["cost_usd"] as? NSNumber)?.doubleValue ?? 0
+            let cost = rawCost.isFinite ? min(max(rawCost, 0), 1_000_000_000) : 0
             let title = row["title"] as? String
             let project = row["project"] as? String
 
             var dInput = input
+            var dReasoning = reasoning
             var dOutput = output
             var dCacheRead = cacheRead
             var dCacheWrite = cacheWrite
             var dCost = cost
             var costQuality = "estimated"
-            var rawEventID = row["event_id"] as? String ?? ""
-            // Cap upstream event ids: a bloated id would explode the unique
-            // index and the watermark setting on every poll.
-            if rawEventID.count > 512 {
-                rawEventID = String(rawEventID.prefix(512))
-            }
+            let rawEventID = row["event_id"] as? String ?? ""
             let eventID = rawEventID.isEmpty
                 ? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
-                                       lastSeen: lastSeenS, firstSeen: firstSeen)
+                                       lastSeen: lastSeenS, firstSeen: firstSeenS)
                 : rawEventID
             let previousCursor = cursor(tool)
             // Watermark guard applies only to per-turn tools. Hermes/OpenCode
@@ -320,11 +366,11 @@ final class HermesRemoteClient: ObservableObject {
             case .hermes, .opencode:
                 break
             default:
-                // Use the NORMALIZED second timestamp for the cursor so a
-                // feed mixing ms and s units cannot advance past future
-                // second-unit rows.
-                guard lastSeenS > previousCursor.ts
-                        || (lastSeenS == previousCursor.ts && eventID > previousCursor.eventID) else { continue }
+                // Replay a bounded tail on every poll. Event ids make this
+                // idempotent, while the overlap admits rows that arrived a few
+                // minutes late behind the producer's current watermark.
+                guard Self.isWithinReplayWindow(timestamp: lastSeenS,
+                                                cursorTimestamp: previousCursor.ts) else { continue }
             }
             var isFirstRow = false // 首行 = 该 session 的累计基线 → 归 firstSeen 日期
 
@@ -343,25 +389,31 @@ final class HermesRemoteClient: ObservableObject {
                 let baseURL = ((row["billing_base_url"] as? String) ?? "")
                     .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 let key = "hm_d|\(sessionID)|\(model ?? "")|\(provider)|\(baseURL)"
-                let totalIn = input + reasoning
                 let prev = runningHermes[key]
                     ?? (Database.shared.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
-                isFirstRow = prev.count != 5
-                if prev.count == 5 {
-                    dInput = max(totalIn - prev[0], 0)
+                isFirstRow = prev.count != 5 && prev.count != 6
+                if prev.count == 6 {
+                    dInput = max(input - prev[0], 0)
                     dOutput = max(output - prev[1], 0)
+                    dReasoning = max(reasoning - prev[2], 0)
+                    dCacheRead = max(cacheRead - prev[3], 0)
+                    dCacheWrite = max(cacheWrite - prev[4], 0)
+                } else if prev.count == 5 {
+                    // Legacy baseline stored input+reasoning together. Claim it
+                    // without replaying historical reasoning as a new delta.
+                    dInput = max(input + reasoning - prev[0], 0)
+                    dOutput = max(output - prev[1], 0)
+                    dReasoning = 0
                     dCacheRead = max(cacheRead - prev[2], 0)
                     dCacheWrite = max(cacheWrite - prev[3], 0)
                 }
-                // 基线只增不减：feed 偶发回退行（例如 cache_read 从 2304 掉回 0）
-                // 若直接覆盖基线，下一行累计快照会整体重计（量级级重复）。
-                // max(cur, prev) 保证回退行既不计入 delta 也不清空已推进的基线。
                 let safeBase: [Int64]
-                if prev.count == 5 {
-                    safeBase = [max(totalIn, prev[0]), max(output, prev[1]),
-                                max(cacheRead, prev[2]), max(cacheWrite, prev[3]), 0]
+                if prev.count == 6 {
+                    safeBase = [max(input, prev[0]), max(output, prev[1]),
+                                max(reasoning, prev[2]), max(cacheRead, prev[3]),
+                                max(cacheWrite, prev[4]), 0]
                 } else {
-                    safeBase = [totalIn, output, cacheRead, cacheWrite, 0]
+                    safeBase = [input, output, reasoning, cacheRead, cacheWrite, 0]
                 }
                 runningHermes[key] = safeBase
                 pendingHermesBaselines.append((key, safeBase.map(String.init).joined(separator: ",")))
@@ -371,41 +423,49 @@ final class HermesRemoteClient: ObservableObject {
                 let totalsKey = "opencode|\(sessionID)"
                 let prev = runningOpenCode[totalsKey] ?? totals[totalsKey]
                 isFirstRow = prev == nil
+                var legacyCombinedInput = false
                 if let prev {
-                    dInput = max(input + reasoning - prev.input, 0)
+                    legacyCombinedInput = prev.reasoning == 0
+                        && reasoning > 0 && prev.input == input + reasoning
+                    dInput = max((legacyCombinedInput ? input + reasoning : input) - prev.input, 0)
                     dOutput = max(output - prev.output, 0)
+                    dReasoning = legacyCombinedInput ? 0 : max(reasoning - prev.reasoning, 0)
                     dCacheRead = max(cacheRead - prev.cacheRead, 0)
                     dCacheWrite = max(cacheWrite - prev.cacheWrite, 0)
                     dCost = max(cost - prev.cost, 0)
                 }
-                // 与 Hermes 相同：基线只增不减，回退行不覆盖已推进值。
-                let safeInput = prev.map { max(input + reasoning, $0.input) } ?? (input + reasoning)
+                let safeInput = legacyCombinedInput ? input : (prev.map { max(input, $0.input) } ?? input)
                 let safeOutput = prev.map { max(output, $0.output) } ?? output
+                let safeReasoning = legacyCombinedInput ? reasoning : (prev.map { max(reasoning, $0.reasoning) } ?? reasoning)
                 let safeRead = prev.map { max(cacheRead, $0.cacheRead) } ?? cacheRead
                 let safeWrite = prev.map { max(cacheWrite, $0.cacheWrite) } ?? cacheWrite
                 let safeCost = prev.map { max(cost, $0.cost) } ?? cost
-                runningOpenCode[totalsKey] = ("opencode", safeInput, safeOutput, safeRead, safeWrite, safeCost)
-                pendingOpenCodeTotals.append((totalsKey, safeInput, safeOutput, safeRead,
-                                              safeWrite, safeCost, lastSeenS))
+                runningOpenCode[totalsKey] = ("opencode", safeInput, safeOutput, safeReasoning,
+                                              safeRead, safeWrite, safeCost)
+                pendingOpenCodeTotals.append((totalsKey, safeInput, safeOutput, safeReasoning,
+                                              safeRead, safeWrite, safeCost, lastSeenS))
                 costQuality = "actual"
             default:
                 break // per-turn events: insert as-is
             }
 
-            if dInput > 0 || dOutput > 0 || dCacheRead > 0 || dCacheWrite > 0 {
+            if dInput > 0 || dOutput > 0 || dReasoning > 0 || dCacheRead > 0 || dCacheWrite > 0 {
                 // First-seen rows are cumulative baselines: attribute them to
                 // the session's start date, not "now" (spec: 历史累计不得归入今天).
-                let firstSeenS = firstSeen > 1_000_000_000_000 ? firstSeen / 1000 : firstSeen
                 let ts = (isFirstRow && firstSeenS > 0) ? firstSeenS : lastSeenS
+                let provider = (row["billing_provider"] as? String)
+                    ?? (row["provider"] as? String)
                 turns.append(TurnRecord(tool: tool, sessionID: sessionID, project: project,
                                         model: model, ts: ts,
                                         inputTokens: dInput, outputTokens: dOutput,
+                                        reasoningTokens: dReasoning,
                                         cacheRead: dCacheRead, cacheWrite: dCacheWrite, cost: dCost,
+                                        provider: provider, sourceInstance: sourceInstance,
                                         eventID: eventID, costQuality: costQuality))
             }
             sessions["\(tool.rawValue)|\(sessionID)"] = SessionInfo(tool: tool, sessionID: sessionID, title: title,
                                                                     project: project, model: model,
-                                                                    created: firstSeen > 1_000_000_000_000 ? firstSeen / 1000 : firstSeen,
+                                                                    created: firstSeenS,
                                                                     updated: lastSeenS)
             // Clamp the cursor to now: a future-dated row (within the +24h
             // acceptance window) must not advance the watermark past the
@@ -432,6 +492,7 @@ final class HermesRemoteClient: ObservableObject {
             for p in pendingOpenCodeTotals {
                 writesOK = Database.shared.setSessionTotals(p.key, tool: "opencode",
                                                             input: p.input, output: p.output,
+                                                            reasoning: p.reasoning,
                                                             cacheRead: p.cacheRead, cacheWrite: p.cacheWrite,
                                                             cost: p.cost, updated: p.updated) && writesOK
             }
@@ -478,12 +539,21 @@ final class HermesRemoteClient: ObservableObject {
     private static func fallbackEventID(row: [String: Any], tool: ToolKind,
                                         sessionID: String, lastSeen: Int64,
                                         firstSeen: Int64) -> String {
+        let digest: String
         if let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) {
-            let digest = SHA256.hash(data: data)
+            digest = SHA256.hash(data: data)
                 .map { String(format: "%02x", $0) }
                 .joined()
-            return "remote:\(tool.rawValue):\(sessionID):\(digest)"
+        } else {
+            digest = "\(firstSeen):\(lastSeen)"
         }
-        return "remote:\(tool.rawValue):\(sessionID):\(firstSeen):\(lastSeen)"
+        let full = "remote:\(tool.rawValue):\(sessionID):\(digest)"
+        guard full.count <= Self.maxFieldLength else {
+            let sessionDigest = SHA256.hash(data: Data(sessionID.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
+            return "remote:\(tool.rawValue):\(sessionDigest):\(digest)"
+        }
+        return full
     }
 }

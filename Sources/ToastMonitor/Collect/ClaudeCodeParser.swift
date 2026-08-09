@@ -27,9 +27,11 @@ enum ClaudeCodeParser {
             // mtime changed with size unchanged = in-place rewrite; replay
             // from 0 so edited events are not silently lost (dedupe handles
             // the already-imported ones).
+            let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
             let sameAppendOnlyFile = prev.identity == st.identity
                 && st.size > prev.size
                 && prev.mtime != 0
+                && !pendingRewrite
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
             if DebugLog.enabled {
@@ -38,12 +40,14 @@ enum ClaudeCodeParser {
             if objs.isEmpty {
                 // Still record the offset so we don't re-read a file whose new
                 // content is only a partial line.
-                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity)
+                let pending = st.size < prev.size || pendingRewrite
+                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime,
+                                             identity: st.identity,
+                                             context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
                 continue
             }
 
             var sessionID = (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
-            let fileName = (file as NSString).lastPathComponent
             let project = FileScanner.lastComponentOfEncodedPath(
                 ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent)
             var lastTs: Int64 = 0
@@ -80,12 +84,13 @@ enum ClaudeCodeParser {
                     guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { continue }
                     let est = Pricing.estimate(model: model, input: input, output: output,
                                                cacheRead: cacheRead, cacheWrite: cacheWrite)
-                    // Truncate-and-rewrite replays the file from offset 0;
-                    // using the PREVIOUS mtime keeps replayed fallback IDs
-                    // colliding with the original inserts so ON CONFLICT
-                    // dedupes instead of double-counting.
-                    let idMtime = sameAppendOnlyFile ? st.mtime : prev.mtime
-                    let eventID = (obj["uuid"] as? String) ?? "claude:\(fileName):\(st.identity):\(idMtime):\(item.offset)"
+                    // A Claude response can be copied into several assistant/tool
+                    // transcript rows with different outer UUIDs. The message id
+                    // identifies the billable model call; the content hash is the
+                    // stable fallback for older rows without one.
+                    let eventID = EventIdentity.claude(
+                        sessionID: sessionID, object: obj, usage: usage,
+                        model: model, timestamp: ts)
                     turns.append(TurnRecord(tool: .claude, sessionID: sessionID, project: project,
                                             model: model, ts: ts, inputTokens: input, outputTokens: output,
                                             cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,
@@ -99,7 +104,10 @@ enum ClaudeCodeParser {
                 sessions.append(SessionInfo(tool: .claude, sessionID: sessionID, title: nil,
                                             project: project, model: sessionModel, created: firstTs, updated: lastTs))
             }
-            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity)
+            let pending = st.size < prev.size
+            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime,
+                                         identity: st.identity,
+                                         context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
         }
         return (turns, sessions)
     }

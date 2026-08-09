@@ -21,6 +21,8 @@ struct SourcesAndSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 170)
+                .accessibilityLabel("来源与设置")
+                .accessibilityHint("在来源状态与配置之间切换")
             }
             .padding(.horizontal, 22)
             .padding(.top, 18)

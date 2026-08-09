@@ -5,17 +5,21 @@ import Foundation
 /// Data model:
 ///  - one or more API keys (settings "or_keys", JSON array) — each key's
 ///    /api/v1/key is queried and daily/weekly/monthly summed across keys
-///  - /api/v1/credits (account-level, works with a regular key) — total
-///    usage across ALL keys + prepaid balance
-///  - if the first key is a management key, /api/v1/keys enumerates every
-///    key in the account for a per-key breakdown
+///  - /api/v1/credits (account-level, management-key only) — total usage
+///    across ALL keys + prepaid balance
+///  - /api/v1/keys is queried with a key whose /api/v1/key response explicitly
+///    reports `is_management_key`; key order never determines privilege.
 final class OpenRouterClient: ObservableObject {
     static let shared = OpenRouterClient()
-
+    static let maxAPIKeyLength = 512
+    static let maxKeyCount = 64
+    static let maxKeyPayloadLength = 40_000
+    static let maxLabelLength = 256
     struct KeyInfo {
         let label: String
         let usageDaily: Double
         let usageWeekly: Double
+
         let usageMonthly: Double
     }
 
@@ -40,6 +44,12 @@ final class OpenRouterClient: ObservableObject {
         var isLoading = false
     }
 
+    private static func finiteAmount(_ value: NSNumber?) -> Double? {
+        guard let value else { return nil }
+        let d = value.doubleValue
+        guard d.isFinite, d >= 0, d <= 1_000_000_000 else { return nil }
+        return d
+    }
     @Published private(set) var state = State()
     @Published private(set) var hasKey = false
 
@@ -91,7 +101,8 @@ final class OpenRouterClient: ObservableObject {
         if let kc = KeychainStore.get(account: "or-keys"), !kc.isEmpty {
             var keys: [String]?
             var needsUpgrade = false
-            if let data = kc.data(using: .utf8),
+            if kc.utf8.count <= Self.maxKeyPayloadLength,
+               let data = kc.data(using: .utf8),
                let raw = try? JSONSerialization.jsonObject(with: data) as? [String] {
                 keys = raw
             } else {
@@ -119,6 +130,7 @@ final class OpenRouterClient: ObservableObject {
         // disk (0600) as a recovery copy, marked unavailable.
         var migrated: [String] = []
         if let raw = Database.shared.setting("or_keys"),
+           raw.utf8.count <= Self.maxKeyPayloadLength,
            let data = raw.data(using: .utf8),
            let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
             migrated = arr
@@ -143,11 +155,15 @@ final class OpenRouterClient: ObservableObject {
 
     private func normalizedKeys(_ keys: [String]) -> [String] {
         var seen = Set<String>()
-        return keys.compactMap { raw in
+        let normalized = keys.compactMap { raw -> String? in
             let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty, seen.insert(key).inserted else { return nil }
+            guard !key.isEmpty,
+                  key.count <= Self.maxAPIKeyLength,
+                  key.rangeOfCharacter(from: .controlCharacters) == nil,
+                  seen.insert(key).inserted else { return nil }
             return key
         }
+        return Array(normalized.prefix(Self.maxKeyCount))
     }
 
     private func saveToKeychain(_ keys: [String]) -> Bool {
@@ -170,17 +186,16 @@ final class OpenRouterClient: ObservableObject {
         Database.shared.setSetting("or_cred_storage", "keychain-unavailable")
         return false
     }
-
     /// Replace all keys (provisioning path).
     @discardableResult
     func setKey(_ key: String?) -> Bool {
-        if let key {
-            let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty, saveKeys([key]) else {
-                state.error = "无法写入 macOS 钥匙串，未保存 API Key"
-                return false
-            }
+        if let key,
+           let normalized = normalizedKeys([key]).first,
+           saveKeys([normalized]) {
             hasKey = true
+        } else if key != nil {
+            state.error = "无法写入 macOS 钥匙串，未保存 API Key"
+            return false
         } else {
             KeychainStore.delete(account: "or-keys")
             KeychainStore.delete(account: "openrouter-key")
@@ -199,10 +214,13 @@ final class OpenRouterClient: ObservableObject {
     /// Append a key for multi-key usage aggregation.
     @discardableResult
     func addKey(_ key: String) -> Bool {
-        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return false }
+        guard let normalized = normalizedKeys([key]).first else { return false }
         var keys = storedKeys()
-        keys.append(key)
+        guard keys.count < Self.maxKeyCount else {
+            state.error = "API Key 数量已达上限"
+            return false
+        }
+        keys.append(normalized)
         guard saveKeys(keys) else {
             state.error = "无法写入 macOS 钥匙串，未保存 API Key"
             return false
@@ -313,68 +331,62 @@ final class OpenRouterClient: ObservableObject {
             }
         }
 
-        // Two-phase: resolve /api/v1/key responses first. credits is an
-        // account-level endpoint that ALSO works with a regular key (verified
-        // against the live API), so it must NOT be gated on management
-        // status — gating it zeroed the balance for every non-management key.
-        // Only the /api/v1/keys listing is management-only.
+        // Resolve privilege from the response belonging to that exact key.
+        // Never assume keys[0] is the management key. The credits and keys
+        // endpoints are management-only; regular keys keep balance unknown
+        // instead of turning an expected 401/403 into a permanent error.
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
             guard self.refreshGeneration == generation else { return }
-            let isManagementKey = results.values.contains { json in
+            let managementKey = results.first { _, json in
                 (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
-            }
+            }?.key
+            self.state.isManagementKey = managementKey != nil
             let adminGroup = DispatchGroup()
-            // Account-level credits (works with a regular key).
-            adminGroup.enter()
-            self.fetch("/api/v1/credits", key: keys[0]) { json, err in
-                guard self.refreshGeneration == generation else { adminGroup.leave(); return }
-                if let json, let data = json["data"] as? [String: Any] {
-                    let total = (data["total_credits"] as? NSNumber)?.doubleValue
-                    let used = (data["total_usage"] as? NSNumber)?.doubleValue
-                    self.state.creditsTotal = total
-                    self.state.creditsUsage = used
-                    self.state.accountUsage = used
-                    // Available balance ≠ purchased credits (P0-7):
-                    // credits minus cumulative usage across ALL keys.
-                    if let total, let used {
-                        self.state.accountBalance = max(total - used, 0)
-                    }
-                } else if err == nil {
-                    failures.append("账户额度响应缺少 data")
-                }
-                adminGroup.leave()
-            }
 
-            // Management key: enumerate all account keys (management-only).
-            if isManagementKey {
+            if let managementKey {
                 adminGroup.enter()
-                self.fetch("/api/v1/keys", key: keys[0]) { json, err in
+                self.fetch("/api/v1/credits", key: managementKey) { json, err in
+                    guard self.refreshGeneration == generation else { adminGroup.leave(); return }
+                    if let json, let data = json["data"] as? [String: Any] {
+                        let total = Self.finiteAmount(data["total_credits"] as? NSNumber)
+                        let used = Self.finiteAmount(data["total_usage"] as? NSNumber)
+                        self.state.creditsTotal = total
+                        self.state.creditsUsage = used
+                        self.state.accountUsage = used
+                        if let total, let used {
+                            self.state.accountBalance = max(total - used, 0)
+                        }
+                    } else if err == nil {
+                        failures.append("账户额度响应缺少 data")
+                    }
+                    adminGroup.leave()
+                }
+
+                adminGroup.enter()
+                self.fetch("/api/v1/keys", key: managementKey) { json, err in
                     guard self.refreshGeneration == generation else { adminGroup.leave(); return }
                     if let json, let data = json["data"] as? [[String: Any]] {
-                        self.state.isManagementKey = true
-                        self.state.keys = data.compactMap { k in
-                            guard let label = k["label"] as? String else { return nil }
+                        self.state.keys = data.prefix(Self.maxKeyCount).compactMap { k in
+                            guard let rawLabel = k["label"] as? String,
+                                  rawLabel.count <= Self.maxLabelLength,
+                                  !rawLabel.isEmpty,
+                                  rawLabel.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
                             return KeyInfo(
-                                label: label,
-                                usageDaily: (k["usage_daily"] as? NSNumber)?.doubleValue ?? 0,
-                                usageWeekly: (k["usage_weekly"] as? NSNumber)?.doubleValue ?? 0,
-                                usageMonthly: (k["usage_monthly"] as? NSNumber)?.doubleValue ?? 0)
+                                label: rawLabel,
+                                usageDaily: Self.finiteAmount(k["usage_daily"] as? NSNumber) ?? 0,
+                                usageWeekly: Self.finiteAmount(k["usage_weekly"] as? NSNumber) ?? 0,
+                                usageMonthly: Self.finiteAmount(k["usage_monthly"] as? NSNumber) ?? 0)
                         }
                         self.state.keyCount = self.state.keys.count
-                    } else {
-                        if err == nil { failures.append("管理 key 响应缺少 data") }
-                        self.state.isManagementKey = false
-                        self.state.keys = []
-                        self.state.keyCount = keys.count
+                    } else if err == nil {
+                        failures.append("管理 key 响应缺少 data")
                     }
                     adminGroup.leave()
                 }
             }
 
-            // 统一在 adminGroup 完成后收尾：credits 是异步的，不能因为
-            // 非管理 key 就直接 finishRefresh（会抢在 balance 设置前
-            // persist，余额恒 0）。
+            // Finish only after optional management calls have completed.
             adminGroup.notify(queue: .main) { [weak self] in
                 guard let self else { return }
                 guard self.refreshGeneration == generation else { return }
@@ -400,13 +412,17 @@ final class OpenRouterClient: ObservableObject {
                 invalidKeyResponses += 1
                 continue
             }
-            usage += (data["usage"] as? NSNumber)?.doubleValue ?? 0
-            daily += (data["usage_daily"] as? NSNumber)?.doubleValue ?? 0
-            weekly += (data["usage_weekly"] as? NSNumber)?.doubleValue ?? 0
-            monthly += (data["usage_monthly"] as? NSNumber)?.doubleValue ?? 0
-            if let v = data["limit"] as? NSNumber { limit = v.doubleValue }
-            if let v = data["limit_remaining"] as? NSNumber { remaining = v.doubleValue }
-            if let r = data["limit_reset"] as? String { reset = r }
+            usage += Self.finiteAmount(data["usage"] as? NSNumber) ?? 0
+            daily += Self.finiteAmount(data["usage_daily"] as? NSNumber) ?? 0
+            weekly += Self.finiteAmount(data["usage_weekly"] as? NSNumber) ?? 0
+            monthly += Self.finiteAmount(data["usage_monthly"] as? NSNumber) ?? 0
+            if let v = Self.finiteAmount(data["limit"] as? NSNumber) { limit = v }
+            if let v = Self.finiteAmount(data["limit_remaining"] as? NSNumber) { remaining = v }
+            if let r = data["limit_reset"] as? String,
+               r.count <= Self.maxLabelLength,
+               r.rangeOfCharacter(from: .controlCharacters) == nil {
+                reset = r
+            }
             if (data["is_free_tier"] as? NSNumber)?.boolValue == true { freeTier = true }
         }
         if invalidKeyResponses > 0 {

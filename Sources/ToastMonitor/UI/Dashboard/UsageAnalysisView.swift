@@ -26,7 +26,7 @@ struct UsageAnalysisView: View {
     @State private var range: Range = .d30
     @State private var grouping: Grouping = .byTool
     @State private var aggs: [Database.DayAgg] = []
-    @State private var modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)] = []
+    @State private var modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)] = []
     @State private var loading = true
     @State private var loadID = UUID()
     @State private var hoveredDayIdx: Int?
@@ -35,12 +35,12 @@ struct UsageAnalysisView: View {
     /// distinct palette entries (hash-based mapping collided).
     @State private var modelColors: [String: Color] = [:]
 
-    /// 归一化行：(day, groupKey, input, output, cacheRead, cost)
-    private var rows: [(day: Int64, key: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)] {
+    /// 归一化行：(day, groupKey, input, output, cacheRead, cost, calls)
+    private var rows: [(day: Int64, key: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)] {
         if grouping == .byTool {
-            return aggs.map { ($0.day, $0.tool, $0.input, $0.output, $0.cacheRead, $0.cost) }
+            return aggs.map { ($0.day, $0.tool, $0.input, $0.output, $0.cacheRead, $0.cost, $0.count) }
         }
-        return modelAggs.map { ($0.day, $0.model, $0.input, $0.output, $0.cacheRead, $0.cost) }
+        return modelAggs.map { ($0.day, $0.model, $0.input, $0.output, $0.cacheRead, $0.cost, $0.count) }
     }
 
     var body: some View {
@@ -107,7 +107,7 @@ struct UsageAnalysisView: View {
 
     /// Rank models by total tokens (descending) and hand each the next
     /// palette color — the top model gets the first color, no collisions.
-    private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)]) -> [String: Color] {
+    private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> [String: Color] {
         let totals: [String: Int64] = aggs.reduce(into: [:]) { acc, row in
             acc[row.model, default: 0] += row.input + row.output + row.cacheRead
         }
@@ -194,19 +194,36 @@ struct UsageAnalysisView: View {
                                          at: CGPoint(x: x, y: chartH + 6))
                             }
                         }
-                        // Invisible per-day hover capture layer.
+                        // Per-day buttons keep the Canvas chart keyboard and
+                        // VoiceOver reachable; hover is only an additional
+                        // pointer affordance.
                         HStack(spacing: 2) {
                             ForEach(days.indices, id: \.self) { di in
-                                Color.clear
-                                    .frame(width: barW)
-                                    .contentShape(Rectangle())
-                                    .onHover { hovering in
-                                        if hovering { hoveredDayIdx = di }
-                                        else if hoveredDayIdx == di { hoveredDayIdx = nil }
-                                    }
+                                let day = days[di]
+                                let total = day.segments.reduce(Int64(0)) { $0 + $1.value }
+                                Button {
+                                    hoveredDayIdx = di
+                                } label: {
+                                    Color.clear
+                                        .frame(width: barW)
+                                        .frame(maxHeight: .infinity)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(Text(Format.dayKeyString(day.date)))
+                                .accessibilityValue(Text(tokenAccessibilityValue(day, total: total)))
+                                .accessibilityHint("按空格查看当天各来源用量")
+                                .onHover { hovering in
+                                    if hovering { hoveredDayIdx = di }
+                                    else if hoveredDayIdx == di { hoveredDayIdx = nil }
+                                }
                             }
                         }
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Tokens 图表")
+                    .accessibilityValue(Text(tokenChartAccessibilitySummary(days, max: maxV)))
+                    .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每日数据")
                 }
                 .frame(height: 174)
                 .overlay(alignment: .topLeading) {
@@ -231,6 +248,17 @@ struct UsageAnalysisView: View {
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 14)
+    }
+    private func tokenAccessibilityValue(_ day: DaySegments, total: Int64) -> String {
+        let parts = day.segments.map { "\($0.name) \(Format.full($0.value)) tokens" }
+        return "\(Format.full(total)) tokens" + (parts.isEmpty ? "" : "，" + parts.joined(separator: "，"))
+    }
+
+    private func tokenChartAccessibilitySummary(_ days: [DaySegments], max: Int64) -> String {
+        let total = days.reduce(Int64(0)) { partial, day in
+            partial + day.segments.reduce(Int64(0)) { $0 + $1.value }
+        }
+        return "\(days.count) 天，共 \(Format.full(total)) tokens，峰值 \(Format.full(max)) tokens/天"
     }
 
     // MARK: - 成本图（按天单 series，不允许跨工具连线）
@@ -296,18 +324,34 @@ struct UsageAnalysisView: View {
                                      at: CGPoint(x: x, y: chartH + 6))
                         }
                     }
-                    // Per-day hover capture.
+                    // Per-day buttons keep the Canvas chart keyboard and
+                    // VoiceOver reachable; hover is only an additional
+                    // pointer affordance.
                     HStack(spacing: 0) {
                         ForEach(keys.indices, id: \.self) { i in
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .onHover { hovering in
-                                    if hovering { hoveredCostIdx = i }
-                                    else if hoveredCostIdx == i { hoveredCostIdx = nil }
-                                }
+                            let day = keys[i]
+                            Button {
+                                hoveredCostIdx = i
+                            } label: {
+                                Color.clear
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(Text(Format.dayKeyString(day)))
+                            .accessibilityValue(Text("\(Format.money(days[day] ?? 0))"))
+                            .accessibilityHint("按空格查看当天估算成本")
+                            .onHover { hovering in
+                                if hovering { hoveredCostIdx = i }
+                                else if hoveredCostIdx == i { hoveredCostIdx = nil }
+                            }
                         }
                     }
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("估算成本图表")
+                .accessibilityValue(Text(costChartAccessibilitySummary(keys, values: days, max: maxV)))
+                .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每日数据")
                 .frame(height: 124)
                 .overlay(alignment: .topTrailing) {
                     Text("最高 \(Format.money(maxV)) / 天")
@@ -317,6 +361,10 @@ struct UsageAnalysisView: View {
                 }
             }
         }
+    }
+    private func costChartAccessibilitySummary(_ keys: [Int64], values: [Int64: Double], max: Double) -> String {
+        let total = keys.reduce(0.0) { $0 + (values[$1] ?? 0) }
+        return "\(keys.count) 天，共 \(Format.money(total))，峰值 \(Format.money(max))/天"
     }
 
     // MARK: - 聚合表
@@ -432,15 +480,15 @@ struct UsageAnalysisView: View {
                 return $0 + $1.input + $1.output + $1.cacheRead
             }
             if tokens == 0 { continue }
-            let calls = list.count
+            let calls = list.reduce(Int64(0)) { $0 + $1.count }
             let cost = list.reduce(0.0) { $0 + $1.cost }
-            out.append((name, tokens, Int64(calls), cost, total > 0 ? Double(tokens) / Double(total) : 0, color(for: name)))
+            out.append((name, tokens, calls, cost, total > 0 ? Double(tokens) / Double(total) : 0, color(for: name)))
         }
         return out.sorted { $0.tokens > $1.tokens }
     }
 
-    private func groupMap() -> [String: [(day: Int64, key: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double)]] {
-        var groups: [String: [(Int64, String, Int64, Int64, Int64, Double)]] = [:]
+    private func groupMap() -> [String: [(day: Int64, key: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]] {
+        var groups: [String: [(Int64, String, Int64, Int64, Int64, Double, Int64)]] = [:]
         for a in rows {
             groups[a.key, default: []].append(a)
         }

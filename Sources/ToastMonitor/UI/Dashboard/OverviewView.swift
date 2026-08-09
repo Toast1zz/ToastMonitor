@@ -183,19 +183,10 @@ struct OverviewView: View {
 
 
     private var statusLine: some View {
-        let broken = health.sources.filter { $0.error != nil }
-        let stale = health.sources.filter { $0.error == nil && $0.isStale }
-        let minutesAgo = app.lastScan > 0 ? Int(Date().timeIntervalSince1970 - TimeInterval(app.lastScan)) / 60 : -1
-        if !broken.isEmpty {
-            return AnyView(TMStatusLabel(text: "\(broken.count) 个来源异常", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill"))
-        }
-        if !stale.isEmpty {
-            return AnyView(TMStatusLabel(text: "\(stale.count) 个来源过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark"))
-        }
-        if minutesAgo >= 0 {
-            return AnyView(TMStatusLabel(text: minutesAgo < 1 ? "数据刚刚更新" : "数据已更新 \(minutesAgo) 分钟前", color: TMDesign.quiet, symbol: "checkmark.circle.fill"))
-        }
-        return AnyView(TMStatusLabel(text: "等待首次扫描", color: TMDesign.quiet, symbol: "circle.dashed"))
+        let broken = health.sources.filter { $0.error != nil }.count
+        let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
+        let summary = TMHealthStatus(brokenCount: broken, staleCount: stale, lastScan: app.lastScan)
+        return TMStatusLabel(text: summary.text, color: summary.color, symbol: summary.symbol)
     }
 
     // MARK: - Heatmap (one year, month axis)
@@ -220,17 +211,20 @@ struct OverviewView: View {
         app.heatmap.values.max() ?? 0
     }
 
-    /// 53-week grid for the current year window. Recomputed at most once per
-    /// day (371 Calendar operations), never on every body evaluation.
+    /// 53-week geometry is keyed by calendar year and ordinal day. A day-only
+    /// key reused the prior year's grid when the app stayed open over New Year.
     private static var cachedWeeks: [[Int64?]] = []
-    private static var cachedWeeksDay: Int = -1
+    private static var cachedWeeksKey: Int = -1
 
     private var heatmapWeeks: [[Int64?]] {
         let now = Date()
-        let day = Calendar.current.ordinality(of: .day, in: .year, for: now) ?? -1
-        guard Self.cachedWeeksDay != day else { return Self.cachedWeeks }
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year], from: now)
+        let day = calendar.ordinality(of: .day, in: .year, for: now) ?? -1
+        let key = (components.year ?? 0) * 1000 + day
+        guard Self.cachedWeeksKey != key else { return Self.cachedWeeks }
         Self.cachedWeeks = Self.buildHeatmapWeeks(now: now)
-        Self.cachedWeeksDay = day
+        Self.cachedWeeksKey = key
         return Self.cachedWeeks
     }
 
@@ -390,6 +384,17 @@ private struct HeatmapGrid: View {
             .defaultScrollAnchor(.trailing)
             heatLegend
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("活动热力图")
+        .accessibilityValue(Text(accessibilitySummary))
+        .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每一天的用量")
+    }
+
+    private var accessibilitySummary: String {
+        let activeDays = heatmap.values.filter { $0 > 0 }.count
+        guard activeDays > 0 else { return "暂无用量数据" }
+        let total = heatmap.values.reduce(Int64(0), +)
+        return "\(activeDays) 天有用量，共 \(Format.full(total)) tokens，最高 \(Format.full(maxTokens)) tokens/天"
     }
 
     /// First week whose Monday falls in a new month gets that month's label.
@@ -427,28 +432,56 @@ private struct HeatmapGrid: View {
                           ? Color.primary.opacity(0.07)
                           : TMDesign.accent.opacity(0.18 + Double(level) / 4 * 0.72))
                     .frame(width: 11, height: 11)
+                    .accessibilityHidden(true)
             }
             Text("多")
                 .font(.system(size: TMType.micro))
                 .foregroundStyle(TMDesign.faint)
             Spacer()
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("图例")
+        .accessibilityValue("少到多")
     }
 
+    @ViewBuilder
     private func heatCell(_ day: Int64?) -> some View {
-        let value = day.flatMap { Double(heatmap[$0] ?? 0) } ?? 0
+        let tokenCount = day.flatMap { heatmap[$0] } ?? 0
+        let value = Double(tokenCount)
         let maxValue = Double(maxTokens)
         let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
-        return RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-            .fill(value > 0 ? TMDesign.accent.opacity(0.18 + intensity * 0.72) : Color.primary.opacity(0.07))
-            .frame(width: cellSize, height: cellSize)
-            .contentShape(Rectangle())
+        let label = day.map(Format.dayKeyString) ?? "无日期"
+        let cost = day.flatMap { heatmapCost[$0] } ?? 0
+        let valueText = day == nil
+            ? "无数据"
+            : "\(Format.full(tokenCount)) tokens" + (cost > 0 ? "，\(Format.money(cost))" : "")
+
+        if let day {
+            Button {
+                hoveredDay = (day, tokenCount, cost)
+            } label: {
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(value > 0 ? TMDesign.accent.opacity(0.18 + intensity * 0.72) : Color.primary.opacity(0.07))
+                    .frame(width: cellSize, height: cellSize)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(label))
+            .accessibilityValue(Text(valueText))
+            .accessibilityHint("按空格查看当天用量")
             .onHover { hovering in
-                if hovering, let day {
-                    hoveredDay = (day, heatmap[day] ?? 0, heatmapCost[day] ?? 0)
+                if hovering {
+                    hoveredDay = (day, tokenCount, cost)
                 } else if hoveredDay?.key == day {
                     hoveredDay = nil
                 }
             }
+        } else {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .fill(Color.primary.opacity(0.07))
+                .frame(width: cellSize, height: cellSize)
+                .accessibilityHidden(true)
+        }
     }
+
 }

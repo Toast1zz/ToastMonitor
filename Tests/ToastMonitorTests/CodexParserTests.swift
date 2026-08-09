@@ -74,6 +74,19 @@ final class CodexParserJSONTests: XCTestCase {
         XCTAssertEqual(counts[1].input + counts[1].cacheRead, 4700)
     }
 
+    func testReasoningTokensRemainSeparateFromOutput() {
+        let counts = CodexParser.tokenCounts(from: [
+            "last_token_usage": [
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 17,
+            ]
+        ])
+        XCTAssertEqual(counts?.input, 10)
+        XCTAssertEqual(counts?.output, 5)
+        XCTAssertEqual(counts?.reasoning, 17)
+    }
+
     func testTokenCountsRequiresLastTokenUsage() {
         XCTAssertNil(CodexParser.tokenCounts(from: ["total_token_usage": ["input_tokens": 5]]),
                      "cumulative totals alone must not produce a turn")
@@ -119,5 +132,15 @@ final class CodexParserJSONTests: XCTestCase {
         XCTAssertNotNil(est, "gpt-5.6-sol must resolve to the gpt-5.6 rate")
         XCTAssertEqual(est!, 3500.0 / 1e6 * 1.25 + 421.0 / 1e6 * 10 + 1200.0 / 1e6 * 0.125 + 80.0 / 1e6 * 1.875,
                        accuracy: 0.0001)
+    }
+}
+
+
+final class OpenCodeParserTests: XCTestCase {
+    func testModelJSONPreservesProviderIdentity() {
+        let raw = #"{"id":"gpt-5.6","providerID":"openai"}"#
+        XCTAssertEqual(OpenCodeParser.normalizeModel(raw), "gpt-5.6")
+        XCTAssertEqual(OpenCodeParser.normalizeProvider(raw), "openai")
+        XCTAssertNil(OpenCodeParser.normalizeProvider("gpt-5.6"))
     }
 }

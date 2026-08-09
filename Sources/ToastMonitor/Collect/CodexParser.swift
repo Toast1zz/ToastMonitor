@@ -32,11 +32,12 @@ enum CodexParser {
     /// (the per-turn delta); `total_token_usage` is cumulative across the
     /// rollout and must never be used for an individual turn.
     /// Returns nil when the event carries no `last_token_usage`.
-    static func tokenCounts(from info: [String: Any]) -> (input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64)? {
+    static func tokenCounts(from info: [String: Any]) -> (input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64)? {
         guard let last = info["last_token_usage"] as? [String: Any] else { return nil }
         return (
             input: (last["input_tokens"] as? NSNumber)?.int64Value ?? 0,
             output: (last["output_tokens"] as? NSNumber)?.int64Value ?? 0,
+            reasoning: (last["reasoning_output_tokens"] as? NSNumber)?.int64Value ?? 0,
             cacheRead: (last["cached_input_tokens"] as? NSNumber)?.int64Value ?? 0,
             cacheWrite: (last["cache_write_input_tokens"] as? NSNumber)?.int64Value ?? 0
         )
@@ -85,16 +86,21 @@ enum CodexParser {
             // mtime changed with size unchanged = in-place rewrite; replay
             // from 0 so edited events are not silently lost (dedupe handles
             // the already-imported ones).
+            let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
             let sameAppendOnlyFile = prev.identity == st.identity
                 && st.size > prev.size
                 && prev.mtime != 0
+                && !pendingRewrite
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
             if DebugLog.enabled {
                 NSLog("[ToastMonitor][codex] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objs.count)
             }
             if objs.isEmpty {
-                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity)
+                let pending = st.size < prev.size || pendingRewrite
+                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime,
+                                             identity: st.identity,
+                                             context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
                 continue
             }
 
@@ -118,7 +124,6 @@ enum CodexParser {
                 updated = (ctx["updated"] as? NSNumber)?.int64Value ?? 0
             }
 
-            let fileName = (file as NSString).lastPathComponent
 
             // A scan chunk may start with token_count rows whose turn_context
             // lives earlier in the stream (or arrived in a previous scan).
@@ -160,6 +165,7 @@ enum CodexParser {
                     let output = counts.output
                     let cacheRead = counts.cacheRead
                     let cacheWrite = counts.cacheWrite
+                    let reasoning = counts.reasoning
                     let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
                         ?? Int64(Date().timeIntervalSince1970)
                     // Threads metadata is a valid fallback when a rollout
@@ -170,15 +176,17 @@ enum CodexParser {
                         ?? threadMeta[sid]?.provider
                     let est = Pricing.estimate(model: eventModel, input: input, output: output,
                                                 cacheRead: cacheRead, cacheWrite: cacheWrite)
-                    if input + output + cacheRead + cacheWrite > 0 {
-                        // Truncate-and-rewrite replays from offset 0: reuse
-                        // the previous mtime so replayed fallback IDs collide
-                        // with the originals and dedupe (no double count).
-                        let idMtime = sameAppendOnlyFile ? st.mtime : prev.mtime
+                    if input + output + reasoning + cacheRead + cacheWrite > 0,
+                       let lastUsage = info["last_token_usage"] as? [String: Any] {
+                        let eventID = EventIdentity.codex(
+                            sessionID: sid, timestamp: ts, model: eventModel,
+                            usage: lastUsage)
                         turns.append(TurnRecord(tool: .codex, sessionID: sid, project: nil,
                                                 model: eventModel, ts: ts, inputTokens: input, outputTokens: output,
+                                                reasoningTokens: reasoning,
                                                 cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,
-                                                eventID: "codex:\(fileName):\(st.identity):\(idMtime):\(item.offset)",
+                                                provider: provider ?? threadMeta[sid]?.provider,
+                                                eventID: eventID,
                                                 costQuality: est == nil ? "unknown" : "estimated"))
                     }
                     updated = max(updated, ts)
@@ -202,9 +210,12 @@ enum CodexParser {
 
             // Persist parse context so incremental scans never depend on
             // session_meta re-appearing (P0-1).
-            let ctx: [String: Any] = ["sid": sid, "model": model ?? "", "provider": provider ?? "",
+            var ctx: [String: Any] = ["sid": sid, "model": model ?? "", "provider": provider ?? "",
                                       "cwd": cwd ?? "", "title": title ?? "",
                                       "created": created, "updated": updated]
+            if st.size < prev.size {
+                ctx["_full_rescan"] = true
+            }
             let ctxJSON = (try? JSONSerialization.data(withJSONObject: ctx)).flatMap { String(data: $0, encoding: .utf8) }
             Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity, context: ctxJSON)
         }

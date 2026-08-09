@@ -80,23 +80,8 @@ struct PopoverRootView: View {
     private var status: some View {
         let broken = health.sources.filter { $0.error != nil }.count
         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
-        let color = TMDesign.statusColor(isError: broken > 0, isStale: stale > 0)
-        let title: String
-        let symbol: String
-        if broken > 0 {
-            title = "\(broken) 个来源异常"
-            symbol = "exclamationmark.triangle.fill"
-        } else if stale > 0 {
-            title = "\(stale) 个来源过期"
-            symbol = "clock.badge.exclamationmark"
-        } else if app.lastScan > 0 {
-            title = "数据已同步"
-            symbol = "checkmark.circle.fill"
-        } else {
-            title = "等待首次扫描"
-            symbol = "circle.dashed"
-        }
-        return TMStatusLabel(text: title, color: color, symbol: symbol)
+        let summary = TMHealthStatus(brokenCount: broken, staleCount: stale, lastScan: app.lastScan)
+        return TMStatusLabel(text: summary.text, color: summary.color, symbol: summary.symbol)
     }
 
     private var footer: some View {
@@ -113,7 +98,7 @@ struct PopoverRootView: View {
 
             Button {
                 WindowManager.shared.show()
-                NSApp.keyWindow?.close()
+                NotificationCenter.default.post(name: PanelController.hideNotification, object: nil)
             } label: {
                 // Claude 风格：无图标、无边框，纯文字入口（参考 claude-statusbar
                 // 的 statusLine —— 只有文字与细符号，从不使用外链箭头）。
