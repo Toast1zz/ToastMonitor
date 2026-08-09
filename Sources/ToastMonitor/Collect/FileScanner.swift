@@ -12,8 +12,12 @@ enum FileScanner {
         let directoryMTimes: [String: Int64]
     }
 
-    private static let listCacheLock = NSLock()
-    private static var listCache: [String: FileListCache] = [:]
+    private final class FileListCacheStore: @unchecked Sendable {
+        let lock = NSLock()
+        var values: [String: FileListCache] = [:]
+    }
+
+    private static let listCache = FileListCacheStore()
 
     /// Stat info for a file.
     struct Stat {
@@ -42,15 +46,15 @@ enum FileScanner {
     /// every directory mtime, so a new nested file can never remain hidden.
     static func listFiles(_ root: String, maxDepth: Int = 3) -> [String] {
         let cacheKey = "\(root)\u{1F} \(maxDepth)"
-        listCacheLock.lock()
-        if let cached = listCache[cacheKey],
+        listCache.lock.lock()
+        if let cached = listCache.values[cacheKey],
            cached.directoryMTimes[root] != nil,
            cached.directoryMTimes.allSatisfy({ dirMT($0.key) == $0.value }) {
             let files = cached.files
-            listCacheLock.unlock()
+            listCache.lock.unlock()
             return files
         }
-        listCacheLock.unlock()
+        listCache.lock.unlock()
 
         var out: [String] = []
         var directories: [String: Int64] = [:]
@@ -72,9 +76,9 @@ enum FileScanner {
                 }
             }
         }
-        listCacheLock.lock()
-        listCache[cacheKey] = FileListCache(files: out, directoryMTimes: directories)
-        listCacheLock.unlock()
+        listCache.lock.lock()
+        listCache.values[cacheKey] = FileListCache(files: out, directoryMTimes: directories)
+        listCache.lock.unlock()
         return out
     }
 
@@ -153,26 +157,32 @@ enum FileScanner {
         return String(data: data, encoding: .utf8)
     }
 
-    static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
+    private final class ISOFormatterCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private let fractional: ISO8601DateFormatter
+        private let noFraction: ISO8601DateFormatter
 
-    private static let isoFormatterNoFraction: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
+        init() {
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            self.fractional = fractional
+            let noFraction = ISO8601DateFormatter()
+            noFraction.formatOptions = [.withInternetDateTime]
+            self.noFraction = noFraction
+        }
+
+        func date(from string: String) -> Date? {
+            lock.lock()
+            defer { lock.unlock() }
+            return fractional.date(from: string) ?? noFraction.date(from: string)
+        }
+    }
+
+    private static let isoFormatters = ISOFormatterCache()
 
     static func parseISO(_ s: String) -> Int64? {
-        if let d = isoFormatter.date(from: s) {
-            return Int64(d.timeIntervalSince1970)
-        }
-        if let d = isoFormatterNoFraction.date(from: s) {
-            return Int64(d.timeIntervalSince1970)
-        }
-        return nil
+        guard let date = isoFormatters.date(from: s) else { return nil }
+        return Int64(date.timeIntervalSince1970)
     }
 
     /// "…-Users-toast1-Documents-Tusi" -> "Tusi" (last path component, "-" = "/").

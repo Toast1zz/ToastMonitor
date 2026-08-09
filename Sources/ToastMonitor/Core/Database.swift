@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 /// Thread-safe SQLite store. WAL mode, single writer, batched transactions.
-final class Database {
+final class Database: @unchecked Sendable {
     static let shared = Database()
     static let subscriptionsDidChange = Notification.Name("ToastMonitorSubscriptionsDidChange")
 
@@ -891,7 +891,7 @@ final class Database {
 
     // MARK: - Queries (UI)
 
-    struct ToolTotals {
+    struct ToolTotals: Sendable {
         var tool: String
         var input: Int64
         var output: Int64
@@ -901,7 +901,7 @@ final class Database {
         var count: Int64
     }
 
-    struct DayAgg {
+    struct DayAgg: Sendable {
         let day: Int64      // yyyymmdd as int
         let tool: String
         let input: Int64
@@ -911,7 +911,7 @@ final class Database {
         let count: Int64
     }
 
-    struct ModelAgg: Identifiable {
+    struct ModelAgg: Identifiable, Sendable {
         let tool: String
         let model: String
         let input: Int64
@@ -940,7 +940,7 @@ final class Database {
         var id: String { "\(tool)|\(sessionID)" }
     }
 
-    struct ORSnapshot: Identifiable {
+    struct ORSnapshot: Identifiable, Sendable {
         let ts: Int64
         let usage: Double
         let usageDaily: Double
@@ -1251,7 +1251,7 @@ final class Database {
 
     // MARK: - OpenCode Go quota snapshots
 
-    struct OGSnapshot: Identifiable {
+    struct OGSnapshot: Identifiable, Sendable {
         let ts: Int64
         let rollingPct: Double?
         let rollingReset: Int64?
@@ -1348,7 +1348,7 @@ final class Database {
 
     // MARK: - Subscriptions (fixed-cost side)
 
-    struct Subscription: Identifiable, Equatable {
+    struct Subscription: Identifiable, Equatable, Sendable {
         let id: Int64
         var name: String
         var plan: String      // "" | "go" | "openrouter" | "claude"

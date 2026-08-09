@@ -14,7 +14,7 @@ import CryptoKit
 ///
 /// Incremental via a per-tool watermark (max ts already imported).
 final class HermesRemoteClient: ObservableObject {
-    static let shared = HermesRemoteClient()
+    nonisolated(unsafe) static let shared = HermesRemoteClient()
     static let replayLookback: Int64 = 300
     static let maxFeedURLLength = 2_048
     static let maxFeedRows = 50_000
@@ -508,12 +508,13 @@ final class HermesRemoteClient: ObservableObject {
         let ignoredRows = unknownTools + malformedRows
         let errorText = ignoredRows > 0 ? "\(ignoredRows) 行无效/未知记录已忽略" : nil
         let syncTime = Int64(Date().timeIntervalSince1970)
+        let importedTurnCount = turns.count
         let importedByTool = turns.reduce(into: [String: Int]()) { counts, turn in
             counts[turn.tool.rawValue, default: 0] += 1
         }
         publishStatus {
             $0.lastSync = syncTime
-            $0.lastRows = turns.count
+            $0.lastRows = importedTurnCount
             $0.error = errorText
         }
         Task { @MainActor in
@@ -523,7 +524,7 @@ final class HermesRemoteClient: ObservableObject {
                                               durationMs: 0, error: nil)
             }
             if let errorText {
-                SourceHealthHub.shared.record(tool: "remote-feed", rows: turns.count,
+                SourceHealthHub.shared.record(tool: "remote-feed", rows: importedTurnCount,
                                               failed: ignoredRows, durationMs: 0, error: errorText)
             }
             // Remote import completes after the collector's local scan
@@ -531,8 +532,8 @@ final class HermesRemoteClient: ObservableObject {
             // and dashboard do not wait for the next 15-second snapshot tick.
             NotificationCenter.default.post(name: CollectorEngine.didCollect, object: nil)
         }
-        if turns.count > 0 {
-            NSLog("[ToastMonitor] remote feed: %d turns imported", turns.count)
+        if importedTurnCount > 0 {
+            NSLog("[ToastMonitor] remote feed: %d turns imported", importedTurnCount)
         }
     }
 

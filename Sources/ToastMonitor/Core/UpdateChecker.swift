@@ -218,9 +218,30 @@ enum UpdateChecker {
         }
         return false
     }
+    private final class LimitState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var exceeded = false
+
+        func markExceeded() {
+            lock.lock()
+            exceeded = true
+            lock.unlock()
+        }
+
+        var value: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return exceeded
+        }
+    }
+
     private final class HTTPSRedirectDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownloadDelegate {
         private let maxBytes: Int64?
-        private(set) var exceededLimit = false
+        private let limitState = LimitState()
+
+        var exceededLimit: Bool {
+            limitState.value
+        }
 
         init(maxBytes: Int64? = nil) {
             self.maxBytes = maxBytes
@@ -236,7 +257,7 @@ enum UpdateChecker {
                         didReceive response: URLResponse,
                         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
             if let maxBytes, response.expectedContentLength > maxBytes {
-                exceededLimit = true
+                limitState.markExceeded()
                 completionHandler(.cancel)
             } else {
                 completionHandler(.allow)
@@ -253,6 +274,7 @@ enum UpdateChecker {
             }
             completionHandler(request)
         }
+
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                         didWriteData bytesWritten: Int64,
                         totalBytesWritten: Int64,
@@ -260,9 +282,10 @@ enum UpdateChecker {
             guard let maxBytes,
                   totalBytesWritten > maxBytes
                     || totalBytesExpectedToWrite > maxBytes else { return }
-            exceededLimit = true
+            limitState.markExceeded()
             downloadTask.cancel()
         }
+
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                         didFinishDownloadingTo location: URL) {
             // The async download API owns the temporary location and returns it

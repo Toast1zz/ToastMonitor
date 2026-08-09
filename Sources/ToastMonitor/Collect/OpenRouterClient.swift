@@ -10,7 +10,7 @@ import Foundation
 ///  - /api/v1/keys is queried with a key whose /api/v1/key response explicitly
 ///    reports `is_management_key`; key order never determines privilege.
 final class OpenRouterClient: ObservableObject {
-    static let shared = OpenRouterClient()
+    nonisolated(unsafe) static let shared = OpenRouterClient()
     static let maxAPIKeyLength = 512
     static let maxKeyCount = 64
     static let maxKeyPayloadLength = 40_000

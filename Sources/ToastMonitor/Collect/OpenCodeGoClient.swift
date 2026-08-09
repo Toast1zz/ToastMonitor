@@ -7,7 +7,7 @@ import Foundation
 /// resetInSec). We fetch it with the session cookie and parse both the
 /// SSR format and the newer data-slot HTML format.
 final class OpenCodeGoClient: ObservableObject {
-    static let shared = OpenCodeGoClient()
+    nonisolated(unsafe) static let shared = OpenCodeGoClient()
     static let maxWorkspaceIDLength = 128
     static let maxCookieLength = 16_384
     static let maxHTMLLength = 10_000_000

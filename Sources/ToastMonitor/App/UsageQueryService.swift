@@ -3,12 +3,12 @@ import Foundation
 /// Off-main-thread aggregation facade (spec §9 / §11).
 /// UI state loads one Snapshot per refresh; no view touches the DB directly
 /// for aggregates, and no long query ever runs on the main thread.
-final class UsageQueryService {
+final class UsageQueryService: @unchecked Sendable {
     static let shared = UsageQueryService()
 
     private let queue = DispatchQueue(label: "toastmonitor.queries", qos: .userInitiated)
 
-    struct CostQuality {
+    struct CostQuality: Sendable {
         var estimated: Double
         var actual: Double
         var knownCount: Int
@@ -19,7 +19,7 @@ final class UsageQueryService {
     /// Fields needed by the status bar and popover. Dashboard-only model and
     /// calendar data is intentionally absent so a lightweight refresh never
     /// performs the annual aggregation queries.
-    struct LightSnapshot {
+    struct LightSnapshot: Sendable {
         var today: Database.ToolTotals
         var week: Database.ToolTotals
         var month: Database.ToolTotals
@@ -47,7 +47,7 @@ final class UsageQueryService {
 
     /// Complete dashboard snapshot. `light` is computed once and reused,
     /// avoiding a second round of status/popover aggregate work.
-    struct Snapshot {
+    struct Snapshot: Sendable {
         var light: LightSnapshot
         var modelAggs: [Database.ModelAgg]
         var modelAggsToday: [Database.ModelAgg]
@@ -59,20 +59,20 @@ final class UsageQueryService {
 
     private init() {}
 
-    func loadSnapshot(completion: @escaping (Snapshot) -> Void) {
+    func loadSnapshot(completion: @escaping @MainActor @Sendable (Snapshot) -> Void) {
         queue.async {
             let snap = self.compute()
             DispatchQueue.main.async { completion(snap) }
         }
     }
-    func loadLightSnapshot(completion: @escaping (LightSnapshot) -> Void) {
+    func loadLightSnapshot(completion: @escaping @MainActor @Sendable (LightSnapshot) -> Void) {
         queue.async {
             let snap = self.computeLight()
             DispatchQueue.main.async { completion(snap) }
         }
     }
 
-    func loadDailyAggs(days: Int, completion: @escaping ([Database.DayAgg]) -> Void) {
+    func loadDailyAggs(days: Int, completion: @escaping @MainActor @Sendable ([Database.DayAgg]) -> Void) {
         queue.async {
             let aggs = Database.shared.dailyAggregates(days: days)
             DispatchQueue.main.async { completion(aggs) }
@@ -80,21 +80,21 @@ final class UsageQueryService {
     }
 
     func loadTurns(sessionTool: String, sessionID: String,
-                   completion: @escaping ([(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)]) -> Void) {
+                   completion: @escaping @MainActor @Sendable ([(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)]) -> Void) {
         queue.async {
             let turns = Database.shared.turns(sessionTool: sessionTool, sessionID: sessionID)
             DispatchQueue.main.async { completion(turns) }
         }
     }
 
-    func loadORSnapshots(limit: Int = 500, completion: @escaping ([Database.ORSnapshot]) -> Void) {
+    func loadORSnapshots(limit: Int = 500, completion: @escaping @MainActor @Sendable ([Database.ORSnapshot]) -> Void) {
         queue.async {
             let snapshots = Database.shared.orSnapshots(limit: limit)
             DispatchQueue.main.async { completion(snapshots) }
         }
     }
 
-    func loadDailyAggsByModel(days: Int, completion: @escaping ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> Void) {
+    func loadDailyAggsByModel(days: Int, completion: @escaping @MainActor @Sendable ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> Void) {
         queue.async {
             let aggs = Database.shared.dailyAggregatesByModel(days: days)
             DispatchQueue.main.async { completion(aggs) }
@@ -102,14 +102,14 @@ final class UsageQueryService {
     }
     /// Loads one quota point per local calendar day, retaining the complete
     /// persisted history rather than a polling-frequency-dependent row limit.
-    func loadOGSnapshotsByDay(completion: @escaping ([Database.OGSnapshot]) -> Void) {
+    func loadOGSnapshotsByDay(completion: @escaping @MainActor @Sendable ([Database.OGSnapshot]) -> Void) {
         queue.async {
             let snapshots = Database.shared.ogSnapshotsByDay()
             DispatchQueue.main.async { completion(snapshots) }
         }
     }
 
-    func loadORSnapshotsByDay(completion: @escaping ([Database.ORSnapshot]) -> Void) {
+    func loadORSnapshotsByDay(completion: @escaping @MainActor @Sendable ([Database.ORSnapshot]) -> Void) {
         queue.async {
             let snapshots = Database.shared.orSnapshotsByDay()
             DispatchQueue.main.async { completion(snapshots) }

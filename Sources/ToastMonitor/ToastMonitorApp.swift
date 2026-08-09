@@ -59,7 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fm = FileManager.default
         let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("ToastMonitor", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        pruneCrashLogs(in: dir)
         // Precompute "<dir>/crash-" for the signal handler (which must not
         // call Foundation) and force the scratch buffer's lazy init now.
         tmCrashDirPrefixC = Array((dir.path + "/crash-").utf8CString)
@@ -72,10 +75,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let stack = exception.callStackSymbols.prefix(12).joined(separator: "\n")
             let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("ToastMonitor", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                     attributes: [.posixPermissions: 0o700])
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
             let line = "uncaught exception \(name): \(reason)\n\(stack)\n"
             let path = dir.appendingPathComponent("crash-\(Int(Date().timeIntervalSince1970)).log")
             try? line.write(to: path, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
             // Returning lets the runtime terminate the app normally.
         }
 
@@ -85,6 +91,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGBUS, tmCrashSignalHandler)
         signal(SIGFPE, tmCrashSignalHandler)
     }
+
+    private func pruneCrashLogs(in directory: URL) {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [
+            .isRegularFileKey, .contentModificationDateKey
+        ], options: [.skipsHiddenFiles])) ?? []
+        let logs = urls.filter { url in
+            url.lastPathComponent.hasPrefix("crash-") && url.pathExtension == "log"
+        }.sorted {
+            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return a > b
+        }
+        for url in logs {
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        for url in logs.dropFirst(20) {
+            try? fm.removeItem(at: url)
+        }
+    }
+
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installCrashHandlers()
@@ -444,11 +471,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// "<dir>/crash-" (NUL-terminated). Built once in `installCrashHandlers`
 /// (Foundation allowed there); read-only afterwards.
-private var tmCrashDirPrefixC: [CChar] = []
+nonisolated(unsafe) private var tmCrashDirPrefixC: [CChar] = []
 /// Preallocated scratch buffer. Lazily initialized on first access — forced
 /// during `installCrashHandlers`, so the handler itself never allocates
 /// (malloc is not async-signal-safe).
-private var tmCrashScratch = [CChar](repeating: 0, count: 2048)
+nonisolated(unsafe) private var tmCrashScratch = [CChar](repeating: 0, count: 2048)
 
 /// Appends the decimal digits of `v` (>= 0) to `buf` at `i`, returning the
 /// index after the last digit. Pure integer math — safe in signal handlers.

@@ -60,11 +60,6 @@ final class WindowManager {
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
     }
 
-    deinit {
-        if let closeObserver {
-            NotificationCenter.default.removeObserver(closeObserver)
-        }
-    }
 }
 
 /// The full surface is task-oriented rather than a collection of duplicated
