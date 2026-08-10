@@ -486,17 +486,19 @@ private struct StatusRow: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            // 固定两行：resets 行始终占位（无值透明），Loading → 数据
-            // 切换时行高不跳，面板高度稳定。
+            // 固定两行高度：空字符串 Text 固有高度会塌缩为 0，所以用
+            // 显式 frame 占位——Loading → 数据切换时行高恒定，面板不跳。
             VStack(alignment: .trailing, spacing: 2) {
                 Text((critical ? "★ " : "") + status)
                     .font(TMType.monoRegular(TMType.body))
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
+                    .frame(height: 16, alignment: .trailing)
                 Text(resetSuffix ?? "")
                     .font(TMType.monoRegular(TMType.micro))
                     .foregroundStyle(statusColor.opacity(0.7))
                     .lineLimit(1)
+                    .frame(height: 13, alignment: .trailing)
                     .opacity(resetSuffix == nil ? 0 : 1)
             }
             .layoutPriority(1)
