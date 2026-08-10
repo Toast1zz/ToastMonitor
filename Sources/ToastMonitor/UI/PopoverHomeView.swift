@@ -117,17 +117,21 @@ struct PopoverHomeView: View {
                 )
 
             ScrollView(.vertical, showsIndicators: false) {
+                // 板块节奏统一：每块之间一条等宽分割线（撑满内容区），
+                // 线上下各 14pt 间距，所有板块间距一致。
                 VStack(alignment: .leading, spacing: 0) {
                     hero
-                        .padding(.bottom, 12)
-                    sourceBar
                         .padding(.bottom, 14)
+                    sourceBar
                     Divider().opacity(0.4)
+                        .padding(.vertical, 14)
                     quotaSection
-                        .padding(.top, 14)
                     Divider().opacity(0.4)
-                    activityTrend
-                        .padding(.top, 14)
+                        .padding(.vertical, 14)
+                    activityBlock
+                    Divider().opacity(0.4)
+                        .padding(.vertical, 14)
+                    trendBlock
                 }
                 .padding(.horizontal, 20)
                 // A ScrollView normally accepts the viewport's proposed
@@ -378,9 +382,7 @@ struct PopoverHomeView: View {
     /// fixed section below the period content, labelled as such.
     private var quotaSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("Quota")
-                .font(TMType.semibold(13))
-                .foregroundStyle(.primary)
+            SectionTitle("Quota")
             goStatusRow
             codexStatusRow
             routerStatusRow
@@ -389,42 +391,39 @@ struct PopoverHomeView: View {
 
     // MARK: - 活动与趋势（历史维度，与周期选择无关）
 
-    /// 一年活动热力图 + 最近 60 天每日用量曲线（参考图布局：Activity 网格、
-    /// Trend 折线，右上角分别标注 active days 与 peak）。
-    private var activityTrend: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text("Activity")
-                        .font(TMType.semibold(13))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Text("\(activeDays) active days")
+    /// 近半年活动热力图板块（参考图布局：网格 + 右上角 active days）。
+    private var activityBlock: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                SectionTitle("Activity")
+                Spacer()
+                Text("\(activeDays) active days")
+                    .font(TMType.monoRegular(TMType.caption))
+                    .foregroundStyle(.secondary)
+            }
+            PopoverHeatmap(weeks: activityWeeks,
+                           heatmap: heatmapData,
+                           maxTokens: heatmapData.values.max() ?? 0)
+        }
+    }
+
+    /// 最近 60 天每日用量曲线板块（参考图布局：折线 + 右上角 peak）。
+    private var trendBlock: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                SectionTitle("Trend")
+                Spacer()
+                if let h = hoveredTrend {
+                    Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens))")
+                        .font(TMType.monoRegular(TMType.caption))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Peak \(Format.compact(trendPeak))")
                         .font(TMType.monoRegular(TMType.caption))
                         .foregroundStyle(.secondary)
                 }
-                PopoverHeatmap(weeks: activityWeeks,
-                               heatmap: heatmapData,
-                               maxTokens: heatmapData.values.max() ?? 0)
             }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text("Trend")
-                        .font(TMType.semibold(13))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    if let h = hoveredTrend {
-                        Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens))")
-                            .font(TMType.monoRegular(TMType.caption))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Peak \(Format.compact(trendPeak))")
-                            .font(TMType.monoRegular(TMType.caption))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                trendChart
-            }
+            trendChart
         }
     }
 
@@ -716,6 +715,23 @@ private struct StatusRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(Text([status, resetSuffix].compactMap { $0 }.joined(separator: " · ")))
+    }
+}
+
+/// 板块标题（Quota / Activity / Trend）：全大写 + 小号 + 字距 + 灰，
+/// 与内容行（13pt medium primary）形成清晰层次；右侧跟随次要信息。
+private struct SectionTitle: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(TMType.semibold(11))
+            .kerning(0.6)
+            .foregroundStyle(TMDesign.quiet)
     }
 }
 
