@@ -178,7 +178,20 @@ struct PopoverHomeView: View {
                 .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
                 .accessibilityLabel("Toggle number format")
             }
-            HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text("Cache Hit Rate")
+                        .font(TMType.regular(12))
+                        .foregroundStyle(.secondary)
+                    Text(cacheRateText)
+                        .font(TMType.regular(12))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Cache hit rate")
+                .accessibilityValue(Text(cacheRateText))
+
                 Button {
                     showSpent.toggle()
                 } label: {
@@ -191,7 +204,7 @@ struct PopoverHomeView: View {
                              : (estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
                             .font(TMType.regular(12))
                             .tmMonospacedDigit()
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(.secondary)
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 9))
                             .foregroundStyle(TMDesign.faint)
@@ -205,21 +218,6 @@ struct PopoverHomeView: View {
                                          ? (actualShown > 0 ? Format.money(actualShown) : "—")
                                          : (estimatedShown > 0 ? Format.money(estimatedShown) : "—")))
                 .accessibilityHint("Click to switch between Spent and API Value")
-
-                Spacer(minLength: 8)
-
-                HStack(spacing: 5) {
-                    Text("Cache Hit Rate")
-                        .font(TMType.regular(12))
-                        .foregroundStyle(.secondary)
-                    Text(cacheRateText)
-                        .font(TMType.regular(12))
-                        .tmMonospacedDigit()
-                        .foregroundStyle(.primary)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Cache hit rate")
-                .accessibilityValue(Text(cacheRateText))
             }
         }
     }
