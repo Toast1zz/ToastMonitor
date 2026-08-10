@@ -336,68 +336,7 @@ extension View {
 }
 import SwiftUI
 
-/// 预测文案统一生成（Popover / 设置 / 计划与余额共用）。
+/// 预测状态语义（各页面自行生成英文预测文案）。
 enum ForecastText {
     enum Status { case ok, warn, danger, neutral }
-
-    /// 主预测行 + 状态。
-    static func line(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: Status) {
-        switch plan {
-        case "go":
-            if let exhaust = fc.exhaustDate {
-                let daysLeft = max(Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()),
-                                                                   to: Calendar.current.startOfDay(for: exhaust)).day ?? 0, 0)
-                return ("预计 \(date(exhaust)) 用尽 $60 额度 · 日均 \(Format.money(fc.dailyRate))",
-                        daysLeft <= 5 ? .danger : .warn)
-            }
-            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
-            let util = fc.limit > 0 ? Int(((fc.projectedEnd ?? 0) / fc.limit) * 100) : 0
-            return ("日均 \(Format.money(fc.dailyRate)) → 期末预计 \(Format.money(fc.projectedEnd ?? 0)) · 剩 \(Format.money(remaining))（利用率 \(util)%）", .ok)
-        case "openrouter":
-            if let exhaust = fc.exhaustDate {
-                return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate)) → 约 \(date(exhaust)) 耗尽", .warn)
-            }
-            return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate)) · 无耗尽风险", .ok)
-        case "claude":
-            return ("Claude 用量价值 \(Format.money(fc.used)) · 日均 \(Format.money(fc.dailyRate)) → 期末 \(Format.money(fc.projectedEnd ?? 0))", .ok)
-        default:
-            return ("已付 \(Format.money(fc.used)) · 未关联用量源", .neutral)
-        }
-    }
-
-    /// 紧凑单行（Popover / 设置行）。
-    static func compact(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: Status) {
-        switch plan {
-        case "go":
-            if let exhaust = fc.exhaustDate {
-                return ("已用 \(Format.money(fc.used)) · 预计 \(date(exhaust)) 用尽", .warn)
-            }
-            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
-            return ("已用 \(Format.money(fc.used)) · 日均 \(Format.money(fc.dailyRate)) · 期末剩 \(Format.money(remaining))", .ok)
-        case "openrouter":
-            if let exhaust = fc.exhaustDate {
-                return ("余额 \(Format.money(fc.limit)) · 约 \(date(exhaust)) 耗尽", .warn)
-            }
-            return ("余额 \(Format.money(fc.limit)) · 日均 \(Format.money(fc.dailyRate))", .ok)
-        case "claude":
-            return ("Claude 价值 \(Format.money(fc.used)) · 日均 \(Format.money(fc.dailyRate))", .ok)
-        default:
-            return ("已付 \(Format.money(fc.used)) · 未关联用量源", .neutral)
-        }
-    }
-
-    static func color(_ status: Status) -> Color {
-        switch status {
-        case .ok: return TMDesign.quiet
-        case .warn: return TMDesign.accent
-        case .danger: return TMDesign.danger
-        case .neutral: return .secondary
-        }
-    }
-
-    private static func date(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd"
-        return f.string(from: d)
-    }
 }

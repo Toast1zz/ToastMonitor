@@ -181,7 +181,7 @@ final class HermesRemoteClient: ObservableObject {
               let url = URL(string: feedURL),
               Self.isAllowedFeedURL(url) else {
             inFlight = false
-            publishStatus { $0.error = "feed URL 无效或不安全（仅允许 HTTPS 或私有网段）" }
+            publishStatus { $0.error = "Feed URL invalid or unsafe (HTTPS or private range only)" }
             return
         }
         var req = URLRequest(url: url)
@@ -196,19 +196,19 @@ final class HermesRemoteClient: ObservableObject {
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
-                    self.publishStatus { $0.error = "无 HTTP 响应" }
+                    self.publishStatus { $0.error = "No HTTP response" }
                     return
                 }
                 // Redirects are cancelled by the delegate; retain this
                 // final-URL check for custom URL loading implementations.
                 if !Self.isAllowedFeedURL(http.url ?? url) {
-                    self.publishStatus { $0.error = "重定向到不允许的地址，已拒绝" }
+                    self.publishStatus { $0.error = "Redirect to a disallowed address rejected" }
                     return
                 }
                 // Reject oversized responses from the Content-Length header
                 // before the body finishes buffering.
                 if http.expectedContentLength > Int64(Self.maxFeedBytes) {
-                    self.publishStatus { $0.error = "响应过大 (>10MB)" }
+                    self.publishStatus { $0.error = "Response too large (>10MB)" }
                     return
                 }
                 guard http.statusCode == 200 else {
@@ -216,15 +216,15 @@ final class HermesRemoteClient: ObservableObject {
                     return
                 }
                 guard let data, data.count <= Self.maxFeedBytes else {
-                    self.publishStatus { $0.error = "响应过大 (>10MB)" }
+                    self.publishStatus { $0.error = "Response too large (>10MB)" }
                     return
                 }
                 if let mime = http.mimeType, !mime.contains("json") {
-                    self.publishStatus { $0.error = "非 JSON 响应 (\(mime))" }
+                    self.publishStatus { $0.error = "Non-JSON response (\(mime))" }
                     return
                 }
                 guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    self.publishStatus { $0.error = "响应解析失败" }
+                    self.publishStatus { $0.error = "Failed to parse response" }
                     return
                 }
                 self.importFeed(obj)
@@ -244,11 +244,11 @@ final class HermesRemoteClient: ObservableObject {
     func importFeed(_ result: [String: Any], database: Database = .shared) {
         guard let rows = result["rows"] as? [[String: Any]],
               rows.count <= Self.maxFeedRows else {
-            publishStatus { $0.error = "feed 格式异常或行数过多" }
+            publishStatus { $0.error = "Feed format invalid or too many rows" }
             return
         }
         if let schema = result["schema"] as? Int, schema > 1 {
-            publishStatus { $0.error = "feed schema v\(schema) 不受支持" }
+            publishStatus { $0.error = "Unsupported feed schema v\(schema)" }
             return
         }
         let sourceDigest = SHA256.hash(data: Data(feedURL.utf8))
@@ -492,11 +492,11 @@ final class HermesRemoteClient: ObservableObject {
             return writesOK
         }
         guard ok else {
-            publishStatus { $0.error = "导入事务失败，水位线未前进" }
+            publishStatus { $0.error = "Import transaction failed, watermark not advanced" }
             return
         }
         let ignoredRows = unknownTools + malformedRows
-        let errorText = ignoredRows > 0 ? "\(ignoredRows) 行无效/未知记录已忽略" : nil
+        let errorText = ignoredRows > 0 ? "\(ignoredRows) invalid/unknown rows ignored" : nil
         let syncTime = Int64(Date().timeIntervalSince1970)
         let importedTurnCount = turns.count
         let importedByTool = turns.reduce(into: [String: Int]()) { counts, turn in

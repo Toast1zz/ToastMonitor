@@ -6,9 +6,12 @@ struct SettingsView: View {
     @State private var feedURL = ""
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
     @State private var saved = false
-    @State private var feedError = false
+    @State private var feedError: String?
     @State private var sourceSaved: ToolKind?
     @State private var sourceFailed: ToolKind?
+    /// Per-tool write generation: only the latest write for a tool may touch
+    /// the saved/failed feedback, so rapid toggles cannot interleave.
+    @State private var sourceGeneration: [ToolKind: Int] = [:]
 
     private let tools = ToolKind.allCases.filter { $0 != .openrouter }
 
@@ -19,25 +22,30 @@ struct SettingsView: View {
                     .padding(.top, 18)
                     .padding(.bottom, 12)
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("数据来源")
-                        .font(.system(size: 13, weight: .semibold))
+                    SectionTitle("Data Sources")
 
                     ForEach(tools) { tool in
                         HStack(spacing: 10) {
                             Image(systemName: tool.symbol)
-                                .font(.system(size: 12))
+                                .font(TMType.regular(12))
                                 .foregroundStyle(tool.color)
                                 .frame(width: 18)
                             Text(tool.displayName)
-                                .font(.system(size: 12.5))
+                                .font(TMType.regular(12.5))
                                 .frame(width: 100, alignment: .leading)
                             Picker("", selection: Binding(
                                 get: { sources[tool] ?? (tool.defaultSource == "remote") },
                                 set: { newValue in
                                     // P0-4: persist immediately (off main thread), show effect.
+                                    let gen = (sourceGeneration[tool] ?? 0) + 1
+                                    sourceGeneration[tool] = gen
                                     DispatchQueue.global(qos: .userInitiated).async {
                                         let ok = tool.setSource(remote: newValue)
                                         DispatchQueue.main.async {
+                                            // Generation guard: a stale write's
+                                            // completion must not overwrite the
+                                            // feedback of a newer one.
+                                            guard sourceGeneration[tool] == gen else { return }
                                             if ok {
                                                 sources[tool] = newValue
                                                 sourceSaved = tool
@@ -58,24 +66,24 @@ struct SettingsView: View {
                                     }
                                 }
                             )) {
-                                Text("本机 (Mac)").tag(false)
-                                Text("远程 (VPS)").tag(true)
+                                Text("Local (Mac)").tag(false)
+                                Text("Remote (VPS)").tag(true)
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 200)
                             Spacer()
                             // Actual effective value, not the draft.
-                            Text(tool.sourceIsRemote ? "读取 VPS feed" : "读取本机日志")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.tertiary)
+                            Text(tool.sourceIsRemote ? "Reads VPS feed" : "Reads local logs")
+                                .font(TMType.regular(TMType.micro))
+                                .foregroundStyle(TMDesign.quiet)
                             if sourceSaved == tool {
-                                Text("已保存 ✓")
-                                    .font(.system(size: 10.5))
+                                Text("Saved ✓")
+                                    .font(TMType.regular(TMType.micro))
                                     .foregroundStyle(TMDesign.accent)
                             }
                             if sourceFailed == tool {
-                                Text("保存失败")
-                                    .font(.system(size: 10.5))
+                                Text("Save failed")
+                                    .font(TMType.regular(TMType.micro))
                                     .foregroundStyle(TMDesign.danger)
                             }
                         }
@@ -86,24 +94,23 @@ struct SettingsView: View {
 
                 // 来源健康（详情在「来源状态」页，这里只留一行摘要）
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("数据来源健康")
-                        .font(.system(size: 13, weight: .semibold))
+                    SectionTitle("Source Health")
                     if health.sources.isEmpty {
-                        Text("暂无扫描记录")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                        Text("No scans yet")
+                            .font(TMType.regular(TMType.micro))
+                            .foregroundStyle(TMDesign.quiet)
                     } else {
                         let broken = health.sources.filter { $0.error != nil }.count
                         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
                         HStack(spacing: 8) {
                             if broken > 0 {
-                                TMStatusPill(text: "\(broken) 个来源错误", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill")
+                                TMStatusPill(text: "\(broken) source\(broken == 1 ? "" : "s") error", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill")
                             }
                             if stale > 0 {
-                                TMStatusPill(text: "\(stale) 个来源稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                                TMStatusPill(text: "\(stale) source\(stale == 1 ? "" : "s") stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                             }
                             if broken == 0 && stale == 0 {
-                                TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
+                                TMStatusPill(text: "Synced", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                             }
                         }
                     }
@@ -112,54 +119,59 @@ struct SettingsView: View {
 
                 // 远程 Feed
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("远程 Feed")
-                        .font(.system(size: 13, weight: .semibold))
+                    SectionTitle("Remote Feed")
                     HStack {
-                        TextField("HTTPS 或私有网段 Feed URL", text: $feedURL)
+                        TextField("Feed URL (HTTPS or private range)", text: $feedURL)
                             .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11.5, design: .monospaced))
-                        Button("保存") {
+                            .font(.system(size: TMType.caption, design: .monospaced))
+                        Button("Save") {
                             let raw = feedURL.trimmingCharacters(in: .whitespacesAndNewlines)
                             saved = false
+                            // Validate locally first so the failure reason can
+                            // be specific instead of a single generic message.
+                            if let problem = Self.feedURLProblem(raw) {
+                                feedError = problem
+                                return
+                            }
                             DispatchQueue.global(qos: .userInitiated).async {
                                 let ok = HermesRemoteClient.shared.provision(url: raw.isEmpty ? nil : raw)
                                 DispatchQueue.main.async {
                                     saved = ok
-                                    feedError = !ok
+                                    feedError = ok ? nil : "Save failed (database unavailable)"
                                 }
                             }
                         }
-                        .font(.system(size: 12))
+                        .font(TMType.regular(12))
                         Button {
                             HermesRemoteClient.shared.maybePoll()
                         } label: {
                             Image(systemName: "arrow.clockwise")
                         }
-                        .font(.system(size: 12))
-                        .help("立即拉取")
+                        .font(TMType.regular(12))
+                        .help("Pull now")
                     }
                     let st = HermesRemoteClient.shared.status
                     HStack {
                         if st.lastSync > 0 {
                             Text(st.lastRows > 0
-                                 ? "上次同步 \(Format.dateTime(st.lastSync)) · \(st.lastRows) 条新增"
-                                 : "上次同步 \(Format.dateTime(st.lastSync)) · 已是最新")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
+                                 ? "Synced \(Format.dateTime(st.lastSync)) · \(st.lastRows) new"
+                                 : "Synced \(Format.dateTime(st.lastSync)) · up to date")
+                                .font(TMType.regular(TMType.micro))
+                                .foregroundStyle(TMDesign.quiet)
                         }
                         if let err = st.error {
                             Text(err)
-                                .font(.system(size: 10.5))
+                                .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.danger)
                         }
                         if saved {
-                            Text("已保存")
-                                .font(.system(size: 10.5))
+                            Text("Saved")
+                                .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.accent)
                         }
-                        if feedError {
-                            Text("URL 不安全或保存失败（仅 HTTPS/私有网段）")
-                                .font(.system(size: 10.5))
+                        if let err = feedError {
+                            Text(err)
+                                .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.danger)
                         }
                     }
@@ -168,12 +180,11 @@ struct SettingsView: View {
 
                 // 额度凭据统一在「计划与余额」页管理。
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("配额凭据")
-                        .font(.system(size: 13, weight: .semibold))
-                    Button("前往计划与余额") {
+                    SectionTitle("Quota Credentials")
+                    Button("Go to Plans & Balance") {
                         NotificationCenter.default.post(name: DashboardView.selectTab, object: DashboardView.Tab.plans)
                     }
-                    .font(.system(size: 11))
+                    .font(TMType.regular(11))
                 }
                 .tmPanelSurface()
 
@@ -189,7 +200,62 @@ struct SettingsView: View {
                 sources[t] = t.sourceIsRemote
             }
         }
+        .onChange(of: feedURL) { _, _ in
+            saved = false
+            feedError = nil
+        }
     }
+
+    /// Local validation mirroring HermesRemoteClient.provision, so the Save
+    /// button can report the specific reason instead of a generic failure.
+    private static func feedURLProblem(_ raw: String) -> String? {
+        if raw.isEmpty { return nil }
+        if raw.count > HermesRemoteClient.maxFeedURLLength {
+            return "URL too long (max \(HermesRemoteClient.maxFeedURLLength) chars)"
+        }
+        if raw.rangeOfCharacter(from: .controlCharacters) != nil {
+            return "URL contains control characters"
+        }
+        guard let url = URL(string: raw) else {
+            return "Not a valid URL"
+        }
+        guard HermesRemoteClient.isAllowedFeedURL(url) else {
+            return "URL rejected — HTTPS or private range only"
+        }
+        return nil
+    }
+
+    /// English forecast line for a subscription (ForecastText in the design
+    /// system still emits Chinese; see report for the main agent).
+    static func forecastLine(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: ForecastText.Status) {
+        switch plan {
+        case "go":
+            if let exhaust = fc.exhaustDate {
+                return ("\(Format.money(fc.used)) used · exhausts \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
+            }
+            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
+            return ("\(Format.money(fc.used)) used · \(Format.money(fc.dailyRate))/day · \(Format.money(remaining)) left at cycle end", .ok)
+        case "openrouter":
+            if let exhaust = fc.exhaustDate {
+                return ("Balance \(Format.money(fc.limit)) · ~empty \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
+            }
+            return ("Balance \(Format.money(fc.limit)) · \(Format.money(fc.dailyRate))/day", .ok)
+        case "claude":
+            return ("Claude value \(Format.money(fc.used)) · \(Format.money(fc.dailyRate))/day", .ok)
+        default:
+            return ("Paid \(Format.money(fc.used)) · no usage source linked", .neutral)
+        }
+    }
+
+    static func forecastColor(_ status: ForecastText.Status) -> Color {
+        switch status {
+        case .ok: return TMDesign.quiet
+        case .warn: return TMDesign.accent
+        case .danger: return TMDesign.danger
+        case .neutral: return .secondary
+        }
+    }
+
 }
 
 /// 订阅管理: list + add/edit form (固定成本侧信息).
@@ -215,8 +281,7 @@ struct SubscriptionSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("订阅（固定成本）")
-                    .font(.system(size: 13, weight: .semibold))
+                SectionTitle("Subscriptions")
                 Spacer()
                 Button {
                     editing = nil
@@ -230,9 +295,9 @@ struct SubscriptionSettingsSection: View {
                     price = ""
                     showForm = true
                 } label: {
-                    Label("添加", systemImage: "plus")
+                    Label("Add", systemImage: "plus")
                 }
-                .font(.system(size: 12))
+                .font(TMType.regular(12))
                 .disabled(showForm)
                 Button {
                     editing = nil
@@ -246,17 +311,17 @@ struct SubscriptionSettingsSection: View {
                     price = "10"
                     showForm = true
                 } label: {
-                    Text("Go 模板")
+                    Text("Go template")
                 }
-                .font(.system(size: 12))
+                .font(TMType.regular(12))
                 .disabled(showForm)
-                .help("填入 OpenCode Go $10/月 模板")
+                .help("Fill OpenCode Go $10/mo template")
             }
 
             if app.subscriptions.isEmpty {
-                Text("暂无订阅")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Text("No subscriptions")
+                    .font(TMType.regular(TMType.micro))
+                    .foregroundStyle(TMDesign.quiet)
             } else {
                 ForEach(app.subscriptions) { sub in
                     HStack {
@@ -265,29 +330,29 @@ struct SubscriptionSettingsSection: View {
                             .frame(width: 18)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(sub.name)
-                                .font(.system(size: 12, weight: .medium))
-                            Text("\(Format.dateTime(sub.startDate)) 起 · \(sub.cycle == "yearly" ? "年度" : "月度") · \(Format.money(sub.price))/期"
-                                 + (sub.endDate > 0 ? " · 至 \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))" : ""))
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
+                                .font(TMType.medium(12))
+                            Text("From \(Format.day(sub.startDate)) · \(sub.cycle == "yearly" ? "Yearly" : "Monthly") · \(Format.money(sub.price))/period"
+                                 + (sub.endDate > 0 ? " · to \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))" : ""))
+                                .font(TMType.regular(TMType.micro))
+                                .foregroundStyle(TMDesign.quiet)
                             if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
                                 HStack(spacing: 6) {
-                                    Text("第 \(info.dayOfCycle)/\(info.totalDays) 天 · 续期 \(SubscriptionMath.dateStr(info.end)) · 日均 \(Format.money(sub.price / Double(info.totalDays)))")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .monospacedDigit()
-                                        .foregroundStyle(.secondary)
+                                    Text("Day \(info.dayOfCycle)/\(info.totalDays) · renews \(SubscriptionMath.dateStr(info.end)) · avg \(Format.money(sub.price / Double(info.totalDays)))/day")
+                                        .font(TMType.regular(TMType.micro))
+                                        .tmMonospacedDigit()
+                                        .foregroundStyle(TMDesign.quiet)
                                     if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                        let line = ForecastText.compact(for: fc, plan: sub.plan)
+                                        let line = SettingsView.forecastLine(for: fc, plan: sub.plan)
                                         Text(line.text)
-                                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                            .monospacedDigit()
-                                            .foregroundStyle(ForecastText.color(line.status))
+                                            .font(TMType.semibold(TMType.micro))
+                                            .tmMonospacedDigit()
+                                            .foregroundStyle(SettingsView.forecastColor(line.status))
                                     }
                                 }
                             }
                         }
                         Spacer()
-                        Button("编辑") {
+                        Button("Edit") {
                             editing = sub
                             editID = sub.id
                             name = sub.name
@@ -299,32 +364,40 @@ struct SubscriptionSettingsSection: View {
                             price = "\(sub.price)"
                             showForm = true
                         }
-                        .font(.system(size: 11))
+                        .font(TMType.regular(11))
                         Button {
                             pendingDelete = sub
                         } label: {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
-                        .font(.system(size: 11))
+                        .font(TMType.regular(11))
                         .foregroundStyle(TMDesign.danger)
-                        .help("删除订阅")
+                        .help("Delete subscription")
                     }
                     .padding(10)
                     .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.04)))
                 }
             }
 
+            // Persistence feedback lives outside the form so a delete failure
+            // (form closed) is still visible, not silently dropped.
+            if let databaseError {
+                Text(databaseError)
+                    .font(TMType.regular(TMType.micro))
+                    .foregroundStyle(TMDesign.danger)
+            }
+
             if showForm {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(editing == nil ? "添加订阅" : "编辑订阅 · \(editing?.name ?? "")")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text(editing == nil ? "Add subscription" : "Edit subscription · \(editing?.name ?? "")")
+                        .font(TMType.semibold(12))
                     HStack(spacing: 10) {
-                        TextField("名称（如 Codex / Claude Pro）", text: $name)
+                        TextField("Name (e.g. Codex / Claude Pro)", text: $name)
                             .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11.5))
+                            .font(TMType.regular(11.5))
                         Picker("", selection: $plan) {
-                            Text("不关联").tag("")
+                            Text("None").tag("")
                             Text("OpenCode Go").tag("go")
                             Text("OpenRouter").tag("openrouter")
                             Text("Claude Pro").tag("claude")
@@ -333,34 +406,34 @@ struct SubscriptionSettingsSection: View {
                         .frame(width: 140)
                     }
                     HStack(spacing: 10) {
-                        DatePicker("开始日期", selection: $startDate, displayedComponents: .date)
-                            .font(.system(size: 11.5))
-                        Toggle("结束时间", isOn: $hasEndDate)
+                        DatePicker("Start date", selection: $startDate, displayedComponents: .date)
+                            .font(TMType.regular(11.5))
+                        Toggle("End date", isOn: $hasEndDate)
                             .toggleStyle(.checkbox)
-                            .font(.system(size: 11.5))
+                            .font(TMType.regular(11.5))
                         if hasEndDate {
                             DatePicker("", selection: $endDate, displayedComponents: .date)
-                                .font(.system(size: 11.5))
+                                .font(TMType.regular(11.5))
                         }
-                        Picker("周期", selection: $cycle) {
-                            Text("月度").tag("monthly")
-                            Text("年度").tag("yearly")
+                        Picker("Cycle", selection: $cycle) {
+                            Text("Monthly").tag("monthly")
+                            Text("Yearly").tag("yearly")
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 130)
                         HStack(spacing: 4) {
-                            TextField("费用", text: $price)
+                            TextField("Price", text: $price)
                                 .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 11.5, design: .monospaced))
+                                .font(.system(size: TMType.caption, design: .monospaced))
                                 .frame(width: 80)
-                            Text("$ / 期").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            Text("$ / period").font(TMType.regular(TMType.micro)).foregroundStyle(TMDesign.quiet)
                         }
                     }
                     HStack(spacing: 10) {
-                        Button("保存") {
+                        Button("Save") {
                             guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
                             // 价格必须为非负有效数字（§8: 负值/无效字符串不得静默转 0）。
-                            guard let p = Double(price.trimmingCharacters(in: .whitespaces)), p >= 0 else {
+                            guard let p = Double(price.trimmingCharacters(in: .whitespaces)), p.isFinite, p >= 0 else {
                                 priceError = true
                                 return
                             }
@@ -391,29 +464,24 @@ struct SubscriptionSettingsSection: View {
                                         showForm = false
                                         databaseError = nil
                                     } else {
-                                        databaseError = "订阅保存失败，请检查磁盘空间或数据库权限"
+                                        databaseError = "Failed to save subscription (disk space or database permissions)"
                                     }
                                 }
                             }
                         }
-                        .font(.system(size: 12))
+                        .font(TMType.regular(12))
                         if priceError {
-                            Text("费用无效（需 ≥ 0 的数字）")
-                                .font(.system(size: 10))
+                            Text("Invalid price (number ≥ 0)")
+                                .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.danger)
                         }
                         if dateError {
-                            Text("结束日期不能早于开始日期")
-                                .font(.system(size: 10))
+                            Text("End date must not be before start date")
+                                .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.danger)
                         }
-                        if let databaseError {
-                            Text(databaseError)
-                                .font(.system(size: 10))
-                                .foregroundStyle(TMDesign.danger)
-                        }
-                        Button("取消") { showForm = false }
-                            .font(.system(size: 12))
+                        Button("Cancel") { showForm = false }
+                            .font(TMType.regular(12))
                         Spacer()
                     }
                 }
@@ -421,20 +489,23 @@ struct SubscriptionSettingsSection: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.03)))
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.primary.opacity(0.04)))
-        .onChange(of: showForm) { _, _ in
+        .tmPanelSurface()
+        .onChange(of: showForm) { _, open in
             // Draft validation must not survive closing and later reopening
             // the form; especially dateError used to appear on a fresh edit.
             priceError = false
             dateError = false
-            databaseError = nil
+            // A stale persistence error (e.g. failed delete) is cleared when
+            // the form reopens so it cannot outlive the operation it reports.
+            if open {
+                databaseError = nil
+            }
         }
-        .alert("删除订阅？", isPresented: Binding(
+        .alert("Delete subscription?", isPresented: Binding(
             get: { pendingDelete != nil },
             set: { if !$0 { pendingDelete = nil } })) {
-                Button("取消", role: .cancel) { pendingDelete = nil }
-                Button("删除", role: .destructive) {
+                Button("Cancel", role: .cancel) { pendingDelete = nil }
+                Button("Delete", role: .destructive) {
                     if let sub = pendingDelete {
                         DispatchQueue.global(qos: .userInitiated).async {
                             let ok = Database.shared.deleteSubscription(id: sub.id)
@@ -443,7 +514,7 @@ struct SubscriptionSettingsSection: View {
                                     // subscriptionsDidChange 通知驱动 AppState 刷新。
                                     databaseError = nil
                                 } else {
-                                    databaseError = "订阅删除失败，请检查磁盘空间或数据库权限"
+                                    databaseError = "Failed to delete subscription (disk space or database permissions)"
                                 }
                             }
                         }
@@ -451,7 +522,7 @@ struct SubscriptionSettingsSection: View {
                     pendingDelete = nil
                 }
             } message: {
-                Text(pendingDelete.map { "将删除「\($0.name)」及其周期/预测记录。" } ?? "")
+                Text(pendingDelete.map { "This deletes \"\($0.name)\" and its cycle/forecast records." } ?? "")
             }
     }
 
@@ -494,47 +565,47 @@ private struct DataMaintenanceSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("数据维护")
-                    .font(.system(size: 13, weight: .semibold))
+                SectionTitle("Data Maintenance")
                 Spacer()
-                Button("预览本机数据重建") { loadPreview() }
-                    .font(.system(size: 11))
+                Button("Preview local rebuild") { loadPreview() }
+                    .font(TMType.regular(11))
                     .disabled(isWorking)
             }
             if let preview {
-                Text("\(preview.turns) 条记录 · \(preview.sessions) 个会话 · \(Format.count(preview.tokens)) tokens")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                Text("\(preview.turns) records · \(preview.sessions) sessions · \(Format.count(preview.tokens)) tokens")
+                    .font(TMType.regular(TMType.micro))
+                    .tmMonospacedDigit()
+                    .foregroundStyle(TMDesign.quiet)
                 HStack {
-                    Button("备份并重建", role: .destructive) { confirmsRepair = true }
+                    Button("Back up & rebuild", role: .destructive) { confirmsRepair = true }
                         .disabled(isWorking || preview.turns == 0)
                     if receipt != nil {
-                        Button("恢复修复前备份") { confirmsRestore = true }
+                        Button("Restore pre-repair backup") { confirmsRestore = true }
                             .disabled(isWorking)
                     }
                 }
-                .font(.system(size: 11))
+                .font(TMType.regular(11))
             }
             if isWorking {
                 ProgressView().controlSize(.small)
             }
             if let message {
                 Text(message)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
+                    .font(TMType.regular(TMType.micro))
+                    .foregroundStyle(TMDesign.quiet)
                     .textSelection(.enabled)
             }
         }
         .tmPanelSurface()
-        .confirmationDialog("重建本机用量数据？", isPresented: $confirmsRepair) {
-            Button("备份并重建", role: .destructive) { repair() }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog("Rebuild local usage data?", isPresented: $confirmsRepair) {
+            Button("Back up & rebuild", role: .destructive) { repair() }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("仅处理当前设为“本机”的来源；先创建备份，再重新扫描原始日志。")
+            Text("Only sources set to Local are processed; a backup is created first, then raw logs are re-scanned.")
         }
-        .confirmationDialog("恢复修复前备份？", isPresented: $confirmsRestore) {
-            Button("恢复备份", role: .destructive) { restore() }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog("Restore pre-repair backup?", isPresented: $confirmsRestore) {
+            Button("Restore backup", role: .destructive) { restore() }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -558,7 +629,7 @@ private struct DataMaintenanceSection: View {
                 let value = try DataMaintenance.repair()
                 DispatchQueue.main.async {
                     receipt = value
-                    message = "备份：\(value.backupPath)"
+                    message = "Backup: \(value.backupPath)"
                     CollectorEngine.shared.scheduleScan(force: true) { _ in
                         app.refresh()
                         loadPreview()
@@ -579,7 +650,7 @@ private struct DataMaintenanceSection: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let ok = DataMaintenance.restore(backupPath: receipt.backupPath)
             DispatchQueue.main.async {
-                message = ok ? "已恢复：\(receipt.backupPath)" : "恢复失败；备份仍保留"
+                message = ok ? "Restored: \(receipt.backupPath)" : "Restore failed; backup retained"
                 isWorking = false
                 if ok {
                     app.refresh()

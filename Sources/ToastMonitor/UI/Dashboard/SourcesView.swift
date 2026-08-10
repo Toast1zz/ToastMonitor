@@ -18,8 +18,7 @@ struct SourcesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("采集器状态")
-                        .font(.system(size: 14, weight: .semibold))
+                    SectionTitle("Collector Status")
                     Spacer()
                     Button {
                         testing = true
@@ -56,29 +55,29 @@ struct SourcesView: View {
                         if testing {
                             ProgressView().controlSize(.mini)
                         } else {
-                            Label("测试连接", systemImage: "bolt")
+                            Label("Test connection", systemImage: "bolt")
                         }
                     }
                     .disabled(testing)
-                    .accessibilityLabel("测试连接")
-                    .accessibilityValue(testing ? "运行中" : "准备就绪")
-                    .accessibilityHint("启动一次立即扫描并检查各来源状态")
+                    .accessibilityLabel("Test connection")
+                    .accessibilityValue(testing ? "Running" : "Ready")
+                    .accessibilityHint("Runs an immediate scan and checks all sources")
                     Button {
                         CollectorEngine.shared.scheduleScan()
                         OpenRouterClient.shared.refresh()
                         OpenCodeGoClient.shared.refresh()
                     } label: {
-                        Label("立即重扫", systemImage: "arrow.clockwise")
+                        Label("Rescan now", systemImage: "arrow.clockwise")
                     }
-                    .accessibilityLabel("立即重扫")
-                    .accessibilityHint("重新扫描所有本机来源并刷新远程额度")
+                    .accessibilityLabel("Rescan now")
+                    .accessibilityHint("Re-scans all local sources and refreshes remote quotas")
                 }
                 if let tr = testResult {
                     Text(tr)
                         .accessibilityElement(children: .combine)
-                        .accessibilityLabel("连接测试结果")
+                        .accessibilityLabel("Connection test result")
                         .accessibilityValue(Text(tr))
-                        .font(.system(size: 11))
+                        .font(TMType.regular(11))
                         .foregroundStyle(testOK ? TMDesign.accent : TMDesign.danger)
                 }
 
@@ -98,42 +97,42 @@ struct SourcesView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: tool.symbol)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(TMType.medium(TMType.body))
                     .foregroundStyle(tool.color)
                     .frame(width: 20)
                 Text(tool.displayName)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(TMType.semibold(TMType.body))
                 Spacer()
-                Text(isRemote ? "远程" : "本机")
-                    .font(.system(size: 10))
+                Text(isRemote ? "Remote" : "Local")
+                    .font(TMType.regular(TMType.micro))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.06)))
                 if h?.error != nil {
-                    TMStatusPill(text: "错误", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                    TMStatusPill(text: "Error", color: TMDesign.danger, symbol: "xmark.circle.fill")
                 } else if h?.isStale == true {
-                    TMStatusPill(text: "稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                    TMStatusPill(text: "Stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                 } else if (h?.lastScan ?? 0) > 0 {
-                    TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
+                    TMStatusPill(text: "Synced", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                 } else {
-                    TMStatusPill(text: "已停止", color: TMDesign.quiet, symbol: "stop.circle")
+                    TMStatusPill(text: "Idle", color: TMDesign.quiet, symbol: "circle.dashed")
                 }
             }
             HStack(spacing: 16) {
-                infoItem("最后扫描", h.map { Format.dateTime($0.lastScan) } ?? "—")
-                infoItem("导入", h.map { "\($0.lastRows) 条" } ?? "—")
-                infoItem("失败", h.map { "\($0.failedRows)" } ?? "—")
-                infoItem("耗时", h.map { String(format: "%.0fms", $0.durationMs) } ?? "—")
+                infoItem("Last scan", h.map { Format.dateTime($0.lastScan) } ?? "—")
+                infoItem("Imported", h.map { "\($0.lastRows) rows" } ?? "—")
+                infoItem("Failed", h.map { "\($0.failedRows) rows" } ?? "—")
+                infoItem("Duration", h.map { String(format: "%.0fms", $0.durationMs) } ?? "—")
             }
             if let err = h?.error {
                 Text(err)
-                    .font(.caption)
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.danger.opacity(0.85))
                     .lineLimit(2)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(tool.displayName) 来源")
+        .accessibilityLabel("\(tool.displayName) source")
         .accessibilityValue(Text(sourceAccessibilityValue(h)))
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,19 +144,19 @@ struct SourcesView: View {
     }
 
     private func sourceAccessibilityValue(_ health: SourceHealth?) -> String {
-        guard let health else { return "已停止" }
+        guard let health else { return "Idle" }
         let status: String
         if health.error != nil {
-            status = "错误"
+            status = "Error"
         } else if health.isStale {
-            status = "稍旧"
+            status = "Stale"
         } else if health.lastScan > 0 {
-            status = "已同步"
+            status = "Synced"
         } else {
-            status = "已停止"
+            status = "Idle"
         }
         let scannedAt = health.lastScan > 0 ? Format.dateTime(health.lastScan) : "—"
-        return "\(status)，最后扫描 \(scannedAt)，导入 \(health.lastRows) 条，失败 \(health.failedRows) 条"
+        return "\(status), last scan \(scannedAt), imported \(health.lastRows) rows, failed \(health.failedRows) rows"
     }
 
     private var remoteCard: some View {
@@ -167,36 +166,36 @@ struct SourcesView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "externaldrive.badge.icloud")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(TMType.medium(TMType.body))
                     .foregroundStyle(TMDesign.accent)
                     .frame(width: 20)
-                Text("远程 Feed")
-                    .font(.system(size: 13, weight: .semibold))
+                Text("Remote Feed")
+                    .font(TMType.semibold(TMType.body))
                 Spacer()
                 if st.error != nil {
-                    TMStatusPill(text: "错误", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                    TMStatusPill(text: "Error", color: TMDesign.danger, symbol: "xmark.circle.fill")
                 } else if stale {
-                    TMStatusPill(text: "稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                    TMStatusPill(text: "Stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                 } else if st.lastSync > 0 {
-                    TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
+                    TMStatusPill(text: "Synced", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                 } else {
-                    TMStatusPill(text: "已停止", color: TMDesign.quiet, symbol: "stop.circle")
+                    TMStatusPill(text: "Idle", color: TMDesign.quiet, symbol: "circle.dashed")
                 }
             }
             HStack(spacing: 16) {
-                infoItem("上次同步", st.lastSync > 0 ? Format.dateTime(st.lastSync) : "—")
-                infoItem("导入", "\(st.lastRows) 条")
-                infoItem("延迟", st.lastSync > 0 ? Format.remaining(Int64(Date().timeIntervalSince1970) - st.lastSync) : "—")
+                infoItem("Last sync", st.lastSync > 0 ? Format.dateTime(st.lastSync) : "—")
+                infoItem("Imported", "\(st.lastRows) rows")
+                infoItem("Delay", st.lastSync > 0 ? Format.remaining(Int64(Date().timeIntervalSince1970) - st.lastSync) : "—")
             }
             if let err = st.error {
                 Text(err)
-                    .font(.caption)
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.danger.opacity(0.85))
                     .lineLimit(2)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("远程 Feed")
+        .accessibilityLabel("Remote Feed")
         .accessibilityValue(Text(remoteAccessibilityValue(st, stale: stale)))
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -210,25 +209,26 @@ struct SourcesView: View {
     private func remoteAccessibilityValue(_ status: HermesRemoteClient.SyncStatus, stale: Bool) -> String {
         let state: String
         if status.error != nil {
-            state = "错误"
+            state = "Error"
         } else if stale {
-            state = "稍旧"
+            state = "Stale"
         } else if status.lastSync > 0 {
-            state = "已同步"
+            state = "Synced"
         } else {
-            state = "已停止"
+            state = "Idle"
         }
-        return "\(state)，上次同步 \(status.lastSync > 0 ? Format.dateTime(status.lastSync) : "—")，导入 \(status.lastRows) 条"
+        return "\(state), last sync \(status.lastSync > 0 ? Format.dateTime(status.lastSync) : "—"), imported \(status.lastRows) rows"
     }
 
     private func infoItem(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: TMType.caption))
-                .foregroundStyle(.secondary)
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
             Text(value)
-                .font(.system(size: TMType.caption, design: .monospaced))
-                .monospacedDigit()
+                .font(TMType.regular(TMType.caption))
+                .tmMonospacedDigit()
         }
     }
+
 }

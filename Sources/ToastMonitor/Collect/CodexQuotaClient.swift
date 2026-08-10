@@ -123,7 +123,7 @@ final class CodexQuotaClient: ObservableObject {
               let accessToken = tokens["access_token"] as? String,
               !accessToken.isEmpty, accessToken.count <= 16_384,
               accessToken.rangeOfCharacter(from: .controlCharacters) == nil else {
-            state.error = "未找到 Codex 登录态（运行 codex 登录后自动恢复）"
+            state.error = "Codex login not found (sign in with codex to restore)"
             return
         }
 
@@ -148,11 +148,11 @@ final class CodexQuotaClient: ObservableObject {
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
-                    self.state.error = "无 HTTP 响应"
+                    self.state.error = "No HTTP response"
                     return
                 }
                 if (300..<400).contains(http.statusCode) {
-                    self.state.error = "拒绝重定向 (HTTP \(http.statusCode))"
+                    self.state.error = "Redirect rejected (HTTP \(http.statusCode))"
                     return
                 }
                 guard http.statusCode == 200 else {
@@ -162,7 +162,7 @@ final class CodexQuotaClient: ObservableObject {
                 guard http.expectedContentLength <= 10_000_000,
                       let data, data.count <= 10_000_000,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    self.state.error = "usage 响应解析失败"
+                    self.state.error = "Failed to parse usage response"
                     return
                 }
                 if let rawPlan = json["plan_type"] as? String,

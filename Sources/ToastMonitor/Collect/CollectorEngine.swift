@@ -166,7 +166,7 @@ final class CollectorEngine: @unchecked Sendable {
                 Task { @MainActor in
                     SourceHealthHub.shared.record(tool: source, rows: out.turns.count,
                                                   failed: max(out.turns.count, 1), durationMs: duration,
-                                                  error: "写入失败，游标/累计基线已回滚")
+                                                  error: "Write failed — cursor/baseline rolled back")
                 }
                 return
             }

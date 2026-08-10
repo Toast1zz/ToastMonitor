@@ -217,7 +217,7 @@ final class OpenRouterClient: ObservableObject {
            saveKeys([normalized], allowPrompt: true) {
             hasKey = true
         } else if key != nil {
-            state.error = "无法写入 macOS 钥匙串，未保存 API Key"
+            state.error = "Keychain write failed — API key not saved"
             return false
         } else {
             KeychainStore.delete(account: "or-keys", allowPrompt: true)
@@ -227,7 +227,7 @@ final class OpenRouterClient: ObservableObject {
             Database.shared.setSetting("or_cred_storage", nil)
             hasKey = false
             var cleared = State()
-            cleared.error = "未配置 API Key"
+            cleared.error = "API key not configured"
             state = cleared
         }
         refresh()
@@ -240,12 +240,12 @@ final class OpenRouterClient: ObservableObject {
         guard let normalized = normalizedKeys([key]).first else { return false }
         var keys = storedKeys()
         guard keys.count < Self.maxKeyCount else {
-            state.error = "API Key 数量已达上限"
+            state.error = "API key count limit reached"
             return false
         }
         keys.append(normalized)
         guard saveKeys(keys, allowPrompt: true) else {
-            state.error = "无法写入 macOS 钥匙串，未保存 API Key"
+            state.error = "Keychain write failed — API key not saved"
             return false
         }
         hasKey = true
@@ -300,7 +300,7 @@ final class OpenRouterClient: ObservableObject {
         // Keychain reads MUST run on the main thread: every read unlocks the
         // vault (SecKeychainUnlock needs the main-thread UI session). Reading
         // here on the background queue silently failed, leaving hasKey=false
-        // and the OpenRouter row stuck on "尚未配置 API key".
+        // and the OpenRouter row stuck on "not yet configured API key".
         let keys = storedKeys()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             DispatchQueue.main.async {
@@ -318,7 +318,7 @@ final class OpenRouterClient: ObservableObject {
         state.keyCount = keys.count
         guard !keys.isEmpty else {
             var cleared = State()
-            cleared.error = "未配置 API Key"
+            cleared.error = "API key not configured"
             state = cleared
             return
         }
@@ -368,7 +368,7 @@ final class OpenRouterClient: ObservableObject {
                             self.state.accountBalance = max(total - used, 0)
                         }
                     } else if err == nil {
-                        failures.append("账户额度响应缺少 data")
+                        failures.append("Account credits response missing data")
                     }
                     accountGroup.leave()
                 }
@@ -392,7 +392,7 @@ final class OpenRouterClient: ObservableObject {
                         }
                         self.state.keyCount = self.state.keys.count
                     } else if err == nil {
-                        failures.append("管理 key 响应缺少 data")
+                        failures.append("Management key response missing data")
                     }
                     accountGroup.leave()
                 }
@@ -413,7 +413,7 @@ final class OpenRouterClient: ObservableObject {
     private func finishRefresh(results: [String: [String: Any]], failures: [String]) {
         state.isLoading = false
         if results.isEmpty {
-            state.error = failures.first ?? "查询失败"
+            state.error = failures.first ?? "Query failed"
             return
         }
         var usage: Double = 0, daily: Double = 0, weekly: Double = 0, monthly: Double = 0
@@ -440,10 +440,10 @@ final class OpenRouterClient: ObservableObject {
         }
         if invalidKeyResponses > 0 {
             var f = failures
-            f.append("\(invalidKeyResponses) 个 key 响应无用量数据")
-            state.error = f.isEmpty ? nil : "部分数据获取失败：\(f.prefix(2).joined(separator: "；"))"
+            f.append("\(invalidKeyResponses) key response(s) missing usage data")
+            state.error = f.isEmpty ? nil : "Partial fetch failed: \(f.prefix(2).joined(separator: ", "))"
         } else {
-            state.error = failures.isEmpty ? nil : "部分数据获取失败：\(failures.prefix(2).joined(separator: "；"))"
+            state.error = failures.isEmpty ? nil : "Partial fetch failed: \(failures.prefix(2).joined(separator: ", "))"
         }
         state.usage = usage
         state.usageDaily = daily
@@ -473,7 +473,7 @@ final class OpenRouterClient: ObservableObject {
     private func fetch(_ path: String, key: String,
                        completion: @escaping ([String: Any]?, String?) -> Void) {
         guard let url = URL(string: "https://openrouter.ai\(path)") else {
-            completion(nil, "URL 无效")
+            completion(nil, "Invalid URL")
             return
         }
         var req = URLRequest(url: url)
@@ -486,23 +486,23 @@ final class OpenRouterClient: ObservableObject {
                 return
             }
             guard let http = resp as? HTTPURLResponse else {
-                DispatchQueue.main.async { completion(nil, "无 HTTP 响应") }
+                DispatchQueue.main.async { completion(nil, "No HTTP response") }
                 return
             }
             if (300..<400).contains(http.statusCode) {
-                DispatchQueue.main.async { completion(nil, "拒绝重定向 (HTTP \(http.statusCode))") }
+                DispatchQueue.main.async { completion(nil, "Redirect rejected (HTTP \(http.statusCode))") }
                 return
             }
             if http.statusCode == 401 {
-                DispatchQueue.main.async { completion(nil, "key 无效或未授权 (401)") }
+                DispatchQueue.main.async { completion(nil, "Invalid or unauthorized key (401)") }
                 return
             }
             if http.statusCode == 403 {
-                DispatchQueue.main.async { completion(nil, "权限不足 (403)——该 key 无此查询权限") }
+                DispatchQueue.main.async { completion(nil, "Insufficient permission (403) — this key cannot query") }
                 return
             }
             if http.statusCode == 429 {
-                DispatchQueue.main.async { completion(nil, "请求过于频繁 (429)") }
+                DispatchQueue.main.async { completion(nil, "Too many requests (429)") }
                 return
             }
             guard (200..<300).contains(http.statusCode) else {
@@ -511,17 +511,17 @@ final class OpenRouterClient: ObservableObject {
             }
             // Reject oversized responses from the header before buffering.
             if http.expectedContentLength > 10_000_000 {
-                DispatchQueue.main.async { completion(nil, "响应过大 (>10MB)") }
+                DispatchQueue.main.async { completion(nil, "Response too large (>10MB)") }
                 return
             }
             if let mime = http.mimeType,
                !mime.contains("json") && !mime.contains("text") {
-                DispatchQueue.main.async { completion(nil, "非 JSON 响应 (\(mime))") }
+                DispatchQueue.main.async { completion(nil, "Non-JSON response (\(mime))") }
                 return
             }
             guard let data, data.count < 10_000_000,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async { completion(nil, "响应解析失败或过大") }
+                DispatchQueue.main.async { completion(nil, "Failed to parse response or too large") }
                 return
             }
             DispatchQueue.main.async { completion(obj, nil) }

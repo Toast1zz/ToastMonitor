@@ -13,10 +13,10 @@ struct OverviewView: View {
     /// The heatmap (one year) and the gauge (today vs daily average) are
     /// deliberately independent — they answer different questions.
     enum Period: String, CaseIterable, Identifiable {
-        case today = "今日"
-        case week = "近 7 天"
-        case month = "近 30 天"
-        case all = "全部"
+        case today = "Today"
+        case week = "7 Days"
+        case month = "30 Days"
+        case all = "All"
         var id: String { rawValue }
     }
 
@@ -26,25 +26,31 @@ struct OverviewView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
                 intro
+                // Hairline between the page header and the content,
+                // consistent with the other dashboard pages.
+                Rectangle()
+                    .fill(TMDesign.divider)
+                    .frame(height: 1)
                 // Hero totals and the distribution share one panel: the
                 // period figure reads as the header of the breakdown below.
                 TMPanel {
                     VStack(alignment: .leading, spacing: 0) {
                         heroSection
-                        Divider()
+                        Rectangle()
+                            .fill(TMDesign.divider)
+                            .frame(height: 1)
                             .padding(.vertical, 14)
                         rankings
                     }
                 }
-                .padding(.bottom, 14)
                 TMPanel {
                     heatmapSection
                 }
-                .padding(.bottom, 28)
             }
             .padding(.horizontal, 24)
+            .padding(.bottom, 28)
         }
     }
 
@@ -62,7 +68,7 @@ struct OverviewView: View {
     /// Day/Week/Month/Year pattern: text labels, equal segments, one
     /// persistent selection). No custom chrome.
     private var periodControl: some View {
-        Picker("周期", selection: $period) {
+        Picker("Period", selection: $period) {
             ForEach(Period.allCases) { p in
                 Text(p.rawValue).tag(p)
             }
@@ -74,10 +80,10 @@ struct OverviewView: View {
 
     private var periodTitle: String {
         switch period {
-        case .today: return "今日用量"
-        case .week: return "近 7 天用量"
-        case .month: return "近 30 天用量"
-        case .all: return "全部用量"
+        case .today: return "Today's Usage"
+        case .week: return "Last 7 Days"
+        case .month: return "Last 30 Days"
+        case .all: return "All Time"
         }
     }
 
@@ -137,49 +143,40 @@ struct OverviewView: View {
     private var heroSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
-                Text(periodTitle)
-                    .font(.system(size: TMType.section, weight: .semibold))
-                    .foregroundStyle(TMDesign.quiet)
+                SectionTitle(periodTitle)
                 Spacer()
                 statusLine
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(Format.compact(periodTokens))
-                    .font(.system(size: TMType.hero, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
+                    .font(TMType.bold(TMType.hero))
+                    .tmMonospacedDigit()
                     .lineLimit(1)
                     .contentTransition(.numericText(value: Double(periodTokens)))
                     .animation(.easeOut(duration: 0.35), value: periodTokens)
                 Text("tokens")
-                    .font(.system(size: TMType.caption))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             }
             HStack(spacing: 0) {
-                heroMini("调用", Format.count(periodCalls))
+                heroMini("Calls", Format.count(periodCalls))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                heroMini("实际花费", Format.money(actualSpend))
+                heroMini("Spent", Format.money(actualSpend))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                heroMini("API 价值", Format.money(apiValue))
+                heroMini("Value", Format.money(apiValue))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 
-    private func heroMini(_ label: String, _ value: String, unit: String? = nil) -> some View {
+    private func heroMini(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label)
-                .font(.system(size: TMType.caption))
+                .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                if let unit {
-                    Text(unit)
-                        .font(.system(size: TMType.micro))
-                        .foregroundStyle(TMDesign.faint)
-                }
-            }
+            Text(value)
+                .font(TMType.regular(16))
+                .tmMonospacedDigit()
         }
     }
 
@@ -195,7 +192,7 @@ struct OverviewView: View {
 
     private var heatmapSection: some View {
         VStack(alignment: .leading, spacing: 11) {
-            TMSectionHeader("活动")
+            TMSectionHeader("Activity")
             HeatmapGrid(
                 weeks: heatmapWeeks,
                 heatmap: app.heatmap,
@@ -267,10 +264,10 @@ struct OverviewView: View {
 
     private var rankings: some View {
         VStack(alignment: .leading, spacing: 16) {
-            TMSectionHeader("来源分布")
+            TMSectionHeader("Sources")
             HStack(alignment: .top, spacing: 32) {
-                rankingColumn(title: "模型", rows: modelRows(period))
-                rankingColumn(title: "工具", rows: toolRows(period))
+                rankingColumn(title: "Models", rows: modelRows(period))
+                rankingColumn(title: "Tools", rows: toolRows(period))
             }
         }
     }
@@ -315,10 +312,10 @@ struct OverviewView: View {
         let total = rows.reduce(Int64(0)) { $0 + $1.1 }
         return VStack(alignment: .leading, spacing: 10) {
             Text(title)
-                .font(.system(size: TMType.section, weight: .semibold))
+                .font(TMType.medium(13))
             if rows.isEmpty {
-                Text("暂无数据")
-                    .font(.system(size: TMType.caption))
+                Text("No data")
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             } else {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
@@ -327,12 +324,12 @@ struct OverviewView: View {
                         HStack(spacing: 8) {
                             Circle().fill(row.3).frame(width: 7, height: 7)
                             Text(row.0)
-                                .font(.system(size: TMType.body))
+                                .font(TMType.regular(TMType.body))
                                 .lineLimit(1)
                             Spacer()
                             Text(Format.compact(row.1))
-                                .font(.system(size: TMType.caption, design: .monospaced))
-                                .monospacedDigit()
+                                .font(TMType.regular(TMType.caption))
+                                .tmMonospacedDigit()
                         }
                         TMProgressBar(value: ratio, tint: row.3, height: 4)
                     }
@@ -361,14 +358,14 @@ private struct HeatmapGrid: View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
                 if let h = hoveredDay {
-                    Text("\(Format.dayKeyString(h.key)) · \(Format.compact(h.tokens)) tokens"
+                    Text("\(Format.shortDayKey(h.key)) · \(Format.compact(h.tokens)) tokens"
                          + (h.cost > 0 ? " · \(Format.money(h.cost))" : ""))
-                        .font(.system(size: TMType.caption, weight: .medium))
-                        .monospacedDigit()
+                        .font(TMType.monoRegular(9))
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
-            .frame(height: 16)
+            .frame(height: 14)
             ScrollView(.horizontal, showsIndicators: false) {
                 ZStack(alignment: .topLeading) {
                     HStack(alignment: .top, spacing: cellGutter) {
@@ -384,7 +381,7 @@ private struct HeatmapGrid: View {
                     // Month labels overhang their column like GitHub's grid.
                     ForEach(monthLabels, id: \.index) { m in
                         Text(m.label)
-                            .font(.system(size: TMType.micro, weight: .medium))
+                            .font(TMType.monoRegular(9))
                             .foregroundStyle(TMDesign.quiet)
                             .fixedSize()
                             .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
@@ -397,21 +394,24 @@ private struct HeatmapGrid: View {
             heatLegend
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("活动热力图")
+        .accessibilityLabel("Activity heatmap")
         .accessibilityValue(Text(accessibilitySummary))
-        .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每一天的用量")
+        .accessibilityHint("Use Tab or VoiceOver to browse each day's usage")
     }
 
     private var accessibilitySummary: String {
         let activeDays = heatmap.values.filter { $0 > 0 }.count
-        guard activeDays > 0 else { return "暂无用量数据" }
+        guard activeDays > 0 else { return "No usage data" }
         let total = heatmap.values.reduce(Int64(0), +)
-        return "\(activeDays) 天有用量，共 \(Format.full(total)) tokens"
+        return "\(activeDays) day\(activeDays == 1 ? "" : "s") with usage, \(Format.full(total)) tokens total"
     }
 
     /// First week whose Monday falls in a new month gets that month's label.
     /// January also carries the (2-digit) year so the year boundary is
     /// visible in a 53-week span.
+    private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
     private var monthLabels: [(index: Int, label: String)] {
         var out: [(Int, String)] = []
         var lastMonth = -1
@@ -422,9 +422,9 @@ private struct HeatmapGrid: View {
             let month = (Int(first) / 100) % 100
             if month != lastMonth || year != lastYear {
                 if month == 1 {
-                    out.append((wi, "\(year % 100)年1月"))
+                    out.append((wi, String(format: "Jan '%02d", year % 100)))
                 } else {
-                    out.append((wi, "\(month)月"))
+                    out.append((wi, Self.monthNames[month - 1]))
                 }
                 lastMonth = month
                 lastYear = year
@@ -435,8 +435,8 @@ private struct HeatmapGrid: View {
 
     private var heatLegend: some View {
         HStack(spacing: 4) {
-            Text("少")
-                .font(.system(size: TMType.micro))
+            Text("Less")
+                .font(TMType.regular(TMType.micro))
                 .foregroundStyle(TMDesign.faint)
             ForEach(0..<5, id: \.self) { level in
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
@@ -446,14 +446,14 @@ private struct HeatmapGrid: View {
                     .frame(width: 11, height: 11)
                     .accessibilityHidden(true)
             }
-            Text("多")
-                .font(.system(size: TMType.micro))
+            Text("More")
+                .font(TMType.regular(TMType.micro))
                 .foregroundStyle(TMDesign.faint)
             Spacer()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("图例")
-        .accessibilityValue("少到多")
+        .accessibilityLabel("Legend")
+        .accessibilityValue("Less to more")
     }
 
     @ViewBuilder
@@ -462,11 +462,11 @@ private struct HeatmapGrid: View {
         let value = Double(tokenCount)
         let maxValue = Double(maxTokens)
         let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
-        let label = day.map(Format.dayKeyString) ?? "无日期"
+        let label = day.map(Format.shortDayKey) ?? "No date"
         let cost = day.flatMap { heatmapCost[$0] } ?? 0
         let valueText = day == nil
-            ? "无数据"
-            : "\(Format.full(tokenCount)) tokens" + (cost > 0 ? "，\(Format.money(cost))" : "")
+            ? "No data"
+            : "\(Format.full(tokenCount)) tokens" + (cost > 0 ? ", \(Format.money(cost))" : "")
 
         if let day {
             Button {
@@ -480,7 +480,7 @@ private struct HeatmapGrid: View {
             .buttonStyle(.plain)
             .accessibilityLabel(Text(label))
             .accessibilityValue(Text(valueText))
-            .accessibilityHint("按空格查看当天用量")
+            .accessibilityHint("Press Space to see that day's usage")
             .onHover { hovering in
                 if hovering {
                     hoveredDay = (day, tokenCount, cost)

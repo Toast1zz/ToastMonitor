@@ -22,6 +22,10 @@ struct PlansView: View {
     @State private var goFormFailed = false
     @State private var orFormMessage: String?
     @State private var orFormFailed = false
+    /// Last observed state markers; onReceive only reloads history when the
+    /// client actually produced a new result (isLoading flips are ignored).
+    @State private var goLastSeen: (lastOK: Int64, lastSync: Int64)?
+    @State private var orLastSeen: Int64 = 0
 
     var body: some View {
         ScrollView {
@@ -36,17 +40,35 @@ struct PlansView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
         }
-        .onAppear { loadSnapshots() }
-        .onReceive(goClient.$state) { _ in loadOGSnapshots() }
-        .onReceive(orClient.$state) { _ in loadORSnapshots() }
+        .onAppear {
+            goLastSeen = (goClient.state.lastOK, goClient.state.lastSync)
+            orLastSeen = orClient.state.lastOK
+            loadSnapshots()
+        }
+        .onReceive(goClient.$state) { state in
+            if goLastSeen?.lastOK != state.lastOK || goLastSeen?.lastSync != state.lastSync {
+                goLastSeen = (state.lastOK, state.lastSync)
+                loadOGSnapshots()
+            }
+        }
+        .onReceive(orClient.$state) { state in
+            if orLastSeen != state.lastOK {
+                orLastSeen = state.lastOK
+                loadORSnapshots()
+            }
+        }
         .onChange(of: showGoForm) { _, open in
-            if !open {
+            if open {
+                goFormMessage = nil
+            } else {
                 goWS = ""
                 goCookie = ""
             }
         }
         .onChange(of: showORForm) { _, open in
-            if !open {
+            if open {
+                orFormMessage = nil
+            } else {
                 orKey = ""
                 orAppend = false
             }
@@ -58,14 +80,25 @@ struct PlansView: View {
         loadORSnapshots()
     }
 
-    /// Reloads only the OpenCode Go history series.
+    /// Reloads only the OpenCode Go history series. The completion compares
+    /// against the state observed at load time: if a newer result arrived
+    /// while the query was running, this round is dropped and the newer
+    /// onReceive round owns the series.
     private func loadOGSnapshots() {
-        UsageQueryService.shared.loadOGSnapshotsByDay { goSnapshots = $0 }
+        let seen = (goClient.state.lastOK, goClient.state.lastSync)
+        UsageQueryService.shared.loadOGSnapshotsByDay { snaps in
+            guard let cur = goLastSeen, cur == seen else { return }
+            goSnapshots = snaps
+        }
     }
 
-    /// Reloads only the OpenRouter history series.
+    /// Reloads only the OpenRouter history series (one point per day).
     private func loadORSnapshots() {
-        UsageQueryService.shared.loadORSnapshots(limit: 120) { orSnapshots = $0 }
+        let seen = orClient.state.lastOK
+        UsageQueryService.shared.loadORSnapshotsByDay { snaps in
+            guard orLastSeen == seen else { return }
+            orSnapshots = snaps
+        }
     }
 
     // MARK: - OpenCode Go
@@ -79,12 +112,12 @@ struct PlansView: View {
                     configured: goClient.configured,
                     error: go.error,
                     lastSync: go.lastOK,
-                    syncedText: go.lastOK > 0 ? "更新于 \(Format.dateTime(go.lastOK))" : nil,
+                    syncedText: go.lastOK > 0 ? "Updated \(Format.dateTime(go.lastOK))" : nil,
                     refresh: goClient.configured ? { goClient.refresh() } : nil
                 )
-                if let err = go.error {
+                if let err = go.error, goClient.configured {
                     Text(err)
-                        .font(.system(size: TMType.caption))
+                        .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.danger.opacity(0.85))
                         .lineLimit(2)
                 }
@@ -92,14 +125,14 @@ struct PlansView: View {
                 // Credentials live here — provisioning and quota are one task.
                 credentialsRow(
                     configured: goClient.configured,
-                    summary: goClient.configured ? "已配置 workspace" : "未配置 — 配额无法读取",
-                    actionTitle: goClient.configured ? "更换凭据" : "配置",
+                    summary: goClient.configured ? "Configured workspace" : "Not configured — quota unavailable",
+                    actionTitle: goClient.configured ? "Change credentials" : "Configure",
                     showForm: $showGoForm,
                     clearAction: {
                         goClient.clear()
                         goWS = ""
                         goCookie = ""
-                        goFormMessage = "OpenCode Go 凭据已清除"
+                        goFormMessage = "OpenCode Go credentials cleared"
                         goFormFailed = false
                     }
                 ) {
@@ -111,7 +144,7 @@ struct PlansView: View {
                             SecureField("auth cookie (Fe26.2**...)", text: $goCookie)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: TMType.caption, design: .monospaced))
-                            Button("保存并查询") {
+                            Button("Save & query") {
                                 let ws = goWS.trimmingCharacters(in: .whitespacesAndNewlines)
                                 let ck = goCookie.trimmingCharacters(in: .whitespacesAndNewlines)
                                 guard !ws.isEmpty, !ck.isEmpty else { return }
@@ -120,57 +153,61 @@ struct PlansView: View {
                                     showGoForm = false
                                     goWS = ""
                                     goCookie = ""
-                                    goFormMessage = "OpenCode Go 凭据已保存"
+                                    goFormMessage = "OpenCode Go credentials saved"
                                     goFormFailed = false
                                 } else {
-                                    goFormMessage = goClient.state.error ?? "保存失败（钥匙串不可用）"
+                                    goFormMessage = goClient.state.error ?? "Save failed (Keychain unavailable)"
                                     goFormFailed = true
                                 }
                             }
-                            .font(.system(size: TMType.caption))
-                        }
-                        if let goFormMessage, showGoForm {
-                            Text(goFormMessage)
-                                .font(.system(size: TMType.caption))
-                                .foregroundStyle(goFormFailed ? TMDesign.danger : TMDesign.accent)
+                            .font(TMType.regular(TMType.caption))
+                            .disabled(goWS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      || goCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
+                }
+                // Form feedback stays visible after the form closes, so a
+                // successful save/clear is never silently swallowed.
+                if let goFormMessage {
+                    Text(goFormMessage)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(goFormFailed ? TMDesign.danger : TMDesign.accent)
                 }
 
                 if goClient.configured {
                     if let pct = go.monthlyPct {
                         quotaBar(
-                            title: "月度额度",
-                            pct: pct,
-                            reset: go.monthlyReset,
+                            title: "Monthly quota",
+                            usedPct: pct,
+                            resetAt: go.monthlyReset.map { go.lastSync + $0 },
                             limit: OpenCodeGoClient.monthlyLimitUSD,
                             color: TMDesign.accent,
                             reference: subForGo?.price
                         )
                     }
-                    windowRow("5 小时窗口", pct: go.rollingPct, reset: go.rollingReset)
-                    windowRow("本周窗口", pct: go.weeklyPct, reset: go.weeklyReset)
+                    windowRow("5h window", pct: go.rollingPct, reset: go.rollingReset)
+                    windowRow("Weekly window", pct: go.weeklyPct, reset: go.weeklyReset)
 
                     if let sub = subForGo, let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
                         Divider()
                         HStack(spacing: 8) {
-                            Text("固定订阅")
-                                .font(.system(size: TMType.caption))
+                            Text("Fixed subscription")
+                                .font(TMType.regular(TMType.caption))
                                 .foregroundStyle(TMDesign.quiet)
                             Spacer()
-                            Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "月" : "年")")
-                                .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
-                                .monospacedDigit()
-                            Text("第 \(info.dayOfCycle)/\(info.totalDays) 天")
-                                .font(.system(size: TMType.caption, design: .monospaced))
-                                .monospacedDigit()
+                            Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "mo" : "yr")")
+                                .font(TMType.semibold(TMType.caption))
+                                .tmMonospacedDigit()
+                            Text("Day \(info.dayOfCycle)/\(info.totalDays)")
+                                .font(TMType.regular(TMType.caption))
+                                .tmMonospacedDigit()
                                 .foregroundStyle(TMDesign.quiet)
                             if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                let line = ForecastText.compact(for: fc, plan: sub.plan)
+                                let line = Self.forecastLine(for: fc, plan: sub.plan)
                                 Text(line.text)
-                                    .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
-                                    .monospacedDigit()
-                                    .foregroundStyle(ForecastText.color(line.status))
+                                    .font(TMType.semibold(TMType.caption))
+                                    .tmMonospacedDigit()
+                                    .foregroundStyle(Self.forecastColor(line.status))
                             }
                         }
                     }
@@ -187,23 +224,29 @@ struct PlansView: View {
         let daily = Self.dailySeries(goSnapshots, month: \.monthlyPct, week: \.weeklyPct)
         return VStack(alignment: .leading, spacing: 6) {
             if daily.count >= 2 {
-                Text("月度用量历史（按天）")
-                    .font(.system(size: TMType.caption, weight: .semibold))
+                HStack(spacing: 12) {
+                    Text("Monthly usage history (daily)")
+                        .font(TMType.semibold(TMType.caption))
+                    Spacer()
+                    legendItem(color: TMDesign.accent, dashed: false, text: "Monthly")
+                    legendItem(color: TMDesign.accentShade(0.6), dashed: true, text: "Weekly")
+                }
                 Chart(daily) { point in
                     if let pct = point.month {
                         LineMark(
-                            x: .value("日期", Date(timeIntervalSince1970: TimeInterval(point.day))),
-                            y: .value("用量 %", pct)
+                            x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.day))),
+                            y: .value("Usage %", pct)
                         )
-                        .foregroundStyle(TMDesign.accent.opacity(0.85))
+                        .foregroundStyle(TMDesign.accent)
                         .interpolationMethod(.catmullRom)
                     }
                     if let pct = point.week {
                         LineMark(
-                            x: .value("日期", Date(timeIntervalSince1970: TimeInterval(point.day))),
-                            y: .value("用量 %", pct)
+                            x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.day))),
+                            y: .value("Usage %", pct)
                         )
-                        .foregroundStyle(TMDesign.accentShade(0.6).opacity(0.8))
+                        .foregroundStyle(TMDesign.accentShade(0.6))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                         .interpolationMethod(.catmullRom)
                     }
                 }
@@ -222,17 +265,28 @@ struct PlansView: View {
                     }
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("OpenCode Go 月度用量历史图表")
+                .accessibilityLabel("OpenCode Go monthly usage history chart")
                 .accessibilityValue(Text(goHistoryAccessibilitySummary(daily)))
-                .accessibilityHint("使用 VoiceOver 浏览每日月度和每周用量")
+                .accessibilityHint("VoiceOver browses daily monthly and weekly usage")
                 .frame(height: 110)
             } else {
-                Text("快照不足")
-                    .font(.system(size: TMType.micro))
+                Text("Not enough snapshots")
+                    .font(TMType.regular(TMType.micro))
                     .foregroundStyle(TMDesign.faint)
             }
         }
         .padding(.top, 4)
+    }
+
+    private func legendItem(color: Color, dashed: Bool, text: String) -> some View {
+        HStack(spacing: 4) {
+            Capsule()
+                .stroke(color, style: StrokeStyle(lineWidth: 2, dash: dashed ? [3, 2] : []))
+                .frame(width: 14, height: 2)
+            Text(text)
+                .font(TMType.regular(TMType.micro))
+                .foregroundStyle(TMDesign.quiet)
+        }
     }
 
     private struct DailyPoint: Identifiable {
@@ -256,7 +310,7 @@ struct PlansView: View {
     }
     private func goHistoryAccessibilitySummary(_ daily: [DailyPoint]) -> String {
         let weekly = daily.compactMap(\.week)
-        return "\(daily.count) 天，周度数据 \(weekly.count) 天"
+        return "\(daily.count) days, weekly data \(weekly.count) days"
     }
 
     private var subForGo: Database.Subscription? {
@@ -267,33 +321,33 @@ struct PlansView: View {
 
     private var orCard: some View {
         let or = orClient.state
-        return serviceCard(title: "OpenRouter", icon: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color) {
+        return serviceCard(title: "OpenRouter", icon: ToolKind.openrouter.symbol, color: TMDesign.accent) {
             VStack(alignment: .leading, spacing: 12) {
                 statusHeader(
                     isLoading: or.isLoading,
                     configured: orClient.hasKey,
                     error: or.error,
                     lastSync: or.lastOK,
-                    syncedText: or.lastOK > 0 ? "更新于 \(Format.dateTime(or.lastOK))" : nil,
+                    syncedText: or.lastOK > 0 ? "Updated \(Format.dateTime(or.lastOK))" : nil,
                     refresh: orClient.hasKey ? { orClient.refresh() } : nil
                 )
-                if let err = or.error {
+                if let err = or.error, orClient.hasKey {
                     Text(err)
-                        .font(.system(size: TMType.caption))
+                        .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.danger.opacity(0.85))
                         .lineLimit(2)
                 }
 
                 credentialsRow(
                     configured: orClient.hasKey,
-                    summary: orClient.hasKey ? "已配置 \(or.keyCount) 个 key（钥匙串）" : "未配置 — 额度无法读取",
-                    actionTitle: orClient.hasKey ? "更换 / 追加" : "配置",
+                    summary: orClient.hasKey ? "\(or.keyCount) key\(or.keyCount == 1 ? "" : "s") (Keychain)" : "Not configured — quota unavailable",
+                    actionTitle: orClient.hasKey ? "Change / Add" : "Configure",
                     showForm: $showORForm,
                     clearAction: {
                         _ = orClient.setKey(nil)
                         orKey = ""
                         orAppend = false
-                        orFormMessage = "OpenRouter key 已清除"
+                        orFormMessage = "OpenRouter key cleared"
                         orFormFailed = false
                     }
                 ) {
@@ -302,51 +356,54 @@ struct PlansView: View {
                             SecureField("sk-or-...", text: $orKey)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: TMType.caption, design: .monospaced))
-                            Button("保存") {
+                            Button("Save") {
                                 let k = orKey.trimmingCharacters(in: .whitespacesAndNewlines)
                                 let ok = orAppend ? orClient.addKey(k) : orClient.setKey(k)
                                 if ok {
                                     showORForm = false
                                     orKey = ""
                                     orAppend = false
-                                    orFormMessage = "OpenRouter key 已保存并开始查询"
+                                    orFormMessage = "OpenRouter key saved"
                                     orFormFailed = false
                                 } else {
-                                    orFormMessage = orClient.state.error ?? "保存失败（钥匙串不可用）"
+                                    orFormMessage = orClient.state.error ?? "Save failed (Keychain unavailable)"
                                     orFormFailed = true
                                 }
                             }
-                            .font(.system(size: TMType.caption))
+                            .font(TMType.regular(TMType.caption))
                             .disabled(orKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             if orClient.hasKey {
-                                Toggle("追加到现有 key", isOn: $orAppend)
+                                Toggle("Append to existing key", isOn: $orAppend)
                                     .toggleStyle(.checkbox)
-                                    .font(.system(size: TMType.caption))
+                                    .font(TMType.regular(TMType.caption))
                                     .controlSize(.small)
                             }
                         }
-                        if let orFormMessage, showORForm {
-                            Text(orFormMessage)
-                                .font(.system(size: TMType.caption))
-                                .foregroundStyle(orFormFailed ? TMDesign.danger : TMDesign.accent)
-                        }
                     }
+                }
+                if let orFormMessage {
+                    Text(orFormMessage)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(orFormFailed ? TMDesign.danger : TMDesign.accent)
                 }
 
                 if orClient.hasKey {
                     HStack(spacing: 24) {
-                        liveStat("现金余额", or.accountBalance.map(Format.money) ?? "—")
-                        liveStat("今日实际", Format.money(or.usageDaily))
-                        liveStat("本月实际", Format.money(or.usageMonthly))
+                        liveStat("Balance", or.accountBalance.map(Format.money) ?? "—")
+                        liveStat("Today", Format.money(or.usageDaily))
+                        liveStat("Month", Format.money(or.usageMonthly))
                         if let limit = or.limit {
-                            liveStat("key 限额", Format.money(limit))
+                            liveStat("Key limit", Format.money(limit))
                         }
                     }
                     if let remaining = or.limitRemaining, let limit = or.limit {
+                        // Bar semantics are "used": a brand-new key at 100%
+                        // remaining renders an empty bar, never a full red one.
+                        let usedPct = limit > 0 ? (limit - remaining) / limit * 100 : 0
                         quotaBar(
-                            title: "key 额度剩余",
-                            pct: limit > 0 ? remaining / limit * 100 : 0,
-                            reset: nil,
+                            title: "Key quota",
+                            usedPct: usedPct,
+                            resetAt: nil,
                             limit: limit,
                             color: TMDesign.accent,
                             reference: nil,
@@ -354,9 +411,9 @@ struct PlansView: View {
                         )
                     }
                     Text(or.isManagementKey
-                         ? "管理 key"
-                         : "普通 key")
-                        .font(.system(size: TMType.micro))
+                         ? "Management key"
+                         : "Standard key")
+                        .font(TMType.regular(TMType.micro))
                         .foregroundStyle(TMDesign.faint)
 
                     orHistory
@@ -368,18 +425,18 @@ struct PlansView: View {
     private var orHistory: some View {
         VStack(alignment: .leading, spacing: 6) {
             if orSnapshots.count >= 2 {
-                Text("用量快照历史")
-                    .font(.system(size: TMType.caption, weight: .semibold))
-                Chart(orSnapshots.reversed()) { s in
+                Text("Usage history (daily)")
+                    .font(TMType.semibold(TMType.caption))
+                Chart(orSnapshots) { s in
                     LineMark(
-                        x: .value("时间", Date(timeIntervalSince1970: TimeInterval(s.ts))),
-                        y: .value("用量", s.usage)
+                        x: .value("Time", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                        y: .value("Usage", s.usage)
                     )
-                    .foregroundStyle(ToolKind.openrouter.color.opacity(0.8))
+                    .foregroundStyle(TMDesign.accent.opacity(0.85))
                     .interpolationMethod(.catmullRom)
                     if let limit = s.limit {
-                        RuleMark(y: .value("额度", limit))
-                            .foregroundStyle(.gray.opacity(0.4))
+                        RuleMark(y: .value("Limit", limit))
+                            .foregroundStyle(TMDesign.quiet.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     }
                 }
@@ -392,28 +449,26 @@ struct PlansView: View {
                     }
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("OpenRouter 用量快照历史图表")
+                .accessibilityLabel("OpenRouter usage history chart")
                 .accessibilityValue(Text(orHistoryAccessibilitySummary(orSnapshots)))
-                .accessibilityHint("使用 VoiceOver 浏览每次快照的用量和额度")
+                .accessibilityHint("VoiceOver browses daily usage and quota")
                 .frame(height: 110)
             } else {
-                Text("快照不足")
-                    .font(.system(size: TMType.micro))
+                Text("Not enough snapshots")
+                    .font(TMType.regular(TMType.micro))
                     .foregroundStyle(TMDesign.faint)
             }
         }
         .padding(.top, 4)
     }
     private func orHistoryAccessibilitySummary(_ snapshots: [Database.ORSnapshot]) -> String {
-        "\(snapshots.count) 次快照"
+        "\(snapshots.count) days"
     }
 
     // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
 
     private var subsCard: some View {
-        serviceCard(title: "固定订阅", icon: "calendar", color: .gray) {
-            SubscriptionSettingsSection()
-        }
+        SubscriptionSettingsSection()
     }
 
     // MARK: - 容器与通用行
@@ -424,50 +479,59 @@ struct PlansView: View {
         let stale = lastSync > 0
             && Date().timeIntervalSince1970 - TimeInterval(lastSync) > 120
         return HStack(spacing: 8) {
-            Text("状态")
-                .font(.system(size: TMType.caption))
+            Text("Status")
+                .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
-            if isLoading {
+            if !configured {
+                // Not configured is neutral, never an error.
+                Text("Not configured")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+            } else if error != nil {
+                TMStatusPill(text: "Error", color: TMDesign.danger, symbol: "xmark.circle.fill")
+            } else if isLoading && lastSync <= 0 {
+                // Loading only before the first result; refreshes with an old
+                // value keep showing the last known state.
                 HStack(spacing: 5) {
                     ProgressView()
                         .controlSize(.mini)
-                    Text("运行中")
-                        .font(.system(size: TMType.caption))
+                    Text("Loading")
+                        .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.quiet)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("运行中")
-            } else if !configured {
-                Text("未配置")
-                    .font(.system(size: TMType.caption))
-                    .foregroundStyle(TMDesign.quiet)
-            } else if error != nil {
-                TMStatusPill(text: "错误", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                .accessibilityLabel("Loading")
             } else if lastSync <= 0 {
-                TMStatusPill(text: "已停止", color: TMDesign.quiet, symbol: "stop.circle")
+                TMStatusPill(text: "Idle", color: TMDesign.quiet, symbol: "circle.dashed")
             } else if stale {
-                TMStatusPill(text: "稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                TMStatusPill(text: "Stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
             } else {
-                Label("已同步", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: TMType.caption))
+                Label("Synced", systemImage: "checkmark.circle.fill")
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             }
             Spacer()
             if let syncedText {
                 Text(syncedText)
-                    .font(.system(size: TMType.micro))
+                    .font(TMType.monoRegular(TMType.micro))
                     .foregroundStyle(TMDesign.faint)
             }
             if let refresh {
                 Button {
                     refresh()
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.borderless)
-                .font(.system(size: TMType.caption))
-                .accessibilityLabel("刷新服务状态")
-                .accessibilityHint("重新查询此服务的额度")
+                .font(TMType.regular(TMType.caption))
+                .disabled(isLoading)
+                .accessibilityLabel("Refresh status")
+                .accessibilityHint("Re-queries this service's quota")
             }
         }
     }
@@ -478,31 +542,31 @@ struct PlansView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: configured ? "key.fill" : "key.slash")
-                    .font(.system(size: 11))
+                    .font(TMType.regular(11))
                     .foregroundStyle(configured ? TMDesign.accent : TMDesign.quiet)
                 Text(summary)
-                    .font(.system(size: TMType.caption))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(configured ? TMDesign.quiet : .secondary)
                 Spacer()
                 if configured {
                     Button(actionTitle) {
                         showForm.wrappedValue.toggle()
                     }
-                    .font(.system(size: TMType.caption))
+                    .font(TMType.regular(TMType.caption))
                 } else {
                     Button(actionTitle) {
                         showForm.wrappedValue.toggle()
                     }
-                    .font(.system(size: TMType.caption))
+                    .font(TMType.regular(TMType.caption))
                     .buttonStyle(.borderedProminent)
                     .tint(TMDesign.accent)
                 }
                 if configured, let clearAction {
-                    Button("清除") {
+                    Button("Clear") {
                         showForm.wrappedValue = false
                         clearAction()
                     }
-                    .font(.system(size: TMType.caption))
+                    .font(TMType.regular(TMType.caption))
                 }
             }
             if showForm.wrappedValue {
@@ -511,28 +575,36 @@ struct PlansView: View {
         }
     }
 
-    private func quotaBar(title: String, pct: Double, reset: Int64?,
+    /// Quota progress bar. `usedPct` is the fraction of the limit already
+    /// consumed (0–100); bar width and color follow usage, so a brand-new
+    /// key at 100% remaining renders an empty bar instead of a full red one.
+    /// `resetAt` (absolute unix seconds) shows the "resets in …" fine-print.
+    /// `reference` draws a hairline at a fixed value — used for the
+    /// subscription price as a share of the quota limit (e.g. a $10 sub on a
+    /// $60 monthly limit marks the 16.7% position) so the paid tier is
+    /// visible against actual consumption.
+    private func quotaBar(title: String, usedPct: Double, resetAt: Int64?,
                           limit: Double, color: Color, reference: Double?,
                           remainingText: String? = nil) -> some View {
-        let p = min(max(pct, 0), 100)
+        let p = min(max(usedPct, 0), 100)
         let used = p / 100 * limit
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(.system(size: TMType.caption, weight: .medium))
+                    .font(TMType.medium(TMType.caption))
                 Spacer()
                 if let remainingText {
-                    Text("剩余 \(remainingText) / \(Format.money(limit))")
-                        .font(.system(size: TMType.caption, design: .monospaced))
-                        .monospacedDigit()
+                    Text("Left \(remainingText) / \(Format.money(limit))")
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
                 } else {
-                    Text("已用 \(Format.money(used)) / \(Format.money(limit))")
-                        .font(.system(size: TMType.caption, design: .monospaced))
-                        .monospacedDigit()
+                    Text("Used \(Format.money(used)) / \(Format.money(limit))")
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
                 }
                 Text("\(Int(p))%")
-                    .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
-                    .monospacedDigit()
+                    .font(TMType.semibold(TMType.caption))
+                    .tmMonospacedDigit()
                     .foregroundStyle(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : TMDesign.quiet))
             }
             GeometryReader { geo in
@@ -542,6 +614,7 @@ struct PlansView: View {
                     Capsule().fill(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : color))
                         .frame(width: max(3, w * CGFloat(p / 100)))
                     if let reference {
+                        // Subscription-price reference line (see doc comment).
                         Rectangle()
                             .fill(Color.primary.opacity(0.4))
                             .frame(width: 1)
@@ -550,10 +623,13 @@ struct PlansView: View {
                 }
             }
             .frame(height: 7)
-            if let reset, pct > 0 {
-                Text("重置于 \(Format.countdown(reset))")
-                    .font(.system(size: TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
+            if let resetAt, usedPct > 0 {
+                let remaining = resetAt - Int64(Date().timeIntervalSince1970)
+                if remaining > 0 {
+                    Text("resets in \(Format.remaining(remaining))")
+                        .font(TMType.monoRegular(TMType.micro))
+                        .foregroundStyle(TMDesign.faint)
+                }
             }
         }
     }
@@ -561,25 +637,27 @@ struct PlansView: View {
     private func windowRow(_ label: String, pct: Double?, reset: Int64?) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: TMType.caption))
+                .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
             Spacer()
             if let pct {
                 Text("\(Int(pct))%")
-                    .font(.system(size: TMType.caption, weight: .semibold, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(pct > 95 ? TMDesign.danger : (pct > 80 ? TMDesign.accent : .primary))
+                    .font(TMType.semibold(TMType.caption))
+                    .tmMonospacedDigit()
+                    .foregroundStyle(pct > 95 ? TMDesign.danger : (pct > 80 ? TMDesign.accent : TMDesign.quiet))
             } else {
                 Text("—")
-                    .font(.system(size: TMType.caption))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.faint)
             }
             if let reset, goClient.state.lastSync > 0 {
                 let absReset = goClient.state.lastSync + reset
-                Text("重置 \(Format.remaining(absReset - Int64(Date().timeIntervalSince1970)))")
-                    .font(.system(size: TMType.caption, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(TMDesign.quiet)
+                let remaining = absReset - Int64(Date().timeIntervalSince1970)
+                if remaining > 0 {
+                    Text("resets in \(Format.remaining(remaining))")
+                        .font(TMType.monoRegular(TMType.micro))
+                        .foregroundStyle(TMDesign.quiet)
+                }
             }
         }
     }
@@ -587,11 +665,11 @@ struct PlansView: View {
     private func liveStat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: TMType.caption))
+                .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
             Text(value)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                .monospacedDigit()
+                .font(TMType.semibold(17))
+                .tmMonospacedDigit()
         }
     }
 
@@ -600,11 +678,10 @@ struct PlansView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(TMType.medium(14))
                     .foregroundStyle(color)
                     .frame(width: 22)
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                SectionTitle(title)
             }
             content()
         }
@@ -617,4 +694,33 @@ struct PlansView: View {
         }
     }
 
+    /// English forecast line for a subscription.
+    static func forecastLine(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: ForecastText.Status) {
+        switch plan {
+        case "go":
+            if let exhaust = fc.exhaustDate {
+                return ("\(Format.money(fc.used)) used · exhausts \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
+            }
+            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
+            return ("\(Format.money(fc.used)) used · \(Format.money(fc.dailyRate))/day · \(Format.money(remaining)) left at cycle end", .ok)
+        case "openrouter":
+            if let exhaust = fc.exhaustDate {
+                return ("Balance \(Format.money(fc.limit)) · ~empty \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
+            }
+            return ("Balance \(Format.money(fc.limit)) · \(Format.money(fc.dailyRate))/day", .ok)
+        case "claude":
+            return ("Claude value \(Format.money(fc.used)) · \(Format.money(fc.dailyRate))/day", .ok)
+        default:
+            return ("Paid \(Format.money(fc.used)) · no usage source linked", .neutral)
+        }
+    }
+
+    static func forecastColor(_ status: ForecastText.Status) -> Color {
+        switch status {
+        case .ok: return TMDesign.quiet
+        case .warn: return TMDesign.accent
+        case .danger: return TMDesign.danger
+        case .neutral: return .secondary
+        }
+    }
 }

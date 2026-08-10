@@ -4,8 +4,8 @@ import SwiftUI
 /// context switch, not another top-level navigation branch.
 struct SourcesAndSettingsView: View {
     enum Section: String, CaseIterable, Identifiable {
-        case sources = "来源状态"
-        case settings = "配置"
+        case sources = "Sources"
+        case settings = "Settings"
         var id: String { rawValue }
     }
 
@@ -14,15 +14,15 @@ struct SourcesAndSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("部分", selection: $section) {
+                Picker("Section", selection: $section) {
                     ForEach(Section.allCases) { item in
                         Text(item.rawValue).tag(item)
                     }
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 170)
-                .accessibilityLabel("来源与设置")
-                .accessibilityHint("在来源状态与配置之间切换")
+                .accessibilityLabel("Sources and Settings")
+                .accessibilityHint("Switch between source status and configuration")
             }
             .padding(.horizontal, 22)
             .padding(.top, 18)

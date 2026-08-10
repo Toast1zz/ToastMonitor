@@ -118,7 +118,7 @@ final class OpenCodeGoClient: ObservableObject {
         guard let workspaceID = Self.normalizedWorkspaceID(workspaceId),
               let authCookie = Self.normalizedCookie(cookie) else {
             configured = false
-            state.error = "workspaceId 或 cookie 无效"
+            state.error = "Invalid workspaceId or cookie"
             return false
         }
         let oldWorkspace = KeychainStore.get(account: "go-workspace-id")
@@ -145,7 +145,7 @@ final class OpenCodeGoClient: ObservableObject {
                 KeychainStore.delete(account: "go-auth-cookie")
             }
             configured = false
-            state.error = "无法写入 macOS 钥匙串，未保存 cookie"
+            state.error = "Keychain write failed — cookie not saved"
             return false
         }
         configured = true
@@ -161,7 +161,7 @@ final class OpenCodeGoClient: ObservableObject {
         Database.shared.setSetting("go_cred_storage", nil)
         configured = false
         var cleared = State()
-        cleared.error = "未配置"
+        cleared.error = "Not configured"
         state = cleared
     }
 
@@ -228,7 +228,7 @@ final class OpenCodeGoClient: ObservableObject {
                     self.inFlight = false
                     self.configured = false
                     var cleared = State()
-                    cleared.error = "未配置"
+                    cleared.error = "Not configured"
                     self.state = cleared
                     return
                 }
@@ -251,7 +251,7 @@ final class OpenCodeGoClient: ObservableObject {
         guard let u = URL(string: url) else {
             inFlight = false
             state.isLoading = false
-            state.error = "URL 无效"
+            state.error = "Invalid URL"
             return
         }
         var req = URLRequest(url: u)
@@ -273,44 +273,44 @@ final class OpenCodeGoClient: ObservableObject {
                     return
                 }
                 guard let data else {
-                    self.state.error = "空响应"
+                    self.state.error = "Empty response"
                     return
                 }
                 guard data.count <= Self.maxHTMLLength else {
-                    self.state.error = "响应过大 (>10MB)"
+                    self.state.error = "Response too large (>10MB)"
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
-                    self.state.error = "无 HTTP 响应"
+                    self.state.error = "No HTTP response"
                     return
                 }
                 if (300..<400).contains(http.statusCode) {
-                    self.state.error = "拒绝重定向 (HTTP \(http.statusCode))"
+                    self.state.error = "Redirect rejected (HTTP \(http.statusCode))"
                     return
                 }
                 // Reject oversized responses from the header before buffering.
                 if http.expectedContentLength > 10_000_000 {
-                    self.state.error = "响应过大 (>10MB)"
+                    self.state.error = "Response too large (>10MB)"
                     return
                 }
                 guard http.statusCode == 200 else {
                     self.state.error = (http.statusCode == 401 || http.statusCode == 403)
-                        ? "cookie 失效，需重新配置 (HTTP \(http.statusCode))"
+                        ? "Cookie expired, reconfigure needed (HTTP \(http.statusCode))"
                         : "HTTP \(http.statusCode)"
                     return
                 }
                 if let mime = http.mimeType,
                    !mime.contains("html") && !mime.contains("json") && !mime.contains("text") {
-                    self.state.error = "非网页响应 (\(mime))"
+                    self.state.error = "Non-web response (\(mime))"
                     return
                 }
                 guard let html = String(data: data, encoding: .utf8) else {
-                    self.state.error = "响应解析失败"
+                    self.state.error = "Failed to parse response"
                     return
                 }
                 let parsed = Self.parse(html)
                 guard let parsed, parsed.0 != nil || parsed.1 != nil || parsed.2 != nil else {
-                    self.state.error = "未找到用量数据（页面结构可能已变）"
+                    self.state.error = "No usage data found (page structure may have changed)"
                     return
                 }
                 self.state.rollingPct = parsed.0?.pct

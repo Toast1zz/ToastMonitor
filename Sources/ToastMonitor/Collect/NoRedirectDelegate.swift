@@ -104,7 +104,7 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
             completion(nil, response, NSError(
                 domain: "ToastMonitor.Network",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "响应过大（超过 \(maxBytes) 字节）"]))
+                userInfo: [NSLocalizedDescriptionKey: "Response too large (over \(maxBytes) bytes)"]))
         } else {
             completion(data, response, error)
         }
