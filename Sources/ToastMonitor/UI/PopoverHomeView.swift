@@ -480,10 +480,18 @@ struct PopoverHomeView: View {
         Self.buildHeatmapWeeks(now: Date())
     }
 
+    /// 本周第一天的日期归一化到周一（不依赖 firstWeekday 的周日/周一习惯）。
+    private static func weekStartMonday(now: Date, calendar: Calendar) -> Date? {
+        guard let first = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return nil }
+        let weekday = calendar.component(.weekday, from: first)  // 1 = 周日 … 7 = 周六
+        let delta = weekday == 1 ? -6 : 2 - weekday
+        return calendar.date(byAdding: .day, value: delta, to: first)
+    }
+
     private static func buildHeatmapWeeks(now: Date) -> [[Int64?]] {
         var weeks: [[Int64?]] = []
         let calendar = Calendar.current
-        guard let monday = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return weeks }
+        guard let monday = weekStartMonday(now: now, calendar: calendar) else { return weeks }
         for week in 0..<26 {
             var column: [Int64?] = []
             for day in 0..<7 {
