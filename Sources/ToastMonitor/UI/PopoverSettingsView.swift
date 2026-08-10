@@ -102,9 +102,9 @@ struct PopoverSettingsView: View {
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .help("返回 (Esc)")
+            .help("Back (Esc)")
 
-            Text("设置")
+            Text("Settings")
                 .font(.system(size: 14, weight: .semibold))
 
             Spacer()
@@ -125,13 +125,13 @@ struct PopoverSettingsView: View {
 
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("外观")
+            Text("Appearance")
                 .font(.system(size: TMType.caption, weight: .semibold))
                 .foregroundStyle(TMDesign.quiet)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("玻璃通透度")
+                    Text("Glass opacity")
                         .font(.system(size: 12.5, weight: .medium))
                     Spacer()
                     Text("\(Int((glass.intensity - GlassSettings.range.lowerBound) / (GlassSettings.range.upperBound - GlassSettings.range.lowerBound) * 100))%")
@@ -140,15 +140,15 @@ struct PopoverSettingsView: View {
                         .foregroundStyle(TMDesign.quiet)
                 }
                 Slider(value: $glass.intensity, in: GlassSettings.range)
-                    .accessibilityLabel("Popover 玻璃通透度")
+                    .accessibilityLabel("Popover glass opacity")
                     .accessibilityValue(Text("\(Int((glass.intensity - GlassSettings.range.lowerBound) / (GlassSettings.range.upperBound - GlassSettings.range.lowerBound) * 100))%"))
-                    .accessibilityHint("向左更通透，向右更磨砂")
+                    .accessibilityHint("Left is more clear, right is more frosted")
                 HStack {
-                    Text("更通透")
+                    Text("More clear")
                         .font(.system(size: 11))
                         .foregroundStyle(TMDesign.faint)
                     Spacer()
-                    Text("更磨砂")
+                    Text("More frosted")
                         .font(.system(size: 11))
                         .foregroundStyle(TMDesign.faint)
                 }
@@ -158,7 +158,7 @@ struct PopoverSettingsView: View {
 
     private var footerNote: some View {
         HStack {
-            Text("外观设置只影响 Popover；订阅与凭据请在主面板修改。")
+            Text("Appearance only affects the Popover. Subscriptions & credentials live in the Dashboard.")
                 .font(.system(size: TMType.micro))
                 .foregroundStyle(TMDesign.faint)
         }

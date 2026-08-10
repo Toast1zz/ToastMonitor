@@ -8,10 +8,10 @@ struct PopoverHomeView: View {
     static let testPeriodNotification = Notification.Name("tmTestPopoverPeriod")
 
     enum Period: String, CaseIterable, Identifiable {
-        case today = "今日"
-        case week = "7 天"
-        case month = "近 30 天"
-        case all = "全部"
+        case today = "Today"
+        case week = "7 Days"
+        case month = "30 Days"
+        case all = "All Time"
         var id: String { rawValue }
     }
 
@@ -160,7 +160,7 @@ struct PopoverHomeView: View {
                     // transition, so toggling 缩写/完整 animates the same way
                     // as a live token update.
                     .animation(.easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
-                    .accessibilityLabel("\(period.rawValue) token 用量")
+                    .accessibilityLabel("\(period.rawValue) token usage")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -173,10 +173,10 @@ struct PopoverHomeView: View {
                         .foregroundStyle(TMDesign.faint)
                 }
                 .buttonStyle(.borderless)
-                .help(fullTokens ? "当前为完整数字，点击切换为缩写 (1.2M)" : "当前为缩写，点击切换为完整数字")
-                .accessibilityLabel("切换数字格式")
+                .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
+                .accessibilityLabel("Toggle number format")
             }
-            Text("\(Format.count(totals.count)) 次调用")
+            Text("\(Format.count(totals.count)) calls")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -201,7 +201,7 @@ struct PopoverHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(p.rawValue)
-                .accessibilityValue(period == p ? "已选" : "未选")
+                .accessibilityValue(period == p ? "Selected" : "Not selected")
                 .accessibilityAddTraits(period == p ? .isSelected : [])
             }
         }
@@ -218,14 +218,14 @@ struct PopoverHomeView: View {
     /// 布局：两列三行，每行左 token 指标、右成本指标，label 左 value 右。
     private var metricsTable: some View {
         VStack(spacing: 8) {
-            metricPair("输入", Format.compact(totals.input),
-                       "实际花费", actualShown > 0 ? Format.money(actualShown) : "—")
+            metricPair("Input", Format.compact(totals.input),
+                       "Spent", actualShown > 0 ? Format.money(actualShown) : "—")
             Divider().opacity(0.5)
-            metricPair("输出", Format.compact(totals.output),
-                       "API 价值", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
+            metricPair("Output", Format.compact(totals.output),
+                       "API Value", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
             Divider().opacity(0.5)
-            metricPair("缓存命中", Format.compact(totals.cacheRead),
-                       "缓存率", cacheRateText)
+            metricPair("Cache", Format.compact(totals.cacheRead),
+                       "Cache Rate", cacheRateText)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -237,7 +237,7 @@ struct PopoverHomeView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
-        .help("缓存率：缓存命中 token 占全部 token 的比例")
+        .help("Cache rate: cached tokens as a share of all tokens")
     }
 
     /// 缓存率 = 缓存命中 / (输入 + 输出 + 缓存命中)。
@@ -319,7 +319,7 @@ struct PopoverHomeView: View {
         }
         return VStack(alignment: .leading, spacing: 10) {
             if rows.isEmpty {
-                Text("暂无来源数据")
+                Text("No source data yet")
                     .font(.caption)
                     .foregroundStyle(TMDesign.quiet)
             } else {
@@ -362,7 +362,7 @@ struct PopoverHomeView: View {
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
-                    .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens，占比 \(percentText(row, total: total))"))
+                    .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens, \(percentText(row, total: total)) of total"))
                 }
             }
         }
@@ -389,7 +389,7 @@ struct PopoverHomeView: View {
     /// fixed section below the period content, labelled as such.
     private var quotaSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("额度状态")
+            Text("Quota")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
             goStatusRow
@@ -400,7 +400,7 @@ struct PopoverHomeView: View {
 
     private func resetText(_ at: Int64?) -> String? {
         guard let at, at > Int64(now.timeIntervalSince1970) else { return nil }
-        return "\(Format.remaining(at - Int64(now.timeIntervalSince1970))) 后重置"
+        return "resets in \(Format.remaining(at - Int64(now.timeIntervalSince1970)))"
     }
 
     private var goStatusRow: some View {
@@ -408,21 +408,21 @@ struct PopoverHomeView: View {
         let remaining = state.monthlyPct.map { 100 - $0 }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        var status = "未配置"
+        var status = "Not configured"
         if goClient.configured {
             if state.error != nil {
-                status = "错误"
+                status = "Error"
             } else if stale {
-                status = "稍旧"
+                status = "Stale"
             } else if let remaining {
-                status = "剩余 \(Int(remaining))%"
+                status = "\(Int(remaining))% left"
                 if let r = resetText(state.monthlyReset.map { state.lastSync + $0 }) {
                     status += " · \(r)"
                 }
             } else if state.isLoading {
-                status = "运行中"
+                status = "Loading"
             } else {
-                status = "已停止"
+                status = "Idle"
             }
         }
         return statusRow(name: "OpenCode Go", status: status,
@@ -430,13 +430,13 @@ struct PopoverHomeView: View {
                          critical: remaining.map { $0 < 20 } ?? false)
     }
 
-    /// 窗口标签由 limit_window_seconds 决定：604800 = 每周（Plus 现状）。
+    /// Window label derives from limit_window_seconds: 604800 = weekly (Plus today).
     private var windowLabel: String {
-        guard let s = codexQuota.state.windowSeconds else { return "限额" }
-        if s >= 7 * 86400 { return "每周" }
-        if s >= 86400 { return "每 \(s / 86400) 天" }
-        if s >= 3600 { return "每 \(s / 3600) 小时" }
-        return "限额"
+        guard let s = codexQuota.state.windowSeconds else { return "limit" }
+        if s >= 7 * 86400 { return "weekly" }
+        if s >= 86400 { return "every \(s / 86400) days" }
+        if s >= 3600 { return "every \(s / 3600) hours" }
+        return "limit"
     }
 
     private var codexStatusRow: some View {
@@ -445,18 +445,18 @@ struct PopoverHomeView: View {
         let sub = app.subscriptions.first { $0.plan == "codex" }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        var status = sub == nil ? "未配置" : "运行中"
+        var status = sub == nil ? "Not configured" : "Loading"
         if state.error != nil {
-            status = "错误"
+            status = "Error"
         } else if stale, state.primaryPct != nil {
-            status = "稍旧"
+            status = "Stale"
         } else if let remaining {
-            status = "\(windowLabel)剩余 \(Int(remaining))%"
+            status = "\(Int(remaining))% of \(windowLabel) left"
             if let r = resetText(state.resetAt) {
                 status += " · \(r)"
             }
         } else if let sub {
-            status = "运行中 · 已订阅 \(Format.money(sub.price))/月"
+            status = "Subscribed · \(Format.money(sub.price))/mo"
         }
         return statusRow(name: "Codex Plus", status: status,
                          statusColor: .primary,
@@ -469,17 +469,17 @@ struct PopoverHomeView: View {
             && now.timeIntervalSince1970 - TimeInterval(state.lastOK) > 120
         let status: String
         if !orClient.hasKey {
-            status = "未配置"
+            status = "Not configured"
         } else if state.error != nil {
-            status = "错误"
+            status = "Error"
         } else if stale {
-            status = "稍旧"
+            status = "Stale"
         } else if let balance = state.accountBalance {
-            status = "余额 \(Format.money(balance))"
+            status = "Balance \(Format.money(balance))"
         } else if state.isLoading {
-            status = "运行中"
+            status = "Loading"
         } else {
-            status = "已停止"
+            status = "Idle"
         }
         return statusRow(name: "OpenRouter", status: status,
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
@@ -552,10 +552,10 @@ private struct StatusRow: View {
             .onHover { hovering = $0 }
         }
         .buttonStyle(.plain)
-        .help("打开计划与余额")
+        .help("Open plans & balance")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(Text(status))
-        .accessibilityHint("打开计划与余额查看详细状态")
+        .accessibilityHint("Open plans & balance for details")
     }
 }

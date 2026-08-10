@@ -73,8 +73,8 @@ struct PopoverRootView: View {
             }
             .buttonStyle(.borderless)
             .disabled(app.manualRefreshing)
-            .help("刷新数据")
-            .accessibilityLabel("刷新数据")
+            .help("Refresh data")
+            .accessibilityLabel("Refresh data")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -86,25 +86,27 @@ struct PopoverRootView: View {
         let brokenSources = health.sources.filter { $0.error != nil }
         let staleSources = health.sources.filter { $0.error == nil && $0.isStale }
         if !brokenSources.isEmpty || !staleSources.isEmpty {
-            let summary = TMHealthStatus(brokenCount: brokenSources.count,
-                                         staleCount: staleSources.count,
-                                         lastScan: app.lastScan)
+            let count = brokenSources.count + staleSources.count
+            let word = brokenSources.isEmpty ? "stale" : "error"
+            let prefix = "\(count) source\(count == 1 ? "" : "s") \(word)"
             let detailSources = !brokenSources.isEmpty ? brokenSources : staleSources
-            let detail = detailSources.map { $0.displayName }.joined(separator: "、")
-            let text = detail.isEmpty ? summary.text : "\(summary.text) · \(detail)"
-            TMStatusLabel(text: text, color: summary.color, symbol: summary.symbol)
-                .accessibilityLabel(Text("数据源状态"))
+            let detail = detailSources.map { $0.displayName }.joined(separator: ", ")
+            let text = detail.isEmpty ? prefix : "\(prefix) · \(detail)"
+            let color = brokenSources.isEmpty ? TMDesign.accent : TMDesign.danger
+            let symbol = brokenSources.isEmpty ? "clock.badge.exclamationmark" : "exclamationmark.triangle.fill"
+            TMStatusLabel(text: text, color: color, symbol: symbol)
+                .accessibilityLabel(Text("Source status"))
                 .accessibilityValue(Text(text))
         }
     }
 
     private var footer: some View {
         HStack(spacing: 12) {
-            FooterIconButton(systemName: "power", help: "退出 ToastMonitor") {
+            FooterIconButton(systemName: "power", help: "Quit ToastMonitor") {
                 NSApp.terminate(nil)
             }
 
-            FooterIconButton(systemName: "gearshape", help: "Popover 设置") {
+            FooterIconButton(systemName: "gearshape", help: "Popover Settings") {
                 withAnimation(.snappy(duration: 0.25)) { showSettings = true }
             }
 
@@ -116,14 +118,14 @@ struct PopoverRootView: View {
             } label: {
                 // Claude 风格：无图标、无边框，纯文字入口（参考 claude-statusbar
                 // 的 statusLine —— 只有文字与细符号，从不使用外链箭头）。
-                Text("打开主面板")
+                Text("Open Dashboard")
                     .font(.system(size: 12, weight: .medium))
                     .padding(.vertical, 4)
                     .padding(.horizontal, 6)
             }
             .buttonStyle(.plain)
-            .help("打开完整面板")
-            .accessibilityLabel("打开完整面板")
+            .help("Open the full dashboard")
+            .accessibilityLabel("Open the full dashboard")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
