@@ -375,13 +375,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        // 初始即为主页面完整内容高度（hero + 来源 + Quota + Activity/Trend）：
-        // 打开时高度一步到位，无"先矮后长"的弹簧感。小差异（≤8pt）由
-        // 动态调整阈值吸收；设置页等高度差异大的页面仍会自适应。
+        // 固定适中高度（内容更长时在 ScrollView 内滚动）：打开即稳定，
+        // 无"先矮后长"的弹簧感；设置页等高度差异大的页面仍会自适应。
         panelController = PanelController(
             statusItem: item,
             content: PopoverRootView(),
-            size: NSSize(width: 400, height: 850)
+            size: NSSize(width: 400, height: 640)
         )
 
         // 真实运行截图钩子（重设计验收用）：--show-panel 显示 popover，

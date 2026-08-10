@@ -118,19 +118,19 @@ struct PopoverHomeView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 // 板块节奏统一：每块之间一条等宽分割线（撑满内容区），
-                // 线上下各 14pt 间距，所有板块间距一致。
+                // 线上下各 10pt 间距，所有板块间距一致。
                 VStack(alignment: .leading, spacing: 0) {
                     hero
-                        .padding(.bottom, 14)
+                        .padding(.bottom, 10)
                     sourceBar
                     Divider().opacity(0.4)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 10)
                     quotaSection
                     Divider().opacity(0.4)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 10)
                     activityBlock
                     Divider().opacity(0.4)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 10)
                     trendBlock
                 }
                 .padding(.horizontal, 20)
@@ -311,7 +311,7 @@ struct PopoverHomeView: View {
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 8) {
             if rows.isEmpty {
                 Text("No source data yet")
                     .font(.caption)
@@ -381,7 +381,7 @@ struct PopoverHomeView: View {
     /// switcher implied it varied per dimension, so it now lives in its own
     /// fixed section below the period content, labelled as such.
     private var quotaSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 6) {
             SectionTitle("Quota")
             goStatusRow
             codexStatusRow
@@ -534,7 +534,7 @@ struct PopoverHomeView: View {
             }
         }
         .chartYAxis(.hidden)
-        .frame(height: 90)
+        .frame(height: 76)
         .chartOverlay { proxy in
             GeometryReader { geo in
                 Rectangle().fill(Color.clear).contentShape(Rectangle())
