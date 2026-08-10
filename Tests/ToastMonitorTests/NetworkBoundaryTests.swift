@@ -18,6 +18,23 @@ final class NetworkBoundaryTests: XCTestCase {
         XCTAssertGreaterThan(OpenCodeGoClient.maxCookieLength, OpenCodeGoClient.maxWorkspaceIDLength)
     }
 
+    func testAccountCreditsFallsBackToRegularKey() {
+        let regular: [String: [String: Any]] = [
+            "regular": ["data": ["is_management_key": false]]
+        ]
+        XCTAssertEqual(
+            OpenRouterClient.accountCreditsKey(keys: ["regular"], results: regular),
+            "regular")
+
+        let mixed: [String: [String: Any]] = [
+            "regular": ["data": ["is_management_key": false]],
+            "management": ["data": ["is_management_key": true]]
+        ]
+        XCTAssertEqual(
+            OpenRouterClient.accountCreditsKey(keys: ["regular", "management"], results: mixed),
+            "management")
+    }
+
     func testBoundedDelegateRejectsChunkedBodyOverCap() {
         ChunkedPayloadURLProtocol.payload = Data(repeating: 0x61, count: 16)
         let configuration = URLSessionConfiguration.ephemeral

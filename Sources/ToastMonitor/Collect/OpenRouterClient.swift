@@ -5,10 +5,11 @@ import Foundation
 /// Data model:
 ///  - one or more API keys (settings "or_keys", JSON array) — each key's
 ///    /api/v1/key is queried and daily/weekly/monthly summed across keys
-///  - /api/v1/credits (account-level, management-key only) — total usage
-///    across ALL keys + prepaid balance
-///  - /api/v1/keys is queried with a key whose /api/v1/key response explicitly
-///    reports `is_management_key`; key order never determines privilege.
+///  - /api/v1/credits (account-level, available to keys with account access)
+///    — total usage across ALL keys + prepaid balance
+///  - /api/v1/keys is queried only with a key whose /api/v1/key response
+///    explicitly reports `is_management_key`; key order never determines
+///    management privilege.
 final class OpenRouterClient: ObservableObject {
     nonisolated(unsafe) static let shared = OpenRouterClient()
     static let maxAPIKeyLength = 512
@@ -49,6 +50,22 @@ final class OpenRouterClient: ObservableObject {
         let d = value.doubleValue
         guard d.isFinite, d >= 0, d <= 1_000_000_000 else { return nil }
         return d
+    }
+
+    /// `/api/v1/credits` is an account endpoint and can be available to a
+    /// regular key even when `/api/v1/key` reports `is_management_key=false`.
+    /// Prefer a key with a valid key response, then fall back to the first
+    /// configured key so the credits request can establish the real privilege.
+    static func accountCreditsKey(keys: [String],
+                                  results: [String: [String: Any]]) -> String? {
+        if let managementKey = results.first(where: { _, json in
+            (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
+        })?.key {
+            return managementKey
+        }
+        return keys.first(where: { key in
+            (results[key]?["data"] as? [String: Any]) != nil
+        }) ?? keys.first
     }
     @Published private(set) var state = State()
     @Published private(set) var hasKey = false
@@ -332,9 +349,8 @@ final class OpenRouterClient: ObservableObject {
         }
 
         // Resolve privilege from the response belonging to that exact key.
-        // Never assume keys[0] is the management key. The credits and keys
-        // endpoints are management-only; regular keys keep balance unknown
-        // instead of turning an expected 401/403 into a permanent error.
+        // `/api/v1/credits` is account-level and may work with a regular key;
+        // only `/api/v1/keys` requires the explicit management-key bit.
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
             guard self.refreshGeneration == generation else { return }
@@ -342,12 +358,13 @@ final class OpenRouterClient: ObservableObject {
                 (json["data"] as? [String: Any])?["is_management_key"] as? Bool == true
             }?.key
             self.state.isManagementKey = managementKey != nil
-            let adminGroup = DispatchGroup()
+            let creditsKey = Self.accountCreditsKey(keys: keys, results: results)
+            let accountGroup = DispatchGroup()
 
-            if let managementKey {
-                adminGroup.enter()
-                self.fetch("/api/v1/credits", key: managementKey) { json, err in
-                    guard self.refreshGeneration == generation else { adminGroup.leave(); return }
+            if let creditsKey {
+                accountGroup.enter()
+                self.fetch("/api/v1/credits", key: creditsKey) { json, err in
+                    guard self.refreshGeneration == generation else { accountGroup.leave(); return }
                     if let json, let data = json["data"] as? [String: Any] {
                         let total = Self.finiteAmount(data["total_credits"] as? NSNumber)
                         let used = Self.finiteAmount(data["total_usage"] as? NSNumber)
@@ -360,12 +377,14 @@ final class OpenRouterClient: ObservableObject {
                     } else if err == nil {
                         failures.append("账户额度响应缺少 data")
                     }
-                    adminGroup.leave()
+                    accountGroup.leave()
                 }
+            }
 
-                adminGroup.enter()
+            if let managementKey {
+                accountGroup.enter()
                 self.fetch("/api/v1/keys", key: managementKey) { json, err in
-                    guard self.refreshGeneration == generation else { adminGroup.leave(); return }
+                    guard self.refreshGeneration == generation else { accountGroup.leave(); return }
                     if let json, let data = json["data"] as? [[String: Any]] {
                         self.state.keys = data.prefix(Self.maxKeyCount).compactMap { k in
                             guard let rawLabel = k["label"] as? String,
@@ -382,12 +401,13 @@ final class OpenRouterClient: ObservableObject {
                     } else if err == nil {
                         failures.append("管理 key 响应缺少 data")
                     }
-                    adminGroup.leave()
+                    accountGroup.leave()
                 }
             }
 
-            // Finish only after optional management calls have completed.
-            adminGroup.notify(queue: .main) { [weak self] in
+            // Finish only after the optional account and management calls have
+            // completed. 401/403 from either optional endpoint is informational.
+            accountGroup.notify(queue: .main) { [weak self] in
                 guard let self else { return }
                 guard self.refreshGeneration == generation else { return }
                 self.finishRefresh(results: results, failures: failures)
