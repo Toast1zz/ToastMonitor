@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import AppKit
+import Charts
 
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
 /// how much was used, where it came from, and whether a limit needs attention.
@@ -99,6 +100,9 @@ struct PopoverHomeView: View {
                         .padding(.bottom, 14)
                     Divider().opacity(0.4)
                     quotaSection
+                        .padding(.top, 14)
+                    Divider().opacity(0.4)
+                    activityTrend
                         .padding(.top, 14)
                 }
                 .padding(.horizontal, 20)
@@ -355,6 +359,116 @@ struct PopoverHomeView: View {
         }
     }
 
+    // MARK: - 活动与趋势（历史维度，与周期选择无关）
+
+    /// 一年活动热力图 + 最近 60 天每日用量曲线（参考图布局：Activity 网格、
+    /// Trend 折线，右上角分别标注 active days 与 peak）。
+    private var activityTrend: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("Activity")
+                        .font(TMType.semibold(13))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text("\(activeDays) active days")
+                        .font(TMType.monoRegular(TMType.caption))
+                        .foregroundStyle(.secondary)
+                }
+                PopoverHeatmap(weeks: activityWeeks,
+                               heatmap: app.heatmap,
+                               maxTokens: app.heatmap.values.max() ?? 0)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("Trend")
+                        .font(TMType.semibold(13))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text("Peak \(Format.compact(trendPeak))")
+                        .font(TMType.monoRegular(TMType.caption))
+                        .foregroundStyle(.secondary)
+                }
+                trendChart
+            }
+        }
+    }
+
+    private var activeDays: Int {
+        app.heatmap.values.filter { $0 > 0 }.count
+    }
+
+    /// 最近 60 天（含今天）按日排序的用量序列。
+    private var trendSeries: [(key: Int64, tokens: Int64)] {
+        app.heatmap.sorted { $0.key < $1.key }
+            .suffix(60)
+            .map { ($0.key, $0.value) }
+    }
+
+    private var trendPeak: Int64 {
+        trendSeries.map(\.tokens).max() ?? 0
+    }
+
+    /// 53 周网格：key 与 app.heatmap 的 yyyymmdd（本地日）对齐。
+    private var activityWeeks: [[Int64?]] {
+        Self.buildHeatmapWeeks(now: Date())
+    }
+
+    private static func buildHeatmapWeeks(now: Date) -> [[Int64?]] {
+        var weeks: [[Int64?]] = []
+        let calendar = Calendar.current
+        guard let monday = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return weeks }
+        for week in 0..<53 {
+            var column: [Int64?] = []
+            for day in 0..<7 {
+                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 52 * 7, to: monday) else {
+                    column.append(nil)
+                    continue
+                }
+                if date > now {
+                    column.append(nil)
+                } else {
+                    let components = calendar.dateComponents([.year, .month, .day], from: date)
+                    let key = (components.year ?? 0) * 10_000 + (components.month ?? 0) * 100 + (components.day ?? 0)
+                    column.append(Int64(key))
+                }
+            }
+            weeks.append(column)
+        }
+        return weeks
+    }
+
+    private static func dayDate(_ key: Int64) -> Date {
+        var c = DateComponents()
+        c.year = Int(key / 10_000)
+        c.month = Int(key / 100) % 100
+        c.day = Int(key % 100)
+        return Calendar.current.date(from: c) ?? .distantPast
+    }
+
+    private var trendChart: some View {
+        Chart(trendSeries, id: \.key) { d in
+            LineMark(
+                x: .value("Day", Self.dayDate(d.key)),
+                y: .value("Tokens", d.tokens)
+            )
+            .foregroundStyle(TMDesign.accent)
+            .interpolationMethod(.catmullRom)
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .chartYAxis(.hidden)
+        .frame(height: 90)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Daily usage trend")
+    }
+
     private func resetText(_ at: Int64?) -> String? {
         guard let at, at > Int64(now.timeIntervalSince1970) else { return nil }
         return "resets in \(Format.remaining(at - Int64(now.timeIntervalSince1970)))"
@@ -507,5 +621,69 @@ private struct StatusRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(Text([status, resetSuffix].compactMap { $0 }.joined(separator: " · ")))
+    }
+}
+
+/// 紧凑一年活动热力图（Popover 版）：53 周 × 7 天小格，月份标签悬浮在
+/// 网格上方。无悬停交互——活跃度一眼扫读即可。
+private struct PopoverHeatmap: View {
+    let weeks: [[Int64?]]
+    let heatmap: [Int64: Int64]
+    let maxTokens: Int64
+
+    private let cellSize: CGFloat = 4
+    private let cellGutter: CGFloat = 2
+    private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    private var monthLabels: [(index: Int, label: String)] {
+        var out: [(Int, String)] = []
+        var lastMonth = -1
+        var lastYear = -1
+        for (wi, week) in weeks.enumerated() {
+            guard let first = week.compactMap({ $0 }).first else { continue }
+            let year = Int(first) / 10_000
+            let month = (Int(first) / 100) % 100
+            if month != lastMonth || year != lastYear {
+                out.append((wi, Self.monthNames[month - 1]))
+                lastMonth = month
+                lastYear = year
+            }
+        }
+        return out
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            HStack(alignment: .top, spacing: cellGutter) {
+                ForEach(weeks.indices, id: \.self) { wi in
+                    VStack(spacing: cellGutter) {
+                        ForEach(0..<7, id: \.self) { di in
+                            heatCell(weeks[wi][di])
+                        }
+                    }
+                }
+            }
+            .padding(.top, 12)
+            ForEach(monthLabels, id: \.index) { m in
+                Text(m.label)
+                    .font(TMType.monoRegular(9))
+                    .foregroundStyle(TMDesign.quiet)
+                    .fixedSize()
+                    .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Activity heatmap, one year")
+    }
+
+    private func heatCell(_ key: Int64?) -> some View {
+        let v = key.flatMap { heatmap[$0] } ?? 0
+        let ratio = maxTokens > 0 ? Double(v) / Double(maxTokens) : 0
+        return RoundedRectangle(cornerRadius: 1, style: .continuous)
+            .fill(v > 0
+                  ? TMDesign.accent.opacity(0.25 + 0.75 * ratio)
+                  : Color.primary.opacity(0.06))
+            .frame(width: cellSize, height: cellSize)
     }
 }
