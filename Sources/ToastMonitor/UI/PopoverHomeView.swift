@@ -144,9 +144,8 @@ struct PopoverHomeView: View {
         }
     }
 
-    /// Hero: the decision number is TOKENS. The second line shows one cost
-    /// figure at a time — Spent or API Value — toggled by clicking it, with
-    /// the cache hit rate pinned on the right.
+    /// Hero: the decision number is TOKENS. Below it, Spent and Value
+    /// (official-rate revaluation) each get their own row.
     private var hero: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -190,7 +189,7 @@ struct PopoverHomeView: View {
                 .accessibilityLabel("Spent")
                 .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
                 HStack(spacing: 5) {
-                    Text("API Value")
+                    Text("Value")
                         .font(TMType.regular(12))
                         .foregroundStyle(.secondary)
                     Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—")
@@ -199,7 +198,7 @@ struct PopoverHomeView: View {
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("API Value")
+                .accessibilityLabel("Value")
                 .accessibilityValue(Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
             }
         }
