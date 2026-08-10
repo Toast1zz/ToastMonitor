@@ -183,10 +183,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.invalidateShadow()
         panel.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
-        // First-layout height reports can arrive before SwiftUI settles;
-        // re-apply the merged height once the panel is on screen so the
-        // initial size matches the content instead of the viewport.
+        // 若已有内容高度测量值（非冷启动），立即应用——否则面板先用旧的
+        // 600pt 高度显示，底部 Activity/Trend 被裁剪，等 0.4s 后才"展开"。
+        // 冷启动时 slice 还是 0，等 SwiftUI 首布局的 onAppear 测量通知
+        // （50ms 合并延迟）即可，不再依赖这里的 0.4s 兜底。
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(applyMergedHeight), object: nil)
+        if bodySliceHeight > 0 || pinnedSliceHeight > 0 {
+            applyMergedHeight()
+        }
+        // First-layout height reports can arrive before SwiftUI settles;
+        // re-apply once more after the panel is on screen so the initial
+        // size matches the content instead of the viewport.
         perform(#selector(applyMergedHeight), with: nil, afterDelay: 0.4)
     }
 
