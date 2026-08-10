@@ -79,6 +79,15 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
+    /// 一年热力图（day yyyymmdd -> primary tokens，口径同主面板），供
+    /// Popover 使用——主面板走 AppState 的 complete snapshot，Popover
+    /// 前台只刷 light snapshot，heatmap 不会自动填充，需自行查询。
+    func loadHeatmap(days: Int = 371, completion: @escaping @MainActor @Sendable ([Int64: Int64]) -> Void) {
+        loadDailyAggs(days: days) { aggs in
+            completion(Self.buildHeatmap(aggs: aggs))
+        }
+    }
+
     func loadTurns(sessionTool: String, sessionID: String,
                    completion: @escaping @MainActor @Sendable ([(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)]) -> Void) {
         queue.async {

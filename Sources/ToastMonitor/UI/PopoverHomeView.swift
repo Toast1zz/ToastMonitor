@@ -26,6 +26,8 @@ struct PopoverHomeView: View {
     /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
     /// counter tick up during streaming.
     @AppStorage("popoverFullTokens") private var fullTokens = false
+    /// 年度每日用量（Popover 自持：AppState 只在 dashboard 可见时填 heatmap）。
+    @State private var heatmapData: [Int64: Int64] = [:]
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var totals: Database.ToolTotals {
@@ -137,7 +139,11 @@ struct PopoverHomeView: View {
             .layoutPriority(1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onReceive(minuteTicker) { now = $0 }
+        .onAppear { reloadHeatmap() }
+        .onReceive(minuteTicker) {
+            now = $0
+            reloadHeatmap()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
             guard let raw = note.object as? String else { return }
             switch raw {
@@ -376,8 +382,8 @@ struct PopoverHomeView: View {
                         .foregroundStyle(.secondary)
                 }
                 PopoverHeatmap(weeks: activityWeeks,
-                               heatmap: app.heatmap,
-                               maxTokens: app.heatmap.values.max() ?? 0)
+                               heatmap: heatmapData,
+                               maxTokens: heatmapData.values.max() ?? 0)
             }
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
@@ -394,13 +400,20 @@ struct PopoverHomeView: View {
         }
     }
 
+    private func reloadHeatmap() {
+        UsageQueryService.shared.loadHeatmap { map in
+            guard map != self.heatmapData else { return }
+            self.heatmapData = map
+        }
+    }
+
     private var activeDays: Int {
-        app.heatmap.values.filter { $0 > 0 }.count
+        heatmapData.values.filter { $0 > 0 }.count
     }
 
     /// 最近 60 天（含今天）按日排序的用量序列。
     private var trendSeries: [(key: Int64, tokens: Int64)] {
-        app.heatmap.sorted { $0.key < $1.key }
+        heatmapData.sorted { $0.key < $1.key }
             .suffix(60)
             .map { ($0.key, $0.value) }
     }
@@ -631,8 +644,9 @@ private struct PopoverHeatmap: View {
     let heatmap: [Int64: Int64]
     let maxTokens: Int64
 
-    private let cellSize: CGFloat = 4
     private let cellGutter: CGFloat = 2
+    /// 行/列固定 7×53，cell 尺寸由可用宽度均分（4.8pt @ 360pt 内容宽）。
+    private static let cellAspect: CGFloat = 7 * 53
     private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
@@ -654,36 +668,41 @@ private struct PopoverHeatmap: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            HStack(alignment: .top, spacing: cellGutter) {
-                ForEach(weeks.indices, id: \.self) { wi in
-                    VStack(spacing: cellGutter) {
-                        ForEach(0..<7, id: \.self) { di in
-                            heatCell(weeks[wi][di])
+        GeometryReader { geo in
+            let cell = max((geo.size.width - 52 * cellGutter) / 53, 2)
+            ZStack(alignment: .topLeading) {
+                HStack(alignment: .top, spacing: cellGutter) {
+                    ForEach(weeks.indices, id: \.self) { wi in
+                        VStack(spacing: cellGutter) {
+                            ForEach(0..<7, id: \.self) { di in
+                                heatCell(weeks[wi][di], size: cell)
+                            }
                         }
                     }
                 }
-            }
-            .padding(.top, 12)
-            ForEach(monthLabels, id: \.index) { m in
-                Text(m.label)
-                    .font(TMType.monoRegular(9))
-                    .foregroundStyle(TMDesign.quiet)
-                    .fixedSize()
-                    .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
+                .padding(.top, 12)
+                ForEach(monthLabels, id: \.index) { m in
+                    Text(m.label)
+                        .font(TMType.monoRegular(9))
+                        .foregroundStyle(TMDesign.quiet)
+                        .fixedSize()
+                        .offset(x: CGFloat(m.index) * (cell + cellGutter), y: 0)
+                }
             }
         }
+        // 12（月份标签行）+ 7×cell + 6×gutter（cell ≈ 4.83 @ 360pt 内容宽）
+        .frame(height: 58)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Activity heatmap, one year")
     }
 
-    private func heatCell(_ key: Int64?) -> some View {
+    private func heatCell(_ key: Int64?, size: CGFloat) -> some View {
         let v = key.flatMap { heatmap[$0] } ?? 0
         let ratio = maxTokens > 0 ? Double(v) / Double(maxTokens) : 0
         return RoundedRectangle(cornerRadius: 1, style: .continuous)
             .fill(v > 0
                   ? TMDesign.accent.opacity(0.25 + 0.75 * ratio)
                   : Color.primary.opacity(0.06))
-            .frame(width: cellSize, height: cellSize)
+            .frame(width: size, height: size)
     }
 }
