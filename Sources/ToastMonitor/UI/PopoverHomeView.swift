@@ -481,11 +481,12 @@ struct PopoverHomeView: View {
     }
 
     /// 本周第一天的日期归一化到周一（不依赖 firstWeekday 的周日/周一习惯）。
+    /// 周日（weekday 1）是本轮 firstWeekday=1 时的周首日，周一是其后一天；
+    /// 通用公式 2 - weekday：周日 → +1，周一 → 0，周二 → -1 …
     private static func weekStartMonday(now: Date, calendar: Calendar) -> Date? {
         guard let first = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return nil }
         let weekday = calendar.component(.weekday, from: first)  // 1 = 周日 … 7 = 周六
-        let delta = weekday == 1 ? -6 : 2 - weekday
-        return calendar.date(byAdding: .day, value: delta, to: first)
+        return calendar.date(byAdding: .day, value: 2 - weekday, to: first)
     }
 
     private static func buildHeatmapWeeks(now: Date) -> [[Int64?]] {
