@@ -40,14 +40,14 @@ final class GlassSettings: ObservableObject {
     /// 滑块值 → 玻璃背景层的 alpha（macOS 26+ NSGlassEffectView 与
     /// 降级 NSVisualEffectView 共用）。
     ///
-    /// 最低端必须真的透明：alpha 0.05 ≈ 玻璃几乎消失，只留内容文字；
-    /// 高端 1.0 满磨砂。gamma 0.6 让低段变化最快（离开通透端立刻出现
-    /// 磨砂），中高段细腻调节。
-    /// - 0% 滑块 → alpha 0.05（几乎全透明）
+    /// 最低端保留基础玻璃感：alpha 0.2（0.05 实测太透，文字直接叠桌面
+    /// 可读性差）；高端 1.0 满磨砂。gamma 0.6 让低段变化最快（离开通透
+    /// 端立刻出现磨砂），中高段细腻调节。
+    /// - 0% 滑块 → alpha 0.2（最通透但仍留一层玻璃）
     /// - 100% 滑块 → alpha 1.0（满磨砂）
     nonisolated static func alpha(for slider: Double) -> Double {
         let t = min(max((slider - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
-        let low: Double = 0.05
+        let low: Double = 0.2
         return low + (1 - low) * pow(t, 0.6)
     }
 }
