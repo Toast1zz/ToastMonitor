@@ -78,10 +78,17 @@ struct PopoverRootView: View {
     }
 
     private var status: some View {
-        let broken = health.sources.filter { $0.error != nil }.count
-        let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
-        let summary = TMHealthStatus(brokenCount: broken, staleCount: stale, lastScan: app.lastScan)
-        return TMStatusLabel(text: summary.text, color: summary.color, symbol: summary.symbol)
+        let brokenSources = health.sources.filter { $0.error != nil }
+        let staleSources = health.sources.filter { $0.error == nil && $0.isStale }
+        let summary = TMHealthStatus(brokenCount: brokenSources.count,
+                                     staleCount: staleSources.count,
+                                     lastScan: app.lastScan)
+        let detailSources = !brokenSources.isEmpty ? brokenSources : staleSources
+        let detail = detailSources.map { $0.displayName }.joined(separator: "、")
+        let text = detail.isEmpty ? summary.text : "\(summary.text) · \(detail)"
+        return TMStatusLabel(text: text, color: summary.color, symbol: summary.symbol)
+            .accessibilityLabel(Text("数据源状态"))
+            .accessibilityValue(Text(text))
     }
 
     private var footer: some View {

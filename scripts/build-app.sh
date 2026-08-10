@@ -89,7 +89,17 @@ echo "== code signing =="
 SIGNING_IDENTITY="${TM_SIGNING_IDENTITY:-}"
 if [[ -z "$SIGNING_IDENTITY" ]]; then
     AVAILABLE_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-    if [[ "$AVAILABLE_IDENTITIES" == *'"Spotoast Local Dev"'* ]]; then
+    # Prefer an Apple Development identity locally: its Team ID gives
+    # Keychain ACLs a stable partition across rebuilt binaries. CI/release
+    # callers still provide TM_SIGNING_IDENTITY explicitly.
+    while IFS= read -r identity_line; do
+        if [[ "$identity_line" == *'"Apple Development:'* ]]; then
+            SIGNING_IDENTITY="${identity_line#*\"}"
+            SIGNING_IDENTITY="${SIGNING_IDENTITY%%\"*}"
+            break
+        fi
+    done <<< "$AVAILABLE_IDENTITIES"
+    if [[ -z "$SIGNING_IDENTITY" && "$AVAILABLE_IDENTITIES" == *'"Spotoast Local Dev"'* ]]; then
         SIGNING_IDENTITY="Spotoast Local Dev"
     fi
 fi

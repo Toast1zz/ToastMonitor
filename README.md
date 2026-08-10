@@ -35,6 +35,9 @@
 cd ~/Projects/ToastMonitor
 swift build -c release
 ./scripts/build-app.sh          # 使用 artifacts 中的 ToastMonitor.icns 并签名
+
+# 本机首次切换到 Apple Development 签名后，只需运行一次：
+./scripts/authorize-local-keychain.sh
 open dist/ToastMonitor.app      # 或带面板: open -a dist/ToastMonitor.app --args --show-dashboard
 ```
 

@@ -27,11 +27,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Read secrets from stdin so they never appear in argv/`ps` output or
     /// shell history. Callers may pipe one line or an EOF-terminated value.
     private func readSecretFromStdin(_ label: String) -> String? {
+        let maxBytes = 64 * 1024
         print(label, terminator: " ")
         fflush(stdout)
-        let data = FileHandle.standardInput.readDataToEndOfFile()
-        guard let value = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        var data = Data()
+        while data.count <= maxBytes {
+            do {
+                guard let chunk = try FileHandle.standardInput.read(
+                    upToCount: min(4096, maxBytes + 1 - data.count)),
+                      !chunk.isEmpty else { break }
+                data.append(chunk)
+            } catch {
+                return nil
+            }
+        }
+        guard data.count <= maxBytes,
+              let value = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
         return value
     }
     private func boundedRenderDimension(_ args: [String], index: Int,
@@ -65,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pruneCrashLogs(in: dir)
         // Precompute "<dir>/crash-" for the signal handler (which must not
         // call Foundation) and force the scratch buffer's lazy init now.
-        tmCrashDirPrefixC = Array((dir.path + "/crash-").utf8CString)
+        tmCrashDirPrefixC = Array((dir.path + "/crash-").utf8CString.dropLast())
         _ = tmCrashScratch.count
 
         // Objective-C exception handler: may use Foundation (normal context).
@@ -158,8 +171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--clear-or-key") {
             Database.shared.open()
-            KeychainStore.delete(account: "or-keys")
-            KeychainStore.delete(account: "openrouter-key")
+            KeychainStore.delete(account: "or-keys", allowPrompt: true)
+            KeychainStore.delete(account: "openrouter-key", allowPrompt: true)
             Database.shared.setSetting("or_keys", nil)
             Database.shared.setSetting("openrouter_key", nil)
             Database.shared.setSetting("or_cred_storage", nil)
@@ -168,8 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--clear-go") {
             Database.shared.open()
-            KeychainStore.delete(account: "go-workspace-id")
-            KeychainStore.delete(account: "go-auth-cookie")
+            KeychainStore.delete(account: "go-workspace-id", allowPrompt: true)
+            KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)
             Database.shared.setSetting("go_workspace_id", nil)
             Database.shared.setSetting("go_auth_cookie", nil)
             Database.shared.setSetting("go_cred_storage", nil)

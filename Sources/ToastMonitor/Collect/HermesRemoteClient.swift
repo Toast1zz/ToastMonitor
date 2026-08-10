@@ -510,10 +510,12 @@ final class HermesRemoteClient: ObservableObject {
                 SourceHealthHub.shared.record(tool: tool, rows: imported, failed: 0,
                                               durationMs: 0, error: nil)
             }
-            if let errorText {
-                SourceHealthHub.shared.record(tool: "remote-feed", rows: importedTurnCount,
-                                              failed: ignoredRows, durationMs: 0, error: errorText)
-            }
+            // Always record the remote-feed outcome. A successful poll must
+            // clear a prior malformed-row error, otherwise the aggregate
+            // popover status remains red forever after the feed recovers.
+            SourceHealthHub.shared.record(tool: "remote-feed", rows: importedTurnCount,
+                                          failed: ignoredRows, durationMs: 0,
+                                          error: errorText)
             // Remote import completes after the collector's local scan
             // notification. Publish the same refresh signal so the menu bar
             // and dashboard do not wait for the next 15-second snapshot tick.

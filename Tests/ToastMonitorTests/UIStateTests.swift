@@ -15,6 +15,13 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(state?.failedRows, 0)
     }
 
+    func testSourceHealthDisplayNameIdentifiesRemoteFeed() {
+        let remote = SourceHealth(tool: "remote-feed", mode: "remote")
+        XCTAssertEqual(remote.displayName, "远程 Feed")
+        let omp = SourceHealth(tool: ToolKind.omp.rawValue, mode: "local")
+        XCTAssertEqual(omp.displayName, ToolKind.omp.displayName)
+    }
+
     func testHealthStatusPrecedenceIsStable() {
         let failed = TMHealthStatus(brokenCount: 1, staleCount: 5, lastScan: 1)
         XCTAssertTrue(failed.text.contains("异常"))

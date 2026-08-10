@@ -123,8 +123,10 @@ final class OpenCodeGoClient: ObservableObject {
         }
         let oldWorkspace = KeychainStore.get(account: "go-workspace-id")
         let oldCookie = KeychainStore.get(account: "go-auth-cookie")
-        let wroteWorkspace = KeychainStore.set(workspaceID, account: "go-workspace-id")
-        let okKC = wroteWorkspace && KeychainStore.set(authCookie, account: "go-auth-cookie")
+        let wroteWorkspace = KeychainStore.set(workspaceID, account: "go-workspace-id",
+                                               allowPrompt: true)
+        let okKC = wroteWorkspace && KeychainStore.set(authCookie, account: "go-auth-cookie",
+                                                       allowPrompt: true)
         if okKC {
             Database.shared.setSetting("go_workspace_id", nil)
             Database.shared.setSetting("go_auth_cookie", nil)
@@ -152,10 +154,8 @@ final class OpenCodeGoClient: ObservableObject {
     }
 
     func clear() {
-        refreshGeneration &+= 1
-        inFlight = false
-        KeychainStore.delete(account: "go-workspace-id")
-        KeychainStore.delete(account: "go-auth-cookie")
+        KeychainStore.delete(account: "go-workspace-id", allowPrompt: true)
+        KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)
         Database.shared.setSetting("go_workspace_id", nil)
         Database.shared.setSetting("go_auth_cookie", nil)
         Database.shared.setSetting("go_cred_storage", nil)

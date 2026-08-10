@@ -77,6 +77,7 @@ final class OpenRouterClient: ObservableObject {
     private var started = false
     private var refreshGeneration: UInt64 = 0
     private var keyLoadInFlight = false
+    private var legacyCleanupDone = false
 
     private var popoverVisible = false
     private var dashboardVisible = false
@@ -134,9 +135,7 @@ final class OpenRouterClient: ObservableObject {
                     saveKeys(arr)
                 }
                 // Remove any pre-Keychain plaintext remnants left by older builds.
-                Database.shared.setSetting("or_keys", nil)
-                Database.shared.setSetting("openrouter_key", nil)
-                KeychainStore.delete(account: "openrouter-key")
+                clearLegacyOpenRouterValuesOnce()
                 if arr.isEmpty { KeychainStore.delete(account: "or-keys") }
                 return arr
             }
@@ -158,9 +157,7 @@ final class OpenRouterClient: ObservableObject {
         if !legacy.isEmpty {
             let arr = normalizedKeys(legacy)
             if saveToKeychain(arr) {
-                Database.shared.setSetting("or_keys", nil)
-                Database.shared.setSetting("openrouter_key", nil)
-                KeychainStore.delete(account: "openrouter-key")
+                clearLegacyOpenRouterValuesOnce()
                 Database.shared.setSetting("or_cred_storage", "keychain")
                 return arr
             }
@@ -183,16 +180,17 @@ final class OpenRouterClient: ObservableObject {
         return Array(normalized.prefix(Self.maxKeyCount))
     }
 
-    private func saveToKeychain(_ keys: [String]) -> Bool {
+    private func saveToKeychain(_ keys: [String], allowPrompt: Bool = false) -> Bool {
         guard let data = try? JSONSerialization.data(withJSONObject: keys) else { return false }
-        return KeychainStore.set(String(data: data, encoding: .utf8) ?? "", account: "or-keys")
+        return KeychainStore.set(String(data: data, encoding: .utf8) ?? "",
+                                 account: "or-keys", allowPrompt: allowPrompt)
     }
 
     @discardableResult
-    private func saveKeys(_ keys: [String]) -> Bool {
+    private func saveKeys(_ keys: [String], allowPrompt: Bool = false) -> Bool {
         let arr = normalizedKeys(keys)
         guard !arr.isEmpty else { return false }
-        if saveToKeychain(arr) {
+        if saveToKeychain(arr, allowPrompt: allowPrompt) {
             Database.shared.setSetting("or_keys", nil)
             Database.shared.setSetting("or_cred_storage", "keychain")
             return true
@@ -203,19 +201,27 @@ final class OpenRouterClient: ObservableObject {
         Database.shared.setSetting("or_cred_storage", "keychain-unavailable")
         return false
     }
+
+    private func clearLegacyOpenRouterValuesOnce() {
+        guard !legacyCleanupDone else { return }
+        legacyCleanupDone = true
+        Database.shared.setSetting("or_keys", nil)
+        Database.shared.setSetting("openrouter_key", nil)
+        KeychainStore.delete(account: "openrouter-key")
+    }
     /// Replace all keys (provisioning path).
     @discardableResult
     func setKey(_ key: String?) -> Bool {
         if let key,
            let normalized = normalizedKeys([key]).first,
-           saveKeys([normalized]) {
+           saveKeys([normalized], allowPrompt: true) {
             hasKey = true
         } else if key != nil {
             state.error = "无法写入 macOS 钥匙串，未保存 API Key"
             return false
         } else {
-            KeychainStore.delete(account: "or-keys")
-            KeychainStore.delete(account: "openrouter-key")
+            KeychainStore.delete(account: "or-keys", allowPrompt: true)
+            KeychainStore.delete(account: "openrouter-key", allowPrompt: true)
             Database.shared.setSetting("or_keys", nil)
             Database.shared.setSetting("openrouter_key", nil)
             Database.shared.setSetting("or_cred_storage", nil)
@@ -238,7 +244,7 @@ final class OpenRouterClient: ObservableObject {
             return false
         }
         keys.append(normalized)
-        guard saveKeys(keys) else {
+        guard saveKeys(keys, allowPrompt: true) else {
             state.error = "无法写入 macOS 钥匙串，未保存 API Key"
             return false
         }

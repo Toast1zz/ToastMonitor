@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Standard Keychain wrapper: system login keychain, SecItem API.
@@ -7,54 +8,59 @@ import Security
 /// API with an embedded password) to avoid prompts. macOS 26 turned that
 /// into a maintenance burden — unlock must run on the main thread, ACL calls
 /// prompt on every launch, background reads silently fail. We're back to the
-/// standard API: the login keychain, first-access authorization prompt
-/// included. The old vault file's values are migrated once on launch.
+/// standard API: reads are non-interactive by default, while explicit
+/// provisioning calls may opt into the one-time authorization prompt. The
+/// old vault file's values are migrated once on launch.
 enum KeychainStore {
     static let service = "ToastMonitor"
 
+    private static func query(account: String, allowPrompt: Bool) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let context = LAContext()
+        context.interactionNotAllowed = !allowPrompt
+        query[kSecUseAuthenticationContext as String] = context
+        // macOS 26 can still consult legacy ACL UI policy before it honors
+        // LAContext. Keep the deprecated compatibility switch explicit so
+        // background reads never open a password sheet.
+        query[kSecUseAuthenticationUI as String] =
+            allowPrompt ? kSecUseAuthenticationUIAllow : kSecUseAuthenticationUIFail
+        return query
+    }
+
     static func set(_ value: String, account: String, allowPrompt: Bool = false) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
-        // Transactional: snapshot the old value, delete, add; restore on
-        // failure so a locked/unavailable keychain never destroys the only
-        // durable copy of a credential (callers keep plaintext recovery
-        // copies only while the keychain write is unconfirmed).
-        let old = get(account: account)
-        delete(account: account) // avoid errSecDuplicateItem
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        let ok = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-        if !ok, let old {
-            _ = setRaw(old, account: account)
+        let query = query(account: account, allowPrompt: allowPrompt)
+        let update: [String: Any] = [kSecValueData as String: data]
+
+        // Update in place whenever possible. Deleting and re-adding a generic
+        // password recreates its ACL, which makes every newly signed local
+        // build look like a different Keychain client and prompts again.
+        let updated = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else { return false }
+
+        var add = query
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let added = SecItemAdd(add as CFDictionary, nil)
+        if added == errSecSuccess { return true }
+        // A concurrent writer may have created the item between the update
+        // and add calls; preserve the same in-place semantics in that case.
+        if added == errSecDuplicateItem {
+            return SecItemUpdate(query as CFDictionary, update as CFDictionary) == errSecSuccess
         }
-        return ok
+        return false
     }
 
-    private static func setRaw(_ value: String, account: String) -> Bool {
-        guard let data = value.data(using: .utf8) else { return false }
-        delete(account: account)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
-    }
 
     static func get(account: String, allowPrompt: Bool = false) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        var query = query(account: account, allowPrompt: allowPrompt)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
@@ -62,11 +68,7 @@ enum KeychainStore {
     }
 
     static func delete(account: String, allowPrompt: Bool = false) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        let query = query(account: account, allowPrompt: allowPrompt)
         SecItemDelete(query as CFDictionary)
     }
 

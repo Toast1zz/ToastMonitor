@@ -12,6 +12,13 @@ struct SourceHealth: Identifiable, Equatable {
     var error: String?
 
     var id: String { tool }
+
+    /// User-facing name used when an aggregate status needs to identify one
+    /// failing source instead of reporting only a count.
+    var displayName: String {
+        if tool == "remote-feed" { return "远程 Feed" }
+        return ToolKind(rawValue: tool)?.displayName ?? tool
+    }
     var isStale: Bool {
         lastScan > 0 && Date().timeIntervalSince1970 - TimeInterval(lastScan) > 120
     }
