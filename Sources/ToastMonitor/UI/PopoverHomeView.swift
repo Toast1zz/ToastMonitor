@@ -25,8 +25,6 @@ struct PopoverHomeView: View {
     /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
     /// counter tick up during streaming.
     @AppStorage("popoverFullTokens") private var fullTokens = false
-    /// Hero 指标行：Spent 与 API Value 共用一行，点击切换显示其一。
-    @State private var showSpent = true
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var totals: Database.ToolTotals {
@@ -178,35 +176,35 @@ struct PopoverHomeView: View {
                 .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
                 .accessibilityLabel("Toggle number format")
             }
-            Button {
-                showSpent.toggle()
-            } label: {
-                HStack(spacing: 5) {
-                    Text(showSpent ? "Spent" : "API Value")
-                        .font(TMType.regular(12))
-                        .foregroundStyle(.secondary)
-                        // 标签固定宽度：Spent 与 API Value 长度不同，
-                        // 切换时数值与图标位置不跳动。
-                        .frame(width: 72, alignment: .leading)
-                    Text(showSpent
-                         ? (actualShown > 0 ? Format.money(actualShown) : "—")
-                         : (estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
-                        .font(TMType.regular(12))
-                        .tmMonospacedDigit()
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 9))
-                        .foregroundStyle(TMDesign.faint)
+            HStack(spacing: 24) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Spent")
+                            .font(TMType.regular(11))
+                            .foregroundStyle(.secondary)
+                        Text(actualShown > 0 ? Format.money(actualShown) : "—")
+                            .font(TMType.regular(12))
+                            .tmMonospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Spent")
+                    .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("API Value")
+                            .font(TMType.regular(11))
+                            .foregroundStyle(.secondary)
+                        Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—")
+                            .font(TMType.regular(12))
+                            .tmMonospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("API Value")
+                    .accessibilityValue(Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
                 }
-                .contentShape(Rectangle())
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .help(showSpent ? "Spent shown; click for API Value" : "API Value shown; click for Spent")
-            .accessibilityLabel(showSpent ? "Spent" : "API Value")
-            .accessibilityValue(Text(showSpent
-                                     ? (actualShown > 0 ? Format.money(actualShown) : "—")
-                                     : (estimatedShown > 0 ? Format.money(estimatedShown) : "—")))
-            .accessibilityHint("Click to switch between Spent and API Value")
         }
     }
 
