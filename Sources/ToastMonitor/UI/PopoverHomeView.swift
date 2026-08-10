@@ -12,9 +12,11 @@ private func dayFromKey(_ key: Int64) -> Date {
     return Calendar.current.date(from: c) ?? .distantPast
 }
 
-/// "Aug 5" 式短日期（hover 提示用）。
+/// "Aug 5" 式短日期（hover 提示用）。固定英文 locale：系统为中文时
+/// DateFormatter 会输出 "8月5日"，Popover 全英文必须强制 en_US。
 private let shortDayFormatter: DateFormatter = {
     let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
     f.dateFormat = "MMM d"
     return f
 }()
@@ -388,7 +390,7 @@ struct PopoverHomeView: View {
     /// 一年活动热力图 + 最近 60 天每日用量曲线（参考图布局：Activity 网格、
     /// Trend 折线，右上角分别标注 active days 与 peak）。
     private var activityTrend: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
                     Text("Activity")
