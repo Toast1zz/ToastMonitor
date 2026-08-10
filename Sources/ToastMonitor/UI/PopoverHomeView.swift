@@ -180,13 +180,33 @@ struct PopoverHomeView: View {
     }
 
     private var periodControl: some View {
-        Picker("周期", selection: $period) {
+        HStack(spacing: 2) {
             ForEach(Period.allCases) { p in
-                Text(p.rawValue).tag(p)
+                Button {
+                    period = p
+                } label: {
+                    Text(p.rawValue)
+                        .font(.subheadline.weight(period == p ? .semibold : .regular))
+                        .foregroundStyle(period == p ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(period == p ? Color.primary.opacity(0.10) : .clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(p.rawValue)
+                .accessibilityValue(period == p ? "已选" : "未选")
+                .accessibilityAddTraits(period == p ? .isSelected : [])
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
     }
 
     /// 成本拆解表。口径（用户 2026-08-05 定义）：
@@ -513,7 +533,7 @@ private struct StatusRow: View {
                     .foregroundStyle(.tertiary)
             }
             .contentShape(Rectangle())
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 0)
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
