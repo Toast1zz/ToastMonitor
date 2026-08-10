@@ -151,7 +151,9 @@ struct UsageAnalysisView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             } else {
-                let maxV = days.flatMap { $0.segments.map(\.value) }.max() ?? 1
+                let maxV = days.map { day in
+                    day.segments.reduce(Int64(0)) { $0 + $1.value }
+                }.max() ?? 1
                 let axisH: CGFloat = 14
                 if let idx = hoveredDayIdx, idx < days.count {
                     tokenHoverLine(days[idx])
@@ -175,9 +177,10 @@ struct UsageAnalysisView: View {
                                 grid.addLine(to: CGPoint(x: size.width, y: y))
                                 ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.045)), lineWidth: 1)
                                 let v = Double(maxV) * Double(3 - step) / 3
-                                let labelY = step == 0 ? y + 4 : (step == 3 ? y - 4 : y + 4)
+                                let labelY = step == 0 ? CGFloat(1) : (step == 3 ? y - 1 : y)
+                                let anchor: UnitPoint = step == 0 ? .topLeading : (step == 3 ? .bottomLeading : .leading)
                                 ctx.draw(Text(Format.compact(Int64(v))).font(.system(size: 9)).foregroundStyle(.secondary),
-                                         at: CGPoint(x: 2, y: labelY))
+                                         at: CGPoint(x: 2, y: labelY), anchor: anchor)
                             }
                             for (di, day) in days.enumerated() {
                                 var y = chartH
@@ -222,16 +225,10 @@ struct UsageAnalysisView: View {
                     }
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel("Tokens 图表")
-                    .accessibilityValue(Text(tokenChartAccessibilitySummary(days, max: maxV)))
+                    .accessibilityValue(Text(tokenChartAccessibilitySummary(days)))
                     .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每日数据")
                 }
                 .frame(height: 174)
-                .overlay(alignment: .topLeading) {
-                    Text("峰值 \(Format.compact(maxV)) / 天")
-                        .font(.system(size: TMType.micro))
-                        .foregroundStyle(.tertiary)
-                        .padding(2)
-                }
                 legend
             }
         }
@@ -254,11 +251,11 @@ struct UsageAnalysisView: View {
         return "\(Format.full(total)) tokens" + (parts.isEmpty ? "" : "，" + parts.joined(separator: "，"))
     }
 
-    private func tokenChartAccessibilitySummary(_ days: [DaySegments], max: Int64) -> String {
+    private func tokenChartAccessibilitySummary(_ days: [DaySegments]) -> String {
         let total = days.reduce(Int64(0)) { partial, day in
             partial + day.segments.reduce(Int64(0)) { $0 + $1.value }
         }
-        return "\(days.count) 天，共 \(Format.full(total)) tokens，峰值 \(Format.full(max)) tokens/天"
+        return "\(days.count) 天，共 \(Format.full(total)) tokens"
     }
 
     // MARK: - 成本图（按天单 series，不允许跨工具连线）
@@ -301,9 +298,10 @@ struct UsageAnalysisView: View {
                             grid.addLine(to: CGPoint(x: size.width, y: y))
                             ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.045)), lineWidth: 1)
                             let v = maxV * Double(3 - step) / 3
-                            let labelY = step == 3 ? y - 4 : y + 4
+                            let labelY = step == 0 ? CGFloat(1) : (step == 3 ? y - 1 : y)
+                            let anchor: UnitPoint = step == 0 ? .topLeading : (step == 3 ? .bottomLeading : .leading)
                             ctx.draw(Text(Format.moneyShort(v)).font(.system(size: 9)).foregroundStyle(.secondary),
-                                     at: CGPoint(x: 2, y: labelY))
+                                     at: CGPoint(x: 2, y: labelY), anchor: anchor)
                         }
                         var path = Path()
                         for (i, k) in keys.enumerated() {
@@ -350,21 +348,15 @@ struct UsageAnalysisView: View {
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("估算成本图表")
-                .accessibilityValue(Text(costChartAccessibilitySummary(keys, values: days, max: maxV)))
+                .accessibilityValue(Text(costChartAccessibilitySummary(keys, values: days)))
                 .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每日数据")
                 .frame(height: 124)
-                .overlay(alignment: .topTrailing) {
-                    Text("最高 \(Format.money(maxV)) / 天")
-                        .font(.system(size: TMType.micro))
-                        .foregroundStyle(.tertiary)
-                        .padding(2)
-                }
             }
         }
     }
-    private func costChartAccessibilitySummary(_ keys: [Int64], values: [Int64: Double], max: Double) -> String {
+    private func costChartAccessibilitySummary(_ keys: [Int64], values: [Int64: Double]) -> String {
         let total = keys.reduce(0.0) { $0 + (values[$1] ?? 0) }
-        return "\(keys.count) 天，共 \(Format.money(total))，峰值 \(Format.money(max))/天"
+        return "\(keys.count) 天，共 \(Format.money(total))"
     }
 
     // MARK: - 聚合表
