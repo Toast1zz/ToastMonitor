@@ -480,7 +480,7 @@ private struct StatusRow: View {
     var resetSuffix: String?
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(name)
                 .font(TMType.medium(TMType.body))
                 .foregroundStyle(.primary)
