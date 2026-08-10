@@ -737,8 +737,6 @@ private struct PopoverHeatmap: View {
     /// 网格与月份标签的垂直间距。
     private let labelGap: CGFloat = 14
     private let cellGutter: CGFloat = 3
-    private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
     /// 内容区固定 360pt（面板 400 − 水平 padding 40），cell 按列数均分。
     private var gridHeight: CGFloat {
@@ -757,7 +755,7 @@ private struct PopoverHeatmap: View {
             let wi = min(Int(Double(i) * step), max(weeks.count - 1, 0))
             guard let first = weeks[wi].compactMap({ $0 }).first else { continue }
             let month = (Int(first) / 100) % 100
-            out.append((wi, Self.monthNames[month - 1]))
+            out.append((wi, MonthAxis.names[month - 1]))
         }
         return out
     }
