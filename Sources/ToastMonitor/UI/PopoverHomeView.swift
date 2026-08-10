@@ -3,6 +3,22 @@ import Combine
 import AppKit
 import Charts
 
+/// yyyymmdd → Date（本地日历）。
+private func dayFromKey(_ key: Int64) -> Date {
+    var c = DateComponents()
+    c.year = Int(key / 10_000)
+    c.month = Int(key / 100) % 100
+    c.day = Int(key % 100)
+    return Calendar.current.date(from: c) ?? .distantPast
+}
+
+/// "Aug 5" 式短日期（hover 提示用）。
+private let shortDayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "MMM d"
+    return f
+}()
+
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
 /// how much was used, where it came from, and whether a limit needs attention.
 struct PopoverHomeView: View {
@@ -28,6 +44,8 @@ struct PopoverHomeView: View {
     @AppStorage("popoverFullTokens") private var fullTokens = false
     /// 年度每日用量（Popover 自持：AppState 只在 dashboard 可见时填 heatmap）。
     @State private var heatmapData: [Int64: Int64] = [:]
+    /// Trend 悬停命中的日数据；无悬停时标题行显示 Peak。
+    @State private var hoveredTrend: (key: Int64, tokens: Int64)?
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var totals: Database.ToolTotals {
@@ -391,9 +409,15 @@ struct PopoverHomeView: View {
                         .font(TMType.semibold(13))
                         .foregroundStyle(.primary)
                     Spacer()
-                    Text("Peak \(Format.compact(trendPeak))")
-                        .font(TMType.monoRegular(TMType.caption))
-                        .foregroundStyle(.secondary)
+                    if let h = hoveredTrend {
+                        Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens))")
+                            .font(TMType.monoRegular(TMType.caption))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Peak \(Format.compact(trendPeak))")
+                            .font(TMType.monoRegular(TMType.caption))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 trendChart
             }
@@ -469,16 +493,38 @@ struct PopoverHomeView: View {
             .interpolationMethod(.catmullRom)
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+            // 3 个日期标签，颜色与 Activity 月份标签一致（TMDesign.quiet）。
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
                 AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     .font(.system(size: 9))
-                    .foregroundStyle(.gray)
+                    .foregroundStyle(TMDesign.quiet)
                     .offset(y: 5)
             }
         }
         .chartYAxis(.hidden)
         .frame(height: 90)
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                Rectangle().fill(Color.clear).contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            guard let date = proxy.value(atX: location.x, as: Date.self) else { return }
+                            let day = Calendar.current.startOfDay(for: date)
+                            if let hit = trendSeries.first(where: {
+                                Calendar.current.isDate(dayFromKey($0.key), inSameDayAs: day)
+                            }) {
+                                hoveredTrend = hit
+                            } else {
+                                hoveredTrend = nil
+                            }
+                        case .ended:
+                            hoveredTrend = nil
+                        }
+                    }
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Daily usage trend")
     }
@@ -661,47 +707,59 @@ private struct PopoverHeatmap: View {
         return labelGap + 7 * cell + 6 * cellGutter
     }
 
+    /// 26 周均分 6 个标签：无论各月实际周数，标签间距恒定，
+    /// 名字取该周所在月份。
     private var monthLabels: [(index: Int, label: String)] {
+        let count = 6
+        let step = Double(weeks.count) / Double(count)
         var out: [(Int, String)] = []
-        var lastMonth = -1
-        var lastYear = -1
-        for (wi, week) in weeks.enumerated() {
-            guard let first = week.compactMap({ $0 }).first else { continue }
-            let year = Int(first) / 10_000
+        for i in 0..<count {
+            let wi = min(Int(Double(i) * step), max(weeks.count - 1, 0))
+            guard let first = weeks[wi].compactMap({ $0 }).first else { continue }
             let month = (Int(first) / 100) % 100
-            if month != lastMonth || year != lastYear {
-                out.append((wi, Self.monthNames[month - 1]))
-                lastMonth = month
-                lastYear = year
-            }
+            out.append((wi, Self.monthNames[month - 1]))
         }
         return out
     }
 
+    @State private var hoveredDay: (key: Int64, tokens: Int64)?
+
     var body: some View {
-        GeometryReader { geo in
-            let cell = max((geo.size.width - CGFloat(weeks.count - 1) * cellGutter) / CGFloat(weeks.count), 2)
-            ZStack(alignment: .topLeading) {
-                HStack(alignment: .top, spacing: cellGutter) {
-                    ForEach(weeks.indices, id: \.self) { wi in
-                        VStack(spacing: cellGutter) {
-                            ForEach(0..<7, id: \.self) { di in
-                                heatCell(weeks[wi][di], size: cell)
+        VStack(alignment: .leading, spacing: 4) {
+            // 悬停信息行：无悬停时空占位，保持高度稳定。
+            HStack {
+                if let h = hoveredDay {
+                    Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens)) tokens")
+                        .font(TMType.monoRegular(9))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .frame(height: 11)
+            GeometryReader { geo in
+                let cell = max((geo.size.width - CGFloat(weeks.count - 1) * cellGutter) / CGFloat(weeks.count), 2)
+                ZStack(alignment: .topLeading) {
+                    HStack(alignment: .top, spacing: cellGutter) {
+                        ForEach(weeks.indices, id: \.self) { wi in
+                            VStack(spacing: cellGutter) {
+                                ForEach(0..<7, id: \.self) { di in
+                                    heatCell(weeks[wi][di], size: cell)
+                                }
                             }
                         }
                     }
-                }
-                .padding(.top, labelGap)
-                ForEach(monthLabels, id: \.index) { m in
-                    Text(m.label)
-                        .font(TMType.monoRegular(9))
-                        .foregroundStyle(TMDesign.quiet)
-                        .fixedSize()
-                        .offset(x: CGFloat(m.index) * (cell + cellGutter), y: 0)
+                    .padding(.top, labelGap)
+                    ForEach(monthLabels, id: \.index) { m in
+                        Text(m.label)
+                            .font(TMType.monoRegular(9))
+                            .foregroundStyle(TMDesign.quiet)
+                            .fixedSize()
+                            .offset(x: CGFloat(m.index) * (cell + cellGutter), y: 0)
+                    }
                 }
             }
+            .frame(height: gridHeight)
         }
-        .frame(height: gridHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Activity heatmap, six months")
     }
@@ -714,5 +772,13 @@ private struct PopoverHeatmap: View {
                   ? TMDesign.accent.opacity(0.25 + 0.75 * ratio)
                   : Color.primary.opacity(0.06))
             .frame(width: size, height: size)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering, let key {
+                    hoveredDay = (key, v)
+                } else if hoveredDay?.key == key {
+                    hoveredDay = nil
+                }
+            }
     }
 }
