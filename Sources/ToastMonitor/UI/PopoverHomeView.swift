@@ -176,25 +176,23 @@ struct PopoverHomeView: View {
                 .accessibilityLabel("Toggle number format")
             }
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     Text("Spent")
-                        .font(TMType.regular(12))
+                        .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
                     Text(actualShown > 0 ? Format.money(actualShown) : "—")
-                        .font(TMType.regular(12))
-                        .tmMonospacedDigit()
+                        .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Spent")
                 .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     Text("Value")
-                        .font(TMType.regular(12))
+                        .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
                     Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—")
-                        .font(TMType.regular(12))
-                        .tmMonospacedDigit()
+                        .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
