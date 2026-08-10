@@ -151,7 +151,7 @@ struct PopoverHomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(fullTokens ? Format.full(tokens) : Format.compact(tokens))
-                    .font(.system(size: 34, weight: .semibold))
+                    .font(.system(size: 34, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -163,7 +163,7 @@ struct PopoverHomeView: View {
                     .accessibilityLabel("\(period.rawValue) token 用量")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
                     .foregroundStyle(.tertiary)
                 Button {
                     fullTokens.toggle()
@@ -264,7 +264,7 @@ struct PopoverHomeView: View {
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
             Text(value)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(.primary)
         }
