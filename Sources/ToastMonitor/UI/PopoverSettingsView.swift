@@ -26,10 +26,12 @@ final class GlassSettings: ObservableObject {
     }
 
     /// 滑块值 → 原生玻璃的 tint 强度（macOS 26+ NSGlassEffectView）。
-    /// 通透端 = 无 tint（系统玻璃自适应），磨砂端 = 0.3 黑 tint。
+    /// 通透端 = 无 tint（系统玻璃自适应），磨砂端 = 0.45 黑 tint——
+    /// 内容独立于玻璃之上后，0.3 黑底不够实、文字可读性差；加厚底色
+    /// 恢复之前内容嵌入时的对比度。
     nonisolated static func tint(for slider: Double) -> Double {
         let t = min(max((slider - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
-        return t * 0.3
+        return t * 0.45
     }
 
     /// 纯函数，无状态：测试可同步调用。
