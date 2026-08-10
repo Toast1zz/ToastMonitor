@@ -324,22 +324,9 @@ final class OpenRouterClient: ObservableObject {
         }
         state.isLoading = true
         state.error = nil
-        // A new request must not leave a failed/unauthorized response looking
-        // like the current account state. Values are repopulated only from
-        // this generation's responses.
-        state.usage = 0
-        state.usageDaily = 0
-        state.usageWeekly = 0
-        state.usageMonthly = 0
-        state.limit = nil
-        state.limitRemaining = nil
-        state.limitReset = nil
-        state.creditsTotal = nil
-        state.creditsUsage = nil
-        state.isManagementKey = false
-        state.keys = []
-        state.accountUsage = nil
-        state.accountBalance = nil
+        // 刷新期间保留上一次的数值：UI 继续显示旧快照（余额/额度/用量），
+        // 新数据到达后由本代响应的完成回调整块替换，Popover 不闪
+        // Loading/Idle。失败响应仍设置 error，由 UI 优先显示。
 
         let group = DispatchGroup()
         var results: [String: [String: Any]] = [:]

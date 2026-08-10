@@ -243,16 +243,9 @@ final class OpenCodeGoClient: ObservableObject {
         configured = true
         state.isLoading = true
         state.error = nil
-        // Do not keep rendering an old quota snapshot as if it belonged to
-        // the request currently in flight. A failed response will show an
-        // explicit error with empty quota fields.
-        state.rollingPct = nil
-        state.rollingReset = nil
-        state.weeklyPct = nil
-        state.weeklyReset = nil
-        state.monthlyPct = nil
-        state.monthlyReset = nil
-        state.lastOK = 0
+        // 刷新期间保留上一次的数值：UI 继续显示旧快照，新数据到达后
+        // 整块替换，Popover 状态行不会闪 Loading/Idle。失败响应仍会
+        // 设置 error，由 UI 优先显示。
 
         let url = "https://opencode.ai/workspace/\(creds.workspaceId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? creds.workspaceId)/go"
         guard let u = URL(string: url) else {
