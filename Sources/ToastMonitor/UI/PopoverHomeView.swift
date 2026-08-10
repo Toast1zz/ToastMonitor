@@ -488,13 +488,12 @@ private struct StatusRow: View {
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 Text((critical ? "★ " : "") + status)
-                    .font(TMType.regular(TMType.caption))
-                    .tmMonospacedDigit()
+                    .font(TMType.monoRegular(TMType.body))
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
                 if let resetSuffix {
                     Text(resetSuffix)
-                        .font(TMType.monoRegular(TMType.caption))
+                        .font(TMType.monoRegular(TMType.micro))
                         .foregroundStyle(statusColor.opacity(0.7))
                         .lineLimit(1)
                 }
