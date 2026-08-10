@@ -135,10 +135,10 @@ enum TMHealthStatus {
 
     var text: String {
         switch self {
-        case .failed(let count): return "\(count) 个来源错误"
-        case .stale(let count): return "\(count) 个来源稍旧"
-        case .synced: return "已同步"
-        case .waiting: return "已停止"
+        case .failed(let count): return "\(count) source\(count == 1 ? "" : "s") error"
+        case .stale(let count): return "\(count) source\(count == 1 ? "" : "s") stale"
+        case .synced: return "Synced"
+        case .waiting: return "Idle"
         }
     }
 
@@ -169,10 +169,8 @@ enum TMHealthStatus {
 /// on refresh (tokens, money, percents, countdowns) gets .monospacedDigit()
 /// so the width never jumps.
 enum TMType {
-    /// Page title (26) — one per page, in TMPageHeader.
-    static let pageTitle: CGFloat = 26
-    /// Hero metric — the primary number on overview.
-    static let hero: CGFloat = 30
+    /// Hero metric — the primary number (Popover 34pt bold 同规格).
+    static let hero: CGFloat = 34
     /// Section heading inside a panel.
     static let section: CGFloat = 14
     /// Body text.
@@ -196,6 +194,23 @@ enum TMType {
     static func monoRegular(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
 }
 
+/// 板块标题（Quota / Activity / Overview 等）：全大写 + 小号 + 字距 + 灰，
+/// 与内容行形成清晰层次。Popover 与主页面共用。
+struct SectionTitle: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(TMType.semibold(11))
+            .kerning(0.6)
+            .foregroundStyle(TMDesign.quiet)
+    }
+}
+
 /// Applies .monospacedDigit() — every dynamic number (tokens, money, percents,
 /// countdowns) must use it so refreshing values never shift the layout.
 struct TMMonospacedDigit: ViewModifier {
@@ -208,6 +223,7 @@ extension View {
     func tmMonospacedDigit() -> some View { modifier(TMMonospacedDigit()) }
 }
 
+/// 板块标题（含可选右侧操作）。与 SectionTitle 同风格：全大写小号灰。
 struct TMSectionHeader: View {
     let title: String
     var action: (() -> Void)?
@@ -221,31 +237,14 @@ struct TMSectionHeader: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
-                .font(.system(size: TMType.section, weight: .semibold))
+            SectionTitle(title)
             Spacer(minLength: 12)
             if let action, let actionTitle {
                 Button(actionTitle, action: action)
                     .buttonStyle(.link)
-                    .font(.caption)
+                    .font(.system(size: TMType.caption))
             }
         }
-    }
-}
-
-struct TMPageHeader: View {
-    let title: String
-
-    init(_ title: String) {
-        self.title = title
-    }
-
-    var body: some View {
-        Text(title)
-            .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
-            .foregroundStyle(.primary)
-            .padding(.top, 22)
-            .padding(.bottom, 14)
     }
 }
 
@@ -256,7 +255,7 @@ struct TMStatusPill: View {
 
     var body: some View {
         Label(text, systemImage: symbol)
-            .font(.caption.weight(.medium))
+            .font(TMType.medium(TMType.caption))
             .monospacedDigit()
             .foregroundStyle(color)
             .padding(.horizontal, 9)
@@ -324,9 +323,10 @@ struct TMStatusLabel: View {
 extension View {
     /// A restrained elevated section for settings and service summaries.
     /// Use one surface per task group; avoid nesting these inside each other.
+    /// 与 TMPanel 同规格（16pt padding、12 圆角、hairline 描边）。
     func tmPanelSurface(cornerRadius: CGFloat = 12) -> some View {
         self
-            .padding(14)
+            .padding(16)
             .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

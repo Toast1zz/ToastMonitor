@@ -91,6 +91,17 @@ enum Format {
         return String(format: "%04d-%02d-%02d", y, m, d)
     }
 
+    /// yyyymmdd 整数键 → 英文短日期 "Aug 5"（Popover/主页面悬停统一格式，
+    /// en_US_POSIX 强制英文，不受系统 locale 影响）。
+    static func shortDayKey(_ key: Int64) -> String {
+        var c = DateComponents()
+        c.year = Int(key) / 10_000
+        c.month = (Int(key) / 100) % 100
+        c.day = Int(key % 100)
+        guard let date = Calendar.current.date(from: c) else { return dayKeyString(key) }
+        return dateFormatterCache.string(date, format: "MMM d")
+    }
+
     /// "2026-08-05 14:23"
     static func dateTime(_ ts: Int64) -> String {
         dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "MM-dd HH:mm")

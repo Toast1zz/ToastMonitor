@@ -1849,6 +1849,29 @@ final class Database: @unchecked Sendable {
         let beat = Int64(setting("last_scan_heartbeat") ?? "0") ?? 0
         return max(out, beat)
     }
+
+    /// 轻量数据版本戳：任何会改变快照的写路径（turns / 额度快照 / 订阅 /
+    /// 有效扫描 heartbeat）都会反映在计数与最大时间戳上。快照缓存用它
+    /// 判断是否需要重算——版本未变时直接复用上次聚合结果。
+    func dataVersionKey() -> String {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return "closed" }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM turns)
+            || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM opencodego_snapshots)
+            || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM openrouter_snapshots)
+            || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) FROM subscriptions)
+            || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='last_scan_heartbeat');
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return "err" }
+        var out = "err"
+        if sqlite3_step(stmt) == SQLITE_ROW, let cstr = sqlite3_column_text(stmt, 0) {
+            out = String(cString: cstr)
+        }
+        sqlite3_finalize(stmt)
+        return out
+    }
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

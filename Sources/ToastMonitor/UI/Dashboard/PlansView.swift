@@ -26,7 +26,9 @@ struct PlansView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                TMPageHeader("计划与余额")
+                SectionTitle("Plans & Balance")
+                    .padding(.top, 18)
+                    .padding(.bottom, 12)
                 goCard
                 orCard
                 subsCard

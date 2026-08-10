@@ -68,7 +68,6 @@ final class WindowManager {
 struct DashboardView: View {
     static let selectTab = Notification.Name("ToastMonitorDashboardSelectTab")
     @EnvironmentObject private var app: AppState
-    @ObservedObject private var health = SourceHealthHub.shared
     @State private var tab: Tab = .overview
 
     init(initialTab: Tab? = nil) {
@@ -76,22 +75,30 @@ struct DashboardView: View {
     }
 
     enum Tab: String, CaseIterable, Identifiable {
-        case overview = "概览"
-        case analysis = "用量分析"
-        case plans = "计划与余额"
-        case sources = "来源与设置"
+        case overview = "Overview"
+        case analysis = "Analysis"
+        case plans = "Plans"
+        case sources = "Sources"
 
         var id: String { rawValue }
     }
 
     var body: some View {
-        Group {
-            switch tab {
-            case .overview: OverviewView()
-            case .analysis: UsageAnalysisView()
-            case .plans: PlansView()
-            case .sources: SourcesAndSettingsView()
-            }
+        // 页面常驻（ZStack + opacity）：切换标签不销毁子视图，保留查询
+        // 结果、hover 状态与滚动位置；AppState 快照驱动的页面零闪烁。
+        ZStack(alignment: .topLeading) {
+            OverviewView()
+                .opacity(tab == .overview ? 1 : 0)
+                .allowsHitTesting(tab == .overview)
+            UsageAnalysisView()
+                .opacity(tab == .analysis ? 1 : 0)
+                .allowsHitTesting(tab == .analysis)
+            PlansView()
+                .opacity(tab == .plans ? 1 : 0)
+                .allowsHitTesting(tab == .plans)
+            SourcesAndSettingsView()
+                .opacity(tab == .sources ? 1 : 0)
+                .allowsHitTesting(tab == .sources)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TMDesign.canvas)
@@ -100,7 +107,7 @@ struct DashboardView: View {
             // is a text-only segmented control in the toolbar (HIG: avoid
             // mixing icons and text in one control).
             ToolbarItemGroup(placement: .principal) {
-                Picker("页面", selection: $tab) {
+                Picker("Page", selection: $tab) {
                     ForEach(Tab.allCases) { item in
                         Text(item.rawValue).tag(item)
                     }
@@ -108,6 +115,7 @@ struct DashboardView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
+                .accessibilityLabel("Page")
             }
             ToolbarItemGroup(placement: .automatic) {
                 Button {
@@ -122,13 +130,21 @@ struct DashboardView: View {
                 }
                 .symbolEffect(.pulse, isActive: app.manualRefreshing)
                 .disabled(app.manualRefreshing)
-                .help("刷新数据")
-                .accessibilityLabel("刷新数据")
-                .accessibilityValue(app.manualRefreshing ? "刷新中" : "已准备")
+                .help("Refresh data")
+                .accessibilityLabel("Refresh data")
+                .accessibilityValue(app.manualRefreshing ? "Refreshing" : "Ready")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in
             if let requested = note.object as? Tab { tab = requested }
+        }
+        // Cmd+1…4 快速切页（隐藏按钮注册快捷键）。
+        .overlay(alignment: .bottomTrailing) {
+            ForEach(Array(Tab.allCases.enumerated()), id: \.element) { i, item in
+                Button("") { tab = item }
+                    .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+                    .hidden()
+            }
         }
     }
 }

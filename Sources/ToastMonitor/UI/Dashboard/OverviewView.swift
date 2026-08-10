@@ -50,13 +50,12 @@ struct OverviewView: View {
 
     private var intro: some View {
         HStack(alignment: .center, spacing: 12) {
-            Text("概览")
-                .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
+            SectionTitle("Overview")
             Spacer()
             periodControl
         }
-        .padding(.top, 22)
-        .padding(.bottom, 14)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
     }
 
     /// Period switch: native macOS segmented control (HIG — Calendar's

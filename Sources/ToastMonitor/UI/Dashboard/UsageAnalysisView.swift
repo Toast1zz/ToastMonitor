@@ -84,13 +84,12 @@ struct UsageAnalysisView: View {
 
     private var pageHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: 16) {
-            Text("用量分析")
-                .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
+            SectionTitle("Analysis")
             Spacer(minLength: 8)
             controls
         }
-        .padding(.top, 22)
-        .padding(.bottom, 14)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
     }
 
     private var summaryStrip: some View {

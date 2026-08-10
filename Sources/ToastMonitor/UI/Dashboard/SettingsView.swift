@@ -15,7 +15,9 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                TMPageHeader("配置")
+                SectionTitle("Settings")
+                    .padding(.top, 18)
+                    .padding(.bottom, 12)
                 VStack(alignment: .leading, spacing: 12) {
                     Text("数据来源")
                         .font(.system(size: 13, weight: .semibold))
@@ -384,7 +386,8 @@ struct SubscriptionSettingsSection: View {
                                 let ok = Self.persist(sub)
                                 DispatchQueue.main.async {
                                     if ok {
-                                        app.refresh()
+                                        // Database 会发 subscriptionsDidChange，AppState 自动刷新，
+                                        // 无需显式 refresh（避免双刷新）。
                                         showForm = false
                                         databaseError = nil
                                     } else {
@@ -437,7 +440,7 @@ struct SubscriptionSettingsSection: View {
                             let ok = Database.shared.deleteSubscription(id: sub.id)
                             DispatchQueue.main.async {
                                 if ok {
-                                    app.refresh()
+                                    // subscriptionsDidChange 通知驱动 AppState 刷新。
                                     databaseError = nil
                                 } else {
                                     databaseError = "订阅删除失败，请检查磁盘空间或数据库权限"

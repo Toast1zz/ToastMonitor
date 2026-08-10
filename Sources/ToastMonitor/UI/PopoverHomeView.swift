@@ -727,23 +727,6 @@ private struct StatusRow: View {
     }
 }
 
-/// 板块标题（Quota / Activity / Trend）：全大写 + 小号 + 字距 + 灰，
-/// 与内容行（13pt medium primary）形成清晰层次；右侧跟随次要信息。
-private struct SectionTitle: View {
-    let title: String
-
-    init(_ title: String) {
-        self.title = title
-    }
-
-    var body: some View {
-        Text(title.uppercased())
-            .font(TMType.semibold(11))
-            .kerning(0.6)
-            .foregroundStyle(TMDesign.quiet)
-    }
-}
-
 /// 紧凑近半年活动热力图（Popover 版）：26 周 × 7 天方格，月份标签悬浮在
 /// 网格上方。无悬停交互——活跃度一眼扫读即可。
 private struct PopoverHeatmap: View {

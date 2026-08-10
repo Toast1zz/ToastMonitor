@@ -12,7 +12,7 @@ struct SourcesView: View {
     /// Bumped per test start; stale 10s timeouts check it before firing.
     @State private var testGeneration = 0
 
-    private let tools: [ToolKind] = [.claude, .codex, .opencode, .hermes, .omp]
+    private let tools: [ToolKind] = ToolKind.allCases.filter { $0 != .openrouter }
 
     var body: some View {
         ScrollView {
@@ -28,25 +28,29 @@ struct SourcesView: View {
                         testGeneration += 1
                         let gen = testGeneration
                         CollectorEngine.shared.scheduleScan(force: true) { receipt in
-                            guard gen == testGeneration, testing else { return }
+                            // 完成回调是唯一真相源：只按代际过滤（迟到成功必须
+                            // 能覆盖 10s 超时文案，不能被 testing 状态丢弃）。
+                            guard gen == testGeneration else { return }
                             testing = false
-                            testGeneration += 1
-                            if receipt.failedSources.isEmpty {
+                            let remoteErr = HermesRemoteClient.shared.status.error
+                            let localFailed = receipt.failedSources
+                            if localFailed.isEmpty && remoteErr == nil {
                                 testOK = true
-                                testResult = "扫描完成（\(receipt.turns) 条新增）"
+                                testResult = "Scan complete (\(receipt.turns) new)"
                             } else {
                                 testOK = false
-                                testResult = "错误：\(receipt.failedSources.joined(separator: "、"))"
+                                var parts = localFailed
+                                if let remoteErr { parts.append("Remote Feed: \(remoteErr)") }
+                                testResult = "Error: \(parts.joined(separator: ", "))"
                             }
                         }
                         HermesRemoteClient.shared.poll()
-                        // A completion belongs to this forced scan; the timeout
-                        // only covers a genuinely stalled collector.
+                        // 超时只兜底"仍在等待"；迟到的完成回调会覆盖此文案。
                         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                            guard gen == testGeneration else { return }
+                            guard gen == testGeneration, testing else { return }
                             testing = false
                             testOK = false
-                            testResult = "10 秒内未完成扫描"
+                            testResult = "Scan not finished in 10s"
                         }
                     } label: {
                         if testing {
@@ -159,7 +163,7 @@ struct SourcesView: View {
     private var remoteCard: some View {
         let st = remote.status
         let stale = st.lastSync > 0
-            && Date().timeIntervalSince1970 - TimeInterval(st.lastSync) > 120
+            && Date().timeIntervalSince1970 - TimeInterval(st.lastSync) > SourceHealth.staleThreshold
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "externaldrive.badge.icloud")

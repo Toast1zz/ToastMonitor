@@ -112,7 +112,11 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        NotificationCenter.default.addObserver(forName: CollectorEngine.didCollect, object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(forName: CollectorEngine.didCollect, object: nil, queue: .main) { [weak self] note in
+            // 变更驱动：只有真的扫到新数据才刷新快照；空转扫描（0 新增）
+            // 直接跳过，避免每秒一轮完整聚合。
+            if let receipt = note.object as? CollectorEngine.ScanReceipt,
+               receipt.turns == 0, receipt.sessions == 0 { return }
             Task { @MainActor [weak self] in
                 self?.refresh()
             }
@@ -140,7 +144,9 @@ final class AppState: ObservableObject {
             refreshTimer = nil
         }
         if fg {
-            let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            // 5s 保险轮询：实时性由 didCollect 的变更驱动保证（新数据到达
+            // 立即刷新），此处只兜底错过通知的场景，避免每秒完整聚合。
+            let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     self?.refresh()
                 }

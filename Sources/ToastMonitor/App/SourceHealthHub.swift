@@ -20,8 +20,13 @@ struct SourceHealth: Identifiable, Equatable {
         return ToolKind(rawValue: tool)?.displayName ?? tool
     }
     var isStale: Bool {
-        lastScan > 0 && Date().timeIntervalSince1970 - TimeInterval(lastScan) > 120
+        lastScan > 0 && Date().timeIntervalSince1970 - TimeInterval(lastScan) > Self.staleThreshold
     }
+}
+
+extension SourceHealth {
+    /// 全 App 统一的过期阈值（本机源与远程 feed 共用，避免双份硬编码漂移）。
+    static let staleThreshold: TimeInterval = 120
 }
 
 @MainActor

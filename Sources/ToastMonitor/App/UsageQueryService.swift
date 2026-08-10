@@ -57,17 +57,35 @@ final class UsageQueryService: @unchecked Sendable {
         var heatmapCost: [Int64: Double]
     }
 
+    /// 快照缓存：以 dataVersionKey 为失效键。DB 未变化时直接返回缓存，
+    /// 5s 保险轮询与 didCollect 驱动的刷新都不再触发全量聚合。
+    private var cachedLight: (key: String, snapshot: LightSnapshot)?
+    private var cachedSnapshot: (key: String, snapshot: Snapshot)?
+
     private init() {}
 
     func loadSnapshot(completion: @escaping @MainActor @Sendable (Snapshot) -> Void) {
         queue.async {
+            let key = Database.shared.dataVersionKey()
+            if let c = self.cachedSnapshot, c.key == key {
+                DispatchQueue.main.async { completion(c.snapshot) }
+                return
+            }
             let snap = self.compute()
+            self.cachedSnapshot = (key, snap)
+            self.cachedLight = (key, snap.light)
             DispatchQueue.main.async { completion(snap) }
         }
     }
     func loadLightSnapshot(completion: @escaping @MainActor @Sendable (LightSnapshot) -> Void) {
         queue.async {
+            let key = Database.shared.dataVersionKey()
+            if let c = self.cachedLight, c.key == key {
+                DispatchQueue.main.async { completion(c.snapshot) }
+                return
+            }
             let snap = self.computeLight()
+            self.cachedLight = (key, snap)
             DispatchQueue.main.async { completion(snap) }
         }
     }
