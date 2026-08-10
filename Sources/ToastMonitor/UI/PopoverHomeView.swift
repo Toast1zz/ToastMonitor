@@ -156,7 +156,10 @@ struct PopoverHomeView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .contentTransition(.numericText(value: Double(tokens)))
-                    .animation(.easeOut(duration: 0.35), value: tokens)
+                    // Both the token count and the display format drive the
+                    // transition, so toggling 缩写/完整 animates the same way
+                    // as a live token update.
+                    .animation(.easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
                     .accessibilityLabel("\(period.rawValue) token 用量")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
@@ -506,6 +509,13 @@ struct PopoverHomeView: View {
     }
 }
 
+
+/// Drives the hero number transition: any change to the token count OR the
+/// 缩写/完整 format toggle re-runs the same numericText animation.
+private struct HeroValue: Equatable {
+    let tokens: Int64
+    let full: Bool
+}
 
 /// 额度状态行：名称 primary，状态按健康状态着色，右侧 chevron 表示可打开计划。
 private struct StatusRow: View {
