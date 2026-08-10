@@ -422,7 +422,7 @@ struct PopoverHomeView: View {
         trendSeries.map(\.tokens).max() ?? 0
     }
 
-    /// 53 周网格：key 与 app.heatmap 的 yyyymmdd（本地日）对齐。
+    /// 近 26 周（6 个月）网格：key 与 heatmapData 的 yyyymmdd（本地日）对齐。
     private var activityWeeks: [[Int64?]] {
         Self.buildHeatmapWeeks(now: Date())
     }
@@ -431,10 +431,10 @@ struct PopoverHomeView: View {
         var weeks: [[Int64?]] = []
         let calendar = Calendar.current
         guard let monday = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return weeks }
-        for week in 0..<53 {
+        for week in 0..<26 {
             var column: [Int64?] = []
             for day in 0..<7 {
-                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 52 * 7, to: monday) else {
+                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 25 * 7, to: monday) else {
                     column.append(nil)
                     continue
                 }
@@ -473,7 +473,8 @@ struct PopoverHomeView: View {
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
                 AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.gray)
+                    .offset(y: 5)
             }
         }
         .chartYAxis(.hidden)
@@ -502,9 +503,10 @@ struct PopoverHomeView: View {
             } else if let remaining {
                 status = "\(Int(remaining))% left"
                 resetSuffix = resetText(state.monthlyReset.map { state.lastSync + $0 })
-            } else if state.isLoading {
+            } else if state.isLoading && state.lastSync <= 0 {
                 status = "Loading"
             } else {
+                // 刷新期间保留上次结果，不闪 Loading。
                 status = "Idle"
             }
         }
@@ -529,7 +531,9 @@ struct PopoverHomeView: View {
         let sub = app.subscriptions.first { $0.plan == "codex" }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        var status = sub == nil ? "Not configured" : "Loading"
+        // 刷新期间保留上次结果：只有从未同步过才显示 Loading。
+        var status = sub == nil ? "Not configured"
+                    : (state.lastSync <= 0 ? "Loading" : "Idle")
         var resetSuffix: String?
         if state.error != nil {
             status = "Error"
@@ -560,7 +564,7 @@ struct PopoverHomeView: View {
             status = "Stale"
         } else if let balance = state.accountBalance {
             status = "Balance \(Format.money(balance))"
-        } else if state.isLoading {
+        } else if state.isLoading && state.lastOK <= 0 {
             status = "Loading"
         } else {
             status = "Idle"
@@ -637,18 +641,25 @@ private struct StatusRow: View {
     }
 }
 
-/// 紧凑一年活动热力图（Popover 版）：53 周 × 7 天小格，月份标签悬浮在
+/// 紧凑近半年活动热力图（Popover 版）：26 周 × 7 天方格，月份标签悬浮在
 /// 网格上方。无悬停交互——活跃度一眼扫读即可。
 private struct PopoverHeatmap: View {
     let weeks: [[Int64?]]
     let heatmap: [Int64: Int64]
     let maxTokens: Int64
 
-    private let cellGutter: CGFloat = 2
-    /// 行/列固定 7×53，cell 尺寸由可用宽度均分（4.8pt @ 360pt 内容宽）。
-    private static let cellAspect: CGFloat = 7 * 53
+    /// 网格与月份标签的垂直间距。
+    private let labelGap: CGFloat = 14
+    private let cellGutter: CGFloat = 3
     private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    /// 内容区固定 360pt（面板 400 − 水平 padding 40），cell 按列数均分。
+    private var gridHeight: CGFloat {
+        let contentWidth: CGFloat = 360
+        let cell = max((contentWidth - CGFloat(weeks.count - 1) * cellGutter) / CGFloat(weeks.count), 2)
+        return labelGap + 7 * cell + 6 * cellGutter
+    }
 
     private var monthLabels: [(index: Int, label: String)] {
         var out: [(Int, String)] = []
@@ -669,7 +680,7 @@ private struct PopoverHeatmap: View {
 
     var body: some View {
         GeometryReader { geo in
-            let cell = max((geo.size.width - 52 * cellGutter) / 53, 2)
+            let cell = max((geo.size.width - CGFloat(weeks.count - 1) * cellGutter) / CGFloat(weeks.count), 2)
             ZStack(alignment: .topLeading) {
                 HStack(alignment: .top, spacing: cellGutter) {
                     ForEach(weeks.indices, id: \.self) { wi in
@@ -680,7 +691,7 @@ private struct PopoverHeatmap: View {
                         }
                     }
                 }
-                .padding(.top, 12)
+                .padding(.top, labelGap)
                 ForEach(monthLabels, id: \.index) { m in
                     Text(m.label)
                         .font(TMType.monoRegular(9))
@@ -690,10 +701,9 @@ private struct PopoverHeatmap: View {
                 }
             }
         }
-        // 12（月份标签行）+ 7×cell + 6×gutter（cell ≈ 4.83 @ 360pt 内容宽）
-        .frame(height: 58)
+        .frame(height: gridHeight)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Activity heatmap, one year")
+        .accessibilityLabel("Activity heatmap, six months")
     }
 
     private func heatCell(_ key: Int64?, size: CGFloat) -> some View {
