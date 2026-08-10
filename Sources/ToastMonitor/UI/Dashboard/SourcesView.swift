@@ -36,7 +36,7 @@ struct SourcesView: View {
                                 testResult = "扫描完成（\(receipt.turns) 条新增）"
                             } else {
                                 testOK = false
-                                testResult = "来源异常：\(receipt.failedSources.joined(separator: "、"))"
+                                testResult = "错误：\(receipt.failedSources.joined(separator: "、"))"
                             }
                         }
                         HermesRemoteClient.shared.poll()
@@ -57,7 +57,7 @@ struct SourcesView: View {
                     }
                     .disabled(testing)
                     .accessibilityLabel("测试连接")
-                    .accessibilityValue(testing ? "等待首次扫描" : "准备就绪")
+                    .accessibilityValue(testing ? "运行中" : "准备就绪")
                     .accessibilityHint("启动一次立即扫描并检查各来源状态")
                     Button {
                         CollectorEngine.shared.scheduleScan()
@@ -106,19 +106,19 @@ struct SourcesView: View {
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.06)))
                 if h?.error != nil {
-                    TMStatusPill(text: "异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                    TMStatusPill(text: "错误", color: TMDesign.danger, symbol: "xmark.circle.fill")
                 } else if h?.isStale == true {
-                    TMStatusPill(text: "过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                    TMStatusPill(text: "稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                 } else if (h?.lastScan ?? 0) > 0 {
                     TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                 } else {
-                    TMStatusPill(text: "未知", color: TMDesign.quiet, symbol: "questionmark.circle")
+                    TMStatusPill(text: "已停止", color: TMDesign.quiet, symbol: "stop.circle")
                 }
             }
             HStack(spacing: 16) {
                 infoItem("最后扫描", h.map { Format.dateTime($0.lastScan) } ?? "—")
-                infoItem("最近导入", h.map { "\($0.lastRows) 条" } ?? "—")
-                infoItem("解析失败", h.map { "\($0.failedRows)" } ?? "—")
+                infoItem("导入", h.map { "\($0.lastRows) 条" } ?? "—")
+                infoItem("失败", h.map { "\($0.failedRows)" } ?? "—")
                 infoItem("耗时", h.map { String(format: "%.0fms", $0.durationMs) } ?? "—")
             }
             if let err = h?.error {
@@ -141,19 +141,19 @@ struct SourcesView: View {
     }
 
     private func sourceAccessibilityValue(_ health: SourceHealth?) -> String {
-        guard let health else { return "未知，等待首次扫描" }
+        guard let health else { return "已停止" }
         let status: String
         if health.error != nil {
-            status = "异常"
+            status = "错误"
         } else if health.isStale {
-            status = "过期"
+            status = "稍旧"
         } else if health.lastScan > 0 {
             status = "已同步"
         } else {
-            status = "未知，等待首次扫描"
+            status = "已停止"
         }
         let scannedAt = health.lastScan > 0 ? Format.dateTime(health.lastScan) : "—"
-        return "\(status)，最后扫描 \(scannedAt)，最近导入 \(health.lastRows) 条，解析失败 \(health.failedRows) 条"
+        return "\(status)，最后扫描 \(scannedAt)，导入 \(health.lastRows) 条，失败 \(health.failedRows) 条"
     }
 
     private var remoteCard: some View {
@@ -170,19 +170,19 @@ struct SourcesView: View {
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 if st.error != nil {
-                    TMStatusPill(text: "异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                    TMStatusPill(text: "错误", color: TMDesign.danger, symbol: "xmark.circle.fill")
                 } else if stale {
-                    TMStatusPill(text: "过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                    TMStatusPill(text: "稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                 } else if st.lastSync > 0 {
                     TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
                 } else {
-                    TMStatusPill(text: "未知", color: TMDesign.quiet, symbol: "questionmark.circle")
+                    TMStatusPill(text: "已停止", color: TMDesign.quiet, symbol: "stop.circle")
                 }
             }
             HStack(spacing: 16) {
                 infoItem("上次同步", st.lastSync > 0 ? Format.dateTime(st.lastSync) : "—")
-                infoItem("最近导入", "\(st.lastRows) 条")
-                infoItem("数据延迟", st.lastSync > 0 ? Format.remaining(Int64(Date().timeIntervalSince1970) - st.lastSync) : "—")
+                infoItem("导入", "\(st.lastRows) 条")
+                infoItem("延迟", st.lastSync > 0 ? Format.remaining(Int64(Date().timeIntervalSince1970) - st.lastSync) : "—")
             }
             if let err = st.error {
                 Text(err)
@@ -206,15 +206,15 @@ struct SourcesView: View {
     private func remoteAccessibilityValue(_ status: HermesRemoteClient.SyncStatus, stale: Bool) -> String {
         let state: String
         if status.error != nil {
-            state = "异常"
+            state = "错误"
         } else if stale {
-            state = "过期"
+            state = "稍旧"
         } else if status.lastSync > 0 {
             state = "已同步"
         } else {
-            state = "未知，等待首次扫描"
+            state = "已停止"
         }
-        return "\(state)，上次同步 \(status.lastSync > 0 ? Format.dateTime(status.lastSync) : "—")，最近导入 \(status.lastRows) 条"
+        return "\(state)，上次同步 \(status.lastSync > 0 ? Format.dateTime(status.lastSync) : "—")，导入 \(status.lastRows) 条"
     }
 
     private func infoItem(_ label: String, _ value: String) -> some View {

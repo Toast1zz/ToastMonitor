@@ -253,11 +253,8 @@ struct PlansView: View {
             .sorted { $0.day < $1.day }
     }
     private func goHistoryAccessibilitySummary(_ daily: [DailyPoint]) -> String {
-        let monthly = daily.compactMap(\.month)
         let weekly = daily.compactMap(\.week)
-        let values = monthly + weekly
-        guard let peak = values.max() else { return "暂无数据" }
-        return "\(daily.count) 天，月度峰值 \(Int(peak))%，周度数据 \(weekly.count) 天"
+        return "\(daily.count) 天，周度数据 \(weekly.count) 天"
     }
 
     private var subForGo: Database.Subscription? {
@@ -336,7 +333,7 @@ struct PlansView: View {
 
                 if orClient.hasKey {
                     HStack(spacing: 24) {
-                        liveStat("现金余额", or.accountBalance.map(Format.money) ?? "未知")
+                        liveStat("现金余额", or.accountBalance.map(Format.money) ?? "—")
                         liveStat("今日实际", Format.money(or.usageDaily))
                         liveStat("本月实际", Format.money(or.usageMonthly))
                         if let limit = or.limit {
@@ -406,9 +403,7 @@ struct PlansView: View {
         .padding(.top, 4)
     }
     private func orHistoryAccessibilitySummary(_ snapshots: [Database.ORSnapshot]) -> String {
-        let values = snapshots.map(\.usage)
-        guard let peak = values.max() else { return "暂无数据" }
-        return "\(snapshots.count) 次快照，峰值 \(Format.money(peak))"
+        "\(snapshots.count) 次快照"
     }
 
     // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
@@ -431,19 +426,25 @@ struct PlansView: View {
                 .font(.system(size: TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
             if isLoading {
-                ProgressView()
-                    .controlSize(.mini)
-                    .accessibilityLabel("等待首次扫描")
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("运行中")
+                        .font(.system(size: TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("运行中")
             } else if !configured {
                 Text("未配置")
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             } else if error != nil {
-                TMStatusPill(text: "异常", color: TMDesign.danger, symbol: "xmark.circle.fill")
+                TMStatusPill(text: "错误", color: TMDesign.danger, symbol: "xmark.circle.fill")
             } else if lastSync <= 0 {
-                TMStatusPill(text: "未知", color: TMDesign.quiet, symbol: "questionmark.circle")
+                TMStatusPill(text: "已停止", color: TMDesign.quiet, symbol: "stop.circle")
             } else if stale {
-                TMStatusPill(text: "过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                TMStatusPill(text: "稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
             } else {
                 Label("已同步", systemImage: "checkmark.circle.fill")
                     .font(.system(size: TMType.caption))

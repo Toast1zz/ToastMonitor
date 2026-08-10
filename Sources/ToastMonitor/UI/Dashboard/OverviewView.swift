@@ -155,10 +155,13 @@ struct OverviewView: View {
                     .font(.system(size: TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             }
-            HStack(spacing: 24) {
+            HStack(spacing: 0) {
                 heroMini("调用", Format.count(periodCalls))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 heroMini("实际花费", Format.money(actualSpend))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 heroMini("API 价值", Format.money(apiValue))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -186,7 +189,7 @@ struct OverviewView: View {
         let broken = health.sources.filter { $0.error != nil }.count
         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
         let summary = TMHealthStatus(brokenCount: broken, staleCount: stale, lastScan: app.lastScan)
-        return TMStatusLabel(text: summary.text, color: summary.color, symbol: summary.symbol)
+        return TMStatusPill(text: summary.text, color: summary.color, symbol: summary.symbol)
     }
 
     // MARK: - Heatmap (one year, month axis)
@@ -314,16 +317,16 @@ struct OverviewView: View {
                     let ratio = total > 0 ? Double(row.1) / Double(total) : 0
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
-                            Circle().fill(row.3).frame(width: 6, height: 6)
+                            Circle().fill(row.3).frame(width: 7, height: 7)
                             Text(row.0)
-                                .font(.system(size: TMType.caption))
+                                .font(.system(size: TMType.body))
                                 .lineLimit(1)
                             Spacer()
                             Text(Format.compact(row.1))
                                 .font(.system(size: TMType.caption, design: .monospaced))
                                 .monospacedDigit()
                         }
-                        TMProgressBar(value: ratio, tint: row.3, height: 3)
+                        TMProgressBar(value: ratio, tint: row.3, height: 4)
                     }
                 }
             }
@@ -379,6 +382,7 @@ private struct HeatmapGrid: View {
                             .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
                     }
                 }
+                .padding(.horizontal, 4)
                 .padding(.vertical, 5)
             }
             .defaultScrollAnchor(.trailing)
@@ -394,7 +398,7 @@ private struct HeatmapGrid: View {
         let activeDays = heatmap.values.filter { $0 > 0 }.count
         guard activeDays > 0 else { return "暂无用量数据" }
         let total = heatmap.values.reduce(Int64(0), +)
-        return "\(activeDays) 天有用量，共 \(Format.full(total)) tokens，最高 \(Format.full(maxTokens)) tokens/天"
+        return "\(activeDays) 天有用量，共 \(Format.full(total)) tokens"
     }
 
     /// First week whose Monday falls in a new month gets that month's label.

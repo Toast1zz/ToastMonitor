@@ -24,12 +24,12 @@ final class UIStateTests: XCTestCase {
 
     func testHealthStatusPrecedenceIsStable() {
         let failed = TMHealthStatus(brokenCount: 1, staleCount: 5, lastScan: 1)
-        XCTAssertTrue(failed.text.contains("异常"))
+        XCTAssertEqual(failed.text, "1 个来源错误")
         let stale = TMHealthStatus(brokenCount: 0, staleCount: 1, lastScan: 1)
-        XCTAssertTrue(stale.text.contains("过期"))
+        XCTAssertEqual(stale.text, "1 个来源稍旧")
         let synced = TMHealthStatus(brokenCount: 0, staleCount: 0, lastScan: 1)
         XCTAssertEqual(synced.text, "已同步")
         let waiting = TMHealthStatus(brokenCount: 0, staleCount: 0, lastScan: 0)
-        XCTAssertTrue(waiting.text.contains("首次扫描"))
+        XCTAssertEqual(waiting.text, "已停止")
     }
 }

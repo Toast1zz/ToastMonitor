@@ -135,10 +135,10 @@ enum TMHealthStatus {
 
     var text: String {
         switch self {
-        case .failed(let count): return "\(count) 个来源异常"
-        case .stale(let count): return "\(count) 个来源过期"
+        case .failed(let count): return "\(count) 个来源错误"
+        case .stale(let count): return "\(count) 个来源稍旧"
         case .synced: return "已同步"
-        case .waiting: return "等待首次扫描"
+        case .waiting: return "已停止"
         }
     }
 
@@ -160,21 +160,21 @@ enum TMHealthStatus {
     }
 }
 
-/// Type scale for the dashboard. Data-heavy surfaces keep the floor at 11pt;
-/// nothing below that is used for readable copy.
+/// Type scale for the dashboard. Data-heavy surfaces keep the floor at 10.5pt;
+/// readable copy stays at 11.5pt or above.
 enum TMType {
     /// Page title (26) — one per page, in TMPageHeader.
     static let pageTitle: CGFloat = 26
-    /// Hero number (40+), for the single most important figure on a page.
-    static let hero: CGFloat = 40
-    /// Section heading inside a panel (13).
-    static let section: CGFloat = 13
-    /// Body text (12.5).
-    static let body: CGFloat = 12.5
-    /// Captions, labels, secondary info (11).
-    static let caption: CGFloat = 11
-    /// Micro metadata (10) — the floor; use sparingly.
-    static let micro: CGFloat = 10
+    /// Hero metric — the primary number on overview.
+    static let hero: CGFloat = 30
+    /// Section heading inside a panel.
+    static let section: CGFloat = 14
+    /// Body text.
+    static let body: CGFloat = 13
+    /// Captions, labels, secondary info.
+    static let caption: CGFloat = 11.5
+    /// Micro metadata — use sparingly.
+    static let micro: CGFloat = 10.5
 }
 
 struct TMSectionHeader: View {

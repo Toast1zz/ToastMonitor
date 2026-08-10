@@ -180,33 +180,13 @@ struct PopoverHomeView: View {
     }
 
     private var periodControl: some View {
-        HStack(spacing: 2) {
+        Picker("周期", selection: $period) {
             ForEach(Period.allCases) { p in
-                Button {
-                    period = p
-                } label: {
-                    Text(p.rawValue)
-                        .font(.subheadline.weight(period == p ? .semibold : .regular))
-                        .foregroundStyle(period == p ? Color.primary : Color.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(period == p ? Color.primary.opacity(0.10) : .clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(p.rawValue)
-                .accessibilityValue(period == p ? "已选" : "未选")
-                .accessibilityAddTraits(period == p ? .isSelected : [])
+                Text(p.rawValue).tag(p)
             }
         }
-        .padding(3)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
+        .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
     /// 成本拆解表。口径（用户 2026-08-05 定义）：
@@ -217,10 +197,10 @@ struct PopoverHomeView: View {
         VStack(spacing: 8) {
             metricPair("输入", Format.compact(totals.input),
                        "实际花费", actualShown > 0 ? Format.money(actualShown) : "—")
-            Divider().opacity(0.4)
+            Divider().opacity(0.5)
             metricPair("输出", Format.compact(totals.output),
                        "API 价值", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
-            Divider().opacity(0.4)
+            Divider().opacity(0.5)
             metricPair("缓存命中", Format.compact(totals.cacheRead),
                        "缓存率", cacheRateText)
         }
@@ -228,11 +208,11 @@ struct PopoverHomeView: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(0.015))
+                .fill(Color.primary.opacity(0.035))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.04), lineWidth: 0.5)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
         .help("缓存率：缓存命中 token 占全部 token 的比例")
     }
@@ -340,21 +320,22 @@ struct PopoverHomeView: View {
                 .accessibilityHidden(true)
 
                 ForEach(rows, id: \.tool) { row in
-                    HStack(spacing: 6) {
+                    HStack(spacing: 7) {
                         Circle()
                             .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
-                            .frame(width: 6, height: 6)
+                            .frame(width: 7, height: 7)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
-                            .font(.caption.weight(.medium))
+                            .font(.system(size: TMType.body, weight: .medium))
                             .foregroundStyle(.primary)
                         Text("(\(percentText(row, total: total)))")
-                            .font(.caption.monospacedDigit())
+                            .font(.system(size: TMType.caption, design: .monospaced))
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                         Spacer()
                         Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: TMType.body, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
@@ -407,18 +388,18 @@ struct PopoverHomeView: View {
         var status = "未配置"
         if goClient.configured {
             if state.error != nil {
-                status = "异常"
+                status = "错误"
             } else if stale {
-                status = "过期"
+                status = "稍旧"
             } else if let remaining {
                 status = "剩余 \(Int(remaining))%"
                 if let r = resetText(state.monthlyReset.map { state.lastSync + $0 }) {
                     status += " · \(r)"
                 }
             } else if state.isLoading {
-                status = "等待首次扫描"
+                status = "运行中"
             } else {
-                status = "未知"
+                status = "已停止"
             }
         }
         return statusRow(name: "OpenCode Go", status: status,
@@ -441,18 +422,18 @@ struct PopoverHomeView: View {
         let sub = app.subscriptions.first { $0.plan == "codex" }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        var status = "未订阅"
+        var status = sub == nil ? "未配置" : "运行中"
         if state.error != nil {
-            status = "异常"
+            status = "错误"
         } else if stale, state.primaryPct != nil {
-            status = "过期"
+            status = "稍旧"
         } else if let remaining {
             status = "\(windowLabel)剩余 \(Int(remaining))%"
             if let r = resetText(state.resetAt) {
                 status += " · \(r)"
             }
         } else if let sub {
-            status = "未知 · 已订阅 \(Format.money(sub.price))/月"
+            status = "运行中 · 已订阅 \(Format.money(sub.price))/月"
         }
         return statusRow(name: "Codex Plus", status: status,
                          statusColor: .primary,
@@ -467,15 +448,15 @@ struct PopoverHomeView: View {
         if !orClient.hasKey {
             status = "未配置"
         } else if state.error != nil {
-            status = "异常"
+            status = "错误"
         } else if stale {
-            status = "过期"
+            status = "稍旧"
         } else if let balance = state.accountBalance {
             status = "余额 \(Format.money(balance))"
         } else if state.isLoading {
-            status = "等待首次扫描"
+            status = "运行中"
         } else {
-            status = "未知"
+            status = "已停止"
         }
         return statusRow(name: "OpenRouter", status: status,
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
@@ -506,7 +487,7 @@ struct PopoverHomeView: View {
 }
 
 
-/// 额度状态行：默认无卡片，hover 轻填充；名称 primary、状态 secondary。
+/// 额度状态行：名称 primary，状态按健康状态着色，右侧 chevron 表示可打开计划。
 private struct StatusRow: View {
     let name: String
     let status: String
@@ -525,7 +506,7 @@ private struct StatusRow: View {
                 Text((critical ? "★ " : "") + status)
                     .font(.system(size: TMType.caption, design: .monospaced))
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(statusColor)
                     .lineLimit(1)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))

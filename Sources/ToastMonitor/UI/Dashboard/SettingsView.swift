@@ -95,10 +95,10 @@ struct SettingsView: View {
                         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
                         HStack(spacing: 8) {
                             if broken > 0 {
-                                TMStatusPill(text: "\(broken) 个来源异常", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill")
+                                TMStatusPill(text: "\(broken) 个来源错误", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill")
                             }
                             if stale > 0 {
-                                TMStatusPill(text: "\(stale) 个来源过期", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+                                TMStatusPill(text: "\(stale) 个来源稍旧", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
                             }
                             if broken == 0 && stale == 0 {
                                 TMStatusPill(text: "已同步", color: TMDesign.quiet, symbol: "checkmark.circle.fill")

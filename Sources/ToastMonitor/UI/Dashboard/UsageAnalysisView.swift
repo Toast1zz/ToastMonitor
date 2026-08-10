@@ -45,10 +45,8 @@ struct UsageAnalysisView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TMPageHeader("用量分析")
-            controls
-                .padding(.bottom, 12)
-            Divider()
+            pageHeader
+            Divider().opacity(0.5)
             if loading {
                 Spacer()
                 ProgressView("加载中…")
@@ -56,12 +54,13 @@ struct UsageAnalysisView: View {
             } else if rows.isEmpty {
                 Spacer()
                 Text("该时间范围内暂无数据")
-                    .font(.system(size: 12))
+                    .font(.system(size: TMType.body))
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        summaryStrip
                         TMPanel {
                             tokensChart
                         }
@@ -72,7 +71,7 @@ struct UsageAnalysisView: View {
                             aggTable
                         }
                     }
-                    .padding(.top, 4)
+                    .padding(.top, 14)
                     .padding(.bottom, 32)
                 }
             }
@@ -81,6 +80,67 @@ struct UsageAnalysisView: View {
         .onAppear { load() }
         .onChange(of: range) { load() }
         .onChange(of: grouping) { load() }
+    }
+
+    private var pageHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text("用量分析")
+                .font(.system(size: TMType.pageTitle, weight: .semibold, design: .rounded))
+            Spacer(minLength: 8)
+            controls
+        }
+        .padding(.top, 22)
+        .padding(.bottom, 14)
+    }
+
+    private var summaryStrip: some View {
+        let days = Set(rows.map(\.day)).count
+        let total = rows.reduce(Int64(0)) { $0 + tokenValue($1) }
+        let cost = rows.reduce(0.0) { $0 + max($1.cost, 0) }
+        let calls = rows.reduce(Int64(0)) { $0 + max($1.count, 0) }
+        let daily = days > 0 ? total / Int64(days) : 0
+        return HStack(spacing: 0) {
+            summaryMetric("Tokens", Format.compact(total))
+            Divider().frame(height: 34)
+            summaryMetric("估算成本", Format.moneyShort(cost))
+            Divider().frame(height: 34)
+            summaryMetric("日均 Tokens", Format.compact(daily))
+            Divider().frame(height: 34)
+            summaryMetric("调用", Format.count(calls))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(TMDesign.accentWash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(TMDesign.accent.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private func summaryMetric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func tokenValue(_ row: (day: Int64, key: String, input: Int64,
+                                    output: Int64, cacheRead: Int64,
+                                    cost: Double, count: Int64)) -> Int64 {
+        if grouping == .byTool {
+            return ToolKind(rawValue: row.key)?.totalTokens(input: row.input,
+                                                            output: row.output,
+                                                            cacheRead: row.cacheRead)
+                ?? row.input + row.output
+        }
+        return row.input + row.output + row.cacheRead
     }
 
     private func load() {
@@ -118,9 +178,8 @@ struct UsageAnalysisView: View {
         }
         return map
     }
-
     private var controls: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Picker("范围", selection: $range) {
                 ForEach(Range.allCases) { r in Text(r.rawValue).tag(r) }
             }
@@ -134,8 +193,6 @@ struct UsageAnalysisView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 180)
-
-            Spacer()
         }
     }
 
@@ -144,42 +201,45 @@ struct UsageAnalysisView: View {
     private var tokensChart: some View {
         let days = groupedDays()
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Tokens（\(grouping.rawValue)）")
-                .font(.system(size: 13, weight: .semibold))
+            HStack(alignment: .firstTextBaseline) {
+                Text("Tokens（\(grouping.rawValue)）")
+                    .font(.system(size: TMType.section, weight: .semibold))
+                Spacer()
+                if !days.isEmpty {
+                    legend
+                }
+            }
             if days.isEmpty {
                 Text("暂无数据")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: TMType.body))
                     .foregroundStyle(.secondary)
             } else {
                 let maxV = days.map { day in
                     day.segments.reduce(Int64(0)) { $0 + $1.value }
                 }.max() ?? 1
-                let axisH: CGFloat = 14
+                let axisH: CGFloat = 18
                 if let idx = hoveredDayIdx, idx < days.count {
                     tokenHoverLine(days[idx])
                 } else {
-                    Color.clear.frame(height: 14)
+                    Color.clear.frame(height: 18)
                 }
                 GeometryReader { geo in
-                    let yAxisW: CGFloat = 34
+                    let yAxisW: CGFloat = 48
                     let width = max(geo.size.width - yAxisW, 10)
                     let barW = max(2, width / CGFloat(days.count) - 2)
                     ZStack(alignment: .topLeading) {
                         Canvas { ctx, size in
                             let chartH = size.height - axisH
-                            // Y 轴：0 基线 + 4 档网格与刻度（open code data 惯例：
-                            // 纵轴从 0 起、有梯度、数值缩写）。标签画在网格线
-                            // 下方，顶部最大值不被裁掉。
                             for step in 0...3 {
                                 let y = chartH * CGFloat(step) / 3
                                 var grid = Path()
                                 grid.move(to: CGPoint(x: yAxisW, y: y))
                                 grid.addLine(to: CGPoint(x: size.width, y: y))
-                                ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.045)), lineWidth: 1)
+                                ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.055)), lineWidth: 1)
                                 let v = Double(maxV) * Double(3 - step) / 3
                                 let labelY = step == 0 ? CGFloat(1) : (step == 3 ? y - 1 : y)
                                 let anchor: UnitPoint = step == 0 ? .topLeading : (step == 3 ? .bottomLeading : .leading)
-                                ctx.draw(Text(Format.compact(Int64(v))).font(.system(size: 9)).foregroundStyle(.secondary),
+                                ctx.draw(Text(Format.compact(Int64(v))).font(.system(size: 10)).foregroundStyle(.secondary),
                                          at: CGPoint(x: 2, y: labelY), anchor: anchor)
                             }
                             for (di, day) in days.enumerated() {
@@ -193,13 +253,10 @@ struct UsageAnalysisView: View {
                             }
                             for (idx, label) in monthTickIndices(days.map(\.date)) {
                                 let x = yAxisW + CGFloat(idx) * (barW + 2) + barW / 2
-                                ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
-                                         at: CGPoint(x: x, y: chartH + 6))
+                                ctx.draw(Text(label).font(.system(size: 10)).foregroundStyle(.secondary),
+                                         at: CGPoint(x: x, y: chartH + 7))
                             }
                         }
-                        // Per-day buttons keep the Canvas chart keyboard and
-                        // VoiceOver reachable; hover is only an additional
-                        // pointer affordance.
                         HStack(spacing: 2) {
                             ForEach(days.indices, id: \.self) { di in
                                 let day = days[di]
@@ -228,8 +285,7 @@ struct UsageAnalysisView: View {
                     .accessibilityValue(Text(tokenChartAccessibilitySummary(days)))
                     .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每日数据")
                 }
-                .frame(height: 174)
-                legend
+                .frame(height: 180)
             }
         }
     }
@@ -264,43 +320,40 @@ struct UsageAnalysisView: View {
         let days = costByDay()
         return VStack(alignment: .leading, spacing: 6) {
             Text("估算成本（按天聚合）")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: TMType.section, weight: .semibold))
             if days.values.allSatisfy({ $0 <= 0 }) {
                 Text("该范围内无估算成本数据")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: TMType.body))
                     .foregroundStyle(.secondary)
             } else {
                 let keys = days.keys.sorted()
                 let maxV = max(days.values.max() ?? 0, 0.001)
-                let axisH: CGFloat = 14
+                let axisH: CGFloat = 18
                 if let idx = hoveredCostIdx, idx < keys.count {
                     let k = keys[idx]
                     Text("\(Format.dayKeyString(k)) · \(Format.money(days[k] ?? 0))")
                         .font(.system(size: TMType.caption, design: .monospaced))
                         .monospacedDigit()
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(height: 14)
+                        .frame(height: 18)
                 } else {
-                    Color.clear.frame(height: 14)
+                    Color.clear.frame(height: 18)
                 }
-                GeometryReader { geo in
-                    let yAxisW: CGFloat = 34
+                GeometryReader { _ in
+                    let yAxisW: CGFloat = 48
                     Canvas { ctx, size in
                         guard keys.count >= 2 else { return }
                         let chartH = size.height - axisH
-                        // Y grid: 4 ticks with labels (0 / ⅓ / ⅔ / max)。
-                        // 标签画在网格线下方（顶部 max 不再被裁掉），0 基线
-                        // 更实——open code data 的纵轴惯例：从 0 起、有梯度。
                         for step in 0...3 {
                             let y = chartH * CGFloat(step) / 3
                             var grid = Path()
                             grid.move(to: CGPoint(x: yAxisW, y: y))
                             grid.addLine(to: CGPoint(x: size.width, y: y))
-                            ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.045)), lineWidth: 1)
+                            ctx.stroke(grid, with: .color(Color.primary.opacity(step == 0 ? 0.10 : 0.055)), lineWidth: 1)
                             let v = maxV * Double(3 - step) / 3
                             let labelY = step == 0 ? CGFloat(1) : (step == 3 ? y - 1 : y)
                             let anchor: UnitPoint = step == 0 ? .topLeading : (step == 3 ? .bottomLeading : .leading)
-                            ctx.draw(Text(Format.moneyShort(v)).font(.system(size: 9)).foregroundStyle(.secondary),
+                            ctx.draw(Text(Format.moneyShort(v)).font(.system(size: 10)).foregroundStyle(.secondary),
                                      at: CGPoint(x: 2, y: labelY), anchor: anchor)
                         }
                         var path = Path()
@@ -310,7 +363,7 @@ struct UsageAnalysisView: View {
                             if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                             else { path.addLine(to: CGPoint(x: x, y: y)) }
                         }
-                        ctx.stroke(path, with: .color(TMDesign.accent), lineWidth: 1.6)
+                        ctx.stroke(path, with: .color(TMDesign.accent), lineWidth: 1.8)
                         var area = path
                         area.addLine(to: CGPoint(x: size.width, y: chartH))
                         area.addLine(to: CGPoint(x: yAxisW, y: chartH))
@@ -318,13 +371,10 @@ struct UsageAnalysisView: View {
                         ctx.fill(area, with: .color(TMDesign.accent.opacity(0.12)))
                         for (idx, label) in monthTickIndices(keys) {
                             let x = keys.count > 1 ? yAxisW + CGFloat(idx) / CGFloat(keys.count - 1) * (size.width - yAxisW) : yAxisW
-                            ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.secondary),
-                                     at: CGPoint(x: x, y: chartH + 6))
+                            ctx.draw(Text(label).font(.system(size: 10)).foregroundStyle(.secondary),
+                                     at: CGPoint(x: x, y: chartH + 7))
                         }
                     }
-                    // Per-day buttons keep the Canvas chart keyboard and
-                    // VoiceOver reachable; hover is only an additional
-                    // pointer affordance.
                     HStack(spacing: 0) {
                         ForEach(keys.indices, id: \.self) { i in
                             let day = keys[i]
@@ -350,7 +400,7 @@ struct UsageAnalysisView: View {
                 .accessibilityLabel("估算成本图表")
                 .accessibilityValue(Text(costChartAccessibilitySummary(keys, values: days)))
                 .accessibilityHint("使用 Tab 键或 VoiceOver 浏览每日数据")
-                .frame(height: 124)
+                .frame(height: 146)
             }
         }
     }
@@ -363,51 +413,70 @@ struct UsageAnalysisView: View {
 
     private var aggTable: some View {
         let rows = aggregateRows()
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 8) {
             Text("聚合明细（\(range.rawValue)）")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: TMType.section, weight: .semibold))
             if rows.isEmpty {
                 Text("暂无数据")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: TMType.body))
                     .foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Text(grouping == .byTool ? "工具" : "模型")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("成本")
+                            .frame(width: 76, alignment: .trailing)
+                        Text("Tokens")
+                            .frame(width: 76, alignment: .trailing)
+                        Text("调用")
+                            .frame(width: 54, alignment: .trailing)
+                        Text("占比")
+                            .frame(width: 42, alignment: .trailing)
+                        Color.clear.frame(width: 100, height: 1)
+                    }
+                    .font(.system(size: TMType.micro, weight: .medium))
+                    .foregroundStyle(TMDesign.quiet)
+                    .padding(.bottom, 6)
+
                     ForEach(rows, id: \.name) { r in
                         HStack(spacing: 10) {
-                            Circle().fill(r.color).frame(width: 7, height: 7)
-                            Text(r.name)
-                                .font(.system(size: 11.5, weight: .medium))
-                                .frame(width: 150, alignment: .leading)
-                                .lineLimit(1)
-                            Text(r.cost > 0 ? Format.moneyShort(r.cost) : "—")
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 70, alignment: .trailing)
-                            Spacer()
-                            Text(Format.compact(r.tokens))
-                                .font(.system(size: 11, design: .monospaced))
-                                .monospacedDigit()
-                                .frame(width: 56, alignment: .trailing)
-                            Text("\(Int(r.ratio * 100))%")
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 40, alignment: .trailing)
-                            GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                    Capsule().fill(Color.primary.opacity(0.06))
-                                    Capsule().fill(r.color)
-                                        .frame(width: max(2, geo.size.width * r.ratio))
-                                }
+                            HStack(spacing: 7) {
+                                Circle().fill(r.color).frame(width: 7, height: 7)
+                                Text(grouping == .byTool
+                                     ? (ToolKind(rawValue: r.name)?.displayName ?? r.name)
+                                     : r.name)
+                                    .font(.system(size: TMType.body, weight: .medium))
+                                    .lineLimit(1)
                             }
-                            .frame(width: 90)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(r.cost > 0 ? Format.moneyShort(r.cost) : "—")
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 76, alignment: .trailing)
+                            Text(Format.compact(r.tokens))
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                                .monospacedDigit()
+                                .frame(width: 76, alignment: .trailing)
+                            Text(Format.count(r.calls))
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 54, alignment: .trailing)
+                            Text("\(Int(r.ratio * 100))%")
+                                .font(.system(size: TMType.caption, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 42, alignment: .trailing)
+                            TMProgressBar(value: r.ratio, tint: r.color, height: 5)
+                                .frame(width: 100)
                         }
-                        .padding(.vertical, 5)
-                        Divider()
+                        .padding(.vertical, 7)
+                        Divider().opacity(0.65)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 2)
             }
         }
     }
@@ -421,19 +490,14 @@ struct UsageAnalysisView: View {
 
     private func groupedDays() -> [DaySegments] {
         let groups = groupMap()
+        let orderedNames = aggregateRows().map(\.name)
         let days = rows.map(\.day).sorted()
         return days.map { d in
             var segs: [(String, Int64, Color)] = []
-            for (name, list) in groups {
+            for name in orderedNames {
+                let list = groups[name] ?? []
                 let v = list.filter { $0.day == d }.reduce(Int64(0)) {
-                    if grouping == .byTool {
-                        return $0 + (ToolKind(rawValue: $1.key)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead)
-                                   ?? ($1.input + $1.output))
-                    }
-                    // by-model rows are keyed by model name (no tool);
-                    // cacheRead counts toward the total like by-tool (the
-                    // codex exception is not expressible at model granularity).
-                    return $0 + $1.input + $1.output + $1.cacheRead
+                    $0 + tokenValue($1)
                 }
                 if v > 0 {
                     segs.append((name, v, color(for: name)))
@@ -454,27 +518,17 @@ struct UsageAnalysisView: View {
     private func aggregateRows() -> [(name: String, tokens: Int64, calls: Int64, cost: Double, ratio: Double, color: Color)] {
         let groups = groupMap()
         let total = groups.values.flatMap { $0 }.reduce(Int64(0)) {
-            if grouping == .byTool {
-                return $0 + (ToolKind(rawValue: $1.key)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead)
-                           ?? ($1.input + $1.output))
-            }
-            // by-model: no tool info on model-keyed rows; include cacheRead.
-            return $0 + $1.input + $1.output + $1.cacheRead
+            $0 + tokenValue($1)
         }
         var out: [(name: String, tokens: Int64, calls: Int64, cost: Double, ratio: Double, color: Color)] = []
         for (name, list) in groups {
-            let tokens = list.reduce(Int64(0)) {
-                if grouping == .byTool {
-                    return $0 + (ToolKind(rawValue: $1.key)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead)
-                               ?? ($1.input + $1.output))
-                }
-                // by-model: no tool info on model-keyed rows; include cacheRead.
-                return $0 + $1.input + $1.output + $1.cacheRead
-            }
+            let tokens = list.reduce(Int64(0)) { $0 + tokenValue($1) }
             if tokens == 0 { continue }
-            let calls = list.reduce(Int64(0)) { $0 + $1.count }
-            let cost = list.reduce(0.0) { $0 + $1.cost }
-            out.append((name, tokens, calls, cost, total > 0 ? Double(tokens) / Double(total) : 0, color(for: name)))
+            let calls = list.reduce(Int64(0)) { $0 + max($1.count, 0) }
+            let cost = list.reduce(0.0) { $0 + max($1.cost, 0) }
+            out.append((name, tokens, calls, cost,
+                        total > 0 ? Double(tokens) / Double(total) : 0,
+                        color(for: name)))
         }
         return out.sorted { $0.tokens > $1.tokens }
     }
@@ -515,11 +569,14 @@ struct UsageAnalysisView: View {
         let top = aggregateRows().prefix(6)
         return HStack(spacing: 12) {
             ForEach(top, id: \.name) { r in
-                HStack(spacing: 4) {
-                    Circle().fill(r.color).frame(width: 6, height: 6)
-                    Text(r.name)
-                        .font(.system(size: TMType.micro))
+                HStack(spacing: 5) {
+                    Circle().fill(r.color).frame(width: 7, height: 7)
+                    Text(grouping == .byTool
+                         ? (ToolKind(rawValue: r.name)?.displayName ?? r.name)
+                         : r.name)
+                        .font(.system(size: TMType.caption))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
         }
