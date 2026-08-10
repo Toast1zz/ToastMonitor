@@ -189,7 +189,7 @@ struct PopoverHomeView: View {
                         Text(showSpent
                              ? (actualShown > 0 ? Format.money(actualShown) : "—")
                              : (estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
-                            .font(TMType.semibold(15))
+                            .font(TMType.regular(12))
                             .tmMonospacedDigit()
                             .foregroundStyle(.primary)
                         Image(systemName: "arrow.triangle.2.circlepath")
@@ -213,7 +213,7 @@ struct PopoverHomeView: View {
                         .font(TMType.regular(12))
                         .foregroundStyle(.secondary)
                     Text(cacheRateText)
-                        .font(TMType.semibold(15))
+                        .font(TMType.regular(12))
                         .tmMonospacedDigit()
                         .foregroundStyle(.primary)
                 }
