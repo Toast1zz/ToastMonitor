@@ -57,10 +57,18 @@ enum Format {
         fullFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
+    /// 整数金额的千分位分组（$173,564，避免无逗号的 "$173564"）。
+    private static let moneyWholeFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.maximumFractionDigits = 0
+        return f
+    }()
+
     /// Money in USD with adaptive precision.
     static func money(_ v: Double) -> String {
         if v == 0 { return "$0.00" }
-        if v >= 100 { return String(format: "$%.0f", v) }
+        if v >= 100 { return "$" + (moneyWholeFormatter.string(from: NSNumber(value: v)) ?? "\(Int(v))") }
         if v >= 1 { return String(format: "$%.2f", v) }
         if v >= 0.01 { return String(format: "$%.3f", v) }
         return String(format: "$%.4f", v)
