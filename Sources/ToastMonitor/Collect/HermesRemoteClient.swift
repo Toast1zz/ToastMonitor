@@ -146,7 +146,7 @@ final class HermesRemoteClient: ObservableObject {
 
     private static func validField(_ value: Any?, maxLength: Int,
                                    allowEmpty: Bool = true) -> Bool {
-        guard let value else { return true }
+        guard let value, !(value is NSNull) else { return true }
         guard let string = value as? String,
               (allowEmpty || !string.isEmpty),
               string.count <= maxLength,
@@ -236,6 +236,9 @@ final class HermesRemoteClient: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             update(&self.status)
+            if let error = self.status.error {
+                NSLog("[ToastMonitor] remote feed error: %@", error)
+            }
         }
     }
     func importFeed(_ result: [String: Any], database: Database = .shared) {
@@ -521,8 +524,9 @@ final class HermesRemoteClient: ObservableObject {
             // and dashboard do not wait for the next 15-second snapshot tick.
             NotificationCenter.default.post(name: CollectorEngine.didCollect, object: nil)
         }
-        if importedTurnCount > 0 {
-            NSLog("[ToastMonitor] remote feed: %d turns imported", importedTurnCount)
+        if importedTurnCount > 0 || ignoredRows > 0 {
+            NSLog("[ToastMonitor] remote feed: %d rows received, %d turns imported, %d invalid",
+                  rows.count, importedTurnCount, ignoredRows)
         }
     }
 

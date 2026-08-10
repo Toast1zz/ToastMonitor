@@ -23,11 +23,6 @@ enum KeychainStore {
         let context = LAContext()
         context.interactionNotAllowed = !allowPrompt
         query[kSecUseAuthenticationContext as String] = context
-        // macOS 26 can still consult legacy ACL UI policy before it honors
-        // LAContext. Keep the deprecated compatibility switch explicit so
-        // background reads never open a password sheet.
-        query[kSecUseAuthenticationUI as String] =
-            allowPrompt ? kSecUseAuthenticationUIAllow : kSecUseAuthenticationUIFail
         return query
     }
 
@@ -56,11 +51,16 @@ enum KeychainStore {
         return false
     }
 
-
     static func get(account: String, allowPrompt: Bool = false) -> String? {
         var query = query(account: account, allowPrompt: allowPrompt)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        if !allowPrompt {
+            // Legacy macOS Keychain ACLs ignore LAContext's interaction flag.
+            // `Skip` is the documented CopyMatching mode that guarantees an
+            // unattended poll never opens a password sheet.
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        }
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }

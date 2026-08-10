@@ -61,6 +61,28 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(turns.first?.ts, oldTimestamp)
     }
 
+    func testRemoteFeedAcceptsNullOptionalStrings() {
+        let now = Int64(Date().timeIntervalSince1970)
+        XCTAssertTrue(db.setSetting("src_claude", "remote"))
+        let row: [String: Any] = [
+            "tool": "claude",
+            "session_id": "null-title-session",
+            "model": "claude-3-5-sonnet",
+            "title": NSNull(),
+            "project": NSNull(),
+            "last_seen": NSNumber(value: now),
+            "first_seen": NSNumber(value: now),
+            "input_tokens": NSNumber(value: 10),
+            "output_tokens": NSNumber(value: 5),
+            "event_id": "null-title-event"
+        ]
+
+        HermesRemoteClient.shared.importFeed(["rows": [row]], database: db)
+
+        let turns = db.turns(sessionTool: "claude", sessionID: "null-title-session")
+        XCTAssertEqual(turns.count, 1, "JSON null must be treated like a missing optional field")
+    }
+
     func testCanonicalEventSupersedesDerivedMigrationRow() {
         let legacy = TurnRecord(tool: .claude, sessionID: "s1", project: "p", model: "m",
                                 ts: 100, inputTokens: 10, outputTokens: 5,
