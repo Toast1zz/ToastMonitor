@@ -10,6 +10,8 @@ import Combine
 @MainActor
 final class PanelController: NSObject, NSWindowDelegate {
     private let panel: NSPanel
+    /// 内容容器：非激活面板显示时手动刷新 cursor rects（见 show()）。
+    private weak var containerView: NSView?
     private weak var statusItem: NSStatusItem?
     private var resignObserver: NSObjectProtocol?
     private var contentHeightObserver: NSObjectProtocol?
@@ -70,6 +72,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         container.frame = NSRect(origin: .zero, size: size)
         container.autoresizingMask = [.width, .height]
         panel.contentView = container
+        self.containerView = container
 
         // Close when the panel resigns key (click elsewhere / Cmd-Tab away).
         resignObserver = NotificationCenter.default.addObserver(
@@ -182,6 +185,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         logPanel("show setFrame: finalFrame=\(panel.frame)")
         panel.invalidateShadow()
         panel.makeKeyAndOrderFront(nil)
+        // 非激活窗口不会自动重建 cursor rects，鼠标从终端移入时残留
+        // I-beam；强制刷新让容器默认箭头光标生效。
+        if let containerView {
+            panel.invalidateCursorRects(for: containerView)
+        }
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
         // 若已有内容高度测量值（非冷启动），立即应用——否则面板先用旧的
         // 600pt 高度显示，底部 Activity/Trend 被裁剪，等 0.4s 后才"展开"。
@@ -372,6 +380,14 @@ final class PanelContainerView: NSView {
             }
             effect = e
         }
+    }
+
+    /// 非激活面板不参与常规光标更新：鼠标从终端（I-beam）移入面板时
+    /// 会残留文本光标。整面板默认箭头光标；内容中的文本输入区（如有）
+    /// 会以更具体的 cursor rect 覆盖。
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
     }
 
     required init?(coder: NSCoder) {
