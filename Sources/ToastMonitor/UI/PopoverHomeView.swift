@@ -1,7 +1,6 @@
 import SwiftUI
 import Combine
 import AppKit
-import Charts
 
 /// yyyymmdd → Date（本地日历）。
 private func dayFromKey(_ key: Int64) -> Date {
@@ -18,6 +17,14 @@ private let shortDayFormatter: DateFormatter = {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
     f.dateFormat = "MMM d"
+    return f
+}()
+
+/// Trend 横轴 "8/5" 式标签（数字形式，无本地化月份）。
+private let axisDayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "M/d"
     return f
 }()
 
@@ -485,49 +492,54 @@ struct PopoverHomeView: View {
         return Calendar.current.date(from: c) ?? .distantPast
     }
 
+    /// 自绘折线（Canvas）：Swift Charts 冷启动首次渲染有 ~1s 延迟，
+    /// 会让 Trend 区块在面板展开后仍空白。Canvas 无框架初始化开销，
+    /// 冷启动即渲染；3 个日期标签与 hover 全部自绘。
     private var trendChart: some View {
-        Chart(trendSeries, id: \.key) { d in
-            LineMark(
-                x: .value("Day", Self.dayDate(d.key)),
-                y: .value("Tokens", d.tokens)
-            )
-            .foregroundStyle(TMDesign.accent)
-            .interpolationMethod(.catmullRom)
-        }
-        .chartXAxis {
-            // 3 个日期标签，颜色与 Activity 月份标签一致（TMDesign.quiet）。
-            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
-                AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
+        let series = trendSeries
+        return Canvas { ctx, size in
+            guard series.count > 1 else { return }
+            let minV = series.map(\.tokens).min() ?? 0
+            let range = max(series.map(\.tokens).max() ?? 0 - minV, 1)
+            let plotH = size.height - 20
+            func point(_ i: Int) -> CGPoint {
+                CGPoint(x: CGFloat(i) / CGFloat(series.count - 1) * size.width,
+                        y: plotH - CGFloat(series[i].tokens - minV) / CGFloat(range) * plotH)
+            }
+            var path = Path()
+            path.move(to: point(0))
+            for i in 1..<series.count { path.addLine(to: point(i)) }
+            ctx.stroke(path, with: .color(TMDesign.accent), lineWidth: 1.5)
+
+            // 3 个日期标签，颜色与 Activity 月份标签一致。
+            let labelCount = 3
+            for i in 0..<labelCount {
+                let idx = min(i * (series.count - 1) / (labelCount - 1), series.count - 1)
+                let x = CGFloat(idx) / CGFloat(series.count - 1) * size.width
+                let text = Text(axisDayFormatter.string(from: dayFromKey(series[idx].key)))
                     .font(.system(size: 9))
                     .foregroundStyle(TMDesign.quiet)
-                    .offset(y: 5)
+                ctx.draw(text, at: CGPoint(x: x, y: size.height - 6), anchor: .center)
             }
         }
-        .chartYAxis(.hidden)
         .frame(height: 90)
-        .chartOverlay { proxy in
+        .overlay {
             GeometryReader { geo in
                 Rectangle().fill(Color.clear).contentShape(Rectangle())
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location):
-                            guard let date = proxy.value(atX: location.x, as: Date.self) else { return }
-                            let day = Calendar.current.startOfDay(for: date)
-                            if let hit = trendSeries.first(where: {
-                                Calendar.current.isDate(dayFromKey($0.key), inSameDayAs: day)
-                            }) {
-                                hoveredTrend = hit
-                            } else {
-                                hoveredTrend = nil
-                            }
+                            guard series.count > 1, geo.size.width > 0 else { return }
+                            let idx = min(max(Int(location.x / geo.size.width * CGFloat(series.count - 1)), 0),
+                                          series.count - 1)
+                            hoveredTrend = series[idx]
                         case .ended:
                             hoveredTrend = nil
                         }
                     }
             }
         }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Daily usage trend")
     }
 
