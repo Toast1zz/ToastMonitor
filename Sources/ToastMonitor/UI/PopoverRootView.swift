@@ -55,9 +55,8 @@ struct PopoverRootView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            // 品牌标题是唯一使用 SF Mono 的地方（开发者工具特征）。
             Text("ToastMonitor")
-                .font(TMType.monoSemibold(13))
+                .font(.headline.weight(.semibold))
             Spacer()
             status
             Button(action: refresh) {

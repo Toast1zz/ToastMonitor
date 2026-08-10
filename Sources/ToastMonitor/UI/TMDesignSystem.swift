@@ -194,8 +194,6 @@ enum TMType {
     static func bold(_ size: CGFloat) -> Font { .system(size: size, weight: .bold) }
     /// SF Mono Regular — fine-print suffixes (e.g. "resets in …").
     static func monoRegular(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
-    /// SF Mono Semibold — brand title only.
-    static func monoSemibold(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold, design: .monospaced) }
 }
 
 /// Applies .monospacedDigit() — every dynamic number (tokens, money, percents,

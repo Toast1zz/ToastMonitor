@@ -486,7 +486,7 @@ private struct StatusRow: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            HStack(spacing: 6) {
+            VStack(alignment: .trailing, spacing: 2) {
                 Text((critical ? "★ " : "") + status)
                     .font(TMType.regular(TMType.caption))
                     .tmMonospacedDigit()
