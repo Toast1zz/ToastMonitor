@@ -207,7 +207,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         let maxH = max(120, topY - visible.minY - 8)
         let target = min(max(h, 120), maxH)
         logPanel("applyHeight: reported=\(h) topY=\(topY) maxH=\(maxH) target=\(target) currentFrame=\(panel.frame)")
-        guard abs(target - panel.frame.height) > 2 else { return }
+        // 8pt 阈值：初始高度已预留完整内容（850），微小的测量差异不触发
+        // 高度动画，避免打开瞬间的弹簧感；设置页等大幅差异仍会自适应。
+        guard abs(target - panel.frame.height) > 8 else { return }
         var frame = panel.frame
         frame.size.height = target
         frame.origin.y = topY - target // top pinned; bottom moves
