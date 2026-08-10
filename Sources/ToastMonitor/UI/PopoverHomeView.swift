@@ -25,6 +25,8 @@ struct PopoverHomeView: View {
     /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
     /// counter tick up during streaming.
     @AppStorage("popoverFullTokens") private var fullTokens = false
+    /// Hero 指标行：Spent 与 API Value 共用一行，点击切换显示其一。
+    @State private var showSpent = true
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var totals: Database.ToolTotals {
@@ -96,8 +98,6 @@ struct PopoverHomeView: View {
                     hero
                         .padding(.bottom, 12)
                     sourceBar
-                        .padding(.bottom, 12)
-                    metricsTable
                         .padding(.bottom, 14)
                     Divider().opacity(0.4)
                     quotaSection
@@ -146,9 +146,11 @@ struct PopoverHomeView: View {
         }
     }
 
-    /// Hero: the decision number is TOKENS. Spend lives in the table below.
+    /// Hero: the decision number is TOKENS. The second line shows one cost
+    /// figure at a time — Spent or API Value — toggled by clicking it, with
+    /// the cache hit rate pinned on the right.
     private var hero: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(fullTokens ? Format.full(tokens) : Format.compact(tokens))
                     .font(TMType.bold(34))
@@ -176,10 +178,49 @@ struct PopoverHomeView: View {
                 .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
                 .accessibilityLabel("Toggle number format")
             }
-            Text("\(Format.count(totals.count)) calls")
-                .font(.caption2)
-                .tmMonospacedDigit()
-                .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button {
+                    showSpent.toggle()
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(showSpent ? "Spent" : "API Value")
+                            .font(TMType.regular(12))
+                            .foregroundStyle(.secondary)
+                        Text(showSpent
+                             ? (actualShown > 0 ? Format.money(actualShown) : "—")
+                             : (estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
+                            .font(TMType.semibold(15))
+                            .tmMonospacedDigit()
+                            .foregroundStyle(.primary)
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 9))
+                            .foregroundStyle(TMDesign.faint)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(showSpent ? "Spent shown; click for API Value" : "API Value shown; click for Spent")
+                .accessibilityLabel(showSpent ? "Spent" : "API Value")
+                .accessibilityValue(Text(showSpent
+                                         ? (actualShown > 0 ? Format.money(actualShown) : "—")
+                                         : (estimatedShown > 0 ? Format.money(estimatedShown) : "—")))
+                .accessibilityHint("Click to switch between Spent and API Value")
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 5) {
+                    Text("Cache Hit Rate")
+                        .font(TMType.regular(12))
+                        .foregroundStyle(.secondary)
+                    Text(cacheRateText)
+                        .font(TMType.semibold(15))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Cache hit rate")
+                .accessibilityValue(Text(cacheRateText))
+            }
         }
     }
 
@@ -213,66 +254,11 @@ struct PopoverHomeView: View {
         )
     }
 
-    /// 成本拆解表。口径（用户 2026-08-05 定义）：
-    /// 实际支出 = 订阅摊销 + PAYG 实际（OpenRouter 今日 + 直连 turns actual）；
-    /// 估算成本 = turns 估算（未知真实价的估算）。
-    /// 布局：两列三行，每行左 token 指标、右成本指标，label 左 value 右。
-    private var metricsTable: some View {
-        VStack(spacing: 8) {
-            metricPair("Input", Format.compact(totals.input),
-                       "Spent", actualShown > 0 ? Format.money(actualShown) : "—")
-            Divider().opacity(0.5)
-            metricPair("Output", Format.compact(totals.output),
-                       "API Value", estimatedShown > 0 ? Format.money(estimatedShown) : "—")
-            Divider().opacity(0.5)
-            metricPair("Cache", Format.compact(totals.cacheRead),
-                       "Cache Rate", cacheRateText)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-        )
-        .help("Cache rate: cached tokens as a share of all tokens")
-    }
-
-    /// 缓存率 = 缓存命中 / (输入 + 输出 + 缓存命中)。
+    /// 缓存命中率 = 缓存命中 / (输入 + 输出 + 缓存命中)。
     private var cacheRateText: String {
         let total = totals.input + totals.output + totals.cacheRead
         guard total > 0 else { return "—" }
         return "\(Int(Double(totals.cacheRead) / Double(total) * 100))%"
-    }
-
-    private func metricPair(_ l1: String, _ v1: String, _ l2: String, _ v2: String) -> some View {
-        HStack(spacing: 0) {
-            metricItem(l1, v1)
-                .padding(.trailing, 10)
-            Divider().frame(height: 28)
-            metricItem(l2, v2)
-                .padding(.leading, 10)
-        }
-    }
-
-    private func metricItem(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(TMType.regular(13))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            Text(value)
-                .font(TMType.semibold(16))
-                .tmMonospacedDigit()
-                .foregroundStyle(.primary)
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
     }
 
     /// 实际支出 = turns 实际 + OpenRouter 今日实际 + 全部订阅摊销。
