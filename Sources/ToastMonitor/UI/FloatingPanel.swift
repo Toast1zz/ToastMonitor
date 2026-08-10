@@ -323,19 +323,32 @@ final class PanelContainerView: NSView {
             let g = NSGlassEffectView()
             g.style = .regular
             g.cornerRadius = cornerRadius
-            g.contentView = content
             g.translatesAutoresizingMaskIntoConstraints = false
+            // 内容独立叠加在玻璃之上（与降级路径同构）。玻璃需要 contentView
+            // 才渲染，放一个空视图占位；内容不嵌入玻璃，alphaValue 才能只
+            // 作用于玻璃背景——通透度滑块调的是真正的透明度。
+            g.contentView = NSView()
+            content.translatesAutoresizingMaskIntoConstraints = false
             addSubview(g)
+            addSubview(content)
             NSLayoutConstraint.activate([
                 g.leadingAnchor.constraint(equalTo: leadingAnchor),
                 g.trailingAnchor.constraint(equalTo: trailingAnchor),
                 g.topAnchor.constraint(equalTo: topAnchor),
                 g.bottomAnchor.constraint(equalTo: bottomAnchor),
+                content.leadingAnchor.constraint(equalTo: leadingAnchor),
+                content.trailingAnchor.constraint(equalTo: trailingAnchor),
+                content.topAnchor.constraint(equalTo: topAnchor),
+                content.bottomAnchor.constraint(equalTo: bottomAnchor),
             ])
-            // 玻璃通透度滑块 → tintColor 强度（通透 = 弱 tint，磨砂 = 强 tint）。
+            // 通透度滑块：低端 = 玻璃 alpha 趋近 0（几乎全透明）+ 无黑 tint；
+            // 高端 = 满 alpha + 0.3 黑 tint（磨砂）。
             g.tintColor = NSColor.black.withAlphaComponent(GlassSettings.tint(for: GlassSettings.shared.intensity))
+            g.alphaValue = GlassSettings.alpha(for: GlassSettings.shared.intensity)
             cancellable = GlassSettings.shared.$intensity.sink { [weak self] v in
-                (self?.glass as? NSGlassEffectView)?.tintColor = NSColor.black.withAlphaComponent(GlassSettings.tint(for: v))
+                guard let g = self?.glass as? NSGlassEffectView else { return }
+                g.tintColor = NSColor.black.withAlphaComponent(GlassSettings.tint(for: v))
+                g.alphaValue = GlassSettings.alpha(for: v)
             }
             glass = g
         } else {

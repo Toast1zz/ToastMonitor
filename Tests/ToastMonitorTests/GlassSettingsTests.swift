@@ -23,7 +23,7 @@ final class GlassSettingsTests: XCTestCase {
     }
 
     func testAlphaMappingEndpoints() {
-        XCTAssertEqual(GlassSettings.alpha(for: 0.25), 0.2, accuracy: 0.0001, "最通透端应接近全透（用户要求更通透）")
+        XCTAssertEqual(GlassSettings.alpha(for: 0.25), 0.05, accuracy: 0.0001, "最通透端玻璃几乎消失（真透明）")
         XCTAssertEqual(GlassSettings.alpha(for: 1.0), 1.0, accuracy: 0.0001, "满磨砂端 = 1.0")
     }
 
@@ -33,12 +33,12 @@ final class GlassSettingsTests: XCTestCase {
         let hi = GlassSettings.alpha(for: 1.0)
         XCTAssertLessThan(lo, mid)
         XCTAssertLessThan(mid, hi)
-        // 中点（t=0.5）≈ 0.2 + 0.8·0.66 ≈ 0.73：中段已有明确磨砂，但未到满。
-        XCTAssertGreaterThan(mid, 0.65)
-        XCTAssertLessThan(mid, 0.85)
-        // 离开通透端应快速起砂：滑块 25% 处已过半程视觉。
+        // 中点（t=0.5）≈ 0.05 + 0.95·0.66 ≈ 0.68：中段已有明确磨砂，但未到满。
+        XCTAssertGreaterThan(mid, 0.6)
+        XCTAssertLessThan(mid, 0.8)
+        // 离开通透端应快速起砂：滑块 25% 处已有接近半程视觉。
         let quarter = GlassSettings.alpha(for: 0.4375)  // 滑块 25%
-        XCTAssertGreaterThan(quarter, 0.5, "低段变化要快，25% 就有半程磨砂")
+        XCTAssertGreaterThan(quarter, 0.4, "低段变化要快，25% 就有接近半程磨砂")
     }
 
     func testAlphaClampsOutOfRangeSlider() {

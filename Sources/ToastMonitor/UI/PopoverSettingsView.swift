@@ -37,18 +37,17 @@ final class GlassSettings: ObservableObject {
         min(max(v, range.lowerBound), range.upperBound)
     }
 
-    /// 滑块值 → NSVisualEffectView 的 alpha。
+    /// 滑块值 → 玻璃背景层的 alpha（macOS 26+ NSGlassEffectView 与
+    /// 降级 NSVisualEffectView 共用）。
     ///
-    /// 直接线性映射不线性：behindWindow 磨砂的感知区间很窄，alpha 降到
-    /// ~0.8 以下磨砂视觉就消失了，导致滑块中低段全是死区（用户实测
-    /// 「到 80% 就完全 clear，再拖没区别」）。用 gamma 曲线把视觉变化
-    /// 摊平到整个滑块行程：
-    /// - 0% 滑块 → alpha 0.2（几乎全透——「最通透」端要真的通透）
+    /// 最低端必须真的透明：alpha 0.05 ≈ 玻璃几乎消失，只留内容文字；
+    /// 高端 1.0 满磨砂。gamma 0.6 让低段变化最快（离开通透端立刻出现
+    /// 磨砂），中高段细腻调节。
+    /// - 0% 滑块 → alpha 0.05（几乎全透明）
     /// - 100% 滑块 → alpha 1.0（满磨砂）
-    /// - 中段按 pow(t, 0.6) 过渡，低段变化最快（离开通透端立刻出现磨砂）。
     nonisolated static func alpha(for slider: Double) -> Double {
         let t = min(max((slider - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
-        let low: Double = 0.2
+        let low: Double = 0.05
         return low + (1 - low) * pow(t, 0.6)
     }
 }
