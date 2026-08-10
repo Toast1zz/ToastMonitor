@@ -178,47 +178,35 @@ struct PopoverHomeView: View {
                 .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
                 .accessibilityLabel("Toggle number format")
             }
-            VStack(alignment: .leading, spacing: 4) {
+            Button {
+                showSpent.toggle()
+            } label: {
                 HStack(spacing: 5) {
-                    Text("Cache Hit Rate")
+                    Text(showSpent ? "Spent" : "API Value")
                         .font(TMType.regular(12))
                         .foregroundStyle(.secondary)
-                    Text(cacheRateText)
+                        // 标签固定宽度：Spent 与 API Value 长度不同，
+                        // 切换时数值与图标位置不跳动。
+                        .frame(width: 72, alignment: .leading)
+                    Text(showSpent
+                         ? (actualShown > 0 ? Format.money(actualShown) : "—")
+                         : (estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
                         .font(TMType.regular(12))
                         .tmMonospacedDigit()
                         .foregroundStyle(.secondary)
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 9))
+                        .foregroundStyle(TMDesign.faint)
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Cache hit rate")
-                .accessibilityValue(Text(cacheRateText))
-
-                Button {
-                    showSpent.toggle()
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(showSpent ? "Spent" : "API Value")
-                            .font(TMType.regular(12))
-                            .foregroundStyle(.secondary)
-                        Text(showSpent
-                             ? (actualShown > 0 ? Format.money(actualShown) : "—")
-                             : (estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
-                            .font(TMType.regular(12))
-                            .tmMonospacedDigit()
-                            .foregroundStyle(.secondary)
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 9))
-                            .foregroundStyle(TMDesign.faint)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(showSpent ? "Spent shown; click for API Value" : "API Value shown; click for Spent")
-                .accessibilityLabel(showSpent ? "Spent" : "API Value")
-                .accessibilityValue(Text(showSpent
-                                         ? (actualShown > 0 ? Format.money(actualShown) : "—")
-                                         : (estimatedShown > 0 ? Format.money(estimatedShown) : "—")))
-                .accessibilityHint("Click to switch between Spent and API Value")
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(showSpent ? "Spent shown; click for API Value" : "API Value shown; click for Spent")
+            .accessibilityLabel(showSpent ? "Spent" : "API Value")
+            .accessibilityValue(Text(showSpent
+                                     ? (actualShown > 0 ? Format.money(actualShown) : "—")
+                                     : (estimatedShown > 0 ? Format.money(estimatedShown) : "—")))
+            .accessibilityHint("Click to switch between Spent and API Value")
         }
     }
 
@@ -250,13 +238,6 @@ struct PopoverHomeView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.primary.opacity(0.04))
         )
-    }
-
-    /// 缓存命中率 = 缓存命中 / (输入 + 输出 + 缓存命中)。
-    private var cacheRateText: String {
-        let total = totals.input + totals.output + totals.cacheRead
-        guard total > 0 else { return "—" }
-        return "\(Int(Double(totals.cacheRead) / Double(total) * 100))%"
     }
 
     /// 实际支出 = turns 实际 + OpenRouter 今日实际 + 全部订阅摊销。
@@ -473,12 +454,7 @@ struct PopoverHomeView: View {
     private func statusRow(name: String, status: String, statusColor: Color,
                            critical: Bool = false, resetSuffix: String? = nil) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
-                  critical: critical, resetSuffix: resetSuffix, action: openPlans)
-    }
-
-    private func openPlans() {
-        WindowManager.shared.show(tab: .plans)
-        NotificationCenter.default.post(name: PanelController.hideNotification, object: nil)
+                  critical: critical, resetSuffix: resetSuffix)
     }
 
     /// Post a measured height slice straight to the panel controller.
@@ -502,7 +478,7 @@ private struct HeroValue: Equatable {
     let full: Bool
 }
 
-/// 额度状态行：名称 primary，状态按健康状态着色，右侧 chevron 表示可打开计划。
+/// 额度状态行：名称 primary，状态按健康状态着色。纯信息行，不引导跳转。
 /// 状态主文本是 SF Pro Regular + 等宽数字；可选的 "resets in …" 后缀单独用
 /// SF Mono Regular，不让整行变成等宽。
 private struct StatusRow: View {
@@ -511,49 +487,32 @@ private struct StatusRow: View {
     let statusColor: Color
     var critical = false
     var resetSuffix: String?
-    let action: () -> Void
-    @State private var hovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Text(name)
-                    .font(TMType.medium(TMType.body))
-                    .foregroundStyle(.primary)
+        HStack(spacing: 8) {
+            Text(name)
+                .font(TMType.medium(TMType.body))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                Text((critical ? "★ " : "") + status)
+                    .font(TMType.regular(TMType.caption))
+                    .tmMonospacedDigit()
+                    .foregroundStyle(statusColor)
                     .lineLimit(1)
-                Spacer(minLength: 8)
-                HStack(spacing: 6) {
-                    Text((critical ? "★ " : "") + status)
-                        .font(TMType.regular(TMType.caption))
-                        .tmMonospacedDigit()
-                        .foregroundStyle(statusColor)
+                if let resetSuffix {
+                    Text(resetSuffix)
+                        .font(TMType.monoRegular(TMType.caption))
+                        .foregroundStyle(statusColor.opacity(0.7))
                         .lineLimit(1)
-                    if let resetSuffix {
-                        Text(resetSuffix)
-                            .font(TMType.monoRegular(TMType.caption))
-                            .foregroundStyle(statusColor.opacity(0.7))
-                            .lineLimit(1)
-                    }
                 }
-                .layoutPriority(1)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 0)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(hovering ? Color.primary.opacity(0.06) : .clear)
-            )
-            .onHover { hovering = $0 }
+            .layoutPriority(1)
         }
-        .buttonStyle(.plain)
-        .help("Open plans & balance")
+        .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(Text([status, resetSuffix].compactMap { $0 }.joined(separator: " · ")))
-        .accessibilityHint("Open plans & balance for details")
     }
 }
