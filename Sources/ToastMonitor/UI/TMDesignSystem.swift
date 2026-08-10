@@ -114,6 +114,30 @@ enum TMDesign {
     }
 }
 
+/// 月份轴刻度：Overview 热力图与 Analysis 两个图表共用。
+/// 输入按时间升序的 yyyymmdd 键（热力图取每周首键），输出
+/// [(index, label)]——每个新月份的第一个位置一个刻度。一月附带两位年份，
+/// 长跨度里年界可见。未来哨兵 0 等非日期键由调用方过滤，不进本函数。
+enum MonthAxis {
+    static let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    static func ticks(days: [Int64]) -> [(index: Int, label: String)] {
+        var out: [(Int, String)] = []
+        var lastMonth = -1
+        var lastYear = -1
+        for (i, d) in days.enumerated() {
+            let year = Int(d) / 10_000
+            let month = (Int(d) / 100) % 100
+            guard month != lastMonth || year != lastYear else { continue }
+            out.append((i, month == 1 ? String(format: "Jan '%02d", year % 100) : names[month - 1]))
+            lastMonth = month
+            lastYear = year
+        }
+        return out
+    }
+}
+
 /// Shared wording and iconography for aggregate source freshness.
 enum TMHealthStatus {
     case failed(Int)
@@ -248,6 +272,32 @@ struct TMSectionHeader: View {
     }
 }
 
+/// 迷你指标：小标签 + 数值，Overview hero 与 Analysis 汇总条共用。
+/// 标签固定 caption quiet；数值字体由调用方指定（Overview hero regular 16、
+/// Analysis 汇总 semibold 16），一律 tmMonospacedDigit 防宽度跳动。
+struct TMMiniMetric: View {
+    let label: String
+    let value: String
+    let font: Font
+    var spacing: CGFloat = 1
+    /// 数值缩小时的最小缩放（1.0 = 不缩放）。
+    var minimumScaleFactor: CGFloat = 1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            Text(label)
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            Text(value)
+                .font(font)
+                .tmMonospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(minimumScaleFactor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct TMStatusPill: View {
     let text: String
     let color: Color
@@ -336,7 +386,37 @@ extension View {
 }
 import SwiftUI
 
-/// 预测状态语义（各页面自行生成英文预测文案）。
+/// 预测状态语义 + 英文预测文案（计划页/设置页共用，避免逐字重复）。
 enum ForecastText {
     enum Status { case ok, warn, danger, neutral }
+
+    /// English forecast line for a subscription.
+    static func line(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: Status) {
+        switch plan {
+        case "go":
+            if let exhaust = fc.exhaustDate {
+                return ("\(Format.money(fc.used)) used · exhausts \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
+            }
+            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
+            return ("\(Format.money(fc.used)) used · \(Format.money(fc.dailyRate))/day · \(Format.money(remaining)) left at cycle end", .ok)
+        case "openrouter":
+            if let exhaust = fc.exhaustDate {
+                return ("Balance \(Format.money(fc.limit)) · ~empty \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
+            }
+            return ("Balance \(Format.money(fc.limit)) · \(Format.money(fc.dailyRate))/day", .ok)
+        case "claude":
+            return ("Claude value \(Format.money(fc.used)) · \(Format.money(fc.dailyRate))/day", .ok)
+        default:
+            return ("Paid \(Format.money(fc.used)) · no usage source linked", .neutral)
+        }
+    }
+
+    static func color(_ status: Status) -> Color {
+        switch status {
+        case .ok: return TMDesign.quiet
+        case .warn: return TMDesign.accent
+        case .danger: return TMDesign.danger
+        case .neutral: return .secondary
+        }
+    }
 }

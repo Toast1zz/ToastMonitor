@@ -7,8 +7,11 @@ struct SettingsView: View {
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
     @State private var saved = false
     @State private var feedError: String?
-    @State private var sourceSaved: ToolKind?
-    @State private var sourceFailed: ToolKind?
+    @State private var feedDisabled = false
+    /// Per-tool feedback slots: each tool owns its own "Saved ✓"/"Save
+    /// failed" message, so one tool's save never clears another's feedback.
+    @State private var sourceSaved: [ToolKind: Bool] = [:]
+    @State private var sourceFailed: [ToolKind: Bool] = [:]
     /// Per-tool write generation: only the latest write for a tool may touch
     /// the saved/failed feedback, so rapid toggles cannot interleave.
     @State private var sourceGeneration: [ToolKind: Int] = [:]
@@ -48,19 +51,19 @@ struct SettingsView: View {
                                             guard sourceGeneration[tool] == gen else { return }
                                             if ok {
                                                 sources[tool] = newValue
-                                                sourceSaved = tool
-                                                sourceFailed = nil
+                                                sourceSaved[tool] = true
+                                                sourceFailed[tool] = nil
                                             } else {
                                                 // Keep the picker aligned with the
                                                 // effective persisted value after a
                                                 // failed write.
                                                 sources[tool] = tool.sourceIsRemote
-                                                sourceFailed = tool
-                                                sourceSaved = nil
+                                                sourceFailed[tool] = true
+                                                sourceSaved[tool] = nil
                                             }
                                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                                if sourceSaved == tool { sourceSaved = nil }
-                                                if sourceFailed == tool { sourceFailed = nil }
+                                                if sourceSaved[tool] != nil { sourceSaved[tool] = nil }
+                                                if sourceFailed[tool] != nil { sourceFailed[tool] = nil }
                                             }
                                         }
                                     }
@@ -76,12 +79,12 @@ struct SettingsView: View {
                             Text(tool.sourceIsRemote ? "Reads VPS feed" : "Reads local logs")
                                 .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.quiet)
-                            if sourceSaved == tool {
+                            if sourceSaved[tool] == true {
                                 Text("Saved ✓")
                                     .font(TMType.regular(TMType.micro))
                                     .foregroundStyle(TMDesign.accent)
                             }
-                            if sourceFailed == tool {
+                            if sourceFailed[tool] == true {
                                 Text("Save failed")
                                     .font(TMType.regular(TMType.micro))
                                     .foregroundStyle(TMDesign.danger)
@@ -138,6 +141,7 @@ struct SettingsView: View {
                                 DispatchQueue.main.async {
                                     saved = ok
                                     feedError = ok ? nil : "Save failed (database unavailable)"
+                                    feedDisabled = ok && raw.isEmpty
                                 }
                             }
                         }
@@ -164,7 +168,11 @@ struct SettingsView: View {
                                 .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.danger)
                         }
-                        if saved {
+                        if feedDisabled {
+                            Text("Remote feed disabled")
+                                .font(TMType.regular(TMType.micro))
+                                .foregroundStyle(TMDesign.accent)
+                        } else if saved {
                             Text("Saved")
                                 .font(TMType.regular(TMType.micro))
                                 .foregroundStyle(TMDesign.accent)
@@ -203,6 +211,7 @@ struct SettingsView: View {
         .onChange(of: feedURL) { _, _ in
             saved = false
             feedError = nil
+            feedDisabled = false
         }
     }
 
@@ -224,38 +233,6 @@ struct SettingsView: View {
         }
         return nil
     }
-
-    /// English forecast line for a subscription (ForecastText in the design
-    /// system still emits Chinese; see report for the main agent).
-    static func forecastLine(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: ForecastText.Status) {
-        switch plan {
-        case "go":
-            if let exhaust = fc.exhaustDate {
-                return ("\(Format.money(fc.used)) used · exhausts \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
-            }
-            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
-            return ("\(Format.money(fc.used)) used · \(Format.money(fc.dailyRate))/day · \(Format.money(remaining)) left at cycle end", .ok)
-        case "openrouter":
-            if let exhaust = fc.exhaustDate {
-                return ("Balance \(Format.money(fc.limit)) · ~empty \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
-            }
-            return ("Balance \(Format.money(fc.limit)) · \(Format.money(fc.dailyRate))/day", .ok)
-        case "claude":
-            return ("Claude value \(Format.money(fc.used)) · \(Format.money(fc.dailyRate))/day", .ok)
-        default:
-            return ("Paid \(Format.money(fc.used)) · no usage source linked", .neutral)
-        }
-    }
-
-    static func forecastColor(_ status: ForecastText.Status) -> Color {
-        switch status {
-        case .ok: return TMDesign.quiet
-        case .warn: return TMDesign.accent
-        case .danger: return TMDesign.danger
-        case .neutral: return .secondary
-        }
-    }
-
 }
 
 /// 订阅管理: list + add/edit form (固定成本侧信息).
@@ -342,11 +319,11 @@ struct SubscriptionSettingsSection: View {
                                         .tmMonospacedDigit()
                                         .foregroundStyle(TMDesign.quiet)
                                     if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                        let line = SettingsView.forecastLine(for: fc, plan: sub.plan)
+                                        let line = ForecastText.line(for: fc, plan: sub.plan)
                                         Text(line.text)
                                             .font(TMType.semibold(TMType.micro))
                                             .tmMonospacedDigit()
-                                            .foregroundStyle(SettingsView.forecastColor(line.status))
+                                            .foregroundStyle(ForecastText.color(line.status))
                                     }
                                 }
                             }

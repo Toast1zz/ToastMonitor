@@ -35,9 +35,6 @@ struct UsageAnalysisView: View {
     /// distinct palette entries (hash-based mapping collided).
     @State private var modelColors: [String: Color] = [:]
 
-    private static let monthAbbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
     // MARK: - Derived data（单次求值，仅数据到达时重建）
 
     /// 归一化行：(day, groupKey, input, output, cacheRead, cost, calls)
@@ -77,6 +74,13 @@ struct UsageAnalysisView: View {
         let totalTokens: Int64
         let totalCost: Double
         let totalCalls: Int64
+        /// 纯派生图表输入，build 时一并算出，hover/渲染时不再重算：
+        /// token 图日峰值与月份刻度、成本图的天键序列/峰值/月份刻度。
+        let maxDayTokens: Int64
+        let tokenTicks: [(index: Int, label: String)]
+        let costDays: [Int64]
+        let maxDayCost: Double
+        let costTicks: [(index: Int, label: String)]
     }
 
     var body: some View {
@@ -137,13 +141,13 @@ struct UsageAnalysisView: View {
         let calls = d?.totalCalls ?? 0
         let daily = days > 0 ? total / Int64(days) : 0
         return HStack(spacing: 0) {
-            summaryMetric("Tokens", Format.compact(total))
+            TMMiniMetric(label: "Tokens", value: Format.compact(total), font: TMType.semibold(16), spacing: 3, minimumScaleFactor: 0.75)
             Divider().frame(height: 34)
-            summaryMetric("Estimated Cost", Format.moneyShort(cost))
+            TMMiniMetric(label: "Estimated Cost", value: Format.moneyShort(cost), font: TMType.semibold(16), spacing: 3, minimumScaleFactor: 0.75)
             Divider().frame(height: 34)
-            summaryMetric("Daily Avg Tokens", Format.compact(daily))
+            TMMiniMetric(label: "Daily Avg Tokens", value: Format.compact(daily), font: TMType.semibold(16), spacing: 3, minimumScaleFactor: 0.75)
             Divider().frame(height: 34)
-            summaryMetric("Calls", Format.count(calls))
+            TMMiniMetric(label: "Calls", value: Format.count(calls), font: TMType.semibold(16), spacing: 3, minimumScaleFactor: 0.75)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -154,20 +158,6 @@ struct UsageAnalysisView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(TMDesign.divider, lineWidth: 1)
         }
-    }
-
-    private func summaryMetric(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-            Text(value)
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .tmMonospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func load() {
@@ -266,6 +256,15 @@ struct UsageAnalysisView: View {
                                 color: color(for: name, grouping: grouping, modelColors: modelColors))
         }
 
+        // 图表纯派生输入（与 tokensChart/costChart 原 body 内公式一致）。
+        let maxDayTokens = segments.map { day in
+            day.segments.reduce(Int64(0)) { $0 + $1.value }
+        }.max() ?? 1
+        let tokenTicks = MonthAxis.ticks(days: dayOrder)
+        let costDays = costByDay.keys.sorted()
+        let maxDayCost = max(costDays.map { costByDay[$0] ?? 0 }.max() ?? 0, 0.001)
+        let costTicks = MonthAxis.ticks(days: costDays)
+
         return AnalysisData(grouping: grouping,
                             range: range,
                             segments: segments,
@@ -274,7 +273,12 @@ struct UsageAnalysisView: View {
                             dayCount: dayOrder.count,
                             totalTokens: totalTokens,
                             totalCost: costByName.values.reduce(0, +),
-                            totalCalls: callsByName.values.reduce(0, +))
+                            totalCalls: callsByName.values.reduce(0, +),
+                            maxDayTokens: maxDayTokens,
+                            tokenTicks: tokenTicks,
+                            costDays: costDays,
+                            maxDayCost: maxDayCost,
+                            costTicks: costTicks)
     }
 
     private static func tokenValue(_ row: Row, grouping: Grouping) -> Int64 {
@@ -314,6 +318,7 @@ struct UsageAnalysisView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel("Range")
             .frame(width: 200)
 
             Picker("Grouping", selection: $grouping) {
@@ -321,6 +326,7 @@ struct UsageAnalysisView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel("Grouping")
             .frame(width: 180)
         }
     }
@@ -342,9 +348,7 @@ struct UsageAnalysisView: View {
                     .font(TMType.regular(TMType.body))
                     .foregroundStyle(.secondary)
             } else {
-                let maxV = days.map { day in
-                    day.segments.reduce(Int64(0)) { $0 + $1.value }
-                }.max() ?? 1
+                let maxV = analysis?.maxDayTokens ?? 1
                 let axisH: CGFloat = 18
                 if let idx = hoveredDayIdx, idx < days.count {
                     tokenHoverLine(days[idx])
@@ -379,7 +383,7 @@ struct UsageAnalysisView: View {
                                     y -= h
                                 }
                             }
-                            for (idx, label) in monthTickIndices(days.map(\.date)) {
+                            for (idx, label) in analysis?.tokenTicks ?? [] {
                                 let x = yAxisW + CGFloat(idx) * (barW + 2) + barW / 2
                                 ctx.draw(Text(label).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(.secondary),
                                          at: CGPoint(x: x, y: chartH + 7))
@@ -457,8 +461,8 @@ struct UsageAnalysisView: View {
                     .font(TMType.regular(TMType.body))
                     .foregroundStyle(.secondary)
             } else {
-                let keys = days.keys.sorted()
-                let maxV = max(days.values.max() ?? 0, 0.001)
+                let keys = analysis?.costDays ?? []
+                let maxV = analysis?.maxDayCost ?? 0.001
                 let axisH: CGFloat = 18
                 if let idx = hoveredCostIdx, idx < keys.count {
                     let k = keys[idx]
@@ -509,7 +513,7 @@ struct UsageAnalysisView: View {
                             area.closeSubpath()
                             ctx.fill(area, with: .color(TMDesign.accent.opacity(0.12)))
                         }
-                        for (idx, label) in monthTickIndices(keys) {
+                        for (idx, label) in analysis?.costTicks ?? [] {
                             let x = keys.count > 1
                                 ? yAxisW + CGFloat(idx) / CGFloat(keys.count - 1) * (size.width - yAxisW)
                                 : yAxisW + (size.width - yAxisW) / 2
@@ -643,20 +647,6 @@ struct UsageAnalysisView: View {
     }
 
     // MARK: - 数据组装
-
-    /// Month labels for chart x-axes (yyyymmdd keys, one tick per month).
-    private func monthTickIndices(_ days: [Int64]) -> [(Int, String)] {
-        var out: [(Int, String)] = []
-        var last = -1
-        for (i, d) in days.enumerated() {
-            let m = (Int(d) / 100) % 100
-            if m != last {
-                out.append((i, Self.monthAbbr[m - 1]))
-                last = m
-            }
-        }
-        return out
-    }
 
     private var legend: some View {
         // Sorted by usage (aggregates are descending), top 6.

@@ -92,11 +92,14 @@ final class HermesRemoteClient: ObservableObject {
 
     @discardableResult
     func provision(url: String?) -> Bool {
-        guard let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty,
-              raw.count <= Self.maxFeedURLLength,
-              raw.rangeOfCharacter(from: .controlCharacters) == nil,
-              let parsed = URL(string: raw),
+        // 空值 = 清除远程 feed（回退本地源）：直接删除配置，不视为非法。
+        let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            return Database.shared.setSetting("remote_feed_url", nil)
+        }
+        guard trimmed.count <= Self.maxFeedURLLength,
+              trimmed.rangeOfCharacter(from: .controlCharacters) == nil,
+              let parsed = URL(string: trimmed),
               parsed.user == nil,
               parsed.password == nil,
               Self.isAllowedFeedURL(parsed) else { return false }

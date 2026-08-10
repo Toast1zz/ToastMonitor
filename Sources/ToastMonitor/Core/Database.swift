@@ -1411,6 +1411,7 @@ final class Database: @unchecked Sendable {
             let rc = sqlite3_step(stmt)
             sqlite3_finalize(stmt)
             guard rc == SQLITE_DONE else { markTransactionWriteFailure(); return false }
+            bumpDataVersion()
             NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
             return true
         }
@@ -1433,6 +1434,7 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         guard rc == SQLITE_DONE else { markTransactionWriteFailure(); return false }
+        bumpDataVersion()
         NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
     }
@@ -1447,6 +1449,7 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         guard rc == SQLITE_DONE else { markTransactionWriteFailure(); return false }
+        bumpDataVersion()
         NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
     }
@@ -1853,6 +1856,7 @@ final class Database: @unchecked Sendable {
     /// 轻量数据版本戳：任何会改变快照的写路径（turns / 额度快照 / 订阅 /
     /// 有效扫描 heartbeat）都会反映在计数与最大时间戳上。快照缓存用它
     /// 判断是否需要重算——版本未变时直接复用上次聚合结果。
+    /// 包含当日本地日期：跨午夜后"今日"窗口必须滚动。
     func dataVersionKey() -> String {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return "closed" }
@@ -1862,7 +1866,9 @@ final class Database: @unchecked Sendable {
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM opencodego_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM openrouter_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) FROM subscriptions)
-            || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='last_scan_heartbeat');
+            || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='last_scan_heartbeat')
+            || '|' || (SELECT COALESCE(CAST(v AS INTEGER),0) FROM settings WHERE k='data_version')
+            || '|' || (SELECT strftime('%Y%m%d', 'now', 'localtime'));
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return "err" }
         var out = "err"
@@ -1871,6 +1877,20 @@ final class Database: @unchecked Sendable {
         }
         sqlite3_finalize(stmt)
         return out
+    }
+
+    /// 订阅写路径的修改计数（UPDATE 不改变 COUNT/MAX(id)，需要显式 bump，
+    /// 否则快照缓存会命中旧值）。
+    private func bumpDataVersion() {
+        guard let db else { return }
+        var stmt: OpaquePointer?
+        let sql = """
+        INSERT INTO settings (k, v) VALUES ('data_version', '1')
+        ON CONFLICT(k) DO UPDATE SET v = CAST(v AS INTEGER) + 1;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
     }
 }
 

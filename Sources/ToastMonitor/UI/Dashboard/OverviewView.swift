@@ -75,6 +75,7 @@ struct OverviewView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
+        .accessibilityLabel("Period")
         .frame(width: 264)
     }
 
@@ -159,24 +160,10 @@ struct OverviewView: View {
                     .foregroundStyle(TMDesign.quiet)
             }
             HStack(spacing: 0) {
-                heroMini("Calls", Format.count(periodCalls))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                heroMini("Spent", Format.money(actualSpend))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                heroMini("Value", Format.money(apiValue))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                TMMiniMetric(label: "Calls", value: Format.count(periodCalls), font: TMType.regular(16))
+                TMMiniMetric(label: "Spent", value: Format.money(actualSpend), font: TMType.regular(16))
+                TMMiniMetric(label: "Value", value: Format.money(apiValue), font: TMType.regular(16))
             }
-        }
-    }
-
-    private func heroMini(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-            Text(value)
-                .font(TMType.regular(16))
-                .tmMonospacedDigit()
         }
     }
 
@@ -212,15 +199,17 @@ struct OverviewView: View {
 
     /// 53-week geometry is keyed by calendar year and ordinal day. A day-only
     /// key reused the prior year's grid when the app stayed open over New Year.
+    /// Timezone identifier joins the key: year/ordinal-day components depend on
+    /// the current zone, so a system zone change must rebuild the grid too.
     private static var cachedWeeks: [[Int64?]] = []
-    private static var cachedWeeksKey: Int = -1
+    private static var cachedWeeksKey: String = ""
 
     private var heatmapWeeks: [[Int64?]] {
         let now = Date()
         let calendar = Calendar.current
         let components = calendar.dateComponents([.year], from: now)
         let day = calendar.ordinality(of: .day, in: .year, for: now) ?? -1
-        let key = (components.year ?? 0) * 1000 + day
+        let key = "\(components.year ?? 0)-\(day)-\(TimeZone.current.identifier)"
         guard Self.cachedWeeksKey != key else { return Self.cachedWeeks }
         Self.cachedWeeks = Self.buildHeatmapWeeks(now: now)
         Self.cachedWeeksKey = key
@@ -248,7 +237,9 @@ struct OverviewView: View {
                     continue
                 }
                 if date > now {
-                    column.append(nil)
+                    // 未来日哨兵 0：与有效日 0 token 区分（渲染用更淡色）。
+                    // 真实键恒为正（year*10000 + …），0 不可能冲突。
+                    column.append(0)
                 } else {
                     let components = calendar.dateComponents([.year, .month, .day], from: date)
                     let key = (components.year ?? 0) * 10_000 + (components.month ?? 0) * 100 + (components.day ?? 0)
@@ -406,31 +397,19 @@ private struct HeatmapGrid: View {
         return "\(activeDays) day\(activeDays == 1 ? "" : "s") with usage, \(Format.full(total)) tokens total"
     }
 
-    /// First week whose Monday falls in a new month gets that month's label.
-    /// January also carries the (2-digit) year so the year boundary is
-    /// visible in a 53-week span.
-    private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
+    /// First week whose Monday falls in a new month gets that month's label
+    /// (shared MonthAxis logic; January carries the 2-digit year so the year
+    /// boundary is visible in a 53-week span). Ticks are computed over each
+    /// week's first real day key, then remapped back to week indices.
     private var monthLabels: [(index: Int, label: String)] {
-        var out: [(Int, String)] = []
-        var lastMonth = -1
-        var lastYear = -1
+        var weekKeys: [Int64] = []
+        var weekIndices: [Int] = []
         for (wi, week) in weeks.enumerated() {
-            guard let first = week.compactMap({ $0 }).first else { continue }
-            let year = Int(first) / 10_000
-            let month = (Int(first) / 100) % 100
-            if month != lastMonth || year != lastYear {
-                if month == 1 {
-                    out.append((wi, String(format: "Jan '%02d", year % 100)))
-                } else {
-                    out.append((wi, Self.monthNames[month - 1]))
-                }
-                lastMonth = month
-                lastYear = year
-            }
+            guard let first = week.first(where: { ($0 ?? 0) > 0 }), let key = first else { continue }
+            weekKeys.append(key)
+            weekIndices.append(wi)
         }
-        return out
+        return MonthAxis.ticks(days: weekKeys).map { (weekIndices[$0.index], $0.label) }
     }
 
     private var heatLegend: some View {
@@ -458,17 +437,17 @@ private struct HeatmapGrid: View {
 
     @ViewBuilder
     private func heatCell(_ day: Int64?) -> some View {
-        let tokenCount = day.flatMap { heatmap[$0] } ?? 0
-        let value = Double(tokenCount)
-        let maxValue = Double(maxTokens)
-        let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
-        let label = day.map(Format.shortDayKey) ?? "No date"
-        let cost = day.flatMap { heatmapCost[$0] } ?? 0
-        let valueText = day == nil
-            ? "No data"
-            : "\(Format.full(tokenCount)) tokens" + (cost > 0 ? ", \(Format.money(cost))" : "")
+        // 0 是未来日哨兵（buildHeatmapWeeks：date > now 时写入）。未来格
+        // 用更淡底色，与“有效日 0 token”的 0.07 区分开。
+        if let day, day > 0 {
+            let tokenCount = heatmap[day] ?? 0
+            let value = Double(tokenCount)
+            let maxValue = Double(maxTokens)
+            let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
+            let label = Format.shortDayKey(day)
+            let cost = heatmapCost[day] ?? 0
+            let valueText = "\(Format.full(tokenCount)) tokens" + (cost > 0 ? ", \(Format.money(cost))" : "")
 
-        if let day {
             Button {
                 hoveredDay = (day, tokenCount, cost)
             } label: {
@@ -490,7 +469,7 @@ private struct HeatmapGrid: View {
             }
         } else {
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(Color.primary.opacity(0.07))
+                .fill(Color.primary.opacity(day == 0 ? 0.03 : 0.07))
                 .frame(width: cellSize, height: cellSize)
                 .accessibilityHidden(true)
         }

@@ -203,11 +203,11 @@ struct PlansView: View {
                                 .tmMonospacedDigit()
                                 .foregroundStyle(TMDesign.quiet)
                             if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                let line = Self.forecastLine(for: fc, plan: sub.plan)
+                                let line = ForecastText.line(for: fc, plan: sub.plan)
                                 Text(line.text)
                                     .font(TMType.semibold(TMType.caption))
                                     .tmMonospacedDigit()
-                                    .foregroundStyle(Self.forecastColor(line.status))
+                                    .foregroundStyle(ForecastText.color(line.status))
                             }
                         }
                     }
@@ -246,7 +246,7 @@ struct PlansView: View {
                             y: .value("Usage %", pct)
                         )
                         .foregroundStyle(TMDesign.accentShade(0.6))
-                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: Self.historyDash))
                         .interpolationMethod(.catmullRom)
                     }
                 }
@@ -278,10 +278,14 @@ struct PlansView: View {
         .padding(.top, 4)
     }
 
+    /// Shared dash pattern for the weekly line and its legend capsule, so
+    /// the in-chart line and the legend swatch always render identically.
+    private static let historyDash: [CGFloat] = [4, 3]
+
     private func legendItem(color: Color, dashed: Bool, text: String) -> some View {
         HStack(spacing: 4) {
             Capsule()
-                .stroke(color, style: StrokeStyle(lineWidth: 2, dash: dashed ? [3, 2] : []))
+                .stroke(color, style: StrokeStyle(lineWidth: 2, dash: dashed ? Self.historyDash : []))
                 .frame(width: 14, height: 2)
             Text(text)
                 .font(TMType.regular(TMType.micro))
@@ -437,7 +441,15 @@ struct PlansView: View {
                     if let limit = s.limit {
                         RuleMark(y: .value("Limit", limit))
                             .foregroundStyle(TMDesign.quiet.opacity(0.5))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: Self.historyDash))
+                    }
+                }
+                .chartXAxis {
+                    // Same day-stride axis as goHistory so both history
+                    // charts share tick density and label format.
+                    AxisMarks(values: .stride(by: .day, count: max(orSnapshots.count / 6, 1))) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     }
                 }
                 .chartYAxis {
@@ -534,6 +546,10 @@ struct PlansView: View {
                 .accessibilityHint("Re-queries this service's quota")
             }
         }
+        // Fixed minimum row height: the plain-text branches ("Not configured",
+        // "Synced") are ~10pt shorter than TMStatusPill's padded capsule, so
+        // switching states used to make the whole row jump in height.
+        .frame(minHeight: 24)
     }
 
     private func credentialsRow(configured: Bool, summary: String, actionTitle: String,
@@ -612,7 +628,9 @@ struct PlansView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.07))
                     Capsule().fill(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : color))
-                        .frame(width: max(3, w * CGFloat(p / 100)))
+                        // p == 0 renders a truly empty bar; the 3pt floor
+                        // only protects tiny-but-nonzero usage from vanishing.
+                        .frame(width: p > 0 ? max(3, w * CGFloat(p / 100)) : 0)
                     if let reference {
                         // Subscription-price reference line (see doc comment).
                         Rectangle()
@@ -691,36 +709,6 @@ struct PlansView: View {
         .overlay {
             RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous)
                 .stroke(TMDesign.divider, lineWidth: 1)
-        }
-    }
-
-    /// English forecast line for a subscription.
-    static func forecastLine(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: ForecastText.Status) {
-        switch plan {
-        case "go":
-            if let exhaust = fc.exhaustDate {
-                return ("\(Format.money(fc.used)) used · exhausts \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
-            }
-            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
-            return ("\(Format.money(fc.used)) used · \(Format.money(fc.dailyRate))/day · \(Format.money(remaining)) left at cycle end", .ok)
-        case "openrouter":
-            if let exhaust = fc.exhaustDate {
-                return ("Balance \(Format.money(fc.limit)) · ~empty \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
-            }
-            return ("Balance \(Format.money(fc.limit)) · \(Format.money(fc.dailyRate))/day", .ok)
-        case "claude":
-            return ("Claude value \(Format.money(fc.used)) · \(Format.money(fc.dailyRate))/day", .ok)
-        default:
-            return ("Paid \(Format.money(fc.used)) · no usage source linked", .neutral)
-        }
-    }
-
-    static func forecastColor(_ status: ForecastText.Status) -> Color {
-        switch status {
-        case .ok: return TMDesign.quiet
-        case .warn: return TMDesign.accent
-        case .danger: return TMDesign.danger
-        case .neutral: return .secondary
         }
     }
 }
