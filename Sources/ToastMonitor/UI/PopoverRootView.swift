@@ -77,18 +77,22 @@ struct PopoverRootView: View {
         .padding(.vertical, 12)
     }
 
+    @ViewBuilder
     private var status: some View {
+        // 正常时右上角不占位：只有来源错误/过期才显示状态标签。
         let brokenSources = health.sources.filter { $0.error != nil }
         let staleSources = health.sources.filter { $0.error == nil && $0.isStale }
-        let summary = TMHealthStatus(brokenCount: brokenSources.count,
-                                     staleCount: staleSources.count,
-                                     lastScan: app.lastScan)
-        let detailSources = !brokenSources.isEmpty ? brokenSources : staleSources
-        let detail = detailSources.map { $0.displayName }.joined(separator: "、")
-        let text = detail.isEmpty ? summary.text : "\(summary.text) · \(detail)"
-        return TMStatusLabel(text: text, color: summary.color, symbol: summary.symbol)
-            .accessibilityLabel(Text("数据源状态"))
-            .accessibilityValue(Text(text))
+        if !brokenSources.isEmpty || !staleSources.isEmpty {
+            let summary = TMHealthStatus(brokenCount: brokenSources.count,
+                                         staleCount: staleSources.count,
+                                         lastScan: app.lastScan)
+            let detailSources = !brokenSources.isEmpty ? brokenSources : staleSources
+            let detail = detailSources.map { $0.displayName }.joined(separator: "、")
+            let text = detail.isEmpty ? summary.text : "\(summary.text) · \(detail)"
+            TMStatusLabel(text: text, color: summary.color, symbol: summary.symbol)
+                .accessibilityLabel(Text("数据源状态"))
+                .accessibilityValue(Text(text))
+        }
     }
 
     private var footer: some View {
