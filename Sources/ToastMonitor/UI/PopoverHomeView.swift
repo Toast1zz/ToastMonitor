@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import AppKit
+import Charts
 
 /// yyyymmdd → Date（本地日历）。
 private func dayFromKey(_ key: Int64) -> Date {
@@ -20,13 +21,7 @@ private let shortDayFormatter: DateFormatter = {
     return f
 }()
 
-/// Trend 横轴 "8/5" 式标签（数字形式，无本地化月份）。
-private let axisDayFormatter: DateFormatter = {
-    let f = DateFormatter()
-    f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = "M/d"
-    return f
-}()
+
 
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
 /// how much was used, where it came from, and whether a limit needs attention.
@@ -433,10 +428,36 @@ struct PopoverHomeView: View {
         }
     }
 
+    /// UserDefaults 持久化的上次热力图数据：冷启动先显示旧曲线，
+    /// 异步刷新后再更新，避免 Activity/Trend 区块空白等待。
+    private static let heatmapCacheKey = "popoverHeatmapCache"
+
+    private func cachedHeatmap() -> [Int64: Int64]? {
+        guard let data = UserDefaults.standard.data(forKey: Self.heatmapCacheKey),
+              let dict = try? JSONDecoder().decode([String: Int64].self, from: data) else { return nil }
+        var out: [Int64: Int64] = [:]
+        for (k, v) in dict {
+            if let key = Int64(k) { out[key] = v }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    private func saveHeatmapCache(_ map: [Int64: Int64]) {
+        let dict = Dictionary(uniqueKeysWithValues: map.map { (String($0.key), $0.value) })
+        if let data = try? JSONEncoder().encode(dict) {
+            UserDefaults.standard.set(data, forKey: Self.heatmapCacheKey)
+        }
+    }
+
     private func reloadHeatmap() {
+        // 打开时立即用缓存数据渲染，再异步刷新。
+        if heatmapData.isEmpty, let cached = cachedHeatmap() {
+            heatmapData = cached
+        }
         UsageQueryService.shared.loadHeatmap { map in
             guard map != self.heatmapData else { return }
             self.heatmapData = map
+            self.saveHeatmapCache(map)
         }
     }
 
@@ -492,54 +513,51 @@ struct PopoverHomeView: View {
         return Calendar.current.date(from: c) ?? .distantPast
     }
 
-    /// 自绘折线（Canvas）：Swift Charts 冷启动首次渲染有 ~1s 延迟，
-    /// 会让 Trend 区块在面板展开后仍空白。Canvas 无框架初始化开销，
-    /// 冷启动即渲染；3 个日期标签与 hover 全部自绘。
+    /// Charts 平滑折线（catmullRom）。冷启动延迟由热力图缓存解决：
+    /// 打开时先用上次持久化的数据立即渲染，再异步刷新新曲线。
     private var trendChart: some View {
-        let series = trendSeries
-        return Canvas { ctx, size in
-            guard series.count > 1 else { return }
-            let minV = series.map(\.tokens).min() ?? 0
-            let range = max(series.map(\.tokens).max() ?? 0 - minV, 1)
-            let plotH = size.height - 20
-            func point(_ i: Int) -> CGPoint {
-                CGPoint(x: CGFloat(i) / CGFloat(series.count - 1) * size.width,
-                        y: plotH - CGFloat(series[i].tokens - minV) / CGFloat(range) * plotH)
-            }
-            var path = Path()
-            path.move(to: point(0))
-            for i in 1..<series.count { path.addLine(to: point(i)) }
-            ctx.stroke(path, with: .color(TMDesign.accent), lineWidth: 1.5)
-
-            // 3 个日期标签，颜色与 Activity 月份标签一致。
-            let labelCount = 3
-            for i in 0..<labelCount {
-                let idx = min(i * (series.count - 1) / (labelCount - 1), series.count - 1)
-                let x = CGFloat(idx) / CGFloat(series.count - 1) * size.width
-                let text = Text(axisDayFormatter.string(from: dayFromKey(series[idx].key)))
+        Chart(trendSeries, id: \.key) { d in
+            LineMark(
+                x: .value("Day", dayFromKey(d.key)),
+                y: .value("Tokens", d.tokens)
+            )
+            .foregroundStyle(TMDesign.accent)
+            .interpolationMethod(.catmullRom)
+        }
+        .chartXAxis {
+            // 3 个日期标签，颜色与 Activity 月份标签一致（TMDesign.quiet）。
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     .font(.system(size: 9))
                     .foregroundStyle(TMDesign.quiet)
-                ctx.draw(text, at: CGPoint(x: x, y: size.height - 6), anchor: .center)
+                    .offset(y: 5)
             }
         }
+        .chartYAxis(.hidden)
         .frame(height: 90)
-        .overlay {
+        .chartOverlay { proxy in
             GeometryReader { geo in
                 Rectangle().fill(Color.clear).contentShape(Rectangle())
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location):
-                            guard series.count > 1, geo.size.width > 0 else { return }
-                            let idx = min(max(Int(location.x / geo.size.width * CGFloat(series.count - 1)), 0),
-                                          series.count - 1)
-                            hoveredTrend = series[idx]
+                            guard let date = proxy.value(atX: location.x, as: Date.self) else { return }
+                            let day = Calendar.current.startOfDay(for: date)
+                            if let hit = trendSeries.first(where: {
+                                Calendar.current.isDate(dayFromKey($0.key), inSameDayAs: day)
+                            }) {
+                                hoveredTrend = hit
+                            } else {
+                                hoveredTrend = nil
+                            }
                         case .ended:
                             hoveredTrend = nil
                         }
                     }
             }
         }
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Daily usage trend")
     }
 
