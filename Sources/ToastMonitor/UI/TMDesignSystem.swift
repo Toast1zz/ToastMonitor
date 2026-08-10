@@ -162,6 +162,12 @@ enum TMHealthStatus {
 
 /// Type scale for the dashboard. Data-heavy surfaces keep the floor at 10.5pt;
 /// readable copy stays at 11.5pt or above.
+///
+/// Font rules (whole app): regular UI copy is system SF Pro only — no third-
+/// party fonts, no monospaced labels. Monospaced SF Mono is reserved for the
+/// brand title and optional fine-print suffixes. Every number that can change
+/// on refresh (tokens, money, percents, countdowns) gets .monospacedDigit()
+/// so the width never jumps.
 enum TMType {
     /// Page title (26) — one per page, in TMPageHeader.
     static let pageTitle: CGFloat = 26
@@ -175,6 +181,33 @@ enum TMType {
     static let caption: CGFloat = 11.5
     /// Micro metadata — use sparingly.
     static let micro: CGFloat = 10.5
+
+    // MARK: - Font helpers (SF Pro family by weight)
+
+    /// SF Pro Regular — default copy.
+    static func regular(_ size: CGFloat) -> Font { .system(size: size) }
+    /// SF Pro Medium — names, controls, section labels.
+    static func medium(_ size: CGFloat) -> Font { .system(size: size, weight: .medium) }
+    /// SF Pro Semibold — section titles, emphasized numbers.
+    static func semibold(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
+    /// SF Pro Bold — the single hero figure.
+    static func bold(_ size: CGFloat) -> Font { .system(size: size, weight: .bold) }
+    /// SF Mono Regular — fine-print suffixes (e.g. "resets in …").
+    static func monoRegular(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
+    /// SF Mono Semibold — brand title only.
+    static func monoSemibold(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold, design: .monospaced) }
+}
+
+/// Applies .monospacedDigit() — every dynamic number (tokens, money, percents,
+/// countdowns) must use it so refreshing values never shift the layout.
+struct TMMonospacedDigit: ViewModifier {
+    func body(content: Content) -> some View { content.monospacedDigit() }
+}
+
+extension View {
+    /// Tabular numerals for dynamic figures. Not a font choice — the font
+    /// stays whatever SF Pro weight the context already uses.
+    func tmMonospacedDigit() -> some View { modifier(TMMonospacedDigit()) }
 }
 
 struct TMSectionHeader: View {
@@ -226,6 +259,7 @@ struct TMStatusPill: View {
     var body: some View {
         Label(text, systemImage: symbol)
             .font(.caption.weight(.medium))
+            .monospacedDigit()
             .foregroundStyle(color)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
@@ -282,6 +316,7 @@ struct TMStatusLabel: View {
                 Image(systemName: symbol)
             }
             Text(text)
+                .monospacedDigit()
         }
         .font(.caption)
         .foregroundStyle(color)

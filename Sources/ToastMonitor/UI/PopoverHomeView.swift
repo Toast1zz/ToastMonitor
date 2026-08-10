@@ -151,8 +151,8 @@ struct PopoverHomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(fullTokens ? Format.full(tokens) : Format.compact(tokens))
-                    .font(.system(size: 34, weight: .semibold, design: .monospaced))
-                    .monospacedDigit()
+                    .font(TMType.bold(34))
+                    .tmMonospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .contentTransition(.numericText(value: Double(tokens)))
@@ -163,7 +163,7 @@ struct PopoverHomeView: View {
                     .accessibilityLabel("\(period.rawValue) token usage")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .font(TMType.regular(13))
                     .foregroundStyle(.tertiary)
                 Button {
                     fullTokens.toggle()
@@ -178,6 +178,7 @@ struct PopoverHomeView: View {
             }
             Text("\(Format.count(totals.count)) calls")
                 .font(.caption2)
+                .tmMonospacedDigit()
                 .foregroundStyle(.secondary)
         }
     }
@@ -189,7 +190,7 @@ struct PopoverHomeView: View {
                     period = p
                 } label: {
                     Text(p.rawValue)
-                        .font(.subheadline.weight(period == p ? .semibold : .regular))
+                        .font(TMType.medium(13))
                         .foregroundStyle(period == p ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
@@ -260,12 +261,12 @@ struct PopoverHomeView: View {
     private func metricItem(_ label: String, _ value: String) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 13))
+                .font(TMType.regular(13))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
             Text(value)
-                .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                .monospacedDigit()
+                .font(TMType.semibold(16))
+                .tmMonospacedDigit()
                 .foregroundStyle(.primary)
         }
         .frame(maxWidth: .infinity)
@@ -348,16 +349,16 @@ struct PopoverHomeView: View {
                             .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
                             .frame(width: 7, height: 7)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
-                            .font(.system(size: TMType.body, weight: .medium))
+                            .font(TMType.medium(TMType.body))
                             .foregroundStyle(.primary)
                         Text("(\(percentText(row, total: total)))")
-                            .font(.system(size: TMType.caption, design: .monospaced))
-                            .monospacedDigit()
+                            .font(TMType.regular(TMType.caption))
+                            .tmMonospacedDigit()
                             .foregroundStyle(.secondary)
                         Spacer()
                         Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
-                            .font(.system(size: TMType.body, design: .monospaced))
-                            .monospacedDigit()
+                            .font(TMType.regular(TMType.body))
+                            .tmMonospacedDigit()
                             .foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
@@ -390,7 +391,7 @@ struct PopoverHomeView: View {
     private var quotaSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Quota")
-                .font(.system(size: 13, weight: .semibold))
+                .font(TMType.semibold(13))
                 .foregroundStyle(.primary)
             goStatusRow
             codexStatusRow
@@ -409,6 +410,7 @@ struct PopoverHomeView: View {
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = "Not configured"
+        var resetSuffix: String?
         if goClient.configured {
             if state.error != nil {
                 status = "Error"
@@ -416,9 +418,7 @@ struct PopoverHomeView: View {
                 status = "Stale"
             } else if let remaining {
                 status = "\(Int(remaining))% left"
-                if let r = resetText(state.monthlyReset.map { state.lastSync + $0 }) {
-                    status += " · \(r)"
-                }
+                resetSuffix = resetText(state.monthlyReset.map { state.lastSync + $0 })
             } else if state.isLoading {
                 status = "Loading"
             } else {
@@ -427,7 +427,8 @@ struct PopoverHomeView: View {
         }
         return statusRow(name: "OpenCode Go", status: status,
                          statusColor: .primary,
-                         critical: remaining.map { $0 < 20 } ?? false)
+                         critical: remaining.map { $0 < 20 } ?? false,
+                         resetSuffix: resetSuffix)
     }
 
     /// Window label derives from limit_window_seconds: 604800 = weekly (Plus today).
@@ -446,21 +447,21 @@ struct PopoverHomeView: View {
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = sub == nil ? "Not configured" : "Loading"
+        var resetSuffix: String?
         if state.error != nil {
             status = "Error"
         } else if stale, state.primaryPct != nil {
             status = "Stale"
         } else if let remaining {
             status = "\(Int(remaining))% of \(windowLabel) left"
-            if let r = resetText(state.resetAt) {
-                status += " · \(r)"
-            }
+            resetSuffix = resetText(state.resetAt)
         } else if let sub {
             status = "Subscribed · \(Format.money(sub.price))/mo"
         }
         return statusRow(name: "Codex Plus", status: status,
                          statusColor: .primary,
-                         critical: remaining.map { $0 < 20 } ?? false)
+                         critical: remaining.map { $0 < 20 } ?? false,
+                         resetSuffix: resetSuffix)
     }
 
     private var routerStatusRow: some View {
@@ -486,9 +487,9 @@ struct PopoverHomeView: View {
     }
 
     private func statusRow(name: String, status: String, statusColor: Color,
-                           critical: Bool = false) -> some View {
+                           critical: Bool = false, resetSuffix: String? = nil) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
-                  critical: critical, action: openPlans)
+                  critical: critical, resetSuffix: resetSuffix, action: openPlans)
     }
 
     private func openPlans() {
@@ -518,11 +519,14 @@ private struct HeroValue: Equatable {
 }
 
 /// 额度状态行：名称 primary，状态按健康状态着色，右侧 chevron 表示可打开计划。
+/// 状态主文本是 SF Pro Regular + 等宽数字；可选的 "resets in …" 后缀单独用
+/// SF Mono Regular，不让整行变成等宽。
 private struct StatusRow: View {
     let name: String
     let status: String
     let statusColor: Color
     var critical = false
+    var resetSuffix: String?
     let action: () -> Void
     @State private var hovering = false
 
@@ -530,14 +534,24 @@ private struct StatusRow: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Text(name)
-                    .font(.system(size: TMType.body, weight: .medium))
+                    .font(TMType.medium(TMType.body))
                     .foregroundStyle(.primary)
-                Spacer()
-                Text((critical ? "★ " : "") + status)
-                    .font(.system(size: TMType.caption, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(statusColor)
                     .lineLimit(1)
+                Spacer(minLength: 8)
+                HStack(spacing: 6) {
+                    Text((critical ? "★ " : "") + status)
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(statusColor)
+                        .lineLimit(1)
+                    if let resetSuffix {
+                        Text(resetSuffix)
+                            .font(TMType.monoRegular(TMType.caption))
+                            .foregroundStyle(statusColor.opacity(0.7))
+                            .lineLimit(1)
+                    }
+                }
+                .layoutPriority(1)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -555,7 +569,7 @@ private struct StatusRow: View {
         .help("Open plans & balance")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
-        .accessibilityValue(Text(status))
+        .accessibilityValue(Text([status, resetSuffix].compactMap { $0 }.joined(separator: " · ")))
         .accessibilityHint("Open plans & balance for details")
     }
 }

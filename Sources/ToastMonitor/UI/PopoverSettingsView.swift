@@ -135,8 +135,8 @@ struct PopoverSettingsView: View {
                         .font(.system(size: 12.5, weight: .medium))
                     Spacer()
                     Text("\(Int((glass.intensity - GlassSettings.range.lowerBound) / (GlassSettings.range.upperBound - GlassSettings.range.lowerBound) * 100))%")
-                        .font(.system(size: 12, design: .monospaced))
-                        .monospacedDigit()
+                        .font(TMType.regular(12))
+                        .tmMonospacedDigit()
                         .foregroundStyle(TMDesign.quiet)
                 }
                 Slider(value: $glass.intensity, in: GlassSettings.range)

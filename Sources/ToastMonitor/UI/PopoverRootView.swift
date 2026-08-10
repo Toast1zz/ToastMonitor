@@ -38,9 +38,6 @@ struct PopoverRootView: View {
             }
         }
         .frame(width: 400)
-        // 全局数字/英文等宽（数据面板惯例）：.system(size:) 未显式指定
-        // design 的 Text 继承此环境；中文没有等宽变体，自动回落系统苹方。
-        .fontDesign(.monospaced)
         // Height slices (scroll body + pinned period selector) are posted as
         // notifications directly by PopoverHomeView's geometry readers —
         // SwiftUI preference propagation is unreliable across ScrollView
@@ -58,8 +55,9 @@ struct PopoverRootView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            // 品牌标题是唯一使用 SF Mono 的地方（开发者工具特征）。
             Text("ToastMonitor")
-                .font(.headline.weight(.semibold))
+                .font(TMType.monoSemibold(13))
             Spacer()
             status
             Button(action: refresh) {
