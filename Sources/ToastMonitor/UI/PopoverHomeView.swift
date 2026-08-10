@@ -307,6 +307,7 @@ struct PopoverHomeView: View {
                             .frame(width: 7, height: 7)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
                             .font(TMType.medium(TMType.body))
+                            .italic()
                             .foregroundStyle(.primary)
                         Text("(\(percentText(row, total: total)))")
                             .font(TMType.regular(TMType.caption))
