@@ -176,34 +176,33 @@ struct PopoverHomeView: View {
                 .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
                 .accessibilityLabel("Toggle number format")
             }
-            HStack(spacing: 24) {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Spent")
-                            .font(TMType.regular(11))
-                            .foregroundStyle(.secondary)
-                        Text(actualShown > 0 ? Format.money(actualShown) : "—")
-                            .font(TMType.regular(12))
-                            .tmMonospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Spent")
-                    .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("API Value")
-                            .font(TMType.regular(11))
-                            .foregroundStyle(.secondary)
-                        Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—")
-                            .font(TMType.regular(12))
-                            .tmMonospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("API Value")
-                    .accessibilityValue(Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text("Spent")
+                        .font(TMType.regular(12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 72, alignment: .leading)
+                    Text(actualShown > 0 ? Format.money(actualShown) : "—")
+                        .font(TMType.regular(12))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 0)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Spent")
+                .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
+                HStack(spacing: 5) {
+                    Text("API Value")
+                        .font(TMType.regular(12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 72, alignment: .leading)
+                    Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—")
+                        .font(TMType.regular(12))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("API Value")
+                .accessibilityValue(Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
             }
         }
     }
