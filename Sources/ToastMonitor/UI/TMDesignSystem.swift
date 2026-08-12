@@ -298,6 +298,36 @@ struct TMMiniMetric: View {
     }
 }
 
+/// 胶囊开关（System Settings 风格）：开启 = 品牌暖橙，关闭 = 中性灰。
+/// 复选框在玻璃面上观感偏「网页」，设置类开/关控件统一用它。
+/// 标签字体/颜色由调用方通过 Toggle 修饰符控制，本样式只管几何。
+struct TMSwitchStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let isOn = configuration.isOn
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                configuration.label
+                Spacer(minLength: 12)
+                Capsule()
+                    .fill(isOn ? TMDesign.accent : Color.primary.opacity(0.15))
+                    .frame(width: 36, height: 20)
+                    .overlay(alignment: isOn ? .trailing : .leading) {
+                        Circle()
+                            .fill(.white)
+                            .padding(2.5)
+                            .shadow(color: .black.opacity(0.28), radius: 1.5, y: 0.5)
+                    }
+            }
+        }
+        .buttonStyle(.plain)
+        .animation(.snappy(duration: 0.2), value: isOn)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
 struct TMStatusPill: View {
     let text: String
     let color: Color

@@ -2,7 +2,6 @@ import SwiftUI
 
 /// 设置: per-tool data source (local Mac vs remote VPS feed) + feed URL.
 struct SettingsView: View {
-    @ObservedObject private var health = SourceHealthHub.shared
     @State private var feedURL = ""
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
     @State private var saved = false
@@ -36,9 +35,10 @@ struct SettingsView: View {
                             Text(tool.displayName)
                                 .font(TMType.regular(12.5))
                                 .frame(width: 100, alignment: .leading)
-                            Picker("", selection: Binding(
-                                get: { sources[tool] ?? (tool.defaultSource == "remote") },
-                                set: { newValue in
+                            if tool.supportsRemoteSource {
+                                Picker("Source", selection: Binding(
+                                    get: { sources[tool] ?? (tool.defaultSource == "remote") },
+                                    set: { newValue in
                                     // P0-4: persist immediately (off main thread), show effect.
                                     let gen = (sourceGeneration[tool] ?? 0) + 1
                                     sourceGeneration[tool] = gen
@@ -67,13 +67,20 @@ struct SettingsView: View {
                                             }
                                         }
                                     }
+                                    }
+                                )) {
+                                    Text("Local (Mac)").tag(false)
+                                    Text("Remote (VPS)").tag(true)
                                 }
-                            )) {
-                                Text("Local (Mac)").tag(false)
-                                Text("Remote (VPS)").tag(true)
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .frame(width: 200)
+                            } else {
+                                Text("Local only")
+                                    .font(TMType.regular(TMType.caption))
+                                    .foregroundStyle(TMDesign.quiet)
+                                    .frame(width: 200, alignment: .leading)
                             }
-                            .pickerStyle(.segmented)
-                            .frame(width: 200)
                             Spacer()
                             // Actual effective value, not the draft.
                             Text(tool.sourceIsRemote ? "Reads VPS feed" : "Reads local logs")
@@ -95,30 +102,10 @@ struct SettingsView: View {
                 }
                 .tmPanelSurface()
 
-                // 来源健康（详情在「来源状态」页，这里只留一行摘要）
-                VStack(alignment: .leading, spacing: 10) {
-                    SectionTitle("Source Health")
-                    if health.sources.isEmpty {
-                        Text("No scans yet")
-                            .font(TMType.regular(TMType.micro))
-                            .foregroundStyle(TMDesign.quiet)
-                    } else {
-                        let broken = health.sources.filter { $0.error != nil }.count
-                        let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
-                        HStack(spacing: 8) {
-                            if broken > 0 {
-                                TMStatusPill(text: "\(broken) source\(broken == 1 ? "" : "s") error", color: TMDesign.danger, symbol: "exclamationmark.triangle.fill")
-                            }
-                            if stale > 0 {
-                                TMStatusPill(text: "\(stale) source\(stale == 1 ? "" : "s") stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
-                            }
-                            if broken == 0 && stale == 0 {
-                                TMStatusPill(text: "Synced", color: TMDesign.quiet, symbol: "checkmark.circle.fill")
-                            }
-                        }
-                    }
-                }
-                .tmPanelSurface()
+                // Operational status stays on this page, but uses one
+                // compact list instead of a second nested page or one card
+                // per collector.
+                SourcesView(embedded: true)
 
                 // 远程 Feed
                 VStack(alignment: .leading, spacing: 10) {
@@ -186,17 +173,6 @@ struct SettingsView: View {
                 }
                 .tmPanelSurface()
 
-                // 额度凭据统一在「计划与余额」页管理。
-                VStack(alignment: .leading, spacing: 10) {
-                    SectionTitle("Quota Credentials")
-                    Button("Go to Plans & Balance") {
-                        NotificationCenter.default.post(name: DashboardView.selectTab, object: DashboardView.Tab.plans)
-                    }
-                    .font(TMType.regular(11))
-                }
-                .tmPanelSurface()
-
-                SubscriptionSettingsSection()
                 DataMaintenanceSection()
             }
             .padding(.horizontal, 24)
@@ -365,106 +341,6 @@ struct SubscriptionSettingsSection: View {
                     .foregroundStyle(TMDesign.danger)
             }
 
-            if showForm {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(editing == nil ? "Add subscription" : "Edit subscription · \(editing?.name ?? "")")
-                        .font(TMType.semibold(12))
-                    HStack(spacing: 10) {
-                        TextField("Name (e.g. Codex / Claude Pro)", text: $name)
-                            .textFieldStyle(.roundedBorder)
-                            .font(TMType.regular(11.5))
-                        Picker("", selection: $plan) {
-                            Text("None").tag("")
-                            Text("OpenCode Go").tag("go")
-                            Text("OpenRouter").tag("openrouter")
-                            Text("Claude Pro").tag("claude")
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 140)
-                    }
-                    HStack(spacing: 10) {
-                        DatePicker("Start date", selection: $startDate, displayedComponents: .date)
-                            .font(TMType.regular(11.5))
-                        Toggle("End date", isOn: $hasEndDate)
-                            .toggleStyle(.checkbox)
-                            .font(TMType.regular(11.5))
-                        if hasEndDate {
-                            DatePicker("", selection: $endDate, displayedComponents: .date)
-                                .font(TMType.regular(11.5))
-                        }
-                        Picker("Cycle", selection: $cycle) {
-                            Text("Monthly").tag("monthly")
-                            Text("Yearly").tag("yearly")
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 130)
-                        HStack(spacing: 4) {
-                            TextField("Price", text: $price)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: TMType.caption, design: .monospaced))
-                                .frame(width: 80)
-                            Text("$ / period").font(TMType.regular(TMType.micro)).foregroundStyle(TMDesign.quiet)
-                        }
-                    }
-                    HStack(spacing: 10) {
-                        Button("Save") {
-                            guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                            // 价格必须为非负有效数字（§8: 负值/无效字符串不得静默转 0）。
-                            guard let p = Double(price.trimmingCharacters(in: .whitespaces)), p.isFinite, p >= 0 else {
-                                priceError = true
-                                return
-                            }
-                            priceError = false
-                            // 结束日期不得早于开始日期，否则会静默存出一条无效订阅。
-                            let startDay = Calendar.current.startOfDay(for: startDate)
-                            let endDay = Calendar.current.startOfDay(for: endDate)
-                            guard !hasEndDate || endDay >= startDay else {
-                                dateError = true
-                                return
-                            }
-                            dateError = false
-                            let sub = Database.Subscription(
-                                id: editID > 0 ? editID : (editing?.id ?? 0),
-                                name: name.trimmingCharacters(in: .whitespaces),
-                                plan: plan,
-                                startDate: Int64(startDate.timeIntervalSince1970),
-                                endDate: hasEndDate ? Int64(endDate.timeIntervalSince1970) : 0,
-                                cycle: cycle,
-                                price: p,
-                                currency: "USD")
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                let ok = Self.persist(sub)
-                                DispatchQueue.main.async {
-                                    if ok {
-                                        // Database 会发 subscriptionsDidChange，AppState 自动刷新，
-                                        // 无需显式 refresh（避免双刷新）。
-                                        showForm = false
-                                        databaseError = nil
-                                    } else {
-                                        databaseError = "Failed to save subscription (disk space or database permissions)"
-                                    }
-                                }
-                            }
-                        }
-                        .font(TMType.regular(12))
-                        if priceError {
-                            Text("Invalid price (number ≥ 0)")
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.danger)
-                        }
-                        if dateError {
-                            Text("End date must not be before start date")
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.danger)
-                        }
-                        Button("Cancel") { showForm = false }
-                            .font(TMType.regular(12))
-                        Spacer()
-                    }
-                }
-                .padding(12)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.03)))
-            }
         }
         .tmPanelSurface()
         .onChange(of: showForm) { _, open in
@@ -501,6 +377,96 @@ struct SubscriptionSettingsSection: View {
             } message: {
                 Text(pendingDelete.map { "This deletes \"\($0.name)\" and its cycle/forecast records." } ?? "")
             }
+        .sheet(isPresented: $showForm) {
+            subscriptionForm
+        }
+    }
+
+    private var subscriptionForm: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(editing == nil ? "Add Subscription" : "Edit Subscription")
+                .font(.title2.weight(.semibold))
+
+            Form {
+                TextField("Name", text: $name, prompt: Text("Codex / Claude Pro"))
+                Picker("Plan", selection: $plan) {
+                    Text("None").tag("")
+                    Text("OpenCode Go").tag("go")
+                    Text("OpenRouter").tag("openrouter")
+                    Text("Claude Pro").tag("claude")
+                }
+                DatePicker("Start date", selection: $startDate, displayedComponents: .date)
+                Toggle("Has end date", isOn: $hasEndDate)
+                if hasEndDate {
+                    DatePicker("End date", selection: $endDate, displayedComponents: .date)
+                }
+                Picker("Billing cycle", selection: $cycle) {
+                    Text("Monthly").tag("monthly")
+                    Text("Yearly").tag("yearly")
+                }
+                .pickerStyle(.segmented)
+                TextField("Price per period (USD)", text: $price)
+            }
+            .formStyle(.grouped)
+
+            if priceError {
+                Text("Enter a valid price (a number greater than or equal to zero).")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+            }
+            if dateError {
+                Text("The end date cannot be before the start date.")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showForm = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { saveSubscription() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private func saveSubscription() {
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard let p = Double(price.trimmingCharacters(in: .whitespaces)), p.isFinite, p >= 0 else {
+            priceError = true
+            return
+        }
+        priceError = false
+        let startDay = Calendar.current.startOfDay(for: startDate)
+        let endDay = Calendar.current.startOfDay(for: endDate)
+        guard !hasEndDate || endDay >= startDay else {
+            dateError = true
+            return
+        }
+        dateError = false
+        let sub = Database.Subscription(
+            id: editID > 0 ? editID : (editing?.id ?? 0),
+            name: name.trimmingCharacters(in: .whitespaces),
+            plan: plan,
+            startDate: Int64(startDate.timeIntervalSince1970),
+            endDate: hasEndDate ? Int64(endDate.timeIntervalSince1970) : 0,
+            cycle: cycle,
+            price: p,
+            currency: "USD")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = Self.persist(sub)
+            DispatchQueue.main.async {
+                if ok {
+                    showForm = false
+                    databaseError = nil
+                } else {
+                    databaseError = "Failed to save subscription (disk space or database permissions)"
+                }
+            }
+        }
     }
 
     /// Defensive persistence: if the edit context lost its id, match by

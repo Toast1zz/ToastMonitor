@@ -32,4 +32,41 @@ final class UIStateTests: XCTestCase {
         let waiting = TMHealthStatus(brokenCount: 0, staleCount: 0, lastScan: 0)
         XCTAssertEqual(waiting.text, "Idle")
     }
+
+    func testOnlyCollectorsWithRemoteImplementationsExposeRemoteSource() {
+        XCTAssertFalse(ToolKind.omp.supportsRemoteSource)
+        XCTAssertFalse(ToolKind.openrouter.supportsRemoteSource)
+        XCTAssertTrue(ToolKind.claude.supportsRemoteSource)
+        XCTAssertTrue(ToolKind.codex.supportsRemoteSource)
+        XCTAssertTrue(ToolKind.opencode.supportsRemoteSource)
+        XCTAssertTrue(ToolKind.hermes.supportsRemoteSource)
+    }
+
+    func testPopoverHeightWaitsForEveryMeasuredSlice() {
+        XCTAssertNil(PanelController.mergedHeight(
+            header: 48, pinned: 0, body: 620, footer: 46,
+            allowsZeroPinned: false))
+        XCTAssertNil(PanelController.mergedHeight(
+            header: 0, pinned: 48, body: 620, footer: 46,
+            allowsZeroPinned: false))
+        XCTAssertEqual(PanelController.mergedHeight(
+            header: 48, pinned: 48, body: 620, footer: 46,
+            allowsZeroPinned: false), 762)
+    }
+
+    func testPopoverSettingsHeightAllowsNoPinnedSelector() {
+        XCTAssertEqual(PanelController.mergedHeight(
+            header: 48, pinned: 0, body: 260, footer: 42,
+            allowsZeroPinned: true), 350)
+    }
+
+    func testPopoverShortPageKeepsItsNaturalHeight() {
+        XCTAssertEqual(PanelController.clampedHeight(
+            natural: 146, available: 900), 146)
+    }
+
+    func testPopoverLongPageClampsToVisibleScreen() {
+        XCTAssertEqual(PanelController.clampedHeight(
+            natural: 1_200, available: 860), 860)
+    }
 }

@@ -13,10 +13,21 @@ struct SourcesView: View {
     @State private var testGeneration = 0
 
     private let tools: [ToolKind] = ToolKind.allCases.filter { $0 != .openrouter }
+    var embedded = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        Group {
+            if embedded {
+                content
+            } else {
+                ScrollView { content }
+            }
+        }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     SectionTitle("Collector Status")
                     Spacer()
@@ -72,6 +83,7 @@ struct SourcesView: View {
                     .accessibilityLabel("Rescan now")
                     .accessibilityHint("Re-scans all local sources and refreshes remote quotas")
                 }
+                .controlSize(.small)
                 if let tr = testResult {
                     Text(tr)
                         .accessibilityElement(children: .combine)
@@ -80,18 +92,23 @@ struct SourcesView: View {
                         .font(TMType.regular(11))
                         .foregroundStyle(testOK ? TMDesign.accent : TMDesign.danger)
                 }
-
-                ForEach(tools) { t in
-                    sourceCard(t)
-                }
-                remoteCard
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            ForEach(Array(tools.enumerated()), id: \.element) { _, tool in
+                sourceRow(tool)
+                Divider()
+            }
+            remoteRow
         }
+        .tmPanelSurface()
+        .padding(.horizontal, embedded ? 0 : 24)
+        .padding(.vertical, embedded ? 0 : 18)
     }
 
-    private func sourceCard(_ tool: ToolKind) -> some View {
+    private func sourceRow(_ tool: ToolKind) -> some View {
         let h = health.sources.first { $0.tool == tool.rawValue }
         let isRemote = tool.sourceIsRemote
         return VStack(alignment: .leading, spacing: 8) {
@@ -134,13 +151,8 @@ struct SourcesView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(tool.displayName) source")
         .accessibilityValue(Text(sourceAccessibilityValue(h)))
-        .padding(14)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(TMDesign.divider, lineWidth: 1)
-        }
     }
 
     private func sourceAccessibilityValue(_ health: SourceHealth?) -> String {
@@ -159,7 +171,7 @@ struct SourcesView: View {
         return "\(status), last scan \(scannedAt), imported \(health.lastRows) rows, failed \(health.failedRows) rows"
     }
 
-    private var remoteCard: some View {
+    private var remoteRow: some View {
         let st = remote.status
         let stale = st.lastSync > 0
             && Date().timeIntervalSince1970 - TimeInterval(st.lastSync) > SourceHealth.staleThreshold
@@ -197,13 +209,8 @@ struct SourcesView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Remote Feed")
         .accessibilityValue(Text(remoteAccessibilityValue(st, stale: stale)))
-        .padding(14)
+        .padding(.top, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(TMDesign.divider, lineWidth: 1)
-        }
     }
 
     private func remoteAccessibilityValue(_ status: HermesRemoteClient.SyncStatus, stale: Bool) -> String {

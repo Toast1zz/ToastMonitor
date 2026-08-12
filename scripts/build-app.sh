@@ -4,7 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-BIN="$(swift build -c release --show-bin-path)/ToastMonitor"
+# Xcode 27's default SwiftPM build engine currently writes the deployment
+# target into LC_BUILD_VERSION's SDK field. AppKit interprets that as a legacy
+# SDK link and deliberately serves compatibility controls. The native engine
+# preserves the macOS 14 deployment target while correctly recording the
+# Xcode 27 SDK, which enables system Liquid Glass on macOS 26/27.
+SWIFT_BUILD=(swift build --build-system native)
+BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 APP="$ROOT/dist/ToastMonitor.app"
 
 # A release's marketing version is sourced from the tag (v1.0, v1.2.3, ...).
@@ -26,7 +32,15 @@ fi
 VERSION_SOURCE="${TM_VERSION_SOURCE:-${TAG_VERSION:-development}}"
 
 echo "== building (if needed) =="
-swift build -c release
+"${SWIFT_BUILD[@]}" -c release
+
+SDK_VERSION="$(vtool -show-build "$BIN" | awk '/^[[:space:]]*sdk / { print $2; exit }')"
+SDK_MAJOR="${SDK_VERSION%%.*}"
+if [[ -z "$SDK_VERSION" || ! "$SDK_MAJOR" =~ ^[0-9]+$ || "$SDK_MAJOR" -lt 26 ]]; then
+    echo "error: release binary is linked as SDK ${SDK_VERSION:-unknown}; macOS 26+ UI requires SDK 26 or newer" >&2
+    exit 1
+fi
+echo "linked SDK: $SDK_VERSION"
 
 echo "== assembling bundle =="
 rm -rf "$APP"
@@ -114,5 +128,28 @@ if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
     TIMESTAMP_FLAG=(--timestamp=none)
 fi
 codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
+
+echo "== installing to /Applications =="
+if [[ "${CI:-}" == "true" ]]; then
+    echo "skipping install to /Applications (CI environment)"
+else
+    WAS_RUNNING=0
+    if pgrep -x ToastMonitor >/dev/null; then
+        WAS_RUNNING=1
+        echo "ToastMonitor is running; quitting before install"
+        pkill -x ToastMonitor || true
+        # pkill returns before the process is actually gone; wait for it.
+        for _ in 1 2 3 4 5; do
+            pgrep -x ToastMonitor >/dev/null || break
+            sleep 1
+        done
+    fi
+    ditto "$APP" /Applications/ToastMonitor.app
+    echo "installed: /Applications/ToastMonitor.app"
+    if [[ "$WAS_RUNNING" == "1" ]]; then
+        echo "relaunching ToastMonitor"
+        open -a /Applications/ToastMonitor.app
+    fi
+fi
 
 echo "== done: $APP =="

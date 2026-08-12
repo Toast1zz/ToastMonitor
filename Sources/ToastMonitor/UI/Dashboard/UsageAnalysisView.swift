@@ -23,8 +23,15 @@ struct UsageAnalysisView: View {
         var id: String { rawValue }
     }
 
+    enum Metric: String, CaseIterable, Identifiable {
+        case tokens = "Tokens"
+        case cost = "Cost"
+        var id: String { rawValue }
+    }
+
     @State private var range: Range = .d30
     @State private var grouping: Grouping = .byTool
+    @State private var metric: Metric = .tokens
     /// Derived chart/table inputs, rebuilt once per data arrival — never per
     /// body evaluation. nil until the first load completes.
     @State private var analysis: AnalysisData?
@@ -98,10 +105,11 @@ struct UsageAnalysisView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         summaryStrip
                         TMPanel {
-                            tokensChart
-                        }
-                        TMPanel {
-                            costChart
+                            if metric == .tokens {
+                                tokensChart
+                            } else {
+                                costChart
+                            }
                         }
                         TMPanel {
                             aggTable
@@ -313,13 +321,21 @@ struct UsageAnalysisView: View {
 
     private var controls: some View {
         HStack(spacing: 10) {
+            Picker("Metric", selection: $metric) {
+                ForEach(Metric.allCases) { metric in Text(metric.rawValue).tag(metric) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Metric")
+            .frame(width: 130)
+
             Picker("Range", selection: $range) {
                 ForEach(Range.allCases) { r in Text(r.rawValue).tag(r) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Range")
-            .frame(width: 200)
+            .frame(width: 188)
 
             Picker("Grouping", selection: $grouping) {
                 ForEach(Grouping.allCases) { g in Text(g.rawValue).tag(g) }
@@ -327,7 +343,7 @@ struct UsageAnalysisView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Grouping")
-            .frame(width: 180)
+            .frame(width: 168)
         }
     }
 

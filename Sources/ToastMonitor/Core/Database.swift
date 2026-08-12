@@ -1867,7 +1867,7 @@ final class Database: @unchecked Sendable {
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM openrouter_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) FROM subscriptions)
             || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='last_scan_heartbeat')
-            || '|' || (SELECT COALESCE(CAST(v AS INTEGER),0) FROM settings WHERE k='data_version')
+            || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='data_version')
             || '|' || (SELECT strftime('%Y%m%d', 'now', 'localtime'));
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return "err" }

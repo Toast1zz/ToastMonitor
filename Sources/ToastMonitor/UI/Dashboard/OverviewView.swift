@@ -16,12 +16,13 @@ struct OverviewView: View {
         case today = "Today"
         case week = "7 Days"
         case month = "30 Days"
-        case all = "All"
+        case all = "All Time"
         var id: String { rawValue }
     }
 
-    /// Heatmap cell geometry (13pt cells, 3pt gutter) — must match render.
-    private let cellSize: CGFloat = 13
+    /// The annual heatmap is supporting context, not the page hero. Keeping
+    /// its cells compact prevents it from visually outweighing current usage.
+    private let cellSize: CGFloat = 10
     private let cellGutter: CGFloat = 3
 
     var body: some View {
@@ -76,7 +77,7 @@ struct OverviewView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .accessibilityLabel("Period")
-        .frame(width: 264)
+        .frame(width: 292)
     }
 
     private var periodTitle: String {
@@ -161,8 +162,8 @@ struct OverviewView: View {
             }
             HStack(spacing: 0) {
                 TMMiniMetric(label: "Calls", value: Format.count(periodCalls), font: TMType.regular(16))
-                TMMiniMetric(label: "Spent", value: Format.money(actualSpend), font: TMType.regular(16))
-                TMMiniMetric(label: "Value", value: Format.money(apiValue), font: TMType.regular(16))
+                TMMiniMetric(label: "Actual Spend", value: Format.money(actualSpend), font: TMType.regular(16))
+                TMMiniMetric(label: "API-equivalent Value", value: Format.money(apiValue), font: TMType.regular(16))
             }
         }
     }
@@ -271,13 +272,21 @@ struct OverviewView: View {
         case .month: aggs = app.modelAggsMonth
         case .all: aggs = app.modelAggsAll
         }
-        return aggs.sorted {
-            (ToolKind(rawValue: $0.tool)?.totalTokens(input: $0.input, output: $0.output, cacheRead: $0.cacheRead) ?? $0.input + $0.output) >
-                (ToolKind(rawValue: $1.tool)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead) ?? $1.input + $1.output)
-        }.prefix(6).map { row in
+        // The same model can be used by multiple tools. Aggregate it into one
+        // row so the ranking answers "which model" instead of leaking source
+        // implementation details as duplicate labels.
+        var totals: [String: (tokens: Int64, cost: Double, color: Color)] = [:]
+        for row in aggs {
             let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead) ?? row.input + row.output
-            return (row.model, value, row.cost, ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+            let previous = totals[row.model]
+            totals[row.model] = (
+                tokens: (previous?.tokens ?? 0) + value,
+                cost: (previous?.cost ?? 0) + row.cost,
+                color: previous?.color ?? ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent
+            )
         }
+        return totals.map { ($0.key, $0.value.tokens, $0.value.cost, $0.value.color) }
+            .sorted { $0.1 > $1.1 }
     }
 
     private func toolRows(_ period: Period) -> [(String, Int64, Double, Color)] {
@@ -291,7 +300,7 @@ struct OverviewView: View {
         return rows.sorted {
             (ToolKind(rawValue: $0.tool)?.totalTokens($0) ?? $0.input + $0.output) >
                 (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? $1.input + $1.output)
-        }.prefix(6).map { row in
+        }.map { row in
             (ToolKind(rawValue: row.tool)?.displayName ?? row.tool,
              ToolKind(rawValue: row.tool)?.totalTokens(row) ?? row.input + row.output,
              row.cost,
@@ -309,7 +318,7 @@ struct OverviewView: View {
                     .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
             } else {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(rows.prefix(6).enumerated()), id: \.offset) { _, row in
                     let ratio = total > 0 ? Double(row.1) / Double(total) : 0
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
@@ -452,7 +461,9 @@ private struct HeatmapGrid: View {
                 hoveredDay = (day, tokenCount, cost)
             } label: {
                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .fill(value > 0 ? TMDesign.accent.opacity(0.18 + intensity * 0.72) : Color.primary.opacity(0.07))
+                    // 线性渐变不变；下限 0.4 保证有数据的日子（含当天）
+                    // 明显可见，大日子保留原有梯度。
+                    .fill(value > 0 ? TMDesign.accent.opacity(max(0.4, 0.18 + intensity * 0.72)) : Color.primary.opacity(0.07))
                     .frame(width: cellSize, height: cellSize)
                     .contentShape(Rectangle())
             }

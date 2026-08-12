@@ -368,3 +368,27 @@ extension DatabaseTests {
         XCTAssertEqual(rows[0].price, 25.0)
     }
 }
+
+// MARK: - 快照缓存失效键（P0 回归：data_version 设置缺失时键曾恒为 "err"，
+// 快照缓存永不失效，UI 冻结在首次快照；见 toastmonitor db scan 诊断）
+
+extension DatabaseTests {
+    func testDataVersionKeyNeverErrsWithoutDataVersionRow() {
+        // 全新 DB 没有 data_version 行；键必须仍是有效字符串。
+        let key = db.dataVersionKey()
+        XCTAssertNotEqual(key, "err", "missing data_version row must not poison the cache key")
+        XCTAssertNotEqual(key, "closed")
+        XCTAssertTrue(key.contains("|"), "key must be the concatenated version stamp")
+    }
+
+    func testDataVersionKeyChangesWhenTurnsInserted() {
+        let before = db.dataVersionKey()
+        let t = TurnRecord(tool: .codex, sessionID: "s1", project: nil, model: "gpt-5.6-sol",
+                           ts: Int64(Date().timeIntervalSince1970), inputTokens: 10, outputTokens: 5,
+                           cacheRead: 0, cacheWrite: 0, cost: 0)
+        XCTAssertTrue(db.insertTurns([t]))
+        let after = db.dataVersionKey()
+        XCTAssertNotEqual(after, before, "inserting turns must invalidate the snapshot cache key")
+        XCTAssertNotEqual(after, "err")
+    }
+}

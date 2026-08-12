@@ -55,8 +55,21 @@ enum ToolKind: String, CaseIterable, Identifiable {
         (Database.shared.setting(sourceKey) ?? defaultSource) == "remote"
     }
 
+    /// Whether this collector has a remote-feed implementation. Oh My Pi is
+    /// intentionally local-only; exposing a Remote choice for it creates a
+    /// configuration that can never produce data.
+    var supportsRemoteSource: Bool {
+        switch self {
+        case .omp, .openrouter:
+            return false
+        case .claude, .codex, .opencode, .hermes:
+            return true
+        }
+    }
+
     @discardableResult
     func setSource(remote: Bool) -> Bool {
+        guard !remote || supportsRemoteSource else { return false }
         return Database.shared.setSetting(sourceKey, remote ? "remote" : "local")
     }
 

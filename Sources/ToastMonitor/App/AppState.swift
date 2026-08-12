@@ -93,6 +93,16 @@ final class AppState: ObservableObject {
     /// re-run as manual once the in-flight one completes so the toolbar
     /// spinner reflects the user's request.
     private var pendingManual = false
+    /// 快照加载开始时间；超过看门狗阈值视为卡死，允许下一次刷新重试。
+    /// 若不重置，一次永不完成的加载会让 refreshInFlight 永久为 true，
+    /// didCollect 与定时器刷新全部被合并锁挡掉——popover 冻结在旧快照，
+    /// 而 quota 客户端独立轮询照常更新，形成"额度在动、来源不动"。
+    private var refreshStartedAt: CFAbsoluteTime = 0
+    private static let refreshWatchdogSeconds: CFAbsoluteTime = 10
+    /// Monotonic request identity. A watchdog retry may overlap the request it
+    /// superseded; only the newest generation is allowed to publish or clear
+    /// the in-flight state.
+    private var refreshGeneration: UInt64 = 0
     private var popoverVisible = false
     private var dashboardVisible = false
     private var foreground = false
@@ -161,16 +171,33 @@ final class AppState: ObservableObject {
     /// `manual` marks user-initiated refreshes (toolbar button) so the
     /// spinner shows only for those.
     func refresh(manual: Bool = false) {
-        guard !refreshInFlight else {
-            if manual { pendingManual = true }
-            return
+        if refreshInFlight {
+            // Watchdog: 卡住超过阈值的在途加载不阻塞后续刷新。旧加载若
+            // 最终完成，其 generation guard 会同时拦住 publish 与 finish，
+            // 不能覆盖新一轮快照或清掉新一轮的 in-flight 状态。
+            if CFAbsoluteTimeGetCurrent() - refreshStartedAt > Self.refreshWatchdogSeconds {
+                refreshInFlight = false
+                if DebugLog.enabled {
+                    NSLog("[ToastMonitor][refresh] watchdog reset inFlight")
+                }
+            } else {
+                if manual { pendingManual = true }
+                return
+            }
         }
         refreshInFlight = true
+        refreshStartedAt = CFAbsoluteTimeGetCurrent()
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         if manual { manualRefreshing = true }
+        if DebugLog.enabled {
+            NSLog("[ToastMonitor][refresh] enter fg=%d popover=%d dashboard=%d",
+                  foreground ? 1 : 0, popoverVisible ? 1 : 0, dashboardVisible ? 1 : 0)
+        }
 
         let publish: (UsageQueryService.LightSnapshot, UsageQueryService.Snapshot?) -> Void = {
             [weak self] light, complete in
-            guard let self else { return }
+            guard let self, self.refreshGeneration == generation else { return }
             var next = self.state
             next.today = light.today
             next.week = light.week
@@ -204,24 +231,32 @@ final class AppState: ObservableObject {
                 next.heatmapCost = complete.heatmapCost
             }
             self.state = next
+            if DebugLog.enabled {
+                NSLog("[ToastMonitor][refresh] publish today=%lld (codex %lld) turns=%d",
+                      light.todayTokens,
+                      (light.byToolToday.first { $0.tool == "codex" }?.input ?? 0)
+                        + (light.byToolToday.first { $0.tool == "codex" }?.output ?? 0),
+                      light.byToolToday.reduce(0) { $0 + $1.count })
+            }
         }
 
         if dashboardVisible {
             UsageQueryService.shared.loadSnapshot { [weak self] snap in
                 guard let self else { return }
                 publish(snap.light, snap)
-                self.finishRefresh()
+                self.finishRefresh(generation: generation)
             }
         } else {
             UsageQueryService.shared.loadLightSnapshot { [weak self] light in
                 guard let self else { return }
                 publish(light, nil)
-                self.finishRefresh()
+                self.finishRefresh(generation: generation)
             }
         }
     }
 
-    private func finishRefresh() {
+    private func finishRefresh(generation: UInt64) {
+        guard generation == refreshGeneration else { return }
         refreshInFlight = false
         manualRefreshing = false
         if pendingManual {

@@ -5,8 +5,8 @@ import Darwin
 /// Pure AppKit entry point. No SwiftUI Scene at all: a WindowGroup or
 /// Settings scene makes macOS re-open an empty window when the last window
 /// closes (user reported the mystery "ToastMonitor" blank window). The
-/// Dashboard is an NSWindow owned by WindowManager, the popover is an
-/// NSPanel owned by PanelController — nothing needs a scene.
+/// Dashboard is an NSWindow owned by WindowManager, the menu-bar surface is a
+/// status-item NSPanel owned by PanelController — nothing needs a scene.
 @main
 enum ToastMonitorMain {
     @MainActor
@@ -259,9 +259,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                 label: "--render-popover")
             Database.shared.open()
             AppState.shared.start()
+            var renderPeriod: String?
+            if let periodFlag = args.firstIndex(of: "--period"), periodFlag + 1 < args.count {
+                renderPeriod = args[periodFlag + 1]
+            }
             let deadline = Date().addingTimeInterval(10)
             while AppState.shared.snapshotFetchedAt == 0 && Date() < deadline {
                 RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            }
+            if let renderPeriod {
+                NotificationCenter.default.post(
+                    name: PopoverHomeView.testPeriodNotification,
+                    object: renderPeriod
+                )
+                RunLoop.main.run(until: Date().addingTimeInterval(0.2))
             }
             RunLoop.main.run(until: Date().addingTimeInterval(0.5))
             // Opaque backdrop: off-screen cacheDisplay skips drawing for
@@ -287,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch tabName {
                 case "analysis": return .analysis
                 case "plans": return .plans
-                case "sources": return .sources
+                case "sources", "settings": return .settings
                 default: return .overview
                 }
             }()
@@ -302,8 +313,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
 
+        let isDashboardVerification = args.contains("--show-dashboard")
+        let isPanelVerification = args.contains("--show-panel")
+            || args.contains("--verify-status-toggle")
         NSApp.setActivationPolicy(.accessory)
         Database.shared.open() // synchronous — needed before any DB reads
+
+        // UI verification must be hermetic. A directly executed development
+        // binary has no stable code-signing requirement, so starting the
+        // OpenRouter and OpenCode Go clients here would ask for three login
+        // Keychain items while we're only inspecting toolbar/panel geometry.
+        if isDashboardVerification || isPanelVerification {
+            AppState.shared.start()
+            NSApp.finishLaunching()
+            if isPanelVerification {
+                setupMenuBar()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                AppState.shared.refresh()
+                WindowManager.shared.show()
+                if let captureFlag = args.firstIndex(of: "--capture-dashboard"),
+                   captureFlag + 1 < args.count {
+                    let output = args[captureFlag + 1]
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        if WindowManager.shared.captureWindow(to: output) {
+                            print("captured dashboard \(output)")
+                        } else {
+                            print("dashboard capture failed")
+                        }
+                    }
+                }
+            }
+            return
+        }
+
         KeychainStore.migrateLegacyVaultIfNeeded() // one-time: legacy vault file → login keychain
         AppState.shared.start()
         CollectorEngine.shared.start()
@@ -314,9 +358,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenuBar()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             AppState.shared.refresh()
-            if args.contains("--show-dashboard") {
-                WindowManager.shared.show()
-            }
         }
     }
 
@@ -355,7 +396,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Custom status item + floating panel (Tusi-style 20pt corners).
+    /// Native status item + Tusi-style borderless panel. AppKit owns the
+    /// material and expanded-interface lifecycle; the panel intentionally has
+    /// no NSPopover arrow.
     private func setupMenuBar() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item
@@ -365,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // attributedTitle (image attachment + text) natively.
             button.target = self
             button.action = #selector(togglePanel(_:))
+            button.sendAction(on: [.leftMouseUp])
             button.setAccessibilityLabel("ToastMonitor 用量与额度")
             updateStatusLabel(button)
             // Refresh the label whenever AppState publishes changes.
@@ -375,19 +419,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        // 固定适中高度（内容更长时在 ScrollView 内滚动）：打开即稳定，
-        // 无"先矮后长"的弹簧感；设置页等高度差异大的页面仍会自适应。
         panelController = PanelController(
             statusItem: item,
             content: PopoverRootView(),
-            size: NSSize(width: 400, height: 640)
+            // Start near the measured home-page size. A legacy 640 pt seed
+            // visibly expanded on first presentation and made the fixed tabs
+            // look as though the whole document had shifted upward.
+            size: NSSize(width: 400, height: 780)
         )
+        // A borderless NSPanel owns its own visibility state. Keep the status
+        // button's explicit target/action on every macOS version so a second
+        // click is a real toggle. Expanded-interface sessions are intended for
+        // interfaces whose lifecycle is delegated back to AppKit; combining
+        // both mechanisms made an already-visible panel ignore the next click.
 
         // 真实运行截图钩子（重设计验收用）：--show-panel 显示 popover，
         // --backdrop white|dark 在背后垫一个大窗口模拟亮/暗桌面背景，
         // --capture <path> 让 app 自己把窗口保存成 PNG（窗口真实显示，
         // 玻璃采样到背后窗口；screencapture 受会话隔离不可靠）。
         let args = CommandLine.arguments
+        if args.contains("--verify-status-toggle") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, let button = self.statusItem?.button,
+                      let panel = self.panelController else {
+                    print("status toggle verification failed: unavailable")
+                    exit(1)
+                }
+                button.performClick(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    let opened = panel.isVisible
+                    button.performClick(nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        let closed = !panel.isVisible
+                        print("status toggle verification: opened=\(opened) closed=\(closed)")
+                        exit(opened && closed ? 0 : 1)
+                    }
+                }
+            }
+        }
         if args.contains("--show-panel") {
             debugBackdrop = nil
             if let bi = args.firstIndex(of: "--backdrop"), bi + 1 < args.count {
@@ -402,6 +471,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let capturePath = args.firstIndex(of: "--capture").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self, let panel = self.panelController else { return }
+                // A command-line-launched accessory app has no ordinary
+                // window to make it active. Activate only this hermetic UI
+                // verification path so the floating panel remains attached to
+                // the current Space while Computer Use connects.
+                NSApp.activate(ignoringOtherApps: true)
                 panel.toggle()
                 if let capturePath {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -474,6 +548,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePanel(_ sender: Any?) {
+        // AppKit sends both click-count 1 and click-count 2 for a double click.
+        // Act on the first event only so a fast double click cannot immediately
+        // undo its own toggle.
+        if let event = NSApp.currentEvent,
+           event.type == .leftMouseUp,
+           event.clickCount >= 2 {
+            return
+        }
         panelController?.toggle()
     }
 

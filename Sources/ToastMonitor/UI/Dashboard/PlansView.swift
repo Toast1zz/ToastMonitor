@@ -5,6 +5,11 @@ import Charts
 /// in the same place. Fixed subscriptions are a read-only summary here;
 /// add/edit lives in 设置.
 struct PlansView: View {
+    private enum CredentialTarget: Equatable {
+        case openCodeGo
+        case openRouter
+    }
+
     @EnvironmentObject var app: AppState
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
@@ -16,6 +21,7 @@ struct PlansView: View {
     @State private var goCookie = ""
     @State private var orKey = ""
     @State private var orAppend = false
+    @State private var pendingCredentialClear: CredentialTarget?
     /// Each credential form shows only its own message/color — saving Go
     /// must never flash a message inside the OpenRouter form (and vice versa).
     @State private var goFormMessage: String?
@@ -73,6 +79,22 @@ struct PlansView: View {
                 orAppend = false
             }
         }
+        .sheet(isPresented: $showGoForm) {
+            goCredentialSheet
+        }
+        .sheet(isPresented: $showORForm) {
+            openRouterCredentialSheet
+        }
+        .confirmationDialog("Clear saved credentials?", isPresented: Binding(
+            get: { pendingCredentialClear != nil },
+            set: { if !$0 { pendingCredentialClear = nil } })) {
+                Button("Cancel", role: .cancel) { pendingCredentialClear = nil }
+                Button("Clear Credentials", role: .destructive) { clearPendingCredentials() }
+            } message: {
+                Text(pendingCredentialClear == .openCodeGo
+                     ? "ToastMonitor will stop showing OpenCode Go quota data until credentials are configured again."
+                     : "ToastMonitor will remove the saved OpenRouter key from Keychain and stop showing its balance.")
+            }
     }
 
     private func loadSnapshots() {
@@ -127,45 +149,11 @@ struct PlansView: View {
                     configured: goClient.configured,
                     summary: goClient.configured ? "Configured workspace" : "Not configured — quota unavailable",
                     actionTitle: goClient.configured ? "Change credentials" : "Configure",
-                    showForm: $showGoForm,
+                    action: { showGoForm = true },
                     clearAction: {
-                        goClient.clear()
-                        goWS = ""
-                        goCookie = ""
-                        goFormMessage = "OpenCode Go credentials cleared"
-                        goFormFailed = false
+                        pendingCredentialClear = .openCodeGo
                     }
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            TextField("workspaceId (wrk_...)", text: $goWS)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: TMType.caption, design: .monospaced))
-                            SecureField("auth cookie (Fe26.2**...)", text: $goCookie)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: TMType.caption, design: .monospaced))
-                            Button("Save & query") {
-                                let ws = goWS.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let ck = goCookie.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard !ws.isEmpty, !ck.isEmpty else { return }
-                                if goClient.provision(workspaceId: ws, cookie: ck) {
-                                    goClient.refresh()
-                                    showGoForm = false
-                                    goWS = ""
-                                    goCookie = ""
-                                    goFormMessage = "OpenCode Go credentials saved"
-                                    goFormFailed = false
-                                } else {
-                                    goFormMessage = goClient.state.error ?? "Save failed (Keychain unavailable)"
-                                    goFormFailed = true
-                                }
-                            }
-                            .font(TMType.regular(TMType.caption))
-                            .disabled(goWS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                      || goCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    }
-                }
+                )
                 // Form feedback stays visible after the form closes, so a
                 // successful save/clear is never silently swallowed.
                 if let goFormMessage {
@@ -346,45 +334,11 @@ struct PlansView: View {
                     configured: orClient.hasKey,
                     summary: orClient.hasKey ? "\(or.keyCount) key\(or.keyCount == 1 ? "" : "s") (Keychain)" : "Not configured — quota unavailable",
                     actionTitle: orClient.hasKey ? "Change / Add" : "Configure",
-                    showForm: $showORForm,
+                    action: { showORForm = true },
                     clearAction: {
-                        _ = orClient.setKey(nil)
-                        orKey = ""
-                        orAppend = false
-                        orFormMessage = "OpenRouter key cleared"
-                        orFormFailed = false
+                        pendingCredentialClear = .openRouter
                     }
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            SecureField("sk-or-...", text: $orKey)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: TMType.caption, design: .monospaced))
-                            Button("Save") {
-                                let k = orKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let ok = orAppend ? orClient.addKey(k) : orClient.setKey(k)
-                                if ok {
-                                    showORForm = false
-                                    orKey = ""
-                                    orAppend = false
-                                    orFormMessage = "OpenRouter key saved"
-                                    orFormFailed = false
-                                } else {
-                                    orFormMessage = orClient.state.error ?? "Save failed (Keychain unavailable)"
-                                    orFormFailed = true
-                                }
-                            }
-                            .font(TMType.regular(TMType.caption))
-                            .disabled(orKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            if orClient.hasKey {
-                                Toggle("Append to existing key", isOn: $orAppend)
-                                    .toggleStyle(.checkbox)
-                                    .font(TMType.regular(TMType.caption))
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
-                }
+                )
                 if let orFormMessage {
                     Text(orFormMessage)
                         .font(TMType.regular(TMType.caption))
@@ -553,10 +507,9 @@ struct PlansView: View {
     }
 
     private func credentialsRow(configured: Bool, summary: String, actionTitle: String,
-                                showForm: Binding<Bool>, clearAction: (() -> Void)? = nil,
-                                @ViewBuilder form: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+                                action: @escaping () -> Void,
+                                clearAction: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 8) {
                 Image(systemName: configured ? "key.fill" : "key.slash")
                     .font(TMType.regular(11))
                     .foregroundStyle(configured ? TMDesign.accent : TMDesign.quiet)
@@ -565,30 +518,139 @@ struct PlansView: View {
                     .foregroundStyle(configured ? TMDesign.quiet : .secondary)
                 Spacer()
                 if configured {
-                    Button(actionTitle) {
-                        showForm.wrappedValue.toggle()
-                    }
-                    .font(TMType.regular(TMType.caption))
+                    Button(actionTitle, action: action)
+                        .font(TMType.regular(TMType.caption))
+                        .buttonStyle(.bordered)
                 } else {
-                    Button(actionTitle) {
-                        showForm.wrappedValue.toggle()
-                    }
-                    .font(TMType.regular(TMType.caption))
-                    .buttonStyle(.borderedProminent)
-                    .tint(TMDesign.accent)
+                    Button(actionTitle, action: action)
+                        .font(TMType.regular(TMType.caption))
+                        .buttonStyle(.borderedProminent)
+                        .tint(TMDesign.accent)
                 }
                 if configured, let clearAction {
-                    Button("Clear") {
-                        showForm.wrappedValue = false
-                        clearAction()
-                    }
-                    .font(TMType.regular(TMType.caption))
+                    Button("Clear", action: clearAction)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.danger)
                 }
             }
-            if showForm.wrappedValue {
-                form()
+    }
+
+    private var goCredentialSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("OpenCode Go Credentials")
+                .font(.title2.weight(.semibold))
+            Text("These values are stored in your macOS Keychain and used only to query quota information.")
+                .font(TMType.regular(TMType.body))
+                .foregroundStyle(.secondary)
+            Form {
+                TextField("Workspace ID", text: $goWS, prompt: Text("wrk_..."))
+                    .font(.system(size: TMType.body, design: .monospaced))
+                SecureField("Authentication cookie", text: $goCookie, prompt: Text("Fe26.2**..."))
+                    .font(.system(size: TMType.body, design: .monospaced))
+            }
+            .formStyle(.grouped)
+            if let goFormMessage, goFormFailed {
+                Text(goFormMessage)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showGoForm = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save & Query") { saveGoCredentials() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(TMDesign.accent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(goWS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || goCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private var openRouterCredentialSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("OpenRouter Credentials")
+                .font(.title2.weight(.semibold))
+            Text("The API key is stored in your macOS Keychain and is never displayed after saving.")
+                .font(TMType.regular(TMType.body))
+                .foregroundStyle(.secondary)
+            Form {
+                SecureField("API key", text: $orKey, prompt: Text("sk-or-..."))
+                    .font(.system(size: TMType.body, design: .monospaced))
+                if orClient.hasKey {
+                    Toggle("Add this key without replacing existing keys", isOn: $orAppend)
+                }
+            }
+            .formStyle(.grouped)
+            if let orFormMessage, orFormFailed {
+                Text(orFormMessage)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showORForm = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { saveOpenRouterCredentials() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(TMDesign.accent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(orKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private func saveGoCredentials() {
+        let ws = goWS.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ck = goCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ws.isEmpty, !ck.isEmpty else { return }
+        if goClient.provision(workspaceId: ws, cookie: ck) {
+            goClient.refresh()
+            showGoForm = false
+            goFormMessage = "OpenCode Go credentials saved"
+            goFormFailed = false
+        } else {
+            goFormMessage = goClient.state.error ?? "Save failed (Keychain unavailable)"
+            goFormFailed = true
+        }
+    }
+
+    private func saveOpenRouterCredentials() {
+        let key = orKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok = orAppend ? orClient.addKey(key) : orClient.setKey(key)
+        if ok {
+            showORForm = false
+            orFormMessage = "OpenRouter key saved"
+            orFormFailed = false
+        } else {
+            orFormMessage = orClient.state.error ?? "Save failed (Keychain unavailable)"
+            orFormFailed = true
+        }
+    }
+
+    private func clearPendingCredentials() {
+        switch pendingCredentialClear {
+        case .openCodeGo:
+            goClient.clear()
+            goWS = ""
+            goCookie = ""
+            goFormMessage = "OpenCode Go credentials cleared"
+            goFormFailed = false
+        case .openRouter:
+            _ = orClient.setKey(nil)
+            orKey = ""
+            orAppend = false
+            orFormMessage = "OpenRouter key cleared"
+            orFormFailed = false
+        case .none:
+            break
+        }
+        pendingCredentialClear = nil
     }
 
     /// Quota progress bar. `usedPct` is the fraction of the limit already

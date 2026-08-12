@@ -24,12 +24,16 @@ struct PopoverRootView: View {
                 ))
             } else {
                 VStack(spacing: 0) {
-                    header
-                    // 留白分区：不再横贯硬分割线，仅保留低对比 hairline。
-                    Divider().opacity(0.25)
+                    fixedSlice(kind: "header") {
+                        header
+                    }
                     PopoverHomeView()
-                    Divider().opacity(0.25)
-                    footer
+                    fixedSlice(kind: "footer") {
+                        VStack(spacing: 0) {
+                            Divider().opacity(0.25)
+                            footer
+                        }
+                    }
                 }
                 .transition(.asymmetric(
                     insertion: .move(edge: .leading).combined(with: .opacity),
@@ -38,11 +42,6 @@ struct PopoverRootView: View {
             }
         }
         .frame(width: 400)
-        // Height slices (scroll body + pinned period selector) are posted as
-        // notifications directly by PopoverHomeView's geometry readers —
-        // SwiftUI preference propagation is unreliable across ScrollView
-        // boundaries, which left the pinned slice stuck at 0 and cut the
-        // bottom rows (OpenRouter) off.
         .environment(\.controlSize, .small)
         .onChange(of: showSettings) { _, open in
             NotificationCenter.default.post(
@@ -51,6 +50,13 @@ struct PopoverRootView: View {
                 userInfo: ["open": open]
             )
         }
+    }
+
+    private func fixedSlice<Content: View>(kind: String,
+                                           @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .fixedSize(horizontal: false, vertical: true)
+            .reportPopoverHeight(kind: kind, page: "home")
     }
 
     private var header: some View {
@@ -74,7 +80,8 @@ struct PopoverRootView: View {
             .accessibilityLabel("Refresh data")
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 
     @ViewBuilder
@@ -134,6 +141,41 @@ struct PopoverRootView: View {
         OpenRouterClient.shared.refresh()
         OpenCodeGoClient.shared.refresh()
         HermesRemoteClient.shared.maybePoll()
+    }
+}
+
+/// Reports a view's natural vertical size without introducing another
+/// material or background layer. A preference is ideal inside SwiftUI; the
+/// final notification is emitted once, at the root of this modifier.
+private struct PopoverHeightReporter: ViewModifier {
+    let kind: String
+    let page: String
+
+    func body(content: Content) -> some View {
+        content.background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { post(proxy.size.height) }
+                    .onChange(of: proxy.size.height) { _, height in post(height) }
+            }
+        )
+    }
+
+    private func post(_ height: CGFloat) {
+        guard height > 0 else { return }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: PanelController.contentHeightNotification,
+                object: nil,
+                userInfo: ["kind": kind, "page": page, "height": height]
+            )
+        }
+    }
+}
+
+extension View {
+    func reportPopoverHeight(kind: String, page: String) -> some View {
+        modifier(PopoverHeightReporter(kind: kind, page: page))
     }
 }
 

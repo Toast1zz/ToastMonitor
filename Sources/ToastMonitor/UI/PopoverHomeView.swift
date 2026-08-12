@@ -40,7 +40,18 @@ struct PopoverHomeView: View {
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
-    @State private var period: Period = .today
+    @State private var period: Period = {
+        let args = CommandLine.arguments
+        guard let flag = args.firstIndex(of: "--period"), flag + 1 < args.count else {
+            return .today
+        }
+        switch args[flag + 1] {
+        case "week": return .week
+        case "month": return .month
+        case "all": return .all
+        default: return .today
+        }
+    }()
     /// Drives countdown refresh (resets etc.) once a minute.
     @State private var now = Date()
     /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
@@ -95,26 +106,10 @@ struct PopoverHomeView: View {
             // screen-height limit, but the selector must always remain visible.
             periodControl
                 .padding(.horizontal, 20)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 10)
                 .fixedSize(horizontal: false, vertical: true)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear {
-                                // Defer past the first layout pass: the initial
-                                // size can be a stale viewport value, which
-                                // made the panel height wrong until a period
-                                // switch re-measured it.
-                                DispatchQueue.main.async {
-                                    postPanelHeight(kind: "pinned", height: geo.size.height)
-                                }
-                            }
-                            .onChange(of: geo.size.height) { _, h in
-                                postPanelHeight(kind: "pinned", height: h)
-                            }
-                    }
-                )
+                .reportPopoverHeight(kind: "pinned", page: "home")
 
             ScrollView(.vertical, showsIndicators: false) {
                 // 板块节奏统一：每块之间一条等宽分割线（撑满内容区），
@@ -134,33 +129,10 @@ struct PopoverHomeView: View {
                     trendBlock
                 }
                 .padding(.horizontal, 20)
-                // A ScrollView normally accepts the viewport's proposed
-                // height, which made every period report the same 684pt panel
-                // height. Force the document to keep its natural vertical
-                // size so 7-day / 30-day pages can actually grow the panel.
                 .fixedSize(horizontal: false, vertical: true)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear {
-                                DispatchQueue.main.async {
-                                    postPanelHeight(kind: "body", height: geo.size.height)
-                                }
-                            }
-                            .onChange(of: geo.size.height) { _, h in
-                                postPanelHeight(kind: "body", height: h)
-                            }
-                    }
-                )
+                .reportPopoverHeight(kind: "body", page: "home")
             }
-            .onChange(of: period) { _, _ in
-                // Reset the underlying NSClipView after SwiftUI updates the
-                // document and PanelController resizes the NSPanel.
-                NotificationCenter.default.post(
-                    name: PanelController.resetScrollNotification,
-                    object: nil
-                )
-            }
+            .id(period)
             .frame(minHeight: 0, maxHeight: .infinity)
             .layoutPriority(1)
         }
@@ -238,34 +210,20 @@ struct PopoverHomeView: View {
         }
     }
 
+    @ViewBuilder
     private var periodControl: some View {
-        HStack(spacing: 2) {
-            ForEach(Period.allCases) { p in
-                Button {
-                    period = p
-                } label: {
-                    Text(p.rawValue)
-                        .font(TMType.medium(13))
-                        .foregroundStyle(period == p ? Color.primary : Color.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(period == p ? Color.primary.opacity(0.10) : .clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(p.rawValue)
-                .accessibilityValue(period == p ? "Selected" : "Not selected")
-                .accessibilityAddTraits(period == p ? .isSelected : [])
-            }
+        if #available(macOS 26.0, *) {
+            NativePeriodSelector(selection: $period)
+                // PopoverRootView intentionally makes ordinary controls
+                // small. This top-level range selector is the exception: the
+                // native macOS 26/27 metric is a 36 pt extra-large capsule.
+                .environment(\.controlSize, .extraLarge)
+                .accessibilityLabel("Period")
+        } else {
+            NativePeriodSelector(selection: $period)
+                .environment(\.controlSize, .large)
+                .accessibilityLabel("Period")
         }
-        .padding(3)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
     }
 
     /// 实际支出 = turns 实际 + OpenRouter 今日实际 + 全部订阅摊销。
@@ -425,6 +383,10 @@ struct PopoverHomeView: View {
             }
             trendChart
         }
+        // Keep the x-axis labels inside the measured scroll document. A
+        // visual `offset` is not included in SwiftUI's layout size, which let
+        // the fixed footer clip the bottom of the dates.
+        .padding(.bottom, 6)
     }
 
     /// UserDefaults 持久化的上次热力图数据：冷启动先显示旧曲线，
@@ -539,7 +501,6 @@ struct PopoverHomeView: View {
                 AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     .font(.system(size: 9))
                     .foregroundStyle(TMDesign.quiet)
-                    .offset(y: 5)
             }
         }
         .chartYAxis(.hidden)
@@ -665,16 +626,82 @@ struct PopoverHomeView: View {
                   critical: critical, resetSuffix: resetSuffix)
     }
 
-    /// Post a measured height slice straight to the panel controller.
-    /// Notifications bypass SwiftUI's preference chain, which is unreliable
-    /// across ScrollView boundaries (the pinned slice was stuck at 0 and the
-    /// bottom rows — OpenRouter — got cut off).
-    private func postPanelHeight(kind: String, height: CGFloat) {
-        NotificationCenter.default.post(
-            name: PanelController.contentHeightNotification,
-            object: nil,
-            userInfo: ["kind": kind, "height": height]
+}
+
+/// The period choices replace the visible dashboard content, so on macOS 27
+/// this is a tabs control rather than an inspector-style value picker. The
+/// tabs role is also what supplies the native draggable Liquid Glass selection
+/// island shown by system apps. The control draws all chrome itself; there is
+/// no material or glass wrapper.
+private struct NativePeriodSelector: NSViewRepresentable {
+    @Binding var selection: PopoverHomeView.Period
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection)
+    }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(
+            labels: PopoverHomeView.Period.allCases.map(\.rawValue),
+            trackingMode: .selectOne,
+            target: context.coordinator,
+            action: #selector(Coordinator.selectionChanged(_:))
         )
+        control.segmentDistribution = .fillEqually
+        control.selectedSegment = selectedIndex
+        if #available(macOS 26.0, *) {
+            // The current macOS value-selection control uses the system's
+            // extra-large 36 pt metric. `.large` is the 28 pt compact form
+            // and is why the popover still looked like the previous design.
+            control.controlSize = .extraLarge
+            control.borderShape = .capsule
+        } else {
+            control.controlSize = .large
+        }
+        if #available(macOS 27.0, *) {
+            control.role = .tabs
+        }
+        control.setAccessibilityLabel("Period")
+        control.setAccessibilityHelp("Changes the usage time range")
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        // SwiftUI can propagate the root `.small` environment into the
+        // represented NSControl after makeNSView. Reassert the platform's
+        // native metric on updates so its intrinsic height remains 36 pt.
+        if #available(macOS 26.0, *) {
+            if control.controlSize != .extraLarge {
+                control.controlSize = .extraLarge
+                control.invalidateIntrinsicContentSize()
+            }
+        } else if control.controlSize != .large {
+            control.controlSize = .large
+            control.invalidateIntrinsicContentSize()
+        }
+        if control.selectedSegment != selectedIndex {
+            control.selectedSegment = selectedIndex
+        }
+    }
+
+    private var selectedIndex: Int {
+        PopoverHomeView.Period.allCases.firstIndex(of: selection) ?? 0
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var selection: Binding<PopoverHomeView.Period>
+
+        init(selection: Binding<PopoverHomeView.Period>) {
+            self.selection = selection
+        }
+
+        @objc func selectionChanged(_ sender: NSSegmentedControl) {
+            let periods = PopoverHomeView.Period.allCases
+            guard periods.indices.contains(sender.selectedSegment) else { return }
+            selection.wrappedValue = periods[sender.selectedSegment]
+        }
     }
 }
 
@@ -805,9 +832,13 @@ private struct PopoverHeatmap: View {
     private func heatCell(_ key: Int64?, size: CGFloat) -> some View {
         let v = key.flatMap { heatmap[$0] } ?? 0
         let ratio = maxTokens > 0 ? Double(v) / Double(maxTokens) : 0
+        // 线性渐变不变；下限 0.4 保证任何有数据的日子（包括当天——其
+        // 比例常被峰值日压到 0.01 以下）都明显可见，而大日子保持原有
+        // 梯度。精确数值由悬停提供。
+        let opacity = max(0.4, 0.25 + 0.75 * ratio)
         return RoundedRectangle(cornerRadius: 1, style: .continuous)
             .fill(v > 0
-                  ? TMDesign.accent.opacity(0.25 + 0.75 * ratio)
+                  ? TMDesign.accent.opacity(opacity)
                   : Color.primary.opacity(0.06))
             .frame(width: size, height: size)
             .contentShape(Rectangle())

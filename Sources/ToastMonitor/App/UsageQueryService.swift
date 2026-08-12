@@ -80,6 +80,9 @@ final class UsageQueryService: @unchecked Sendable {
     func loadLightSnapshot(completion: @escaping @MainActor @Sendable (LightSnapshot) -> Void) {
         queue.async {
             let key = Database.shared.dataVersionKey()
+            if DebugLog.enabled {
+                NSLog("[ToastMonitor][query] light key=%@ cached=%@", key, self.cachedLight?.key ?? "-")
+            }
             if let c = self.cachedLight, c.key == key {
                 DispatchQueue.main.async { completion(c.snapshot) }
                 return
