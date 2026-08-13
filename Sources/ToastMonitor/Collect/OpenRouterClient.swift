@@ -78,6 +78,10 @@ final class OpenRouterClient: ObservableObject {
     private var refreshGeneration: UInt64 = 0
     private var keyLoadInFlight = false
     private var legacyCleanupDone = false
+    /// `nil` means the login Keychain has not been read yet. Once loaded,
+    /// foreground refreshes reuse this in-memory copy and never call Security
+    /// framework from the UI thread.
+    private var cachedKeys: [String]?
 
     private var popoverVisible = false
     private var dashboardVisible = false
@@ -108,7 +112,6 @@ final class OpenRouterClient: ObservableObject {
         // Keychain reads can wait for the login/keychain agent. Never perform
         // one while SwiftUI is constructing the menu bar scene.
         hasKey = false
-        observeForeground()
     }
 
     // MARK: - Keys
@@ -215,6 +218,7 @@ final class OpenRouterClient: ObservableObject {
         if let key,
            let normalized = normalizedKeys([key]).first,
            saveKeys([normalized], allowPrompt: true) {
+            cachedKeys = [normalized]
             hasKey = true
         } else if key != nil {
             state.error = "Keychain write failed — API key not saved"
@@ -225,6 +229,7 @@ final class OpenRouterClient: ObservableObject {
             Database.shared.setSetting("or_keys", nil)
             Database.shared.setSetting("openrouter_key", nil)
             Database.shared.setSetting("or_cred_storage", nil)
+            cachedKeys = []
             hasKey = false
             var cleared = State()
             cleared.error = "API key not configured"
@@ -238,7 +243,7 @@ final class OpenRouterClient: ObservableObject {
     @discardableResult
     func addKey(_ key: String) -> Bool {
         guard let normalized = normalizedKeys([key]).first else { return false }
-        var keys = storedKeys()
+        var keys = cachedKeys ?? storedKeys()
         guard keys.count < Self.maxKeyCount else {
             state.error = "API key count limit reached"
             return false
@@ -248,6 +253,7 @@ final class OpenRouterClient: ObservableObject {
             state.error = "Keychain write failed — API key not saved"
             return false
         }
+        cachedKeys = normalizedKeys(keys)
         hasKey = true
         refresh()
         return true
@@ -264,6 +270,7 @@ final class OpenRouterClient: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        observeForeground()
         refresh() // one initial snapshot
         updateForeground()
     }
@@ -296,16 +303,20 @@ final class OpenRouterClient: ObservableObject {
 
     func refresh() {
         guard !keyLoadInFlight else { return }
+        if let cachedKeys {
+            refresh(with: cachedKeys)
+            return
+        }
         keyLoadInFlight = true
-        // Keychain reads MUST run on the main thread: every read unlocks the
-        // vault (SecKeychainUnlock needs the main-thread UI session). Reading
-        // here on the background queue silently failed, leaving hasKey=false
-        // and the OpenRouter row stuck on "not yet configured API key".
-        let keys = storedKeys()
+        // Standard SecItemCopyMatching is thread-safe. It can still wait for
+        // securityd / login-keychain decryption, so it must not run on the
+        // main actor where it would freeze the toolbar selection animation.
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            let keys = self?.storedKeys() ?? []
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.keyLoadInFlight = false
+                self.cachedKeys = keys
                 self.refresh(with: keys)
             }
         }

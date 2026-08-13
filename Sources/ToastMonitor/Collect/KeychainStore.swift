@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 import Security
 
 /// Standard Keychain wrapper: system login keychain, SecItem API.
@@ -20,9 +19,13 @@ enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        let context = LAContext()
-        context.interactionNotAllowed = !allowPrompt
-        query[kSecUseAuthenticationContext as String] = context
+        if !allowPrompt {
+            // Do not attach an LAContext to legacy login-keychain items. On
+            // macOS 26/27 that route can still enter the old ACL decryption
+            // path and block while SecurityAgent asks for the login password.
+            // UIFail makes every unattended read/write/delete return instead.
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
         return query
     }
 
@@ -55,12 +58,6 @@ enum KeychainStore {
         var query = query(account: account, allowPrompt: allowPrompt)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        if !allowPrompt {
-            // Legacy macOS Keychain ACLs ignore LAContext's interaction flag.
-            // `Skip` is the documented CopyMatching mode that guarantees an
-            // unattended poll never opens a password sheet.
-            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-        }
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }

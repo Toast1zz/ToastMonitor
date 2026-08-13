@@ -12,6 +12,7 @@ cd "$ROOT"
 SWIFT_BUILD=(swift build --build-system native)
 BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 APP="$ROOT/dist/ToastMonitor.app"
+INSTALL_APP="${TM_INSTALL_PATH:-/Applications/ToastMonitor.app}"
 
 # A release's marketing version is sourced from the tag (v1.0, v1.2.3, ...).
 # CI may inject TM_VERSION after checking out an exact tag.  Untagged source
@@ -103,9 +104,11 @@ echo "== code signing =="
 SIGNING_IDENTITY="${TM_SIGNING_IDENTITY:-}"
 if [[ -z "$SIGNING_IDENTITY" ]]; then
     AVAILABLE_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-    # Prefer an Apple Development identity locally: its Team ID gives
-    # Keychain ACLs a stable partition across rebuilt binaries. CI/release
-    # callers still provide TM_SIGNING_IDENTITY explicitly.
+    # Prefer a stable Apple Development Team identity. ToastMonitor's three
+    # login-keychain items authorize this Team ID, so rebuilt binaries remain
+    # trusted even though their CDHash changes. A self-signed identity has no
+    # Team ID and falls back to a per-build CDHash, causing one password sheet
+    # per credential after every install.
     while IFS= read -r identity_line; do
         if [[ "$identity_line" == *'"Apple Development:'* ]]; then
             SIGNING_IDENTITY="${identity_line#*\"}"
@@ -129,9 +132,9 @@ if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
 fi
 codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
 
-echo "== installing to /Applications =="
+echo "== installing locally =="
 if [[ "${CI:-}" == "true" ]]; then
-    echo "skipping install to /Applications (CI environment)"
+    echo "skipping install (CI environment)"
 else
     WAS_RUNNING=0
     if pgrep -x ToastMonitor >/dev/null; then
@@ -144,11 +147,12 @@ else
             sleep 1
         done
     fi
-    ditto "$APP" /Applications/ToastMonitor.app
-    echo "installed: /Applications/ToastMonitor.app"
+    mkdir -p "$(dirname "$INSTALL_APP")"
+    ditto "$APP" "$INSTALL_APP"
+    echo "installed: $INSTALL_APP"
     if [[ "$WAS_RUNNING" == "1" ]]; then
         echo "relaunching ToastMonitor"
-        open -a /Applications/ToastMonitor.app
+        open "$INSTALL_APP"
     fi
 fi
 

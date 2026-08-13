@@ -136,20 +136,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
         if args.contains("--probe-vault") {
-            // Diagnostic: run in a GUI session via `open --args` so the
-            // keychain behaves exactly as it does for the real app. Reports
-            // presence/length only — never key material. Written to the app
-            // support dir (0600), not /tmp.
-            let raw = KeychainStore.get(account: "or-keys")
-            let orKeys = OpenRouterClient.shared.storedKeys()
-            let log = """
-            vault: \(KeychainStore.get(account: "or-keys") != nil ? "loginKC ok" : "loginKC empty")
-            or-keys raw: \(raw == nil ? "nil" : "present") (len \(raw?.count ?? -1))
-            storedKeys(): \(orKeys.count) keys
-            hasKey: \(OpenRouterClient.shared.hasKey)
-            state.error: \(OpenRouterClient.shared.state.error ?? "nil")
-            state.usageMonthly: \(OpenRouterClient.shared.state.usageMonthly)
-            """
+            // Exercise every credential read used during a normal launch.
+            // Report presence and latency only; never write key material.
+            let accounts = ["or-keys", "go-workspace-id", "go-auth-cookie"]
+            let lines = accounts.map { account in
+                let started = CFAbsoluteTimeGetCurrent()
+                let present = KeychainStore.get(account: account) != nil
+                let elapsedMS = (CFAbsoluteTimeGetCurrent() - started) * 1_000
+                return "\(account): \(present ? "present" : "unavailable") \(String(format: "%.2f", elapsedMS)) ms"
+            }
+            let log = lines.joined(separator: "\n")
             let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("ToastMonitor", isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -333,6 +329,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 AppState.shared.refresh()
                 WindowManager.shared.show()
+                if args.contains("--benchmark-dashboard-switches") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        for pass in 1...2 {
+                            for tab in DashboardView.Tab.allCases {
+                                let elapsed = WindowManager.shared.benchmarkSwitch(to: tab) ?? -1
+                                print("dashboard switch pass \(pass) \(tab.rawValue): \(String(format: "%.2f", elapsed * 1_000)) ms")
+                                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                            }
+                        }
+                        exit(0)
+                    }
+                }
                 if let captureFlag = args.firstIndex(of: "--capture-dashboard"),
                    captureFlag + 1 < args.count {
                     let output = args[captureFlag + 1]

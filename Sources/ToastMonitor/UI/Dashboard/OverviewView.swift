@@ -20,20 +20,12 @@ struct OverviewView: View {
         var id: String { rawValue }
     }
 
-    /// The annual heatmap is supporting context, not the page hero. Keeping
-    /// its cells compact prevents it from visually outweighing current usage.
-    private let cellSize: CGFloat = 10
     private let cellGutter: CGFloat = 3
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
                 intro
-                // Hairline between the page header and the content,
-                // consistent with the other dashboard pages.
-                Rectangle()
-                    .fill(TMDesign.divider)
-                    .frame(height: 1)
                 // Hero totals and the distribution share one panel: the
                 // period figure reads as the header of the breakdown below.
                 TMPanel {
@@ -65,19 +57,19 @@ struct OverviewView: View {
         .padding(.bottom, 12)
     }
 
-    /// Period switch: native macOS segmented control (HIG — Calendar's
-    /// Day/Week/Month/Year pattern: text labels, equal segments, one
-    /// persistent selection). No custom chrome.
+    /// The period is a filter on this page, not a second navigation layer.
+    /// A native pop-up keeps the active range visible while letting AppKit
+    /// own the menu, checkmark, material and interaction.
     private var periodControl: some View {
-        Picker("Period", selection: $period) {
+        Picker("Date Range", selection: $period) {
             ForEach(Period.allCases) { p in
                 Text(p.rawValue).tag(p)
             }
         }
-        .pickerStyle(.segmented)
+        .pickerStyle(.menu)
         .labelsHidden()
-        .accessibilityLabel("Period")
-        .frame(width: 292)
+        .fixedSize()
+        .accessibilityLabel("Date range")
     }
 
     private var periodTitle: String {
@@ -186,7 +178,6 @@ struct OverviewView: View {
                 heatmap: app.heatmap,
                 heatmapCost: app.heatmapCost,
                 maxTokens: heatmapMaxTokens,
-                cellSize: cellSize,
                 cellGutter: cellGutter
             )
         }
@@ -348,11 +339,15 @@ private struct HeatmapGrid: View {
     let heatmap: [Int64: Int64]
     let heatmapCost: [Int64: Double]
     let maxTokens: Int64
-    let cellSize: CGFloat
     let cellGutter: CGFloat
 
     private let calendar = Calendar.current
     @State private var hoveredDay: (key: Int64, tokens: Int64, cost: Double)?
+
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 8), spacing: cellGutter),
+              count: weeks.count)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -366,33 +361,47 @@ private struct HeatmapGrid: View {
                 Spacer()
             }
             .frame(height: 14)
-            ScrollView(.horizontal, showsIndicators: false) {
-                ZStack(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: cellGutter) {
-                        ForEach(weeks.indices, id: \.self) { wi in
-                            VStack(spacing: cellGutter) {
-                                ForEach(0..<7, id: \.self) { di in
-                                    heatCell(weeks[wi][di])
-                                }
-                            }
+            VStack(alignment: .leading, spacing: 4) {
+                GeometryReader { proxy in
+                    let cell = fittedCellSize(for: proxy.size.width)
+                    ZStack(alignment: .topLeading) {
+                        ForEach(monthLabels, id: \.index) { m in
+                            Text(m.label)
+                                .font(TMType.monoRegular(9))
+                                .foregroundStyle(TMDesign.quiet)
+                                .fixedSize()
+                                .offset(x: CGFloat(m.index) * (cell + cellGutter))
                         }
                     }
-                    .padding(.top, 16)
-                    // Month labels overhang their column like GitHub's grid.
-                    ForEach(monthLabels, id: \.index) { m in
-                        Text(m.label)
-                            .font(TMType.monoRegular(9))
-                            .foregroundStyle(TMDesign.quiet)
-                            .fixedSize()
-                            .offset(x: CGFloat(m.index) * (cellSize + cellGutter), y: 0)
+                }
+                .frame(height: 12)
+
+                LazyVGrid(columns: gridColumns, alignment: .leading,
+                          spacing: cellGutter) {
+                    // Row-major ordering makes LazyVGrid render the same
+                    // Monday-to-Sunday rows as the former stack of columns.
+                    ForEach(0..<7, id: \.self) { dayIndex in
+                        ForEach(weeks.indices, id: \.self) { weekIndex in
+                            heatCell(weeks[weekIndex][dayIndex])
+                        }
                     }
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 5)
+                .overlay {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                updateHover(phase, size: proxy.size)
+                            }
+                    }
+                }
             }
-            .defaultScrollAnchor(.trailing)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
             heatLegend
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Activity heatmap")
         .accessibilityValue(Text(accessibilitySummary))
@@ -444,6 +453,33 @@ private struct HeatmapGrid: View {
         .accessibilityValue("Less to more")
     }
 
+    private func fittedCellSize(for width: CGFloat) -> CGFloat {
+        guard !weeks.isEmpty else { return 8 }
+        let gaps = CGFloat(max(0, weeks.count - 1)) * cellGutter
+        return max(8, (width - gaps) / CGFloat(weeks.count))
+    }
+
+    private func updateHover(_ phase: HoverPhase, size: CGSize) {
+        switch phase {
+        case .active(let point):
+            let cell = fittedCellSize(for: size.width)
+            let stride = cell + cellGutter
+            guard stride > 0 else { hoveredDay = nil; return }
+            let week = Int(point.x / stride)
+            let day = Int(point.y / stride)
+            guard weeks.indices.contains(week), (0..<7).contains(day),
+                  point.x - CGFloat(week) * stride <= cell,
+                  point.y - CGFloat(day) * stride <= cell,
+                  let key = weeks[week][day], key > 0 else {
+                hoveredDay = nil
+                return
+            }
+            hoveredDay = (key, heatmap[key] ?? 0, heatmapCost[key] ?? 0)
+        case .ended:
+            hoveredDay = nil
+        }
+    }
+
     @ViewBuilder
     private func heatCell(_ day: Int64?) -> some View {
         // 0 是未来日哨兵（buildHeatmapWeeks：date > now 时写入）。未来格
@@ -457,31 +493,18 @@ private struct HeatmapGrid: View {
             let cost = heatmapCost[day] ?? 0
             let valueText = "\(Format.full(tokenCount)) tokens" + (cost > 0 ? ", \(Format.money(cost))" : "")
 
-            Button {
-                hoveredDay = (day, tokenCount, cost)
-            } label: {
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    // 线性渐变不变；下限 0.4 保证有数据的日子（含当天）
-                    // 明显可见，大日子保留原有梯度。
-                    .fill(value > 0 ? TMDesign.accent.opacity(max(0.4, 0.18 + intensity * 0.72)) : Color.primary.opacity(0.07))
-                    .frame(width: cellSize, height: cellSize)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                // 线性渐变不变；下限 0.4 保证有数据的日子（含当天）
+                // 明显可见，大日子保留原有梯度。
+                .fill(value > 0 ? TMDesign.accent.opacity(max(0.4, 0.18 + intensity * 0.72)) : Color.primary.opacity(0.07))
+                .aspectRatio(1, contentMode: .fit)
+                .contentShape(Rectangle())
             .accessibilityLabel(Text(label))
             .accessibilityValue(Text(valueText))
-            .accessibilityHint("Press Space to see that day's usage")
-            .onHover { hovering in
-                if hovering {
-                    hoveredDay = (day, tokenCount, cost)
-                } else if hoveredDay?.key == day {
-                    hoveredDay = nil
-                }
-            }
         } else {
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                 .fill(Color.primary.opacity(day == 0 ? 0.03 : 0.07))
-                .frame(width: cellSize, height: cellSize)
+                .aspectRatio(1, contentMode: .fit)
                 .accessibilityHidden(true)
         }
     }

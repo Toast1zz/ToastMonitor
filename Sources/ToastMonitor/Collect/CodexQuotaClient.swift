@@ -113,6 +113,27 @@ final class CodexQuotaClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
+        inFlight = true
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+
+        // Dashboard visibility and native toolbar actions must never perform
+        // synchronous disk I/O on the main actor.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let accessToken = Self.loadAccessToken()
+            Task { @MainActor [weak self] in
+                guard let self, self.refreshGeneration == generation else { return }
+                guard let accessToken else {
+                    self.inFlight = false
+                    self.state.error = "Codex login not found (sign in with codex to restore)"
+                    return
+                }
+                self.requestUsage(accessToken: accessToken, generation: generation)
+            }
+        }
+    }
+
+    private nonisolated static func loadAccessToken() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let authPath = home.appendingPathComponent(".codex/auth.json").path
 
@@ -123,15 +144,16 @@ final class CodexQuotaClient: ObservableObject {
               let accessToken = tokens["access_token"] as? String,
               !accessToken.isEmpty, accessToken.count <= 16_384,
               accessToken.rangeOfCharacter(from: .controlCharacters) == nil else {
-            state.error = "Codex login not found (sign in with codex to restore)"
+            return nil
+        }
+        return accessToken
+    }
+
+    private func requestUsage(accessToken: String, generation: UInt64) {
+        guard let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else {
+            inFlight = false
             return
         }
-
-        inFlight = true
-        refreshGeneration &+= 1
-        let generation = refreshGeneration
-
-        guard let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else { return }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         req.httpMethod = "GET"
         req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")

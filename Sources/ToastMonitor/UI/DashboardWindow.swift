@@ -7,6 +7,7 @@ final class WindowManager {
     static let shared = WindowManager()
     private var window: NSWindow?
     private var toolbarController: DashboardToolbarController?
+    private var pageController: DashboardPageController?
     private var closeObserver: NSObjectProtocol?
 
     private init() {}
@@ -28,14 +29,15 @@ final class WindowManager {
             NSApp.activate(ignoringOtherApps: true)
             NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
             if let tab {
-                NotificationCenter.default.post(name: DashboardView.selectTab, object: tab)
+                pageController?.select(tab)
+                toolbarController?.select(tab)
             }
             return
         }
 
         let initialTab = tab ?? .overview
-        let content = NSHostingController(rootView: DashboardView(initialTab: initialTab).environmentObject(AppState.shared))
-        let window = NSWindow(contentViewController: content)
+        let pageController = DashboardPageController(initialTab: initialTab)
+        let window = NSWindow(contentViewController: pageController)
         window.title = "ToastMonitor"
         // The page tabs are the centered toolbar identity. Repeating the app
         // name immediately beside them makes the native group look offset.
@@ -50,9 +52,21 @@ final class WindowManager {
         window.minSize = NSSize(width: 900, height: 580)
         window.center()
         window.setFrameAutosaveName("ToastMonitorDashboard")
-        let toolbarController = DashboardToolbarController(initialTab: initialTab)
+        // Build and lay out all four pages before the window appears. This
+        // moves each SwiftUI page's one-time construction cost out of toolbar
+        // clicks, so the native tab island never shares a frame with Charts,
+        // forms or the annual activity grid being initialized.
+        pageController.prepareAllPages()
+        let toolbarController = DashboardToolbarController(initialTab: initialTab) {
+            [weak pageController] tab in
+            pageController?.select(tab)
+        }
+        pageController.selectionDidChange = { [weak toolbarController] tab in
+            toolbarController?.select(tab)
+        }
         window.toolbar = toolbarController.toolbar
         self.toolbarController = toolbarController
+        self.pageController = pageController
         self.window = window
         // The close button (or Cmd-W) closes the window without going through
         // toggle(); without this the foreground timer keeps firing after the
@@ -92,6 +106,19 @@ final class WindowManager {
         }
     }
 
+    /// Hermetic performance hook: drive the same notification path as the
+    /// toolbar, then force AppKit/SwiftUI to finish layout and drawing. This
+    /// measures the main-thread work that can block the native tab animation.
+    func benchmarkSwitch(to tab: DashboardView.Tab) -> TimeInterval? {
+        guard let window, let contentView = window.contentView,
+              let pageController else { return nil }
+        let start = CFAbsoluteTimeGetCurrent()
+        pageController.select(tab)
+        contentView.layoutSubtreeIfNeeded()
+        contentView.displayIfNeeded()
+        return CFAbsoluteTimeGetCurrent() - start
+    }
+
 }
 
 /// A system toolbar item group. On macOS 27 the `.tabs` role is what gives
@@ -103,7 +130,8 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
     private static let tabsIdentifier = NSToolbarItem.Identifier("ToastMonitor.DashboardTabs")
     private static let refreshIdentifier = NSToolbarItem.Identifier("ToastMonitor.Refresh")
 
-    private var selectionObserver: NSObjectProtocol?
+    private var selectionGeneration = 0
+    private let selectionHandler: (DashboardView.Tab) -> Void
 
     private(set) lazy var tabsGroup: NSToolbarItemGroup = {
         let titles = DashboardView.Tab.allCases.map(\.rawValue)
@@ -141,19 +169,11 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
         DashboardView.Tab.allCases.firstIndex(of: initialTab) ?? 0
     }
 
-    init(initialTab: DashboardView.Tab) {
+    init(initialTab: DashboardView.Tab,
+         selectionHandler: @escaping (DashboardView.Tab) -> Void) {
         self.initialTab = initialTab
+        self.selectionHandler = selectionHandler
         super.init()
-        selectionObserver = NotificationCenter.default.addObserver(
-            forName: DashboardView.didSelectTab,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let tab = note.object as? DashboardView.Tab else { return }
-            Task { @MainActor [weak self] in
-                self?.select(tab)
-            }
-        }
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -187,10 +207,18 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
     @objc private func selectionChanged(_ sender: NSToolbarItemGroup) {
         let tabs = DashboardView.Tab.allCases
         guard tabs.indices.contains(sender.selectedIndex) else { return }
-        NotificationCenter.default.post(
-            name: DashboardView.selectTab,
-            object: tabs[sender.selectedIndex]
-        )
+        let selected = tabs[sender.selectedIndex]
+        selectionGeneration += 1
+        let generation = selectionGeneration
+
+        // Let AppKit commit the native tab island's selection transaction
+        // before SwiftUI tears down and builds a whole dashboard page. Doing
+        // both inside the toolbar action blocked the first frames of the
+        // Liquid Glass animation even on fast Apple silicon.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.selectionGeneration == generation else { return }
+            self.selectionHandler(selected)
+        }
     }
 
     @objc private func refreshData(_ sender: Any?) {
@@ -202,16 +230,120 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
         CodexQuotaClient.shared.refresh()
     }
 
-    private func select(_ tab: DashboardView.Tab) {
+    func select(_ tab: DashboardView.Tab) {
         guard let index = DashboardView.Tab.allCases.firstIndex(of: tab),
               tabsGroup.selectedIndex != index else { return }
         tabsGroup.selectedIndex = index
     }
+}
+
+/// Normal dashboard windows keep one mounted hosting controller per page.
+/// Switching changes visibility only; it never reconstructs or reattaches a
+/// large SwiftUI tree inside the toolbar's click event.
+@MainActor
+private final class DashboardPageController: NSViewController {
+    private let initialTab: DashboardView.Tab
+    private var selectedTab: DashboardView.Tab
+    private var hosts: [DashboardView.Tab: NSViewController] = [:]
+    private weak var visibleHost: NSViewController?
+    private var keyMonitor: Any?
+    var selectionDidChange: ((DashboardView.Tab) -> Void)?
+
+    init(initialTab: DashboardView.Tab) {
+        self.initialTab = initialTab
+        self.selectedTab = initialTab
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unused") }
+
+    override func loadView() {
+        let root = NSView()
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view = root
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        attach(initialTab)
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            guard let self, event.window == self.view.window,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  let raw = event.charactersIgnoringModifiers,
+                  let number = Int(raw), (1...DashboardView.Tab.allCases.count).contains(number)
+            else { return event }
+            let tab = DashboardView.Tab.allCases[number - 1]
+            self.select(tab)
+            return nil
+        }
+    }
+
+    func select(_ tab: DashboardView.Tab) {
+        guard tab != selectedTab else { return }
+        selectedTab = tab
+        show(tab)
+        selectionDidChange?(tab)
+    }
+
+    private func attach(_ tab: DashboardView.Tab) {
+        let next = host(for: tab)
+        install(next)
+        next.view.isHidden = false
+        visibleHost = next
+    }
+
+    private func show(_ tab: DashboardView.Tab) {
+        let next = host(for: tab)
+        install(next)
+        guard visibleHost !== next else { return }
+        visibleHost?.view.isHidden = true
+        next.view.isHidden = false
+        visibleHost = next
+    }
+
+    private func install(_ controller: NSViewController) {
+        guard controller.parent !== self else { return }
+        addChild(controller)
+        controller.view.frame = view.bounds
+        controller.view.autoresizingMask = [.width, .height]
+        controller.view.isHidden = true
+        view.addSubview(controller.view)
+    }
+
+    private func host(for tab: DashboardView.Tab) -> NSViewController {
+        if let existing = hosts[tab] { return existing }
+        let page: AnyView
+        switch tab {
+        case .overview:
+            page = AnyView(OverviewView().environmentObject(AppState.shared))
+        case .analysis:
+            page = AnyView(UsageAnalysisView().environmentObject(AppState.shared))
+        case .plans:
+            page = AnyView(PlansView().environmentObject(AppState.shared))
+        case .settings:
+            page = AnyView(SettingsView().environmentObject(AppState.shared))
+        }
+        let host = NSHostingController(rootView: page)
+        hosts[tab] = host
+        return host
+    }
+
+    func prepareAllPages() {
+        view.layoutSubtreeIfNeeded()
+        for tab in DashboardView.Tab.allCases {
+            let controller = host(for: tab)
+            install(controller)
+            controller.view.frame = view.bounds
+            controller.view.layoutSubtreeIfNeeded()
+        }
+        visibleHost?.view.isHidden = false
+    }
 
     deinit {
-        if let selectionObserver {
-            NotificationCenter.default.removeObserver(selectionObserver)
-        }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
 }
 
@@ -252,7 +384,13 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(TMDesign.canvas)
         .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in
-            if let requested = note.object as? Tab { tab = requested }
+            guard let requested = note.object as? Tab, requested != tab else { return }
+            // The toolbar owns the polished native selection animation. Page
+            // replacement must not inherit unrelated chart/control animations
+            // and attempt to animate an entire, structurally different tree.
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { tab = requested }
         }
         .onAppear {
             NotificationCenter.default.post(name: Self.didSelectTab, object: tab)

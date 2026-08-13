@@ -44,6 +44,8 @@ final class OpenCodeGoClient: ObservableObject {
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
+    private var credentialsLoaded = false
+    private var cachedCredentials: (workspaceId: String, cookie: String)?
 
     private init() {
         let cfg = URLSessionConfiguration.ephemeral
@@ -54,7 +56,6 @@ final class OpenCodeGoClient: ObservableObject {
         // Credential lookup may wait for the login/keychain agent. It is
         // loaded asynchronously after the UI has started.
         configured = false
-        observeForeground()
     }
 
     private static func normalizedWorkspaceID(_ raw: String) -> String? {
@@ -148,6 +149,8 @@ final class OpenCodeGoClient: ObservableObject {
             state.error = "Keychain write failed — cookie not saved"
             return false
         }
+        cachedCredentials = (workspaceID, authCookie)
+        credentialsLoaded = true
         configured = true
         state.error = nil
         return true
@@ -159,6 +162,8 @@ final class OpenCodeGoClient: ObservableObject {
         Database.shared.setSetting("go_workspace_id", nil)
         Database.shared.setSetting("go_auth_cookie", nil)
         Database.shared.setSetting("go_cred_storage", nil)
+        cachedCredentials = nil
+        credentialsLoaded = true
         configured = false
         var cleared = State()
         cleared.error = "Not configured"
@@ -168,6 +173,7 @@ final class OpenCodeGoClient: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        observeForeground()
         refresh() // one initial snapshot
         updateForeground()
     }
@@ -218,12 +224,27 @@ final class OpenCodeGoClient: ObservableObject {
     func refresh() {
         guard !inFlight else { return }
         inFlight = true
-        // Keychain reads (credentials) must run on the main thread — every
-        // read unlocks the vault, which needs the main-thread UI session.
-        let creds = credentials()
+        if credentialsLoaded {
+            guard let cachedCredentials else {
+                inFlight = false
+                configured = false
+                var cleared = State()
+                cleared.error = "Not configured"
+                state = cleared
+                return
+            }
+            refresh(with: cachedCredentials)
+            return
+        }
+        // The login Keychain may synchronously wait on securityd. Resolve the
+        // pair once on a utility queue, then keep it in memory for every timer
+        // and foreground refresh during this process lifetime.
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            let creds = self?.credentials()
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.credentialsLoaded = true
+                self.cachedCredentials = creds
                 guard let creds else {
                     self.inFlight = false
                     self.configured = false
