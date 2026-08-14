@@ -16,11 +16,9 @@ if [[ ! -f "$KEYCHAIN" ]]; then
     exit 1
 fi
 
-TEAM_ID="$(codesign -d --verbose=4 "$APP" 2>&1 | while IFS= read -r line; do
-    case "$line" in
-        TeamIdentifier=*) printf '%s\n' "${line#TeamIdentifier=}"; break ;;
-    esac
-done)"
+# macOS ships bash 3.2, which mis-parses a multi-line `case` inside a
+# command substitution; a plain sed pipeline is version-proof.
+TEAM_ID="$(codesign -d --verbose=4 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
 if [[ -z "$TEAM_ID" || ! "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
     echo "error: app is not signed by an Apple Development/Developer ID Team: $APP" >&2
     echo "       build with an identity that has a TeamIdentifier first" >&2

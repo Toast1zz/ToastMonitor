@@ -98,6 +98,20 @@ fi
 cp "$ICON_SOURCE" "$APP/Contents/Resources/AppIcon.icns"
 echo "icon: $ICON_SOURCE"
 echo "== code signing =="
+# A locked login keychain would block codesign on an invisible password
+# sheet. Fail fast with guidance instead; the one-time authorization also
+# unlocks the keychain, so after `scripts/authorize-local-keychain.sh` has
+# been run once, rebuilds stay silent.
+KEYCHAIN="${TM_KEYCHAIN_PATH:-$HOME/Library/Keychains/login.keychain-db}"
+if [[ ! -f "$KEYCHAIN" ]]; then
+    echo "error: keychain not found: $KEYCHAIN" >&2
+    exit 1
+fi
+if ! security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1; then
+    echo "error: keychain is locked: $KEYCHAIN" >&2
+    echo "       run ./scripts/authorize-local-keychain.sh once to unlock and authorize rebuilds" >&2
+    exit 1
+fi
 # Unlocking a keychain with a password on the command line leaks that secret
 # to process observers. Release tooling must unlock/select the keychain before
 # invoking this script.
