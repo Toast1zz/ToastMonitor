@@ -1,95 +1,95 @@
-# Token 统计途径说明
+# Token Collection
 
-本文档说明 ToastMonitor 如何统计 token：**按工具**（数据从哪里来、怎么解析）和**按来源**（本机直接读取 vs 远程 VPS feed）两条线。
+This document explains how ToastMonitor accounts for tokens along two axes: **by tool** (where the data comes from and how it is parsed) and **by source** (local reads vs. remote VPS feed).
 
-## 总览
+## Overview
 
-| 工具 | 本机数据源 | 行语义 | 远程 feed 行语义 |
+| Tool | Local data source | Row semantics | Remote feed row semantics |
 |---|---|---|---|
-| Claude Code | `~/.claude/projects/*/*.jsonl` | 逐条事件（assistant 的 usage） | 同结构逐条事件 |
-| Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | 逐条事件（token_count 的 last_token_usage） | 同结构逐条事件 |
-| OpenCode | `~/.local/share/opencode/opencode.db` | session 累计值 → 本地 delta | 累计值 → session_totals delta |
-| Hermes | `~/.hermes/state.db`（列自省） | (session, model) 累计行 → delta | 聚合行 → 基线 delta |
-| OpenRouter | 云端 API（不产生 token 行） | — | — |
+| Claude Code | `~/.claude/projects/*/*.jsonl` | per-event (assistant usage) | same per-event structure |
+| Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | per-event (`token_count` `last_token_usage`) | same per-event structure |
+| OpenCode | `~/.local/share/opencode/opencode.db` | session cumulative → local delta | cumulative → `session_totals` delta |
+| Hermes | `~/.hermes/state.db` (column introspection) | (session, model) cumulative rows → delta | aggregate rows → baseline delta |
+| OpenRouter | cloud API (produces no token rows) | — | — |
 
-每个工具可在「来源与设置」里独立选择本机 / 远程（设置键 `src_<tool>`）。
+Each tool can be switched between local and remote independently in Sources & Settings (setting key `src_<tool>`).
 
 ---
 
-## 按工具
+## By tool
 
 ### Claude Code
 
-- **本机路径**：`~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`，扫描器递归列目录（跳过隐藏项），只取 `.jsonl`。
-- **解析**：只处理 `type == "assistant"` 的事件。usage 字段兼容两种结构：事件顶层 `usage`，或 `message.usage`（新版 SDK）。
-- **token 字段**：`input_tokens`、`output_tokens`、`cache_read_input_tokens`（缓存命中）、`cache_creation_input_tokens`（缓存写入）。
-- **增量**：按 (size, 纳秒 mtime, inode) 判断文件变化；游标是**字节偏移**（`readNewJSONLines`），只解析追加的新行；未写完的尾部行不消费。文件被截断/替换时从偏移 0 重放（重放事件用旧 mtime 生成 ID 以去重）。
-- **去重**：事件 ID = 上游 `uuid`，缺失时 `claude:<文件名>:<inode>:<mtime>:<绝对字节偏移>`。全库唯一索引 (tool, event_id) 兜底（INSERT OR IGNORE）。
-- **远程 feed**：tm-export.py 在 VPS 上按同结构导出逐条事件，App 直接插入（按 feed 的 event_id 或内容哈希去重）。
+- **Local path**: `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`; the scanner lists directories recursively (skipping hidden entries) and keeps only `.jsonl`.
+- **Parsing**: only `type == "assistant"` events. Usage accepts two shapes: top-level event `usage`, or `message.usage` (newer SDK).
+- **Token fields**: `input_tokens`, `output_tokens`, `cache_read_input_tokens` (cache hits), `cache_creation_input_tokens` (cache writes).
+- **Incremental**: file changes are detected via (size, nanosecond mtime, inode); the cursor is a **byte offset** (`readNewJSONLines`) so only appended lines are parsed; a partial trailing line is not consumed. Truncated/replaced files replay from offset 0 (replayed events use the old mtime to keep IDs stable for dedupe).
+- **Dedupe**: event ID = upstream `uuid`, or `claude:<file>:<inode>:<mtime>:<absolute byte offset>` when missing. A global unique index on (tool, event_id) is the backstop (`INSERT OR IGNORE`).
+- **Remote feed**: tm-export.py exports the same per-event structure from the VPS; the app inserts directly (deduped by feed event_id or content hash).
 
 ### Codex
 
-- **本机路径**：`~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`，加 `~/.codex/state_5.sqlite` 的 `threads` 表（model/title/cwd 元数据）。
-- **解析**：`event_msg` 类型且 `payload.type == "token_count"` 的事件，取 `payload.info.last_token_usage`（per-turn delta）：`input_tokens`、`output_tokens`、`cached_input_tokens`、`cache_write_input_tokens`。
-- **模型关联**：优先 `turn_context` 事件里的 model；其次本 chunk 预扫得到的 model；再退到 `threads` 表的 model/provider；最后才是 NULL（成本按未知处理）。
-- **增量**：与 Claude 相同的 (size, mtime, inode) + 字节偏移游标；scan_state 持久化解析上下文（session id/model 跨扫描存活）。
-- **去重**：事件 ID = `codex:<文件名>:<inode>:<mtime>:<偏移>`（无上游 uuid）。
-- **远程 feed**：逐条事件直接插入。
+- **Local path**: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, plus the `threads` table in `~/.codex/state_5.sqlite` for model/title/cwd metadata.
+- **Parsing**: `event_msg` events with `payload.type == "token_count"`, reading `payload.info.last_token_usage` (per-turn delta): `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_write_input_tokens`.
+- **Model association**: prefer the model from `turn_context` events; then a model pre-scanned from the chunk; then the `threads` table's model/provider; finally NULL (unknown cost).
+- **Incremental**: same (size, mtime, inode) + byte-offset cursor as Claude; `scan_state` persists parsing context (session id/model) across scans.
+- **Dedupe**: event ID = `codex:<file>:<inode>:<mtime>:<offset>` (no upstream uuid).
+- **Remote feed**: per-event rows inserted directly.
 
 ### OpenCode
 
-- **本机路径**：`~/.local/share/opencode/opencode.db` 的 `session` 表（SQLite，只读打开）。
-- **行语义**：每 session 一行**累计值**：`tokens_input`、`tokens_output`、`tokens_reasoning`、`tokens_cache_read`、`tokens_cache_write`、`cost`（官方实际价）。
-- **Delta 机制**：本地维护 `session_totals` 表（key `opencode|<id>`）。每次扫描：新累计值 − 上次记录值 = 本批增量；字段变小（上游重置）按 0 处理。首次见到某 session 时把全量累计作为一条回填记录，归到真实最后更新时间（不归到今天）。
-- **时间**：上游毫秒时间戳归一化为秒。
-- **model**：上游 `model` 列可能是 JSON 对象（`{"id":...,"providerID":...}`），parser 归一化为纯 id；存量数据在启动时一次性 SQL 修复。
-- **远程 feed**：同样按累计值走 `session_totals` delta（与本地共用同一 key，切换来源不重复计数）。
+- **Local path**: the `session` table of `~/.local/share/opencode/opencode.db` (opened read-only).
+- **Row semantics**: one row per session holding **cumulative** values: `tokens_input`, `tokens_output`, `tokens_reasoning`, `tokens_cache_read`, `tokens_cache_write`, `cost` (official actual price).
+- **Delta mechanism**: a local `session_totals` table (key `opencode|<id>`). Each scan computes new cumulative − last recorded = this batch's delta; shrinking fields (upstream reset) count as 0. The first time a session is seen, the full cumulative value becomes one backfill row attributed to the real last update time (never to today).
+- **Time**: upstream millisecond timestamps normalized to seconds.
+- **Model**: the upstream `model` column may be a JSON object (`{"id":...,"providerID":...}`); the parser normalizes it to the plain id; existing data is repaired once at startup via SQL.
+- **Remote feed**: same cumulative → `session_totals` delta (shares the same key as local, so switching sources never double-counts).
 
 ### Hermes
 
-- **本机路径**：`~/.hermes/state.db`（SQLite，列名自省——不同版本表结构不同，按存在的列适配）。
-- **行语义**：按 (session, model) 的累计行。
-- **Delta 机制**：基线键 `hm_d|<session>|<model>|<provider>|<base_url>` 存上次累计值；增量 = 当前 − 上次（负值归 0，防计数器重置）。输出-only 的消息保留（input=0 也记）。时间戳 ms/s 归一化。
-- **成本**：Hermes 流量在 OpenCode Go / OpenRouter / Codex 订阅套餐内计费，token 照记、**成本永远为 0**（`cost_quality = 'unknown'`）。
-- **远程 feed**：`session_model_usage` 聚合行，按 (session, model, provider, base_url) 做基线 delta——同一把 key 让 route 变化不会重复计数。
+- **Local path**: `~/.hermes/state.db` (SQLite, column introspection — the schema varies between versions, so the parser adapts to whichever columns exist).
+- **Row semantics**: cumulative rows keyed by (session, model).
+- **Delta mechanism**: baseline key `hm_d|<session>|<model>|<provider>|<base_url>` stores the last cumulative value; delta = current − last (negatives clamped to 0 to survive counter resets). Output-only messages are kept (input=0 still recorded). Timestamps are normalized between ms/s.
+- **Cost**: Hermes traffic bills through the OpenCode Go / OpenRouter / Codex plans, so tokens are recorded but **cost is always 0** (`cost_quality = 'unknown'`).
+- **Remote feed**: `session_model_usage` aggregate rows, baseline delta keyed by (session, model, provider, base_url) — one shared key so route changes never double-count.
 
-### OMP（Oh My Pi）
+### OMP (Oh My Pi)
 
-- **本机路径**：`~/.omp/agent/sessions/**/*.jsonl`（顶层会话 `<cwd>/<session>.jsonl`，子代理会话 `<session>/<agent>.jsonl`）。
-- **解析**：事件流里的 `message` 事件（`role == "assistant"`）携带 `message.usage`：`input`、`output`、`cacheRead`、`cacheWrite`、`cost`（按请求的成本分解）。结构与 Claude Code 的 JSONL 类似，因此复用同一套增量机制（size/mtime/inode + 字节偏移游标）。
-- **口径**：`input` 是不含缓存命中的部分；`cacheRead` 是命中部分（来自 opencode-go 上游，按 8-token 块粒度报告——与 Hermes 同源，值为真实 tokens）。`cost` 由 provider 计算，OMP 计费在 opencode-go 套餐内，标 `estimated`。
-- **去重**：事件 ID = `omp:<文件名>:<消息 id>`（文件名含会话 UUID，全局唯一；消息 id 稳定，重放可去重）。
-- **远程 feed**：无（OMP 只在本机运行）。
+- **Local path**: `~/.omp/agent/sessions/**/*.jsonl` (top-level sessions `<cwd>/<session>.jsonl`, subagent sessions `<session>/<agent>.jsonl`).
+- **Parsing**: `message` events (`role == "assistant"`) carry `message.usage`: `input`, `output`, `cacheRead`, `cacheWrite`, `cost` (per-request cost breakdown). The structure resembles Claude Code's JSONL, so the same incremental machinery (size/mtime/inode + byte-offset cursor) is reused.
+- **Semantics**: `input` excludes cache hits; `cacheRead` is the hit portion (from the opencode-go upstream, reported at 8-token block granularity — same origin as Hermes, real token values). `cost` is provider-computed; OMP bills within the opencode-go plan, marked `estimated`.
+- **Dedupe**: event ID = `omp:<file>:<message id>` (the file name contains the session UUID, globally unique; message ids are stable, so replays dedupe).
+- **Remote feed**: none (OMP runs locally only).
 
 ### OpenRouter
 
-- 不产生 token 行。前台每 60 秒调 `/api/v1/key` + `/api/v1/credits` 快照额度/余额/用量（美元口径；后台停止轮询），只进入「实际花费」，不参与 token 统计。
+- Produces no token rows. While the UI is visible, `/api/v1/key` + `/api/v1/credits` are snapshotted every 60s (spend/balance in USD; polling stops in background). Only feeds "actual spend", never token stats.
 
 ---
 
-## 按来源
+## By source
 
-### 本机（默认）
+### Local (default)
 
-直接读取上述本地文件/SQLite，纯轮询（1 秒一次，仅前台——popover/面板可见时；后台完全停止）：
+Reads the local files/SQLite directly, pure polling (1s while visible, fully stopped in background):
 
-1. 列出文件 → stat (size, 纳秒 mtime, inode) 对比 `scan_state` → 有变化才读
-2. 字节偏移游标只解析新行（追加场景）；截断/替换场景从 0 重放
-3. 解析出的 turns/sessions 与**游标/基线在同一 SQLite 事务**提交——任何一步失败整体回滚，游标不前进
-4. 稳态空闲扫描约 20ms
+1. List files → stat (size, nanosecond mtime, inode) against `scan_state` → read only on change
+2. Byte-offset cursor parses only new lines (append case); truncated/replaced files replay from 0
+3. Parsed turns/sessions commit **in the same SQLite transaction as the cursor/baseline** — any failure rolls everything back and the cursor does not advance
+4. Steady-state idle scans cost ~20ms
 
-### 远程 VPS feed（可选，每工具可切换）
+### Remote VPS feed (optional, per-tool switch)
 
-- VPS exporter 由用户自行部署并产出 `usage.json`；应用只请求「来源与设置」中明确配置的 HTTPS（或受规则允许的私有本地网络）地址，不包含个人 IP 或默认远程主机。
-- App 前台每 15 秒增量拉取（后台停止），游标是**每工具水位线**（`remote_watermark_<tool>` = `ts:eventID`，同秒事件靠 eventID 排序）。
-- 行语义按工具区分（见上表）：claude/codex 逐条事件直接插入；opencode/hermes 累计行走 delta——delta 工具的基线幂等，因此不受水位线误伤。
-- 未知工具的行拒绝导入；水位线、turns、基线同一事务提交，失败不前进。
-- **切换来源**：设置 `src_<tool> = local/remote` 即时生效。opencode 的 delta key 本机/远程共用，切换不重复计数；hermes 的基线键与本地不同（本地 `session_totals`、远程 `hm_d|...`），切换时首次远程行会把全量作为一条回填——在源切换后可能多记一次历史（已知边界）。
+- The VPS exporter is deployed by the user and produces `usage.json`; the app only requests addresses explicitly configured in Sources & Settings (HTTPS, or private local network allowed by rules), with no personal IPs or default remote hosts baked in.
+- The app polls incrementally every 15s while visible (stopped in background); the cursor is a **per-tool watermark** (`remote_watermark_<tool>` = `ts:eventID`; same-second events ordered by eventID).
+- Row semantics differ per tool (see table above): claude/codex insert per-event rows; opencode/hermes run deltas over cumulative rows — delta baselines are idempotent, so watermarks cannot corrupt them.
+- Rows from unknown tools are rejected; watermark, turns and baselines commit in one transaction — nothing advances on failure.
+- **Switching sources**: `src_<tool> = local/remote` takes effect immediately. OpenCode's delta key is shared local/remote, so switching never double-counts; Hermes uses different baseline keys (local `session_totals`, remote `hm_d|...`), so the first remote row after a switch backfills the full value — a known edge case that can record one extra historical entry after a source switch.
 
 ---
 
-## 主口径与去重保障
+## Master semantics & dedupe guarantees
 
-- **总 token = 输入 + 输出 + 缓存命中（cacheRead）**；唯一例外是 Codex——其 input 已含缓存，不重复加。`cacheWrite`（缓存写入）只记录、不计入总量。
-- **去重链**：上游事件 ID（uuid / 内容哈希）→ 派生 ID（文件+inode+mtime+字节偏移）→ 全库唯一索引 (tool, event_id) `INSERT OR IGNORE`。同一事件重复扫描/重放不会重复计数。
-- **成本相关**（与 token 分开）：`actual` = 工具自带实际价（OpenCode cost 字段）；`estimated` = 按内置模型价格表估算；Hermes = unknown（0）。「API 价值」= 全部工具（含 Hermes）每行按模型官方单价重估。
+- **Total tokens = input + output + cacheRead (cache hits)**; the only exception is Codex, whose input already includes cache, so it is not added again. `cacheWrite` (cache writes) is recorded but never counted in totals.
+- **Dedupe chain**: upstream event ID (uuid / content hash) → derived ID (file + inode + mtime + byte offset) → global unique index (tool, event_id) with `INSERT OR IGNORE`. Re-scanning or replaying the same event never double-counts.
+- **Cost** (separate from tokens): `actual` = tool-provided actual price (OpenCode's cost field); `estimated` = priced from the built-in model table; Hermes = unknown (0). "API value" re-prices every row (including Hermes) at the official per-model list price.

@@ -1,108 +1,123 @@
 # ToastMonitor
 
-纯原生 macOS 菜单栏 AI 用量监视器（SwiftUI + 系统 SQLite，零第三方依赖）。
+[![macOS](https://img.shields.io/badge/macOS-14.0+-blue)](https://github.com/neko1chau/ToastMonitor)
+[![Swift](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
+[![License: MIT](https://img.shields.io/github/license/neko1chau/ToastMonitor)](LICENSE)
+[![CI](https://github.com/neko1chau/ToastMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/neko1chau/ToastMonitor/actions/workflows/ci.yml)
 
-统一跟踪 **Claude Code、Codex、OpenCode、Hermes、Oh My Pi、DeepSeek Harness** 的本地日志，外加 **OpenRouter** 云端配额——所有 token 汇总成一份今日用量，常驻状态栏。
+Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-party dependencies).
 
-## 功能一览
+Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness** local logs, plus **OpenRouter** cloud quota — everything rolls up into one "today" total, always visible in the menu bar.
 
-- **状态栏实时 token**：只显示今日总量，点开是完整面板
-- **完整面板（4 个 Tab）**：概览 / 用量分析 / 计划与余额 / 来源与设置
-- **多源汇总**：一个 SQLite 库汇总所有工具的 token、成本与项目分布，按日/周/月查看
-- **配额内建**：OpenCode Go 套餐三条配额条 + 重置倒计时，OpenRouter 余额快照（不依赖 opencode-quota）
-- **成本估算**：内置常见模型价格表，未知模型只记 token 不记价
-- **隐私优先**：数据只存本机，凭据只进 macOS Keychain，无分析/广告 SDK
+![Dashboard](docs/screenshots/dashboard-overview.png)
 
-## 数据源
+## Features
 
-| 工具 | 本地 (Mac) 来源 | 远程 |
+- **Live menu-bar total** — today's tokens only; click for the full panel
+- **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sources & Settings
+- **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
+- **Built-in quotas** — OpenCode Go plan bars with reset countdown, OpenRouter balance snapshots (no opencode-quota dependency)
+- **Cost estimation** — built-in model price table; unknown models count tokens without a price
+- **Privacy-first** — data stays on this Mac, credentials live only in the macOS Keychain, no analytics or ad SDKs
+
+## Data sources
+
+| Tool | Local (Mac) source | Remote |
 |---|---|---|
 | Claude Code | `~/.claude/projects/*/*.jsonl` | VPS feed |
 | Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | VPS feed |
 | OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed |
-| Hermes | `~/.hermes/state.db`（列自省） | VPS feed |
-| Oh My Pi | `~/.omp/agent/sessions/**/*.jsonl` | —（本机专用） |
-| DeepSeek Harness | `$DSH_HOME`（默认 `~/.dsh`）的会话日志 + 投影缓存 | —（本机专用） |
-| OpenRouter | 云端 API（key + credits 快照） | — |
+| Hermes | `~/.hermes/state.db` (column introspection) | VPS feed |
+| Oh My Pi | `~/.omp/agent/sessions/**/*.jsonl` | — (local only) |
+| DeepSeek Harness | `$DSH_HOME` (default `~/.dsh`) session logs + projection cache | — (local only) |
+| OpenRouter | Cloud API (key + credits snapshots) | — |
 
-### 远程 feed
+### Remote feeds
 
-- 仅使用你在「来源与设置」中**明确填写**的地址；应用不内置任何个人 IP 或默认远程主机
-- 地址按客户端规则校验，凭据请求不跟随重定向
-- 远程轮询由同一采集循环限速到约 15s；本机/远程来源可单独停用
+- Only addresses you **explicitly configure** in Sources & Settings are contacted; the app ships no personal IPs or default remote hosts
+- Addresses are validated client-side; credential requests never follow redirects
+- Remote polling is throttled to ~15s by the same collection loop; local and remote sources can be disabled independently
 
-### DeepSeek Harness（DSH）说明
+### DeepSeek Harness (DSH)
 
-DSH 的 token 口径与 ToastMonitor 一致，四桶一一对应：
+DSH token accounting maps 1:1 onto ToastMonitor's columns:
 
-| DSH 桶 | ToastMonitor 字段 |
+| DSH bucket | ToastMonitor field |
 |---|---|
 | uncached input | `input_tokens` |
-| output（reasoning 已含在内，不单列） | `output_tokens` |
+| output (reasoning included, never separate) | `output_tokens` |
 | cache read | `cache_read` |
 | cache write | `cache_write` |
 
-解析采用双模式，**互斥且粘性**（`dsh_parse_mode`，首次选定后不因 zstd 装/卸而切换，避免重复计数）：
+Parsing uses two **mutually exclusive, sticky** modes (`dsh_parse_mode`; the choice never flips when zstd is installed/uninstalled, so the two accounting paths can never double-count):
 
-- **日志模式（主）**：按 step 增量读取 `sessions/**/session.jsonl.zstd`（zstd 独立帧 + 字节游标），含精确时间戳与 model，成本按价格表估算
-- **缓存模式（降级）**：对 `storages/session_projcache.json` 的会话累计值做差值；无 model/精确时间，web 会话可见、headless 会话不可见
+- **Log mode (primary)** — incremental parse of `sessions/**/session.jsonl.zstd` (independent zstd frames + byte cursor), with exact timestamps and model per step; cost estimated from the price table
+- **Cache mode (fallback)** — delta over the cumulative buckets in `storages/session_projcache.json`; no model or per-step timing; web sessions visible, headless sessions not
 
-macOS 无内置 zstd（Compression.framework 只支持 LZ4/ZLIB/LZMA/LZFSE/BROTLI），应用自动在 `PATH` 与常见安装位置（`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`）查找 `zstd`；缺失时自动降级为缓存模式，不报错不丢数据。
+macOS ships no zstd support (Compression.framework covers LZ4/ZLIB/LZMA/LZFSE/BROTLI only), so the app looks for the `zstd` CLI on `PATH` and at standard install locations (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`); when absent it degrades to cache mode without errors or data loss.
 
-## 配额（内建，不依赖 opencode-quota）
+## Quotas (built-in, no opencode-quota dependency)
 
-- **OpenCode Go 套餐**（与 OpenCode 工具是两个独立条目）：抓取 `opencode.ai/workspace/<id>/go` 的 SolidJS SSR/data-slot 数据，显示 5h=$12 / 周=$30 / 月=$60 三条配额条 + 重置倒计时 + 历史。凭据：计划与余额页粘贴，或 `--provision-go <workspaceId>` 后从 stdin 输入 cookie（可从 opencode-quota 的 opencode-go.json 取）
-- **OpenRouter**：`/api/v1/key` + `/api/v1/credits` 前台每 60 秒快照（后台停止轮询）。Key：面板粘贴或 `--provision-or-key` 后从 stdin 输入；secret 只存 macOS Keychain
+- **OpenCode Go plan** (a separate entry from the OpenCode tool) — reads `opencode.ai/workspace/<id>/go` SolidJS SSR/data-slot data: 5h=$12 / week=$30 / month=$60 bars, reset countdown and history. Credentials: paste in Plans & Balance, or `--provision-go <workspaceId>` reading the cookie from stdin (opencode-quota's opencode-go.json works)
+- **OpenRouter** — `/api/v1/key` + `/api/v1/credits` snapshotted every 60s while the UI is visible (polling stops in background). Key: paste in the panel or `--provision-or-key` from stdin; the secret lives only in the macOS Keychain
 
-## 安装与构建
+## Install & build
 
 ```bash
 cd ~/Projects/ToastMonitor
-./scripts/build-app.sh        # 构建（release）→ 签名 → 安装到 /Applications（CI 环境自动跳过安装）
+./scripts/build-app.sh        # release build → codesign → install to /Applications (skipped in CI)
 ```
 
-- 本机首次使用 Apple Development 签名后，运行一次 `./scripts/authorize-local-keychain.sh` 授权钥匙串条目，之后同一 Team ID 的新构建不再逐次询问
-- 版本号来自 `vMAJOR.MINOR[.PATCH]` git tag；`TM_VERSION`、`TM_BUILD_NUMBER` 仅用于受控 CI/release 注入。未打 tag 的本地构建固定显示 `1.0`（开发构建），不会把 commit hash 当作用户版本
-- 分发需要 Developer ID 证书；`build-app.sh` 拒绝 ad-hoc 签名，可用 `TM_SIGNING_IDENTITY` 指定身份
-- 也可以直接 `open dist/ToastMonitor.app` 运行构建产物
+- After switching to Apple Development signing for the first time, run `./scripts/authorize-local-keychain.sh` once; later builds from the same Team ID never prompt again
+- Versioning comes from `vMAJOR.MINOR[.PATCH]` git tags; `TM_VERSION` / `TM_BUILD_NUMBER` are for controlled CI/release injection. Untagged local builds are explicitly `1.0` (development), never a commit hash
+- Distribution requires a Developer ID certificate; `build-app.sh` refuses ad-hoc signing and accepts an explicit identity via `TM_SIGNING_IDENTITY`
+- Or run the build product directly: `open dist/ToastMonitor.app`
 
-## 命令行（无头场景 / 开发验证）
+### Release artifacts
 
 ```bash
-# 凭据注入：一律从 stdin 读取，不进入 argv
-printf '%s\n' 'sk-or-...' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-or-key
-printf '%s\n' 'auth_cookie' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-go <workspaceId>
-dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>   # 仅用明确配置的地址
-dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                 # 清除
+./scripts/package-release.sh   # builds, signs and zips both arm64 and universal apps
+gh release create vX.Y.Z dist/release/*.zip --title "..." --generate-notes
 ```
 
-- `TM_DEBUG=1`：逐文件扫描决策日志
-- `--render-dashboard <path> [height] [width] [tab]`：无头渲染 Dashboard 为 PNG（开发验证，无需窗口/钥匙串）；路径含 `dark`/`light` 时按对应外观渲染；tab 取 `overview / analysis / plans / sources`
-- `--show-dashboard`：启动即带面板
-- `--verify-status-toggle`：自动验证状态栏按钮开关（CI/自检用）
+## Command line (headless / development)
 
-## 架构
+```bash
+# Credential provisioning — always from stdin, never in argv
+printf '%s\n' 'sk-or-...' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-or-key
+printf '%s\n' 'auth_cookie' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-go <workspaceId>
+dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>   # only explicitly configured addresses
+dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                 # clear
+```
 
-- **单一采集调度**：面板/主页可见时每 1s 扫描，全部隐藏时每 5s 扫描（持续刷新状态栏）；按文件 (size, 纳秒 mtime, inode) 增量读取，稳态只做 stat 检查
-- **单 SQLite 库**：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL 模式）
-- **成本估算**：内置常见模型价格表（Claude/GPT/DeepSeek 等），未知模型只记 token；`backfillCosts()` 幂等修正历史
+- `TM_DEBUG=1`: per-file scan decision logging
+- `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sources`
+- `--show-dashboard`: launch with the panel open
+- `--verify-status-toggle`: automated status-button toggle self-check (CI)
 
-## 数据、隐私与安全
+## Architecture
 
-- **更新检查**：调用方必须提供 HTTPS 元数据地址 + 随发行物固定的 Ed25519 公钥；`UpdateChecker` 校验元数据签名、版本与下载文件 SHA-256，用户确认后才下载并二次校验哈希。绝不自动下载、安装或执行更新
-- **数据维护**：`DataMaintenance.exportDatabase(to:)`、`clearAllData()`、本地清理、受保护备份与恢复前校验；清理前强制生成受保护备份，备份/导出写入用户目录并限制仅当前用户可读。清理或恢复前先退出采集并保留备份
-- **隐私**：日志、用量、项目路径与会话元数据默认只存本机 SQLite；只有启用远程 feed 或配额服务时才向配置的服务发起请求。凭据存 macOS Keychain，不写入 URL、plist 或诊断日志；无分析/广告 SDK
+- **Single collection loop** — scans every 1s while the panel is visible, every 5s while hidden (to keep the menu bar fresh); incremental per-file reads keyed on (size, nanosecond mtime, inode); steady state is stat-only
+- **Single SQLite store** — `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL)
+- **Cost estimation** — built-in price table for common models (Claude/GPT/DeepSeek, …); unknown models count tokens only; `backfillCosts()` corrects history idempotently
 
-## 已知边界
+## Data, privacy & security
 
-- 菜单栏只显示「今日 tokens」（用户偏好），成本与固定订阅在 tooltip/面板内查看
-- 价格表为近似值（按官方价）；OpenCode 自带 cost 字段时直接使用
-- DSH 日志模式依赖 `zstd` CLI（见上文查找逻辑）；缓存模式无 model，成本记 0
+- **Updates** — callers must supply an HTTPS metadata URL plus an Ed25519 public key fixed to the artifact; `UpdateChecker` validates the metadata signature, version and SHA-256 of the download; the file is downloaded only after user confirmation and re-verified before use. Never auto-downloads, installs or executes updates
+- **Data maintenance** — `DataMaintenance.exportDatabase(to:)`, `clearAllData()`, local cleanup, protected backups and pre-restore validation; clearing forces a protected backup first; backups/exports land in the user directory restricted to the current user. Stop collection and keep the backup before clearing or restoring
+- **Privacy** — logs, usage, project paths and session metadata stay in the local SQLite by default; requests go out only to explicitly enabled remote feeds or quota services. Credentials are stored in the macOS Keychain, never in URLs, plists or diagnostic logs; no analytics or ad SDKs
 
-## 支持
+## Known limitations
 
-在仓库提交 issue，附：应用版本（「关于」或 `--version`）、macOS 版本、复现步骤、脱敏日志。**不要**上传 token、cookie、API key、项目路径或完整会话内容。
+- The menu bar shows only today's tokens (user preference); cost and fixed subscriptions live in the tooltip/panel
+- The price table is approximate (official list prices); OpenCode's own cost field is used verbatim when present
+- DSH log mode depends on the `zstd` CLI (see lookup logic above); cache mode has no model, so cost is 0
+- Universal builds link both slices against the 14.0 compatibility layer (a SwiftPM multi-arch limitation), so macOS 26+ UI falls back to compatibility controls in the universal artifact — functionality is unaffected; the arm64 artifact keeps the native look
 
-## 许可
+## Contributing
 
-源码按仓库根目录 `LICENSE` 发布；第三方系统组件仍受各自许可约束。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, test and PR workflow, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Third-party system components remain under their own licenses.

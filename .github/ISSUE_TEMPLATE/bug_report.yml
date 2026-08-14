@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a bug in ToastMonitor
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Output of `--version` or the version in the About panel (e.g. 1.0, build 117)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: e.g. macOS 26.0 (Apple Silicon)
+    validations:
+      required: true
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Affected data source (if any)
+      options:
+        - Claude Code
+        - Codex
+        - OpenCode
+        - Hermes
+        - Oh My Pi
+        - DeepSeek Harness
+        - OpenRouter
+        - Not source-specific
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, and what happened instead?
+      placeholder: |
+        1. ...
+        2. ...
+        3. Expected: ... Actual: ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Relevant output from `TM_DEBUG=1` or Console. Remove any tokens, cookies, API keys, project paths or raw session content.
+    validations:
+      required: false

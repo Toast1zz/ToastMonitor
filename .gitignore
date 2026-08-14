@@ -14,3 +14,8 @@ backups/
 
 # macOS
 .DS_Store
+
+# Internal working docs — keep local, never publish
+DEEPSEEK_AUDIT_REPORT.md
+HERMES_AGENT_REMEDIATION_PLAN.md
+docs/AUDIT-*.md

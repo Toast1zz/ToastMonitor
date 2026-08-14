@@ -1,47 +1,49 @@
-# 数据语义（Data Semantics）
+# Data Semantics
 
-版本：2026-08-05 · 状态：规范（阶段 B 起强制执行）
+Version: 2026-08-05 · Status: normative (enforced from phase B onward)
 
-## 1. 金额口径（禁止混加）
+## 1. Money semantics (never mix sums)
 
-| 字段 | 含义 | 来源 | 可相加对象 |
+| Field | Meaning | Source | Summable with |
 |---|---|---|---|
-| `actualVariableSpend` | 上游明确返回的实际现金/credit 支出 | OpenRouter `usage*`、Hermes `actual_cost_usd` | 仅同类 |
-| `estimatedVariableCost` | 按价格表估算 | `Pricing.estimate` | 仅同类（需覆盖率） |
-| `subscriptionFixedCost` | 用户录入的订阅费用 | `subscriptions.price` | 仅同类（按周期摊销时注明） |
-| `quotaValueConsumed` | 套餐美元定价额度消耗 | OCG 官方 `monthlyPct × $60` | 不等于现金支出 |
-| `accountBalance` | 可用余额 | OpenRouter `/credits` | 不与其他金额相加 |
-| `purchasedCredits` / `usedCredits` | 累计购买/使用 | OpenRouter `/credits` | 相互参照，不参与聚合 |
+| `actualVariableSpend` | actual cash/credit spend explicitly returned upstream | OpenRouter `usage*`, Hermes `actual_cost_usd` | same kind only |
+| `estimatedVariableCost` | estimated from the price table | `Pricing.estimate` | same kind only (needs coverage) |
+| `subscriptionFixedCost` | user-entered subscription fee | `subscriptions.price` | same kind only (state when amortized per period) |
+| `quotaValueConsumed` | plan dollar-priced quota consumed | OCG official `monthlyPct × $60` | not equal to cash spend |
+| `accountBalance` | available balance | OpenRouter `/credits` | never summed with other money |
+| `purchasedCredits` / `usedCredits` | cumulative purchased/used | OpenRouter `/credits` | cross-reference only, not aggregated |
 
-**规则**：UI 不得无条件把这些值相加。任何加总必须声明口径：
-- 「今日总花费」= 订阅当日摊销 + OpenRouter 今日实际 + 直连估算（各分量可展开）。
-- 「已用价值」只用于套餐上下文，不得称为「花费」。
+**Rule**: the UI must not add these values unconditionally. Any sum must declare its basis:
 
-## 2. Token 口径
+- "Today's total spend" = today's subscription amortization + today's actual OpenRouter spend + direct estimate (each component expandable).
+- "Value used" is only valid in a plan context and must never be called "spend".
 
-- `inputTokens`：上游定义的总输入（可能含缓存命中）。
-- `cachedInputTokens`：若为 input 子集 → 非缓存输入 = input − cached。
-- `cacheWriteTokens`：单独记录，不并入 input。
-- `outputTokens`：注明是否含 reasoning；`reasoningTokens` 上游提供时单独记录。
-- `billableInputTokens`：按 provider 计费规则派生（如 OpenAI 缓存输入按缓存价），不直接存猜测值。
+## 2. Token semantics
 
-## 3. 数据质量（Quality）
+- `inputTokens`: total input as defined upstream (may include cache hits).
+- `cachedInputTokens`: when a subset of input → non-cached input = input − cached.
+- `cacheWriteTokens`: recorded separately, never merged into input.
+- `outputTokens`: state whether it includes reasoning; `reasoningTokens` recorded separately when provided upstream.
+- `billableInputTokens`: derived from provider billing rules (e.g. OpenAI cached input at the cache price), never a stored guess.
 
-每个聚合结果必须能表达：
+## 3. Data quality
+
+Every aggregate must be able to express:
 
 ```
 enum MetricQuality { case actual, estimated, partial, unknown }
-覆盖率 = 已覆盖金额 / 总金额（估算时显示）
+coverage = covered amount / total amount (shown when estimating)
 ```
 
-规则：
-- 未知模型/未知成本 → `unknown` + `—`，禁止显示 `$0.000`。
-- 部分 key 失败 → `partial`，禁止显示为全量成功。
-- 数据过期（超过 N 分钟未同步）→ `stale` 显式标注。
+Rules:
 
-## 4. 时间
+- Unknown model/cost → `unknown` + `—`, never display `$0.000`.
+- Partial key failure → `partial`, never presented as fully successful.
+- Stale data (no sync for N minutes) → explicitly marked `stale`.
 
-- 统一存 Unix 秒（Int64）。
-- `created` 取最早有效非零时间；`updated` 取最晚时间。
-- `0` 表示 unknown，UI 显示 `—`，禁止显示 1970。
-- Hermes 无时间列时显式 unknown，不查询不存在的列。
+## 4. Time
+
+- Stored uniformly as Unix seconds (Int64).
+- `created` takes the earliest valid non-zero time; `updated` the latest.
+- `0` means unknown and the UI shows `—`, never 1970.
+- Hermes without a time column is explicitly unknown; never query columns that do not exist.

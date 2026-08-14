@@ -1,26 +1,26 @@
-# 数据库备份与迁移策略
+# Database Backup & Migration Strategy
 
-版本：2026-08-09
+Version: 2026-08-09
 
-## 1. 现状
+## 1. Current state
 
-- 真实 DB：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL）。
-- 含：turns / sessions / scan_state / session_totals / openrouter_snapshots / opencodego_snapshots / subscriptions / settings。
-- 迁移过程不得删除或重置用户数据库；用户主动调用清理/重建 API 时，必须先生成受保护备份并在失败时回滚。
+- Real DB: `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL).
+- Contains: turns / sessions / scan_state / session_totals / openrouter_snapshots / opencodego_snapshots / subscriptions / settings.
+- Migrations must never delete or reset the user's database; when the user explicitly invokes a clear/rebuild API, a protected backup must be created first and rolled back on failure.
 
-## 2. 备份与恢复
+## 2. Backup & restore
 
-- 应用备份目录为 `~/Library/Application Support/ToastMonitor/Backups/`，目录权限 0700，数据库备份文件权限 0600。
-- `DataMaintenance.createBackup(label:)` 使用 SQLite 在线备份快照并保留最近 7 份；`exportDatabase(to:)` 导出完整快照并将目标文件设为 0600。
-- `DataMaintenance.clearAllData()` 清理 turns、sessions、scan_state、session_totals、配额快照和 subscriptions，但保留 settings 与 Keychain 凭据；执行前强制创建 `pre-clear` 备份，失败时回滚。
-- 修复/清理前会先创建受保护备份，失败时不继续破坏原库。
+- The app's backup directory is `~/Library/Application Support/ToastMonitor/Backups/` with directory permissions 0700; database backup files are 0600.
+- `DataMaintenance.createBackup(label:)` uses an online SQLite backup snapshot and keeps the most recent 7; `exportDatabase(to:)` exports a full snapshot and sets the target file to 0600.
+- `DataMaintenance.clearAllData()` clears turns, sessions, scan_state, session_totals, quota snapshots and subscriptions, but keeps settings and Keychain credentials; a `pre-clear` backup is forced before execution and rolled back on failure.
+- A protected backup is always created before repair/clear; on failure the original database is never further modified.
 
-## 3. 手动诊断
+## 3. Manual diagnostics
 
-导出/诊断文件应存放在用户选择的路径，权限保持 0600；导出不包含 Keychain 中的 key/cookie，也不记录 prompt。
+Export/diagnostic files go to a user-chosen path with permissions kept at 0600; exports never include Keychain keys/cookies and never record prompts.
 
-## 4. 迁移机制
+## 4. Migration mechanism
 
-- `PRAGMA user_version` 版本化迁移在 `BEGIN IMMEDIATE` 事务内执行。幂等的 `ensureColumn` ALTER（如 `subscriptions.end_date`、`scan_state.context`）在事务外直接执行——失败可安全重试，不属于版本化迁移。
-- 新增列用幂等 `ensureColumn`；数据库使用递归锁，迁移/采集事务可安全调用。`turns` 的 legacy 唯一约束重建和事件索引创建也在同一 `BEGIN IMMEDIATE` 事务内，失败会回滚并保持 `user_version=0` 以便重试。
-- 每个历史版本的回放应从旧 schema 副本启动应用并核对 `user_version`、关键表和重复事件数；CI 的 migration replay gate 覆盖代表性旧版本。
+- `PRAGMA user_version` versioned migrations run inside a `BEGIN IMMEDIATE` transaction. Idempotent `ensureColumn` ALTERs (e.g. `subscriptions.end_date`, `scan_state.context`) run outside transactions — safe to retry on failure, not part of versioned migration.
+- New columns use idempotent `ensureColumn`; the database uses a recursive lock so migration/collection transactions can call it safely. The `turns` legacy unique-constraint rebuild and event-index creation also run inside the same `BEGIN IMMEDIATE` transaction — failure rolls back and keeps `user_version=0` for retry.
+- Replay of each historical version should start the app against an old-schema copy and verify `user_version`, key tables and duplicate-event counts; CI's migration replay gate covers representative old versions.
