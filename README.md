@@ -9,8 +9,6 @@ Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-part
 
 Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness** local logs, plus **OpenRouter** cloud quota — everything rolls up into one "today" total, always visible in the menu bar.
 
-![Dashboard](docs/screenshots/dashboard-overview.png)
-
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the full panel

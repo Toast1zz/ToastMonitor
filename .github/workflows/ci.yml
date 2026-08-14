@@ -1,6 +1,8 @@
 name: CI
 
-on:
+# Quoted so the YAML 1.1 parser does not fold `on` into boolean true,
+# which GitHub reports as a "workflow file issue" (no jobs created).
+"on":
   push:
     branches: [main]
     tags: ["v*"]
