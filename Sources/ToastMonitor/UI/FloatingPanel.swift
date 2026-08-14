@@ -8,32 +8,35 @@ private final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// The physical panel surface follows Tusi's proven AppKit structure: one
-/// visual-effect view clipped at the window boundary. ToastMonitor overlays a
-/// nearly opaque system background so desktop colours do not muddy the data.
+/// The physical panel surface follows AppKit's popover material model: one
+/// system visual-effect view clipped at the window boundary. The system owns
+/// the light/dark surface treatment instead of a hand-tuned color wash.
 private final class PanelSurfaceView: NSView {
+    private let cornerRadius: CGFloat
     private let effect = NSVisualEffectView()
-    private let clarityWash = NSView()
 
     init(cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
-        layer?.borderWidth = 1
+        clipsToBounds = true
+        // Keep the boundary at AppKit's hairline scale; the system shadow
+        // provides separation, so a full-pixel outline is unnecessarily heavy.
+        layer?.borderWidth = 0.5
 
         effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.cornerCurve = .continuous
+        effect.layer?.masksToBounds = true
         effect.frame = bounds
         effect.autoresizingMask = [.width, .height]
         addSubview(effect)
-
-        clarityWash.wantsLayer = true
-        clarityWash.frame = bounds
-        clarityWash.autoresizingMask = [.width, .height]
-        addSubview(clarityWash)
 
         applyAppearanceColors()
     }
@@ -46,14 +49,27 @@ private final class PanelSurfaceView: NSView {
         applyAppearanceColors()
     }
 
+    override func layout() {
+        super.layout()
+        // Keep every drawing surface on the same continuous shape. In
+        // particular, NSVisualEffectView can otherwise composite its
+        // behind-window material to its rectangular bounds before the parent
+        // layer's corner radius is applied.
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.cornerCurve = .continuous
+        effect.layer?.masksToBounds = true
+    }
+
     private func applyAppearanceColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.10).cgColor
-            // A small amount of system material remains for depth, but 94% of
-            // the surface is the stable window background. This is materially
-            // cleaner than clear Liquid Glass over a colourful desktop.
-            clarityWash.layer?.backgroundColor = NSColor.windowBackgroundColor
-                .withAlphaComponent(0.94).cgColor
+            // Apple's semantic separator adapts to light/dark appearance and
+            // gives a white-on-white popover a quiet boundary without a
+            // custom shadow or hand-picked gray.
+            layer?.borderColor = NSColor.separatorColor
+                .withAlphaComponent(0.42).cgColor
         }
     }
 }
@@ -82,6 +98,18 @@ final class PanelController: NSObject, NSWindowDelegate {
     static let hideNotification = Notification.Name("tmPopoverHide")
     static let visibilityNotification = TMNotifications.popoverVisibility
 
+    /// Settings key controlling whether the panel auto-closes when it loses
+    /// focus (e.g. clicking another window or app). Default (unset) is
+    /// "0" — stay open until the status button, Esc or the in-panel close
+    /// affordance dismisses it.
+    static let dismissOnResignKey = "popover_dismiss_on_resign"
+
+    /// `true` restores the classic transient behavior: resigning key closes
+    /// the panel. Read per event so toggling the setting applies immediately.
+    static var dismissOnResign: Bool {
+        Database.shared.setting(dismissOnResignKey) == "1"
+    }
+
     private var headerSliceHeight: CGFloat = 0
     private var pinnedSliceHeight: CGFloat = 0
     private var bodySliceHeight: CGFloat = 0
@@ -107,6 +135,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        // Match Tusi's native floating-panel structure: the panel itself owns
+        // the elevation and the rounded root content view owns the alpha mask.
+        // With no rectangular wrapper behind it, AppKit's shadow follows the
+        // actual rounded surface instead of producing the former corner block.
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
@@ -122,6 +154,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         hosting.frame = surface.bounds
         hosting.autoresizingMask = [.width, .height]
         surface.addSubview(hosting)
+        // The rounded surface must be the window's root content view. An
+        // outer rectangular shadow host participates in WindowServer's
+        // compositing and brings square corners back at the window edge.
         panel.contentView = surface
 
         contentHeightObserver = NotificationCenter.default.addObserver(
@@ -177,13 +212,18 @@ final class PanelController: NSObject, NSWindowDelegate {
             Task { @MainActor [weak self] in self?.dismiss() }
         }
 
+        // Opt-in focus-loss dismissal (settings: "Close when clicking
+        // elsewhere"). When disabled, clicking other windows or apps leaves
+        // the panel open; only the status button's toggle, the in-panel close
+        // affordance, or Esc dismiss it.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.panel.isVisible else { return }
+                guard let self, self.panel.isVisible,
+                      Self.dismissOnResign else { return }
                 // Let the status button's action own the toggle; closing here
                 // first would turn the same click into an immediate reopen.
                 if let buttonWindow = self.statusItem?.button?.window,

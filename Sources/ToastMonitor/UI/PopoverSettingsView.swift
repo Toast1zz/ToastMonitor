@@ -149,6 +149,15 @@ struct PopoverSettingsView: View {
             .font(.system(size: 12.5, weight: .medium))
             .accessibilityHint("Open ToastMonitor in the menu bar when you sign in")
 
+            Toggle("Close when clicking elsewhere", isOn: Binding(
+                get: { PanelController.dismissOnResign },
+                set: { Database.shared.setSetting(
+                    PanelController.dismissOnResignKey, $0 ? "1" : "0") }
+            ))
+            .toggleStyle(TMSwitchStyle())
+            .font(.system(size: 12.5, weight: .medium))
+            .accessibilityHint("Keep the panel open when you click other windows or apps")
+
             if let msg = launch.message {
                 Text(msg)
                     .font(.system(size: 11))
