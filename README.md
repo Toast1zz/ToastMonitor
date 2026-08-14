@@ -13,7 +13,10 @@
 | OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed（opencode.db session 累计值） |
 | Hermes | `~/.hermes/state.db`（列自省） | VPS feed（`session_model_usage` 聚合） |
 | Oh My Pi (OMP) | `~/.omp/agent/sessions/**/*.jsonl`（assistant 消息的 usage 事件） | —（本机专用） |
+| DeepSeek Harness (DSH) | `$DSH_HOME`/`~/.dsh`：`sessions/**/session.jsonl.zstd`（逐 step usage，含 model/时间戳；有 `zstd` CLI 时）+ `storages/session_projcache.json`（累计桶，无 zstd 时自动降级） | —（本机专用） |
 | OpenRouter | 云端 API（key + credits 快照） | — |
+
+- DSH 的 token 口径与 ToastMonitor 一致：uncached input / output（reasoning 已含在 output）/ cache read / cache write 四桶。原始日志按 step 增量读取（zstd 独立帧 + 字节游标），投影缓存按会话累计值差值；两种模式互斥且粘性（settings 中 `dsh_parse_mode`），首次扫描选定后不因 zstd 装/卸而切换，避免重复计数。macOS 无内置 zstd（Compression.framework 不支持），应用自动在 `PATH` 与常见安装位置（`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`）查找 `zstd`；缺失时自动降级为投影缓存模式（web 会话可见，无 model/精确时间，headless 会话不可见），不报错不丢数据。
 
 - 远程 feed：仅使用用户在「来源与设置」中明确填写的地址；应用不内置个人 IP 或默认远程主机。地址会按客户端规则校验，凭据请求不跟随重定向。
 - 远程轮询由同一采集循环限速到约 15s；本机来源与远程来源都可单独停用。

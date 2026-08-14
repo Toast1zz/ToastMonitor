@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Combine
 
 /// Borderless status-item panel. Unlike `NSPopover`, this has no arrow, while
 /// still using AppKit's popover material, shadow and current rendering.
@@ -9,69 +8,53 @@ private final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Single native Liquid Glass shell. On macOS 26+ the system owns the glass
-/// rendering; older systems fall back to one AppKit popover visual effect.
-/// Content is layered above the shell so no second glass surface is created.
-private final class PanelContainerView: NSView {
-    private var glass: NSView?
-    private var effect: NSVisualEffectView?
+/// The physical panel surface follows Tusi's proven AppKit structure: one
+/// visual-effect view clipped at the window boundary. ToastMonitor overlays a
+/// nearly opaque system background so desktop colours do not muddy the data.
+private final class PanelSurfaceView: NSView {
+    private let effect = NSVisualEffectView()
+    private let clarityWash = NSView()
 
-    init(cornerRadius: CGFloat, content: NSView) {
+    init(cornerRadius: CGFloat) {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
+        layer?.borderWidth = 1
 
-        if #available(macOS 26.0, *) {
-            let nativeGlass = NSGlassEffectView()
-            nativeGlass.style = .regular
-            nativeGlass.cornerRadius = cornerRadius
-            nativeGlass.translatesAutoresizingMaskIntoConstraints = false
-            nativeGlass.contentView = NSView()
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.frame = bounds
+        effect.autoresizingMask = [.width, .height]
+        addSubview(effect)
 
-            content.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(nativeGlass)
-            addSubview(content)
-            NSLayoutConstraint.activate([
-                nativeGlass.leadingAnchor.constraint(equalTo: leadingAnchor),
-                nativeGlass.trailingAnchor.constraint(equalTo: trailingAnchor),
-                nativeGlass.topAnchor.constraint(equalTo: topAnchor),
-                nativeGlass.bottomAnchor.constraint(equalTo: bottomAnchor),
-                content.leadingAnchor.constraint(equalTo: leadingAnchor),
-                content.trailingAnchor.constraint(equalTo: trailingAnchor),
-                content.topAnchor.constraint(equalTo: topAnchor),
-                content.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ])
-            glass = nativeGlass
-        } else {
-            let fallback = NSVisualEffectView()
-            fallback.material = .popover
-            fallback.blendingMode = .behindWindow
-            fallback.state = .active
-            fallback.wantsLayer = true
-            fallback.layer?.cornerRadius = cornerRadius
-            fallback.layer?.masksToBounds = true
-            fallback.layer?.borderWidth = 0.5
-            fallback.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
-            fallback.frame = bounds
-            fallback.autoresizingMask = [.width, .height]
-            addSubview(fallback)
+        clarityWash.wantsLayer = true
+        clarityWash.frame = bounds
+        clarityWash.autoresizingMask = [.width, .height]
+        addSubview(clarityWash)
 
-            content.frame = bounds
-            content.autoresizingMask = [.width, .height]
-            addSubview(content)
-            effect = fallback
+        applyAppearanceColors()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unused") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyAppearanceColors()
+    }
+
+    private func applyAppearanceColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.10).cgColor
+            // A small amount of system material remains for depth, but 94% of
+            // the surface is the stable window background. This is materially
+            // cleaner than clear Liquid Glass over a colourful desktop.
+            clarityWash.layer?.backgroundColor = NSColor.windowBackgroundColor
+                .withAlphaComponent(0.94).cgColor
         }
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: .arrow)
     }
 }
 
@@ -85,6 +68,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var contentHeightObserver: NSObjectProtocol?
     private var hideObserver: NSObjectProtocol?
     private var settingsOpenObserver: NSObjectProtocol?
+    private var resignObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private var settingsOpen = false
     private var desiredHeight: CGFloat
@@ -127,13 +111,18 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = false
+        panel.animationBehavior = .utilityWindow
         panel.isExcludedFromWindowsMenu = true
 
+        let surface = PanelSurfaceView(cornerRadius: Self.cornerRadius)
+        surface.frame = panel.contentRect(forFrameRect: panel.frame)
+        surface.autoresizingMask = [.width, .height]
+
         let hosting = NSHostingView(rootView: content)
-        let container = PanelContainerView(cornerRadius: Self.cornerRadius, content: hosting)
-        container.frame = panel.contentRect(forFrameRect: panel.frame)
-        container.autoresizingMask = [.width, .height]
-        panel.contentView = container
+        hosting.frame = surface.bounds
+        hosting.autoresizingMask = [.width, .height]
+        surface.addSubview(hosting)
+        panel.contentView = surface
 
         contentHeightObserver = NotificationCenter.default.addObserver(
             forName: Self.contentHeightNotification,
@@ -188,6 +177,23 @@ final class PanelController: NSObject, NSWindowDelegate {
             Task { @MainActor [weak self] in self?.dismiss() }
         }
 
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.panel.isVisible else { return }
+                // Let the status button's action own the toggle; closing here
+                // first would turn the same click into an immediate reopen.
+                if let buttonWindow = self.statusItem?.button?.window,
+                   buttonWindow.frame.contains(NSEvent.mouseLocation) {
+                    return
+                }
+                self.dismiss()
+            }
+        }
+
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53, let self, self.panel.isKeyWindow else {
                 return event
@@ -197,10 +203,8 @@ final class PanelController: NSObject, NSWindowDelegate {
                 NotificationCenter.default.post(name: Self.settingsBackNotification, object: nil)
                 return nil
             }
-            // The menu-bar button is the Popover's close control. Do not let
-            // Escape or a focus change silently collapse the panel the user
-            // deliberately left open.
-            return event
+            self.dismiss()
+            return nil
         }
     }
 
@@ -216,12 +220,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard !panel.isVisible else { return }
         applyMeasuredContentSize()
         position()
-        // A non-activating panel does not need an application activation or a
-        // full-surface alpha animation. Both force the entire SwiftUI/Glass
-        // tree through another display pass and made opening intermittently
-        // hitch on an otherwise idle machine.
-        panel.alphaValue = 1
+        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        panel.animator().alphaValue = 1
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
     }
 
@@ -306,7 +308,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     deinit {
         for observer in [contentHeightObserver, hideObserver,
-                         settingsOpenObserver].compactMap({ $0 }) {
+                         settingsOpenObserver, resignObserver].compactMap({ $0 }) {
             NotificationCenter.default.removeObserver(observer)
         }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }

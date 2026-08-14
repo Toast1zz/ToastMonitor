@@ -1,0 +1,14 @@
+{"type":"session","version":0,"id":"session-test-0001","createdAt":1786628702000,"cwd":"/Users/toast1/Projects/ToastMonitor","delegationDepth":0,"agentPreset":"standard"}
+{"type":"request/header","seq":10,"time":1786628702500,"data":{"header":{"config":{"provider":"opencodego","model":"deepseek-v4-flash"}}}}
+{"type":"step/start","seq":11,"time":1786628702555,"data":{"turn":1,"step":1}}
+{"type":"assistant/chunk","seq":12,"time":1786628704000,"data":{"turn":1,"step":1,"chunk":{"type":"block-start","index":0,"blockType":"reasoning"}}}
+{"type":"assistant/chunk","seq":13,"time":1786628706000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":8045,"outputTokens":399}}}}
+{"type":"assistant/chunk","seq":14,"time":1786628706001,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"openai-completions","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+{"type":"assistant/message","seq":15,"time":1786628706002,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}}
+{"type":"assistant/chunk","seq":16,"time":1786628707000,"data":{"turn":1,"step":2,"chunk":{"type":"usage","usage":{"inputTokens":895,"outputTokens":198,"cacheReadTokens":8320}}}}
+{"type":"assistant/chunk","seq":17,"time":1786628707001,"data":{"turn":1,"step":2,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"openai-completions","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+{"type":"assistant/chunk","seq":18,"time":1786628708000,"data":{"turn":1,"step":3,"chunk":{"type":"usage","usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0}}}}
+{"type":"assistant/chunk","seq":19,"time":1786628708001,"data":{"turn":1,"step":3,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+{"type":"assistant/chunk","seq":20,"time":1786628709000,"data":{"turn":1,"step":4,"chunk":{"type":"usage","usage":{"inputTokens":2541,"outputTokens":418,"cacheReadTokens":9344}}}}
+{"type":"assistant/message","seq":21,"time":1786628709001,"data":{"turn":1,"step":4,"message":{"role":"assistant","content":[],"usage":{"inputTokens":2600,"outputTokens":420,"cacheReadTokens":9400}}}}
+{"type":"turn/end","seq":22,"time":1786628710000,"data":{"turn":1,"reason":{"kind":"finished"}}}

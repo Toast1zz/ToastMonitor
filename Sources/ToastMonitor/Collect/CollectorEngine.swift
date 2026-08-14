@@ -207,6 +207,21 @@ final class CollectorEngine: @unchecked Sendable {
         ingest("omp", preflight: { self.fileSourcesChanged(ompFiles) }) {
             OmpParser.scan(knownPaths: ompFiles)
         }
+
+        // DeepSeek Harness: incremental raw event logs when a zstd CLI is
+        // available, otherwise the JSON projection cache. The mode is sticky
+        // (see DSHParser.resolveMode) so the two accounting paths never mix.
+        switch DSHParser.resolveMode() {
+        case .log:
+            let dshFiles = DSHParser.listSessionFiles()
+            ingest("dsh", preflight: { self.fileSourcesChanged(dshFiles) }) {
+                DSHParser.scanLogs(knownPaths: dshFiles)
+            }
+        case .cache:
+            ingest("dsh", preflight: { self.sourceChanged(DSHParser.projCachePath) },
+                   scan: { DSHParser.scanProjCache() }, sourcePath: DSHParser.projCachePath)
+        }
+
         HermesRemoteClient.shared.maybePoll()
         if !turns.isEmpty || !sessions.isEmpty {
             Database.shared.backfillCosts()

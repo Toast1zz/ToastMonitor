@@ -7,6 +7,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
     case opencode = "opencode"
     case hermes = "hermes"
     case omp = "omp"
+    case dsh = "dsh"
     case openrouter = "openrouter"
 
     var id: String { rawValue }
@@ -18,6 +19,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .opencode: return "OpenCode"
         case .hermes: return "Hermes"
         case .omp: return "Oh My Pi"
+        case .dsh: return "DeepSeek Harness"
         case .openrouter: return "OpenRouter"
         }
     }
@@ -29,6 +31,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .opencode: return "terminal.fill"
         case .hermes: return "wand.and.stars"
         case .omp: return "cpu"
+        case .dsh: return "atom"
         case .openrouter: return "arrow.triangle.2.circlepath"
         }
     }
@@ -43,6 +46,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .opencode: return TMDesign.toolColor(hue: 150, sat: 0.50, bri: 0.72)
         case .hermes: return TMDesign.toolColor(hue: 272, sat: 0.48, bri: 0.78)
         case .omp: return TMDesign.toolColor(hue: 190, sat: 0.52, bri: 0.72)
+        case .dsh: return TMDesign.toolColor(hue: 226, sat: 0.55, bri: 0.74)
         case .openrouter: return TMDesign.toolColor(hue: 356, sat: 0.62, bri: 0.72)
         }
     }
@@ -55,12 +59,12 @@ enum ToolKind: String, CaseIterable, Identifiable {
         (Database.shared.setting(sourceKey) ?? defaultSource) == "remote"
     }
 
-    /// Whether this collector has a remote-feed implementation. Oh My Pi is
-    /// intentionally local-only; exposing a Remote choice for it creates a
-    /// configuration that can never produce data.
+    /// Whether this collector has a remote-feed implementation. Oh My Pi and
+    /// DeepSeek Harness are intentionally local-only; exposing a Remote choice
+    /// for them creates a configuration that can never produce data.
     var supportsRemoteSource: Bool {
         switch self {
-        case .omp, .openrouter:
+        case .omp, .dsh, .openrouter:
             return false
         case .claude, .codex, .opencode, .hermes:
             return true

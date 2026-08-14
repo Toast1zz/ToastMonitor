@@ -1,0 +1,121 @@
+{
+  "unit": {
+    "name": "session_projcache",
+    "version": 3
+  },
+  "global": null,
+  "tables": {
+    "sessions": {
+      "session-aaa": {
+        "identity": {
+          "createdAt": 1786627575620,
+          "cwd": "/Users/me/ProjA"
+        },
+        "rows": {
+          "sessionStats": {
+            "ver": 1,
+            "seq": 100,
+            "val": {
+              "turns": 3,
+              "steps": 9,
+              "decodeTokens": 500
+            }
+          },
+          "title": {
+            "ver": 1,
+            "seq": 100,
+            "val": "my task"
+          },
+          "tokenUsage": {
+            "ver": 1,
+            "seq": 100,
+            "val": {
+              "totals": {
+                "uncachedInputTokens": 1000,
+                "outputTokens": 500,
+                "cacheReadTokens": 8000,
+                "cacheWriteTokens": 10
+              },
+              "last": {
+                "turn": 3,
+                "step": 3,
+                "buckets": {
+                  "uncachedInputTokens": 100,
+                  "outputTokens": 50,
+                  "cacheReadTokens": 800,
+                  "cacheWriteTokens": 0
+                }
+              }
+            }
+          },
+          "contextPressure": {
+            "ver": 4,
+            "seq": 100,
+            "val": {
+              "surfaceTokens": 5000,
+              "contextWindow": 262144,
+              "pressureTokens": 7000
+            }
+          },
+          "sessionListMetadata": {
+            "ver": 1,
+            "seq": 100,
+            "val": {
+              "blank": false,
+              "lastPromptAt": 1786627600000
+            }
+          }
+        }
+      },
+      "session-bbb": {
+        "identity": {
+          "createdAt": 1786628605617,
+          "cwd": "/Users/me/ProjB"
+        },
+        "rows": {
+          "sessionStats": {
+            "ver": 1,
+            "seq": 5,
+            "val": {
+              "turns": 0,
+              "steps": 0,
+              "decodeTokens": 0
+            }
+          },
+          "title": {
+            "ver": 1,
+            "seq": 5,
+            "val": null
+          },
+          "tokenUsage": {
+            "ver": 1,
+            "seq": 5,
+            "val": {
+              "totals": {
+                "uncachedInputTokens": 0,
+                "outputTokens": 0,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0
+              },
+              "last": null
+            }
+          },
+          "contextPressure": {
+            "ver": 4,
+            "seq": 5,
+            "val": {
+              "surfaceTokens": 0
+            }
+          },
+          "sessionListMetadata": {
+            "ver": 1,
+            "seq": 5,
+            "val": {
+              "blank": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
