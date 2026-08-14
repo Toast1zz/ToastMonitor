@@ -10,9 +10,15 @@ cd "$ROOT"
 # preserves the macOS 14 deployment target while correctly recording the
 # Xcode 27 SDK, which enables system Liquid Glass on macOS 26/27.
 SWIFT_BUILD=(swift build --build-system native)
+# TM_ARCHS ("arm64", "arm64 x86_64", ...) overrides the host architecture so
+# releases can ship a universal binary. Defaults to the build machine.
+if [[ -n "${TM_ARCHS:-}" ]]; then
+    for arch in $TM_ARCHS; do SWIFT_BUILD+=(--arch "$arch"); done
+fi
 BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 APP="$ROOT/dist/ToastMonitor.app"
 INSTALL_APP="${TM_INSTALL_PATH:-/Applications/ToastMonitor.app}"
+SKIP_INSTALL="${TM_SKIP_INSTALL:-0}"
 
 # A release's marketing version is sourced from the tag (v1.0, v1.2.3, ...).
 # CI may inject TM_VERSION after checking out an exact tag.  Untagged source
@@ -35,11 +41,18 @@ VERSION_SOURCE="${TM_VERSION_SOURCE:-${TAG_VERSION:-development}}"
 echo "== building (if needed) =="
 "${SWIFT_BUILD[@]}" -c release
 
-SDK_VERSION="$(vtool -show-build "$BIN" | awk '/^[[:space:]]*sdk / { print $2; exit }')"
+# Multi-arch builds take the highest SDK across slices; SwiftPM links both
+# slices of an arm64+x86_64 build against the 14.0 compatibility layer, so
+# the strict SDK 26 check applies to single-arch (arm64) artifacts only.
+SDK_VERSION="$(vtool -show-build "$BIN" | awk '/^[[:space:]]*sdk / { print $2 }' | sort -n | tail -1)"
 SDK_MAJOR="${SDK_VERSION%%.*}"
 if [[ -z "$SDK_VERSION" || ! "$SDK_MAJOR" =~ ^[0-9]+$ || "$SDK_MAJOR" -lt 26 ]]; then
-    echo "error: release binary is linked as SDK ${SDK_VERSION:-unknown}; macOS 26+ UI requires SDK 26 or newer" >&2
-    exit 1
+    if [[ "$TM_ARCHS" == *"x86_64"* ]]; then
+        echo "warning: universal build links as SDK $SDK_VERSION (SwiftPM multi-arch limitation); macOS 26+ UI falls back to compatibility controls, functionality unaffected" >&2
+    else
+        echo "error: release binary is linked as SDK ${SDK_VERSION:-unknown}; macOS 26+ UI requires SDK 26 or newer" >&2
+        exit 1
+    fi
 fi
 echo "linked SDK: $SDK_VERSION"
 
@@ -149,6 +162,8 @@ codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENT
 echo "== installing locally =="
 if [[ "${CI:-}" == "true" ]]; then
     echo "skipping install (CI environment)"
+elif [[ "$SKIP_INSTALL" == "1" ]]; then
+    echo "skipping install (TM_SKIP_INSTALL=1)"
 else
     WAS_RUNNING=0
     if pgrep -x ToastMonitor >/dev/null; then
