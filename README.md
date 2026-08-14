@@ -3,7 +3,6 @@
 [![macOS](https://img.shields.io/badge/macOS-14.0+-blue)](https://github.com/neko1chau/ToastMonitor)
 [![Swift](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
 [![License: MIT](https://img.shields.io/github/license/neko1chau/ToastMonitor)](LICENSE)
-[![CI](https://github.com/neko1chau/ToastMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/neko1chau/ToastMonitor/actions/workflows/ci.yml)
 
 Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-party dependencies).
 

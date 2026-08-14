@@ -1,7 +1,6 @@
 name: CI
 
-# Quoted so the YAML 1.1 parser does not fold `on` into boolean true,
-# which GitHub reports as a "workflow file issue" (no jobs created).
+# Quoted so YAML 1.1 parsers do not fold `on` into boolean true.
 "on":
   push:
     branches: [main]
@@ -9,6 +8,12 @@ name: CI
   pull_request:
     branches: [main]
 
+# NOTE: the source uses macOS 27 SDK APIs (NSSegmentedControl.role etc.),
+# so this workflow needs an Xcode 27 toolchain. GitHub's hosted runners do
+# not ship one until macOS 27 is released; until then this workflow stays
+# disabled (disable via Settings -> Actions, or `gh api -X PUT
+# repos/<owner>/<repo>/actions/workflows/ci.yml/disable`). When macOS 27
+# lands, switch `runs-on` to macos-27 and re-enable.
 permissions:
   contents: read
 
@@ -17,7 +22,7 @@ env:
 
 jobs:
   build-and-test:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,7 +55,7 @@ jobs:
   release-bundle:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-test
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
