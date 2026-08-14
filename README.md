@@ -2,78 +2,107 @@
 
 纯原生 macOS 菜单栏 AI 用量监视器（SwiftUI + 系统 SQLite，零第三方依赖）。
 
-跟踪 **Claude Code / Codex / OpenCode / Hermes** 的本地日志，外加 **OpenRouter** 云端配额面板。
+统一跟踪 **Claude Code、Codex、OpenCode、Hermes、Oh My Pi、DeepSeek Harness** 的本地日志，外加 **OpenRouter** 云端配额——所有 token 汇总成一份今日用量，常驻状态栏。
 
-## 数据源（每工具可配置：本机 / 远程 VPS）
+## 功能一览
 
-| 工具 | 本机 (Mac) 来源 | 远程 (VPS) 来源 |
+- **状态栏实时 token**：只显示今日总量，点开是完整面板
+- **完整面板（4 个 Tab）**：概览 / 用量分析 / 计划与余额 / 来源与设置
+- **多源汇总**：一个 SQLite 库汇总所有工具的 token、成本与项目分布，按日/周/月查看
+- **配额内建**：OpenCode Go 套餐三条配额条 + 重置倒计时，OpenRouter 余额快照（不依赖 opencode-quota）
+- **成本估算**：内置常见模型价格表，未知模型只记 token 不记价
+- **隐私优先**：数据只存本机，凭据只进 macOS Keychain，无分析/广告 SDK
+
+## 数据源
+
+| 工具 | 本地 (Mac) 来源 | 远程 |
 |---|---|---|
-| Claude Code | `~/.claude/projects/*/*.jsonl`（兼容顶层与 `message.usage`） | VPS feed（tm-export.py 解析 VPS 上的同结构日志） |
-| Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | VPS feed（同结构） |
-| OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed（opencode.db session 累计值） |
-| Hermes | `~/.hermes/state.db`（列自省） | VPS feed（`session_model_usage` 聚合） |
-| Oh My Pi (OMP) | `~/.omp/agent/sessions/**/*.jsonl`（assistant 消息的 usage 事件） | —（本机专用） |
-| DeepSeek Harness (DSH) | `$DSH_HOME`/`~/.dsh`：`sessions/**/session.jsonl.zstd`（逐 step usage，含 model/时间戳；有 `zstd` CLI 时）+ `storages/session_projcache.json`（累计桶，无 zstd 时自动降级） | —（本机专用） |
+| Claude Code | `~/.claude/projects/*/*.jsonl` | VPS feed |
+| Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | VPS feed |
+| OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed |
+| Hermes | `~/.hermes/state.db`（列自省） | VPS feed |
+| Oh My Pi | `~/.omp/agent/sessions/**/*.jsonl` | —（本机专用） |
+| DeepSeek Harness | `$DSH_HOME`（默认 `~/.dsh`）的会话日志 + 投影缓存 | —（本机专用） |
 | OpenRouter | 云端 API（key + credits 快照） | — |
 
-- DSH 的 token 口径与 ToastMonitor 一致：uncached input / output（reasoning 已含在 output）/ cache read / cache write 四桶。原始日志按 step 增量读取（zstd 独立帧 + 字节游标），投影缓存按会话累计值差值；两种模式互斥且粘性（settings 中 `dsh_parse_mode`），首次扫描选定后不因 zstd 装/卸而切换，避免重复计数。macOS 无内置 zstd（Compression.framework 不支持），应用自动在 `PATH` 与常见安装位置（`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`）查找 `zstd`；缺失时自动降级为投影缓存模式（web 会话可见，无 model/精确时间，headless 会话不可见），不报错不丢数据。
+### 远程 feed
 
-- 远程 feed：仅使用用户在「来源与设置」中明确填写的地址；应用不内置个人 IP 或默认远程主机。地址会按客户端规则校验，凭据请求不跟随重定向。
-- 远程轮询由同一采集循环限速到约 15s；本机来源与远程来源都可单独停用。
+- 仅使用你在「来源与设置」中**明确填写**的地址；应用不内置任何个人 IP 或默认远程主机
+- 地址按客户端规则校验，凭据请求不跟随重定向
+- 远程轮询由同一采集循环限速到约 15s；本机/远程来源可单独停用
+
+### DeepSeek Harness（DSH）说明
+
+DSH 的 token 口径与 ToastMonitor 一致，四桶一一对应：
+
+| DSH 桶 | ToastMonitor 字段 |
+|---|---|
+| uncached input | `input_tokens` |
+| output（reasoning 已含在内，不单列） | `output_tokens` |
+| cache read | `cache_read` |
+| cache write | `cache_write` |
+
+解析采用双模式，**互斥且粘性**（`dsh_parse_mode`，首次选定后不因 zstd 装/卸而切换，避免重复计数）：
+
+- **日志模式（主）**：按 step 增量读取 `sessions/**/session.jsonl.zstd`（zstd 独立帧 + 字节游标），含精确时间戳与 model，成本按价格表估算
+- **缓存模式（降级）**：对 `storages/session_projcache.json` 的会话累计值做差值；无 model/精确时间，web 会话可见、headless 会话不可见
+
+macOS 无内置 zstd（Compression.framework 只支持 LZ4/ZLIB/LZMA/LZFSE/BROTLI），应用自动在 `PATH` 与常见安装位置（`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`）查找 `zstd`；缺失时自动降级为缓存模式，不报错不丢数据。
 
 ## 配额（内建，不依赖 opencode-quota）
 
-- **OpenCode Go 套餐**（与 OpenCode 工具是两个独立条目）：抓取 `opencode.ai/workspace/<id>/go` 的 SolidJS SSR/data-slot 数据，5h=$12 / 周=$30 / 月=$60 三条配额条 + 重置倒计时 + 历史。凭据：计划与余额页粘贴或 `--provision-go <workspaceId>` 后从 stdin 输入 cookie（可从 opencode-quota 的 opencode-go.json 取）。
-- **OpenRouter**：`/api/v1/key` + `/api/v1/credits` 前台每 60 秒快照（后台停止轮询）。Key：面板粘贴或 `--provision-or-key` 后从 stdin 输入；secret 只存 macOS Keychain。
+- **OpenCode Go 套餐**（与 OpenCode 工具是两个独立条目）：抓取 `opencode.ai/workspace/<id>/go` 的 SolidJS SSR/data-slot 数据，显示 5h=$12 / 周=$30 / 月=$60 三条配额条 + 重置倒计时 + 历史。凭据：计划与余额页粘贴，或 `--provision-go <workspaceId>` 后从 stdin 输入 cookie（可从 opencode-quota 的 opencode-go.json 取）
+- **OpenRouter**：`/api/v1/key` + `/api/v1/credits` 前台每 60 秒快照（后台停止轮询）。Key：面板粘贴或 `--provision-or-key` 后从 stdin 输入；secret 只存 macOS Keychain
 
-## 架构
-
-- 单一采集调度：Popover/主页面可见时每 1s 扫描，全部隐藏时每 5s 扫描以持续刷新状态栏 token；按文件 (size, 纳秒 mtime, inode) 增量读取，稳态仅做 stat 检查。远程 feed 由同一循环限速到约 15s；OpenRouter/Go/Codex 配额客户端仅在界面可见时轮询。
-- 单 SQLite 库：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL 模式）。
-- 成本估算：内置常见模型价格表（Claude/GPT/DeepSeek 等），未知模型只记 token 不记价；`backfillCosts()` 幂等修正历史。
-
-## 构建与运行
+## 安装与构建
 
 ```bash
 cd ~/Projects/ToastMonitor
-swift build -c release
-./scripts/build-app.sh          # 使用 artifacts 中的 ToastMonitor.icns 并签名
-                                # 本机执行会自动把新构建安装到 /Applications（CI 环境跳过）
-
-# 本机首次切换到 Apple Development 签名后，只需运行一次：
-./scripts/authorize-local-keychain.sh
-open dist/ToastMonitor.app      # 或带面板: open -a dist/ToastMonitor.app --args --show-dashboard
+./scripts/build-app.sh        # 构建（release）→ 签名 → 安装到 /Applications（CI 环境自动跳过安装）
 ```
 
-版本来源是 `vMAJOR.MINOR` 或 `vMAJOR.MINOR.PATCH` git tag；`TM_VERSION`、`TM_BUILD_NUMBER` 只用于受控 CI/release 注入。未打 tag 的本地构建明确显示 `1.0`（开发构建），不会把 commit hash 当作用户版本。
+- 本机首次使用 Apple Development 签名后，运行一次 `./scripts/authorize-local-keychain.sh` 授权钥匙串条目，之后同一 Team ID 的新构建不再逐次询问
+- 版本号来自 `vMAJOR.MINOR[.PATCH]` git tag；`TM_VERSION`、`TM_BUILD_NUMBER` 仅用于受控 CI/release 注入。未打 tag 的本地构建固定显示 `1.0`（开发构建），不会把 commit hash 当作用户版本
+- 分发需要 Developer ID 证书；`build-app.sh` 拒绝 ad-hoc 签名，可用 `TM_SIGNING_IDENTITY` 指定身份
+- 也可以直接 `open dist/ToastMonitor.app` 运行构建产物
 
-## 更新、数据与支持
-
-- 更新检查调用方必须提供 HTTPS 元数据地址和随发行物固定的 Ed25519 公钥；`UpdateChecker` 校验元数据签名、版本和下载文件 SHA-256 字段，`verifyArtifact` 在用户确认下载后再校验文件哈希并返回结果，超时后失败。检查不会自动下载、安装或执行更新。
-- 数据维护由应用提供 `DataMaintenance.exportDatabase(to:)`、`clearAllData()`、本地清理、受保护备份与恢复前校验；清理前强制生成受保护备份，备份和导出文件写入用户目录并限制为仅当前用户可读。清理或恢复前请先退出采集并保留备份。
-- 隐私：日志、用量、项目路径和会话元数据默认仅保存在本机 SQLite；只有用户启用远程 feed 或配额服务时才会向配置的服务发起请求。凭据存储在 macOS Keychain，不写入 URL、plist 或诊断日志。应用不包含分析/广告 SDK。
-- 支持：请在仓库提交 issue，并附应用版本（「关于」或 `--version`）、macOS 版本、复现步骤和脱敏日志。不要上传 token、cookie、API key、项目路径或完整会话内容。
-
-## 许可
-
-ToastMonitor 源码按仓库根目录 `LICENSE` 的条款发布；第三方系统组件仍受其各自许可约束。
-
-## 无头 CLI 模式（SSH 场景）
+## 命令行（无头场景 / 开发验证）
 
 ```bash
-printf '%s\n' 'sk-or-...' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-or-key  # stdin，不进入 argv
-printf '%s\n' 'auth_cookie' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-go <ws>  # cookie 从 stdin
-dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>  # 仅使用明确配置的地址，无个人默认主机
+# 凭据注入：一律从 stdin 读取，不进入 argv
+printf '%s\n' 'sk-or-...' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-or-key
+printf '%s\n' 'auth_cookie' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-go <workspaceId>
+dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>   # 仅用明确配置的地址
 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                 # 清除
-TM_DEBUG=1 dist/ToastMonitor.app/Contents/MacOS/ToastMonitor                     # 逐文件扫描决策日志
-dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --render-dashboard /tmp/dash.png 1000 1120 plans
-                                                                                 # 无头渲染 Dashboard 为 PNG（开发验证，无需窗口/钥匙串）
 ```
 
-开发验证：`--render-dashboard <path> [height] [width] [tab]`，路径含 `dark`/`light` 时按对应外观渲染；tab 取 overview/analysis/plans/sources。
+- `TM_DEBUG=1`：逐文件扫描决策日志
+- `--render-dashboard <path> [height] [width] [tab]`：无头渲染 Dashboard 为 PNG（开发验证，无需窗口/钥匙串）；路径含 `dark`/`light` 时按对应外观渲染；tab 取 `overview / analysis / plans / sources`
+- `--show-dashboard`：启动即带面板
+- `--verify-status-toggle`：自动验证状态栏按钮开关（CI/自检用）
+
+## 架构
+
+- **单一采集调度**：面板/主页可见时每 1s 扫描，全部隐藏时每 5s 扫描（持续刷新状态栏）；按文件 (size, 纳秒 mtime, inode) 增量读取，稳态只做 stat 检查
+- **单 SQLite 库**：`~/Library/Application Support/ToastMonitor/toastmonitor.db`（WAL 模式）
+- **成本估算**：内置常见模型价格表（Claude/GPT/DeepSeek 等），未知模型只记 token；`backfillCosts()` 幂等修正历史
+
+## 数据、隐私与安全
+
+- **更新检查**：调用方必须提供 HTTPS 元数据地址 + 随发行物固定的 Ed25519 公钥；`UpdateChecker` 校验元数据签名、版本与下载文件 SHA-256，用户确认后才下载并二次校验哈希。绝不自动下载、安装或执行更新
+- **数据维护**：`DataMaintenance.exportDatabase(to:)`、`clearAllData()`、本地清理、受保护备份与恢复前校验；清理前强制生成受保护备份，备份/导出写入用户目录并限制仅当前用户可读。清理或恢复前先退出采集并保留备份
+- **隐私**：日志、用量、项目路径与会话元数据默认只存本机 SQLite；只有启用远程 feed 或配额服务时才向配置的服务发起请求。凭据存 macOS Keychain，不写入 URL、plist 或诊断日志；无分析/广告 SDK
 
 ## 已知边界
 
-- 菜单栏只显示「今日 tokens」（用户偏好；估算与固定订阅在 tooltip/面板分开），点击出 popover。完整面板包含四个 Tab：概览、用量分析、计划与余额、来源与设置。弹窗只保留周期摘要与速览。
-- 价格表是近似值（按官方价），OpenCode 自带 cost 字段则直接用。
-- 分发需 Developer ID 证书；build-app.sh 使用 `artifacts/ToastMonitor-Icon/ToastMonitor.icns`（或同名覆盖路径）并拒绝 ad-hoc 签名。可用 `TM_SIGNING_IDENTITY` 指定受信任身份。
+- 菜单栏只显示「今日 tokens」（用户偏好），成本与固定订阅在 tooltip/面板内查看
+- 价格表为近似值（按官方价）；OpenCode 自带 cost 字段时直接使用
+- DSH 日志模式依赖 `zstd` CLI（见上文查找逻辑）；缓存模式无 model，成本记 0
+
+## 支持
+
+在仓库提交 issue，附：应用版本（「关于」或 `--version`）、macOS 版本、复现步骤、脱敏日志。**不要**上传 token、cookie、API key、项目路径或完整会话内容。
+
+## 许可
+
+源码按仓库根目录 `LICENSE` 发布；第三方系统组件仍受各自许可约束。
