@@ -60,4 +60,26 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(try cost("GPT-5.4-MINI", input: 1_000_000), 0.25, accuracy: 0.0001)
         XCTAssertEqual(try cost("CLAUDE-3-5-HAIKU", input: 1_000_000), 0.25, accuracy: 0.0001)
     }
+
+    // PR-1: o3-mini / deepseek-r1 have their own entries BEFORE the family
+    // catch-alls — they must resolve to their own rates, not the family ones.
+    func testO3MiniResolvesToOwnEntryBeforeOFamily() throws {
+        XCTAssertEqual(try cost("o3-mini", input: 1_000_000, output: 1_000_000,
+                                cacheRead: 1_000_000, cacheWrite: 1_000_000),
+                       1.1 + 4.4 + 0.55 + 1.65, accuracy: 0.0001)
+        XCTAssertEqual(try cost("o3-mini", input: 1_000_000), 1.1, accuracy: 0.0001)
+        XCTAssertEqual(try cost("o3-mini", output: 1_000_000), 4.4, accuracy: 0.0001)
+        XCTAssertEqual(try cost("o3-mini", cacheRead: 1_000_000), 0.55, accuracy: 0.0001)
+        XCTAssertEqual(try cost("o3-mini", cacheWrite: 1_000_000), 1.65, accuracy: 0.0001)
+    }
+
+    func testDeepseekR1ResolvesToOwnEntry() throws {
+        XCTAssertEqual(try cost("deepseek-r1", input: 1_000_000, output: 1_000_000,
+                                cacheRead: 1_000_000, cacheWrite: 1_000_000),
+                       0.55 + 2.19 + 0.055 + 0.55, accuracy: 0.0001)
+        XCTAssertEqual(try cost("deepseek-r1", input: 1_000_000), 0.55, accuracy: 0.0001)
+        XCTAssertEqual(try cost("deepseek-r1", output: 1_000_000), 2.19, accuracy: 0.0001)
+        XCTAssertEqual(try cost("deepseek-r1", cacheRead: 1_000_000), 0.055, accuracy: 0.0001)
+        XCTAssertEqual(try cost("deepseek-r1", cacheWrite: 1_000_000), 0.55, accuracy: 0.0001)
+    }
 }

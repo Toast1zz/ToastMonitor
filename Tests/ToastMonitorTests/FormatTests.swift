@@ -26,8 +26,8 @@ final class FormatTests: XCTestCase {
 
     func testMoneyPrecisionTiers() {
         XCTAssertEqual(Format.money(0), "$0.00")
-        XCTAssertEqual(Format.money(100), "$100", ">= 100 drops cents")
-        XCTAssertEqual(Format.money(123.45), "$123")
+        XCTAssertEqual(Format.money(100), "$100", "whole dollars drop cents")
+        XCTAssertEqual(Format.money(123.45), "$123.45", ">= 100 keeps cents (FM-1)")
         XCTAssertEqual(Format.money(99.99), "$99.99", ">= 1 keeps cents")
         XCTAssertEqual(Format.money(1), "$1.00")
         XCTAssertEqual(Format.money(1.234), "$1.23")
@@ -35,6 +35,26 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(Format.money(0.01), "$0.010")
         XCTAssertEqual(Format.money(0.001), "$0.0010", "below 0.01 gets 4 decimals")
         XCTAssertEqual(Format.money(0.0001), "$0.0001")
+    }
+
+    // MARK: - money: NaN / negative / locale stability (FM-1)
+
+    func testMoneyNonFiniteAndNegative() {
+        XCTAssertEqual(Format.money(.nan), "$0.00", "NaN must never render as $nan (FM-1)")
+        XCTAssertEqual(Format.money(Double.infinity), "$0.00")
+        XCTAssertEqual(Format.money(-Double.infinity), "$0.00")
+        XCTAssertEqual(Format.money(-0.5), "-$0.500", "negative mirrors the positive precision tier")
+        XCTAssertEqual(Format.money(-99.99), "-$99.99")
+        XCTAssertEqual(Format.money(-123.45), "-$123.45", ">= $100 keeps cents on negatives too")
+        XCTAssertEqual(Format.money(-100), "-$100")
+    }
+
+    func testMoneyAndFullUsePOSIXGroupingUnderAnyLocale() {
+        // These exact strings must hold regardless of the machine's locale:
+        // the formatters are pinned to en_US_POSIX.
+        XCTAssertEqual(Format.money(123_456.78), "$123,456.78", "POSIX comma grouping (FM-1)")
+        XCTAssertEqual(Format.money(123_456.789), "$123,456.79", "cents rounded at 2 digits")
+        XCTAssertEqual(Format.full(1_234_567), "1,234,567", "POSIX grouping independent of system locale (FM-1)")
     }
 
     // MARK: - dayKeyString

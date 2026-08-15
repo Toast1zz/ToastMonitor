@@ -13,12 +13,18 @@ enum SubscriptionMath {
 
     static func cycleInfo(start: Int64, end: Int64 = 0, cycle: String, now: Date = Date()) -> CycleInfo? {
         guard start > 0 else { return nil }
+        // Only the supported cycles have defined math; anything else (old
+        // rows, bad config) must not silently fall into the monthly window.
+        guard cycle == "yearly" || cycle == "monthly" || cycle == "weekly" else { return nil }
         let cal = Calendar.current
         let startDate = Date(timeIntervalSince1970: TimeInterval(start))
         let endDate = end > 0 ? Date(timeIntervalSince1970: TimeInterval(end)) : nil
         if let endDate, now >= endDate { return nil } // ended subscription: no active cycle
-        let step: Calendar.Component = cycle == "yearly" ? .year : (cycle == "weekly" ? .weekOfYear : .month)
-        let stepCount = cycle == "yearly" ? 1 : (cycle == "weekly" ? 1 : 1)
+        // Weekly advances by adding 7 days, not .weekOfYear: week-of-year math
+        // misbehaves across year boundaries (and DST shifts), while adding 7
+        // calendar days always yields an exact 7-day window.
+        let step: Calendar.Component = cycle == "yearly" ? .year : (cycle == "weekly" ? .day : .month)
+        let stepCount: Int = cycle == "weekly" ? 7 : 1
 
         // Find the current cycle window: roll forward from start until end > now.
         // date(byAdding:) returns nil for out-of-range dates; bail out

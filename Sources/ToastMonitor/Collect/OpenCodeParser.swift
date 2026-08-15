@@ -7,7 +7,12 @@ import SQLite3
 enum OpenCodeParser {
 
     static var dbPath: String {
-        FileManager.default.homeDirectoryForCurrentUser
+        // Env override mirrors HermesParser (HERMES_HOME) / DSHParser
+        // (DSH_HOME) so tests and alternate installs can redirect the source.
+        if let h = ProcessInfo.processInfo.environment["OPENCODE_HOME"], !h.isEmpty {
+            return (h as NSString).appendingPathComponent("opencode.db")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/share/opencode/opencode.db").path
     }
 
@@ -78,14 +83,14 @@ enum OpenCodeParser {
         return (obj["providerID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    static func scan() -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(database: Database = .shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.opencode.sourceIsRemote else { return ([], []) } // source = VPS feed
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let rows = readRows()
         guard !rows.isEmpty else { return ([], []) }
 
-        let prevTotals = Database.shared.sessionTotals()
+        let prevTotals = database.sessionTotals()
         // opencode stores ms timestamps; normalize to seconds (P1).
         func sec(_ v: Int64) -> Int64 { v > 1_000_000_000_000 ? v / 1000 : v }
 
@@ -129,11 +134,21 @@ enum OpenCodeParser {
                                         eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
                                         costQuality: "actual"))
             }
-            Database.shared.setSessionTotals(key, tool: "opencode",
-                                             input: totalInput, output: row.output,
-                                             reasoning: row.reasoning,
-                                             cacheRead: row.cacheRead, cacheWrite: row.cacheWrite,
-                                             cost: row.cost, updated: sec(row.timeUpdated))
+            // The baseline is the HIGH-WATER MARK per counter, never the raw
+            // current value: a source rollback (totals dropping) must not
+            // reset the origin, or the later regrowth would be re-counted
+            // from the rolled-back value. max() also absorbs the legacy
+            // combined-input transition (prev.input == input + reasoning),
+            // where prev.input exceeds the split current values.
+            let prev = prevTotals[key]
+            database.setSessionTotals(key, tool: "opencode",
+                                     input: max(prev?.input ?? 0, totalInput),
+                                     output: max(prev?.output ?? 0, row.output),
+                                     reasoning: max(prev?.reasoning ?? 0, row.reasoning),
+                                     cacheRead: max(prev?.cacheRead ?? 0, row.cacheRead),
+                                     cacheWrite: max(prev?.cacheWrite ?? 0, row.cacheWrite),
+                                     cost: max(prev?.cost ?? 0, row.cost),
+                                     updated: sec(row.timeUpdated))
         }
         return (turns, sessions)
     }

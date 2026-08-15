@@ -13,6 +13,25 @@ import Security
 enum KeychainStore {
     static let service = "ToastMonitor"
 
+    // Most recent SecItem result, thread-safe, so clients can tell "not
+    // configured" (errSecItemNotFound) apart from "keychain locked"
+    // (errSecInteractionNotAllowed) and surface an actionable message.
+    private static let statusLock = NSLock()
+    private static var _lastSecStatus: OSStatus = errSecSuccess
+    static private(set) var lastSecStatus: OSStatus {
+        get { statusLock.lock(); defer { statusLock.unlock() }; return _lastSecStatus }
+        set { statusLock.lock(); defer { statusLock.unlock() }; _lastSecStatus = newValue }
+    }
+    static var lastWasInteractionNotAllowed: Bool {
+        lastSecStatus == errSecInteractionNotAllowed
+    }
+
+    private static func recordStatus(_ status: OSStatus) {
+        statusLock.lock()
+        _lastSecStatus = status
+        statusLock.unlock()
+    }
+
     private static func query(account: String, allowPrompt: Bool) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -38,6 +57,7 @@ enum KeychainStore {
         // password recreates its ACL, which makes every newly signed local
         // build look like a different Keychain client and prompts again.
         let updated = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        recordStatus(updated)
         if updated == errSecSuccess { return true }
         guard updated == errSecItemNotFound else { return false }
 
@@ -45,11 +65,14 @@ enum KeychainStore {
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let added = SecItemAdd(add as CFDictionary, nil)
+        recordStatus(added)
         if added == errSecSuccess { return true }
         // A concurrent writer may have created the item between the update
         // and add calls; preserve the same in-place semantics in that case.
         if added == errSecDuplicateItem {
-            return SecItemUpdate(query as CFDictionary, update as CFDictionary) == errSecSuccess
+            let retry = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+            recordStatus(retry)
+            return retry == errSecSuccess
         }
         return false
     }
@@ -60,13 +83,15 @@ enum KeychainStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
+        recordStatus(status)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
     static func delete(account: String, allowPrompt: Bool = false) {
         let query = query(account: account, allowPrompt: allowPrompt)
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        recordStatus(status)
     }
 
     // MARK: - Legacy vault migration (one-time)

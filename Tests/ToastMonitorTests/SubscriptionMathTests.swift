@@ -62,4 +62,30 @@ final class SubscriptionMathTests: XCTestCase {
         XCTAssertNil(SubscriptionMath.cycleValue(plan: "not-a-plan", cycle: "monthly", cycleStart: start),
                      "unknown plans must not fabricate a value")
     }
+
+    /// SM-1: a weekly cycle must advance by adding 7 days (not week-of-year
+    /// math, which misbehaves across year boundaries). A subscription that
+    /// starts 2025-12-29 must have its window end exactly 2026-01-05.
+    func testWeeklyCycleAcrossYearBoundaryIsSevenDayWindow() {
+        let start: Int64 = 1_766_966_400                    // 2025-12-29T00:00:00Z
+        let now = Date(timeIntervalSince1970: 1_767_312_000) // 2026-01-02T00:00:00Z
+        guard let info = SubscriptionMath.cycleInfo(start: start, end: 0, cycle: "weekly", now: now) else {
+            return XCTFail("weekly cycle must be active")
+        }
+        XCTAssertEqual(info.end.timeIntervalSince(info.start), 7 * 86400, accuracy: 1.0,
+                       "weekly window must advance by exactly 7 days, not week-of-year math (SM-1)")
+        XCTAssertEqual(info.totalDays, 7)
+        XCTAssertEqual(info.dayOfCycle, 5, "Dec 29 → Jan 2 = 4 days elapsed → 1-based day 5")
+    }
+
+    /// SM-1: unknown cycle strings must return nil instead of silently
+    /// falling into the monthly window.
+    func testUnknownCycleReturnsNil() {
+        let start: Int64 = 1_766_966_400
+        let now = Date(timeIntervalSince1970: 1_767_312_000)
+        XCTAssertNil(SubscriptionMath.cycleInfo(start: start, end: 0, cycle: "fortnightly", now: now))
+        XCTAssertNil(SubscriptionMath.cycleInfo(start: start, end: 0, cycle: "", now: now))
+        XCTAssertNil(SubscriptionMath.cycleInfo(start: start, end: 0, cycle: "Weekly", now: now),
+                     "cycle matching is exact, not case-insensitive")
+    }
 }

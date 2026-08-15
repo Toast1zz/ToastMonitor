@@ -17,7 +17,7 @@ enum EventIdentity {
     }
 
     static func claude(sessionID: String, object: [String: Any], usage: [String: Any],
-                       model: String?, timestamp: Int64) -> String {
+                       model: String?, timestamp: Int64, offset: Int64) -> String {
         if let message = object["message"] as? [String: Any],
            let messageID = message["id"] as? String, !messageID.isEmpty {
             return "claude:\(sessionID):\(messageID)"
@@ -26,9 +26,13 @@ enum EventIdentity {
             return "claude:\(sessionID):\(messageID)"
         }
         let message = object["message"] as? [String: Any]
+        // The fallback digest is anchored on the stable byte offset, NOT the
+        // timestamp: untimestamped rows resolve to Date().now, which changes
+        // on every scan and would mint a new digest on each replay. The
+        // offset is stable for a given file content, so replays dedupe.
         let stable = digest([
             sessionID,
-            String(timestamp),
+            String(offset),
             model ?? "",
             canonicalJSON(usage),
             canonicalJSON(message?["content"]),
@@ -37,8 +41,12 @@ enum EventIdentity {
     }
 
     static func codex(sessionID: String, timestamp: Int64, model: String?,
-                      usage: [String: Any]) -> String {
-        "codex:\(sessionID):\(digest([sessionID, String(timestamp), model ?? "", canonicalJSON(usage)]))"
+                      usage: [String: Any], offset: Int64) -> String {
+        // Two token_count events in the same second with identical
+        // last_token_usage collide without the byte offset; including it
+        // keeps every turn distinct (ON CONFLICT DO NOTHING would otherwise
+        // silently drop one).
+        "codex:\(sessionID):\(digest([sessionID, String(timestamp), model ?? "", canonicalJSON(usage), String(offset)]))"
     }
 
     static func omp(relativePath: String, sessionID: String, object: [String: Any],

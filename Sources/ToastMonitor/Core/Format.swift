@@ -46,29 +46,48 @@ enum Format {
     }
 
     /// 完整数字（千分位分组）：1,234,567。流式刷新时看数字增长用。
+    /// en_US_POSIX 强制分组/小数点，不受系统 locale 影响（FM-1）。
     static let fullFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
         f.usesGroupingSeparator = true
+        f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
+    /// NumberFormatter is not thread-safe and money/full are called from both
+    /// the query worker queue and the main thread — serialize all access.
+    private static let formatterLock = NSLock()
+
     static func full(_ n: Int64) -> String {
-        fullFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
+        formatterLock.lock(); defer { formatterLock.unlock() }
+        return fullFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     /// 整数金额的千分位分组（$173,564，避免无逗号的 "$173564"）。
+    /// >= $100 保留分位（$123.45）；en_US_POSIX 保证逗号分组（FM-1）。
     private static let moneyWholeFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
-        f.maximumFractionDigits = 0
+        f.maximumFractionDigits = 2
+        f.minimumFractionDigits = 0
+        f.usesGroupingSeparator = true
+        f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
-    /// Money in USD with adaptive precision.
+    private static func moneyWholeString(_ v: Double) -> String {
+        formatterLock.lock(); defer { formatterLock.unlock() }
+        return moneyWholeFormatter.string(from: NSNumber(value: v)) ?? String(format: "%.2f", v)
+    }
+
+    /// Money in USD with adaptive precision. Non-finite values render as
+    /// $0.00 (never "nan"); negatives format normally with a leading "-".
     static func money(_ v: Double) -> String {
+        guard v.isFinite else { return "$0.00" }
         if v == 0 { return "$0.00" }
-        if v >= 100 { return "$" + (moneyWholeFormatter.string(from: NSNumber(value: v)) ?? "\(Int(v))") }
+        if v < 0 { return "-" + money(-v) }
+        if v >= 100 { return "$" + moneyWholeString(v) }
         if v >= 1 { return String(format: "$%.2f", v) }
         if v >= 0.01 { return String(format: "$%.3f", v) }
         return String(format: "$%.4f", v)

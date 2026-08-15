@@ -23,7 +23,7 @@ enum HermesParser {
         let output: Int64
     }
 
-    static func scan() -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(database: Database = .shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.hermes.sourceIsRemote else { return ([], []) } // source = VPS feed
         guard FileManager.default.fileExists(atPath: dbPath) else { return ([], []) }
 
@@ -119,10 +119,11 @@ enum HermesParser {
             }
             sqlite3_finalize(stmt)
 
-            let prevTotals = Database.shared.sessionTotals()
+            let prevTotals = database.sessionTotals()
             for (sid, agg) in perSession {
                 let key = "hermes|\(sid)"
-                if let prev = prevTotals[key] {
+                let prev = prevTotals[key]
+                if let prev {
                     let dIn = max(agg.input - prev.input, 0)
                     let dOut = max(agg.output - prev.output, 0)
                     if dIn > 0 || dOut > 0 {
@@ -139,8 +140,13 @@ enum HermesParser {
                                             cacheRead: 0, cacheWrite: 0, cost: 0,
                                             eventID: "hermes-local:\(sid):\(agg.lastTs):\(agg.input):\(agg.output)", costQuality: "unknown"))
                 }
-                Database.shared.setSessionTotals(key, tool: "hermes", input: agg.input, output: agg.output,
-                                                 cacheRead: 0, cacheWrite: 0, cost: 0, updated: agg.lastTs)
+                // Baseline is the HIGH-WATER MARK per counter: a source
+                // rollback must not lower the origin, or the regrowth beyond
+                // the old peak would be re-counted.
+                database.setSessionTotals(key, tool: "hermes",
+                                         input: max(prev?.input ?? 0, agg.input),
+                                         output: max(prev?.output ?? 0, agg.output),
+                                         cacheRead: 0, cacheWrite: 0, cost: 0, updated: agg.lastTs)
             }
         }
         return (turns, sessions)

@@ -102,6 +102,32 @@ final class ClaudeCodeParserTests: XCTestCase {
         XCTAssertEqual(Set(turns.compactMap(\.eventID)), ["claude:s1:msg_billable"])
     }
 
+    func testUntimestampedRowsGetDistinctStableOffsetIdentity() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-no-ts-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("s.jsonl").path
+        // Two rows with NO timestamp and IDENTICAL usage. The fallback digest
+        // must be anchored on the byte offset: Date().now would mint a new
+        // digest on every scan (duplicate import) and identical rows would
+        // collide without the offset.
+        try """
+        {"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"m","usage":{"input_tokens":10,"output_tokens":5}}}
+        {"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"m","usage":{"input_tokens":10,"output_tokens":5}}}
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let first = ClaudeCodeParser.scan(knownPaths: [path]).turns
+        XCTAssertEqual(first.count, 2)
+        XCTAssertNotEqual(first[0].eventID, first[1].eventID,
+                          "identical untimestamped rows at different offsets must not collide")
+
+        let replay = ClaudeCodeParser.scan(knownPaths: [path]).turns
+        XCTAssertEqual(replay.count, 2)
+        XCTAssertEqual(first.map(\.eventID), replay.map(\.eventID),
+                       "rescanning the same file must yield identical ids (stable)")
+    }
+
     func testIgnoresMalformedLinesAndNonAssistantMessages() {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-test-\(UUID().uuidString)")

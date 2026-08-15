@@ -42,6 +42,24 @@ final class FileScannerTests: XCTestCase {
         XCTAssertEqual(second.newOffset, Int64(prefix.count + 2))
     }
 
+    func testIsLineBoundary() throws {
+        // offset 0 is always a boundary, even when the file does not exist.
+        XCTAssertTrue(FileScanner.isLineBoundary(path: path, offset: 0))
+        XCTAssertFalse(FileScanner.isLineBoundary(path: path, offset: 1),
+                       "a missing file has no byte before the offset")
+
+        try Data("{\"a\":1}\n".utf8).write(to: URL(fileURLWithPath: path))
+        // Bytes: { " a " : 1 } \n  (indices 0...7)
+        XCTAssertTrue(FileScanner.isLineBoundary(path: path, offset: 8),
+                      "cursor right after the trailing newline is a boundary")
+        XCTAssertFalse(FileScanner.isLineBoundary(path: path, offset: 1),
+                       "byte before offset 1 is '{', not a newline")
+        XCTAssertFalse(FileScanner.isLineBoundary(path: path, offset: 5),
+                       "byte before offset 5 is ':', not a newline")
+        XCTAssertFalse(FileScanner.isLineBoundary(path: path, offset: 9),
+                       "offset beyond EOF has no byte before it")
+    }
+
     func testListFilesOnlyReturnsJSONLWithinDepthBoundary() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("tm-tree-\(UUID().uuidString)")

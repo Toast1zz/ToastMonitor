@@ -58,7 +58,7 @@ final class HermesRemoteClient: ObservableObject {
         foreground = fg
         if fg {
             startTimer()
-            queue.async { [weak self] in self?.poll() }
+            poll()
         } else {
             timer?.invalidate()
             timer = nil
@@ -116,7 +116,7 @@ final class HermesRemoteClient: ObservableObject {
         timer?.invalidate()
         let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.queue.async { self.poll() }
+            self.poll()
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -125,11 +125,13 @@ final class HermesRemoteClient: ObservableObject {
     /// Called from the collector loop; rate-limited internally (60s).
     func maybePoll() {
         guard remoteSourcesEnabled else { return }
+        // Keep the rate-limit check on the serial queue: lastPoll is only
+        // mutated inside pollEnqueued, which always runs there.
         queue.async { [weak self] in
             guard let self else { return }
             let now = Int64(Date().timeIntervalSince1970)
             guard now - self.lastPoll > 13 else { return }
-            self.poll()
+            self.pollEnqueued(completion: nil)
         }
     }
 
@@ -173,9 +175,26 @@ final class HermesRemoteClient: ObservableObject {
 
     // MARK: - Poll
 
-    func poll() {
-        guard remoteSourcesEnabled else { return }
-        guard !inFlight else { return }
+    /// Enqueues one poll on the serial queue. Safe to call from any thread,
+    /// including the main thread (SourcesView's "Test connection").
+    /// `completion` is invoked on the main actor once this poll finishes —
+    /// success or failure, including the skip paths where no network request
+    /// is made.
+    func poll(completion: (@MainActor @Sendable () -> Void)? = nil) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pollEnqueued(completion: completion)
+        }
+    }
+
+    /// The poll body. Runs on the serial queue only (see `poll`).
+    private func pollEnqueued(completion: (@MainActor @Sendable () -> Void)?) {
+        func finish() {
+            guard let completion else { return }
+            Task { @MainActor in completion() }
+        }
+        guard remoteSourcesEnabled else { finish(); return }
+        guard !inFlight else { finish(); return }
         inFlight = true
         lastPoll = Int64(Date().timeIntervalSince1970)
 
@@ -185,6 +204,7 @@ final class HermesRemoteClient: ObservableObject {
               Self.isAllowedFeedURL(url) else {
             inFlight = false
             publishStatus { $0.error = "Feed URL invalid or unsafe (HTTPS or private range only)" }
+            finish()
             return
         }
         var req = URLRequest(url: url)
@@ -192,8 +212,13 @@ final class HermesRemoteClient: ObservableObject {
         redirectBlocker.boundedDataTask(in: session, request: req,
                                         maxBytes: Self.maxFeedBytes) { [weak self] data, resp, err in
             guard let self else { return }
+            // The session completion arrives on a URLSession delegate queue;
+            // hop back onto the serial queue for all state mutation. This is
+            // not a nested queue.async inside pollEnqueued's own closure (it
+            // runs later, off the queue), so there is no deadlock.
             self.queue.async {
                 defer { self.inFlight = false }
+                defer { finish() }
                 if let err {
                     self.publishStatus { $0.error = err.localizedDescription }
                     return
@@ -260,7 +285,9 @@ final class HermesRemoteClient: ObservableObject {
 
         // Retain a monotonic watermark for diagnostics and migration
         // visibility, but never use it to decide whether a per-turn event is
-        // eligible: event_id is the durable deduplication boundary.
+        // eligible: event_id is the durable deduplication boundary. The
+        // Cursor keeps the eventID only for same-second tie-break ordering;
+        // only the timestamp is persisted (see the write below).
         struct Cursor {
             var ts: Int64
             var eventID: String
@@ -275,6 +302,11 @@ final class HermesRemoteClient: ObservableObject {
         var unknownTools = 0
         var malformedRows = 0
         let totals = database.sessionTotals() // once per poll
+        // CLIENT-8: resolve the remote-source set once per poll instead of
+        // hitting the settings table for every row.
+        let toolRemoteSources = Set(ToolKind.allCases.filter {
+            (database.setting($0.sourceKey) ?? $0.defaultSource) == "remote"
+        })
         // must compute against the previous row's write, not the stale
         // committed value, or the cumulative delta is inserted twice.
         var runningHermes: [String: [Int64]] = [:]
@@ -291,7 +323,7 @@ final class HermesRemoteClient: ObservableObject {
                 unknownTools += 1
                 continue
             }
-            guard (database.setting(tool.sourceKey) ?? tool.defaultSource) == "remote" else { continue }
+            guard toolRemoteSources.contains(tool) else { continue }
             seenRemoteTools.insert(tool.rawValue)
             guard let rawSession = row["session_id"] as? String,
                   !rawSession.isEmpty, rawSession.count <= Self.maxFieldLength,
@@ -381,6 +413,12 @@ final class HermesRemoteClient: ObservableObject {
                 let baseURL = ((row["billing_base_url"] as? String) ?? "")
                     .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 let key = "hm_d|\(sessionID)|\(model ?? "")|\(provider)|\(baseURL)"
+                // hm_d| baselines grow one settings entry per distinct
+                // (session, model, billing route) and are never pruned.
+                // Retention is deliberately absent: deleting a baseline would
+                // replay that session's cumulative totals as fresh deltas
+                // (double counting). Growth is bounded by distinct sessions
+                // seen via the feed and is the accepted tradeoff.
                 let prev = runningHermes[key]
                     ?? (database.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
                 isFirstRow = prev.count != 5 && prev.count != 6
@@ -489,8 +527,12 @@ final class HermesRemoteClient: ObservableObject {
                                                       cost: p.cost, updated: p.updated) && writesOK
             }
             for (tool, value) in pendingWatermarks {
+                // Diagnostic-only: persist just the timestamp. The old
+                // "ts:eventID" form embedded a colon-bearing event ID, which
+                // no reader could parse (unparseable + write amplification on
+                // every poll).
                 writesOK = database.setSetting("remote_watermark_\(tool.rawValue)",
-                                               "\(value.ts):\(value.eventID)") && writesOK
+                                               "\(value.ts)") && writesOK
             }
             return writesOK
         }

@@ -46,6 +46,10 @@ final class OpenCodeGoClient: ObservableObject {
     private var refreshGeneration: UInt64 = 0
     private var credentialsLoaded = false
     private var cachedCredentials: (workspaceId: String, cookie: String)?
+    /// Set when a keychain read/write failed with errSecInteractionNotAllowed
+    /// (login keychain locked), so refresh() can say so instead of "Not
+    /// configured". Reset by a successful provision/clear.
+    private var keychainLocked = false
 
     private init() {
         let cfg = URLSessionConfiguration.ephemeral
@@ -97,6 +101,7 @@ final class OpenCodeGoClient: ObservableObject {
                 Database.shared.setSetting("go_workspace_id", nil)
                 Database.shared.setSetting("go_auth_cookie", nil)
                 Database.shared.setSetting("go_cred_storage", "keychain")
+                keychainLocked = false
                 ws = normalizedWS
                 ck = normalizedCK
             } else if legacyWS != nil || legacyCK != nil {
@@ -104,11 +109,18 @@ final class OpenCodeGoClient: ObservableObject {
                 // unconfigured. Plaintext stays as a recovery copy but is
                 // never used for requests.
                 Database.shared.setSetting("go_cred_storage", "keychain-unavailable")
+                keychainLocked = KeychainStore.lastWasInteractionNotAllowed
                 return nil
             }
         }
         guard let ws = ws.flatMap(Self.normalizedWorkspaceID),
-              let ck = ck.flatMap(Self.normalizedCookie) else { return nil }
+              let ck = ck.flatMap(Self.normalizedCookie) else {
+            // Nothing usable: genuinely unconfigured, or the keychain is
+            // locked (reads then return nil indistinguishably). Remember the
+            // lock so the error message is actionable.
+            keychainLocked = KeychainStore.lastWasInteractionNotAllowed
+            return nil
+        }
         return (ws, ck)
     }
 
@@ -132,7 +144,10 @@ final class OpenCodeGoClient: ObservableObject {
             Database.shared.setSetting("go_workspace_id", nil)
             Database.shared.setSetting("go_auth_cookie", nil)
             Database.shared.setSetting("go_cred_storage", "keychain")
+            keychainLocked = false
         } else {
+            // Capture before the rollback calls overwrite the SecItem status.
+            let locked = KeychainStore.lastWasInteractionNotAllowed
             // Avoid leaving a mixed workspace/cookie pair when the second
             // Keychain write fails.
             if let oldWorkspace {
@@ -146,7 +161,9 @@ final class OpenCodeGoClient: ObservableObject {
                 KeychainStore.delete(account: "go-auth-cookie")
             }
             configured = false
-            state.error = "Keychain write failed — cookie not saved"
+            state.error = locked
+                ? "钥匙串被锁定/需要解锁，cookie 未保存"
+                : "Keychain write failed — cookie not saved"
             return false
         }
         cachedCredentials = (workspaceID, authCookie)
@@ -165,6 +182,7 @@ final class OpenCodeGoClient: ObservableObject {
         cachedCredentials = nil
         credentialsLoaded = true
         configured = false
+        keychainLocked = false
         var cleared = State()
         cleared.error = "Not configured"
         state = cleared
@@ -229,7 +247,7 @@ final class OpenCodeGoClient: ObservableObject {
                 inFlight = false
                 configured = false
                 var cleared = State()
-                cleared.error = "Not configured"
+                cleared.error = keychainLocked ? "钥匙串被锁定/需要解锁" : "Not configured"
                 state = cleared
                 return
             }
@@ -249,7 +267,7 @@ final class OpenCodeGoClient: ObservableObject {
                     self.inFlight = false
                     self.configured = false
                     var cleared = State()
-                    cleared.error = "Not configured"
+                    cleared.error = self.keychainLocked ? "钥匙串被锁定/需要解锁" : "Not configured"
                     self.state = cleared
                     return
                 }
@@ -424,13 +442,19 @@ final class OpenCodeGoClient: ObservableObject {
         let items = html.components(separatedBy: "data-slot=\"usage-item\"")
         for item in items.dropFirst().prefix(256) {
             guard item.count <= maxHTMLItemLength else { continue }
-            guard item.range(of: "data-slot=\"usage-label\">\(label)", options: [.caseInsensitive]) != nil else { continue }
+            // Locate this item's own label first, then search value/reset
+            // only in the region AFTER it. Searching the whole item can pair
+            // a sibling label's value (e.g. an embedded "monthly usage" block
+            // inside a "weekly usage" item) with the wrong reset.
+            guard let labelRange = item.range(of: "data-slot=\"usage-label\">\(label)",
+                                              options: [.caseInsensitive]) else { continue }
+            let afterLabel = NSRange(labelRange.upperBound..., in: item)
             let valueRe = try? NSRegularExpression(pattern: "data-slot=\"usage-value\">[^0-9]*(\\d+(?:\\.\\d+)?)")
             let resetRe = try? NSRegularExpression(pattern: "data-slot=\"(reset-time|reset-now)\">([\\s\\S]*?)<\\/span>")
-            guard let vm = valueRe?.firstMatch(in: item, range: NSRange(item.startIndex..., in: item)),
+            guard let vm = valueRe?.firstMatch(in: item, range: afterLabel),
                   let pct = Double(item[Range(vm.range(at: 1), in: item)!]),
                   let pct = boundedPercent(pct) else { continue }
-            guard let rm = resetRe?.firstMatch(in: item, range: NSRange(item.startIndex..., in: item)) else { continue }
+            guard let rm = resetRe?.firstMatch(in: item, range: afterLabel) else { continue }
             var resetText = item[Range(rm.range(at: 2), in: item)!]
                 .replacingOccurrences(of: "<!--$-->", with: "")
                 .replacingOccurrences(of: "<!--/-->", with: "")

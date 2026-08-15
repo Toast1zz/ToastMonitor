@@ -80,8 +80,10 @@ bakes in the public half.
 
 ```bash
 ./scripts/package-release.sh         # builds, signs and zips both arm64 and universal apps
-./scripts/sign-update-manifest.sh 1.2.3 dist/release/ToastMonitor-1.2.3-universal.zip
-cp appcast.json docs/appcast.json && cp appcast.json appcast.json
+# Sign the manifest directly into dist/release/ so the release upload picks it
+# up (the script supports an explicit output path as its fourth argument).
+./scripts/sign-update-manifest.sh 1.2.3 dist/release/ToastMonitor-1.2.3-universal.zip "" dist/release/appcast.json
+cp dist/release/appcast.json docs/appcast.json && cp dist/release/appcast.json appcast.json
 git add -A && git commit -m "Publish update manifest for v1.2.3" && git push
 gh release create vX.Y.Z dist/release/*.zip dist/release/appcast.json --title "..." --notes "..."
 ```

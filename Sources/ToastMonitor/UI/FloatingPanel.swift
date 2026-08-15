@@ -89,6 +89,17 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var settingsOpen = false
     private var desiredHeight: CGFloat
 
+    /// 最近创建的 PanelController 实例（App 只创建一个；弱引用避免静态持有）。
+    private static weak var livePanel: PanelController?
+
+    /// UI-5: 面板当前是否可见。WindowManager 降级 Dock 策略（NSApp.hide）
+    /// 前查询它，决定是否需要补发 popover 可见性通知——NSApp.hide 会静默
+    /// 收起面板但不触发通知，AppState/CollectorEngine 会带着 foreground=true
+    /// 空转。
+    static var isPanelVisible: Bool {
+        livePanel?.isVisible ?? false
+    }
+
     /// SwiftUI reports the natural heights of its fixed chrome and document.
     /// AppKit clamps the resulting window to the current screen; only the
     /// middle SwiftUI scroll view can shrink.
@@ -126,6 +137,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             defer: false
         )
         super.init()
+        Self.livePanel = self
 
         settingsOpen = ProcessInfo.processInfo.environment["TM_POPOVER_SETTINGS"] == "1"
 

@@ -77,6 +77,10 @@ final class OpenRouterClient: ObservableObject {
     private var started = false
     private var refreshGeneration: UInt64 = 0
     private var keyLoadInFlight = false
+    /// A refresh requested while the keychain load was in flight. The load
+    /// completion re-runs refresh() so the request is not silently dropped
+    /// for up to the keychain-agent wait (60s timer interval).
+    private var pendingKeyRefresh = false
     private var legacyCleanupDone = false
     /// `nil` means the login Keychain has not been read yet. Once loaded,
     /// foreground refreshes reuse this in-memory copy and never call Security
@@ -221,7 +225,9 @@ final class OpenRouterClient: ObservableObject {
             cachedKeys = [normalized]
             hasKey = true
         } else if key != nil {
-            state.error = "Keychain write failed — API key not saved"
+            state.error = KeychainStore.lastWasInteractionNotAllowed
+                ? "钥匙串被锁定/需要解锁，API key 未保存"
+                : "Keychain write failed — API key not saved"
             return false
         } else {
             KeychainStore.delete(account: "or-keys", allowPrompt: true)
@@ -250,7 +256,9 @@ final class OpenRouterClient: ObservableObject {
         }
         keys.append(normalized)
         guard saveKeys(keys, allowPrompt: true) else {
-            state.error = "Keychain write failed — API key not saved"
+            state.error = KeychainStore.lastWasInteractionNotAllowed
+                ? "钥匙串被锁定/需要解锁，API key 未保存"
+                : "Keychain write failed — API key not saved"
             return false
         }
         cachedKeys = normalizedKeys(keys)
@@ -302,7 +310,13 @@ final class OpenRouterClient: ObservableObject {
     }
 
     func refresh() {
-        guard !keyLoadInFlight else { return }
+        guard !keyLoadInFlight else {
+            // A setKey/addKey/foreground refresh arrived while the keychain
+            // read is pending; remember it so the load completion re-runs us
+            // with fresh keys instead of dropping the request.
+            pendingKeyRefresh = true
+            return
+        }
         if let cachedKeys {
             refresh(with: cachedKeys)
             return
@@ -318,6 +332,13 @@ final class OpenRouterClient: ObservableObject {
                 self.keyLoadInFlight = false
                 self.cachedKeys = keys
                 self.refresh(with: keys)
+                // Deliver a refresh that was requested while the load was
+                // still running (CLIENT-3). keyLoadInFlight is already clear,
+                // so this proceeds immediately.
+                if self.pendingKeyRefresh {
+                    self.pendingKeyRefresh = false
+                    self.refresh()
+                }
             }
         }
     }
@@ -329,7 +350,13 @@ final class OpenRouterClient: ObservableObject {
         state.keyCount = keys.count
         guard !keys.isEmpty else {
             var cleared = State()
-            cleared.error = "API key not configured"
+            // A locked login keychain reads as "no keys" (errSecItemNotFound
+            // vs errSecInteractionNotAllowed); say so instead of reporting
+            // unconfigured. checked right after storedKeys() so the status is
+            // from the load just completed.
+            cleared.error = KeychainStore.lastWasInteractionNotAllowed
+                ? "钥匙串被锁定/需要解锁"
+                : "API key not configured"
             state = cleared
             return
         }

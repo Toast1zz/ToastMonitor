@@ -44,6 +44,7 @@ enum Pricing {
         ("deepseek-v4-flash", ModelPrice(input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28)),
         ("deepseek-v4", ModelPrice(input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28)),
         ("deepseek-chat", ModelPrice(input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28)),
+        ("deepseek-r1", ModelPrice(input: 0.55, output: 2.19, cacheRead: 0.055, cacheWrite: 0.55)),
         ("deepseek-reasoner", ModelPrice(input: 0.56, output: 1.68, cacheRead: 0.056, cacheWrite: 0.56)),
         ("deepseek", ModelPrice(input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28)),
         // Others
@@ -55,6 +56,7 @@ enum Pricing {
         ("kimi", ModelPrice(input: 0.6, output: 2.5, cacheRead: 0.06, cacheWrite: 0.9)),
         ("glm-4", ModelPrice(input: 0.1, output: 0.1, cacheRead: 0.01, cacheWrite: 0.05)),
         ("glm", ModelPrice(input: 0.1, output: 0.1, cacheRead: 0.01, cacheWrite: 0.05)),
+        ("o3-mini", ModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.65)),
         ("o3", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
         ("o4", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
     ]

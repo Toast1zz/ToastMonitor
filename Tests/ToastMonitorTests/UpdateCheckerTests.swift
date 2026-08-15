@@ -24,23 +24,19 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertFalse(UpdateChecker.isNewer([1, 2], than: [1, 2, 1]))
     }
 
-    /// The release pipeline's manifest envelope must verify against the app's
-    /// baked-in public key: build an envelope the way sign-update-manifest.sh
-    /// does, then confirm UpdateChecker's full parse path (base64 payload +
-    /// Ed25519 signature + version comparison) accepts it and rejects a
-    /// tampered payload.
+    /// The release pipeline's manifest envelope must verify against the
+    /// app's baked-in public key. This test builds an envelope the way
+    /// sign-update-manifest.sh does — with a SELF-CONTAINED throwaway key
+    /// pair, never the release private key — then confirms UpdateChecker's
+    /// full parse path (base64 payload + Ed25519 signature + version
+    /// comparison) accepts it and rejects a tampered payload. Running it
+    /// requires no private key material, so it passes on any machine (CI,
+    /// other developers).
     func testManifestSignatureRoundTrip() throws {
-        let publicKey = UpdateManager.publicKey
+        // Independent key pair; the release key stays off-device.
+        let key = Curve25519.Signing.PrivateKey()
+        let publicKey = Data(key.publicKey.rawRepresentation)
         XCTAssertEqual(publicKey.count, 32)
-        XCTAssertEqual(UpdateManager.endpoint.scheme, "https")
-
-        // Reconstruct the private key (test-only; the real one is off-device).
-        let hex = try String(contentsOfFile: NSHomeDirectory()
-            + "/.config/toastmonitor/update-key.pem", encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(hex: hex))
-        XCTAssertEqual(key.publicKey.rawRepresentation, publicKey,
-                       "baked-in public key must match the release signing key")
 
         let payload = #"{"version":"9.9.9","download_url":"https://example.com/tm.zip","sha256":"\#(String(repeating: "ab", count: 32))"}"#
         let b64 = Data(payload.utf8).base64EncodedString()
@@ -67,6 +63,23 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertThrowsError(try UpdateChecker.parseEnvelope(broken, publicKey: publicKey, current: [1, 2])) { error in
             XCTAssertEqual(error as? UpdateChecker.CheckError, .malformedManifest)
         }
+    }
+
+    /// Offline verification of the SHIPPED manifest against the baked-in
+    /// public key: the payload/signature below are the exact values published
+    /// in the repository's appcast.json (and the live GitHub Pages feed).
+    /// No private key is needed, so this runs everywhere. When the release
+    /// key rotates, update this fixture to the current appcast.json values.
+    func testPublishedAppcastVerifiesAgainstBakedInKey() throws {
+        let envelope = UpdateChecker.Envelope(
+            payload: "eyJ2ZXJzaW9uIjoiMS4zLjEiLCJkb3dubG9hZF91cmwiOiJodHRwczovL2dpdGh1Yi5jb20vVG9hc3QxenovVG9hc3RNb25pdG9yL3JlbGVhc2VzL2Rvd25sb2FkL3YxLjMuMS9Ub2FzdE1vbml0b3ItMS4zLjEtdW5pdmVyc2FsLnppcCIsInNoYTI1NiI6IjI4MzM4ZTkxMjgyNjA1MGVhYzg2Y2MwODYyM2I2NThiM2YwYThkMTg4Y2VhMGUwZGFmMDE0NGEyMmIyMmMwNWEifQ==",
+            signature: "JHdZq3UBlDjIPnCd1ayVts0MNztSKonpW9FEKAhvt+jn/3OA55GNdY3lxAKQCIhvHgrui59cNxcx+/dTCmEUBw==")
+        // current [1, 0] < 1.3.1: parseEnvelope must pass signature + version
+        // checks and return the update — a failure here means either the
+        // baked-in key or the published manifest is broken.
+        let found = try UpdateChecker.parseEnvelope(envelope, publicKey: UpdateManager.publicKey, current: [1, 0])
+        XCTAssertEqual(found?.version, "1.3.1")
+        XCTAssertEqual(found?.sha256, "28338e912826050eac86cc08623b658b3f0a8d188cea0e0daf0144a22b22c05a")
     }
 
     /// Failures surface user-friendly copy, never raw technical strings, and a

@@ -29,6 +29,12 @@ final class UpdateManager: ObservableObject {
     /// Setting key: "1" checks for updates automatically at launch, "0" only
     /// on manual request. Defaults to on when unset.
     static let autoCheckSetting = "auto_check_updates"
+    /// UserDefaults key remembering the highest version ever offered. A
+    /// replayed/rolled-back feed can only serve versions the maintainer has
+    /// signed, but a stale manifest (e.g. Pages rollback) must never offer a
+    /// version lower than one the user already saw — that would be a silent
+    /// downgrade offer.
+    static let lastOfferedKey = "last_offered_update_version"
 
     @Published private(set) var checking = false
     @Published private(set) var installing = false
@@ -84,6 +90,37 @@ final class UpdateManager: ObservableObject {
                 currentVersion: currentVersion,
                 publicKey: Self.publicKey,
                 timeout: 5)
+            // A verified candidate below the highest version this user was
+            // ever offered is a feed rollback, not a real update: suppress it
+            // (the same version may be offered again — e.g. after the user
+            // dismissed it — so only strictly-lower candidates are rejected).
+            if let found {
+                let defaults = UserDefaults.standard
+                let candidateParts = UpdateChecker.semanticVersion(found.version)
+                // A verified candidate below the highest version this user was
+                // ever offered is a feed rollback, not a real update: suppress
+                // it (the same version may be offered again — e.g. after the
+                // user dismissed it — so only strictly-lower candidates are
+                // rejected).
+                if let lastOffered = defaults.string(forKey: Self.lastOfferedKey)
+                    .flatMap(UpdateChecker.semanticVersion),
+                    let candidateParts,
+                    UpdateChecker.isNewer(lastOffered, than: candidateParts) {
+                    available = nil
+                    lastCheckAt = Date()
+                    return
+                }
+                // Remember the highest version ever offered.
+                if let candidateParts,
+                   let lastOffered = defaults.string(forKey: Self.lastOfferedKey)
+                    .flatMap(UpdateChecker.semanticVersion) {
+                    if UpdateChecker.isNewer(candidateParts, than: lastOffered) {
+                        defaults.set(found.version, forKey: Self.lastOfferedKey)
+                    }
+                } else {
+                    defaults.set(found.version, forKey: Self.lastOfferedKey)
+                }
+            }
             available = found
             lastCheckAt = Date()
         } catch {
@@ -122,7 +159,11 @@ final class UpdateManager: ObservableObject {
         do {
             let archive = try await UpdateChecker.downloadArtifact(
                 at: update.downloadURL, sha256: update.sha256)
-            try await Self.stageAndReplace(archive: archive, version: update.version)
+            // ditto + codesign + the installer script each run to completion
+            // synchronously; never block the main actor (menu bar freezes).
+            try await Task.detached(priority: .userInitiated) {
+                try await Self.stageAndReplace(archive: archive, version: update.version)
+            }.value
             // Reached only if staging succeeded but relaunch is pending.
             NSApp.terminate(nil)
         } catch {
@@ -176,13 +217,38 @@ final class UpdateManager: ObservableObject {
         }
 
         let target = Bundle.main.bundleURL
-        // Detached installer: waits for us to exit, swaps the bundle, relaunches.
+        // Detached installer: waits for THIS process to exit (the app calls
+        // NSApp.terminate right after this method returns), then swaps the
+        // bundle atomically — move the old bundle aside, ditto the new one
+        // into place, roll back on failure — and relaunches. The old bundle
+        // is kept until the new instance has had time to launch, so a failed
+        // swap can never leave the app unlaunchable.
         let script = """
         #!/bin/bash
-        sleep 1
-        rm -rf '\(target.path)'
-        ditto '\(candidate.path)' '\(target.path)'
-        open '\(target.path)'
+        set -euo pipefail
+        # Give the old process up to 20s to exit; replace only after it is
+        # gone so the old and new instances never overlap (double collection,
+        # DB contention). If it lingers (terminate blocked), proceed anyway —
+        # swapping files under a running process is safe on macOS.
+        for _ in $(seq 1 40); do
+            if ! pgrep -x ToastMonitor >/dev/null 2>&1; then break; fi
+            sleep 0.5
+        done
+        target='\(target.path)'
+        candidate='\(candidate.path)'
+        old="$target.tm-backup"
+        rm -rf "$old"
+        if [ -d "$target" ]; then mv "$target" "$old"; fi
+        if ! ditto "$candidate" "$target"; then
+            echo "ditto failed; rolling back previous bundle" >&2
+            rm -rf "$target"
+            mv "$old" "$target"
+            exit 1
+        fi
+        open "$target"
+        # Keep the backup until the new instance has launched, then clean up.
+        (sleep 8; rm -rf "$old") &
+        exit 0
         """
         let scriptURL = staging.appendingPathComponent("install.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -190,11 +256,9 @@ final class UpdateManager: ObservableObject {
         let installer = Process()
         installer.executableURL = URL(fileURLWithPath: "/bin/bash")
         installer.arguments = [scriptURL.path]
+        // Detached on purpose: waiting here would deadlock — the script waits
+        // for this process to exit, which only happens after we return.
         try installer.run()
-        installer.waitUntilExit()
-        guard installer.terminationStatus == 0 else {
-            throw UpdateChecker.CheckError.network("Installer failed to start")
-        }
     }
 
     private static func verifyCodesign(_ app: URL) -> Bool {

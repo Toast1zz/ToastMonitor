@@ -144,24 +144,45 @@ enum DSHParser {
             // mtime change with the same size is an in-place rewrite and is
             // replayed from 0; a shrink forces a full rescan too.
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
+            // JSONL transcripts: the cursor must rest on a line boundary so a
+            // truncate + regrow that happened entirely between polls (cursor
+            // mid-line) rescans from 0. zstd files are frame-delimited — the
+            // raw byte before a frame boundary is compressed data, never a
+            // reliable newline — so their recovery path handles rewrites.
+            let lineBoundaryOK = file.hasSuffix(".zstd")
+                || prev.size == 0
+                || FileScanner.isLineBoundary(path: file, offset: prev.size)
+            // A tail that repeatedly fails to make progress (e.g. a false
+            // zstd magic the cursor parks on forever) forces a full rescan
+            // once it has stalled 3 scans in a row.
+            let stalled = FileScanner.contextStallCount(prev.context) >= 3
             let sameAppendOnlyFile = prev.identity == st.identity
                 && st.size > prev.size
                 && prev.mtime != 0
                 && !pendingRewrite
+                && lineBoundaryOK
+                && !stalled
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = readObjects(path: file, fromOffset: offset, decompress: decompress)
 
             if objs.isEmpty {
+                // A scan that neither advanced the cursor nor started at 0
+                // made no progress: count the stall so a permanently stuck
+                // tail eventually forces a full rescan from the file start
+                // (where the first magic is the real header frame).
+                let noProgress = newOffset == offset && offset > 0
+                let stallCount = noProgress ? min(FileScanner.contextStallCount(prev.context) + 1, 3) : 0
+                let baseContext = FileScanner.contextWithFullRescan(prev.context,
+                                                                    pending: st.size < prev.size || pendingRewrite)
+                let context = FileScanner.contextWithStallCount(baseContext, count: stallCount)
                 if newOffset == offset && st.size >= prev.size {
                     // Nothing consumable (corrupt tail, zero-length suffix):
                     // keep the cursor and retry on the next append.
                     database.setScanState(file, size: prev.size, mtime: st.mtime,
-                                          identity: st.identity,
-                                          context: FileScanner.contextWithFullRescan(prev.context, pending: st.size < prev.size || pendingRewrite))
+                                          identity: st.identity, context: context)
                 } else {
                     database.setScanState(file, size: newOffset, mtime: st.mtime,
-                                          identity: st.identity,
-                                          context: FileScanner.contextWithFullRescan(prev.context, pending: st.size < prev.size))
+                                          identity: st.identity, context: context)
                 }
                 continue
             }
@@ -182,9 +203,14 @@ enum DSHParser {
                 }
             }
             guard let sid = sessionID, !sid.isEmpty else {
-                // Header not seen yet; keep the cursor and retry next scan.
-                database.setScanState(file, size: prev.size, mtime: st.mtime,
-                                      identity: st.identity, context: prev.context)
+                // No session identity in the header (and none persisted):
+                // content without identity can never be attributed to a
+                // session, so advance past it instead of re-reading and
+                // re-decompressing the same tail on every scan (O(n²)).
+                // Keep prev context — there is no sid to persist.
+                database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                      identity: st.identity,
+                                      context: FileScanner.contextWithStallCount(prev.context, count: 0))
                 continue
             }
 
@@ -441,18 +467,24 @@ enum DSHParser {
             let ts = lastPromptAt > 0 ? lastPromptAt : (createdAt > 0 ? createdAt : now)
 
             let key = "dsh|\(sid)"
+            let prev = prevTotals[key]
             var dIn = input, dOut = output, dCR = cacheRead, dCW = cacheWrite
-            if let prev = prevTotals[key] {
+            if let prev {
                 dIn = max(input - prev.input, 0)
                 dOut = max(output - prev.output, 0)
                 dCR = max(cacheRead - prev.cacheRead, 0)
                 dCW = max(cacheWrite - prev.cacheWrite, 0)
             }
-            // Baseline advances for every session in the cache (even zero
-            // totals) so later usage diffs from a known origin.
-            database.setSessionTotals(key, tool: "dsh", input: input, output: output,
-                                      cacheRead: cacheRead, cacheWrite: cacheWrite,
-                                      cost: 0, updated: ts)
+            // Baseline is the HIGH-WATER MARK per counter: a source rollback
+            // must not lower the origin, or the regrowth beyond the old peak
+            // would be re-counted. Advances for every session in the cache
+            // (even zero totals) so later usage diffs from a known origin.
+            database.setSessionTotals(key, tool: "dsh",
+                                     input: max(prev?.input ?? 0, input),
+                                     output: max(prev?.output ?? 0, output),
+                                     cacheRead: max(prev?.cacheRead ?? 0, cacheRead),
+                                     cacheWrite: max(prev?.cacheWrite ?? 0, cacheWrite),
+                                     cost: 0, updated: ts)
             if dIn + dOut + dCR + dCW > 0 {
                 // No model in the cache: tokens are recorded without a price,
                 // exactly like the Hermes source.

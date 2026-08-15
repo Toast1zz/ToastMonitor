@@ -24,7 +24,11 @@ SKIP_INSTALL="${TM_SKIP_INSTALL:-0}"
 # CI may inject TM_VERSION after checking out an exact tag.  Untagged source
 # remains explicitly a development build at 1.0; commit hashes never become a
 # user-facing CFBundleShortVersionString.
-TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
+# Only an exact tag hit (HEAD == vX.Y.Z) or an explicit TM_VERSION is a
+# release build. `git describe --abbrev=0` would return the NEAREST REACHABLE
+# tag for untagged commits, making dev builds masquerade as the last release
+# (and silently disabling update checks via a fake current version).
+TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
 RAW_VERSION="${TM_VERSION:-${TAG_VERSION#v}}"
 VERSION="${RAW_VERSION#v}"
 if [[ -z "$VERSION" ]]; then VERSION="1.0"; fi

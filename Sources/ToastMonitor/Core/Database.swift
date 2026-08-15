@@ -215,7 +215,7 @@ final class Database: @unchecked Sendable {
             var colStmt: OpaquePointer?
             let check = "SELECT COUNT(*) FROM pragma_table_info('turns') WHERE name='\(name)';"
             guard sqlite3_prepare_v2(db, check, -1, &colStmt, nil) == SQLITE_OK else {
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 setUserVersion(0)
                 return
             }
@@ -223,7 +223,7 @@ final class Database: @unchecked Sendable {
             if sqlite3_step(colStmt) == SQLITE_ROW { exists = sqlite3_column_int(colStmt, 0) > 0 }
             sqlite3_finalize(colStmt)
             if !exists && !execChecked("ALTER TABLE turns ADD COLUMN \(name) \(decl);") {
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 setUserVersion(0)
                 return
             }
@@ -258,10 +258,10 @@ final class Database: @unchecked Sendable {
             """
             if !execChecked(repairDuplicates)
                 || !execChecked("CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_event ON turns(tool, event_id) WHERE event_id IS NOT NULL;") {
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 setUserVersion(0)
             } else if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 setUserVersion(0)
             }
             return
@@ -321,7 +321,7 @@ final class Database: @unchecked Sendable {
                 let msg = err.map { String(cString: $0) } ?? "unknown"
                 NSLog("[ToastMonitor] turns rebuild step failed: %@ (rolling back)", msg)
                 if let err { sqlite3_free(err) }
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 // Keep the database at the pre-migration version so the next
                 // launch retries the migration instead of treating a partial
                 // schema as current.
@@ -330,7 +330,7 @@ final class Database: @unchecked Sendable {
             }
         }
         if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
-            sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+            rollbackOrPoison()
             setUserVersion(0)
             return
         }
@@ -463,11 +463,11 @@ final class Database: @unchecked Sendable {
         """) && setUserVersion(1)
             if ok {
                 if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
-                    sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                    rollbackOrPoison()
                     setUserVersion(0)
                 }
             } else {
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 setUserVersion(0)
             }
         }
@@ -490,7 +490,7 @@ final class Database: @unchecked Sendable {
             if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
                 transactionWriteError = false
             } else {
-                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+                rollbackOrPoison()
                 setUserVersion(previousVersion)
                 transactionWriteError = false
             }
@@ -669,6 +669,20 @@ final class Database: @unchecked Sendable {
             }
         }
         return false
+    }
+
+    /// Rolls back the current transaction; if ROLLBACK itself fails the
+    /// connection is stuck in an open transaction and every later write
+    /// would silently join (and lose) it — poison the connection instead
+    /// (close + nil), mirroring inTransaction's failure handling. Callers
+    /// must hold the lock and be inside an open transaction.
+    private func rollbackOrPoison() {
+        guard let db else { return }
+        if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
+            NSLog("[ToastMonitor] ROLLBACK failed; poisoning connection")
+            sqlite3_close(db)
+            self.db = nil
+        }
     }
 
     @discardableResult
@@ -1216,6 +1230,34 @@ final class Database: @unchecked Sendable {
         return out
     }
 
+    /// Deletes quota-snapshot rows older than 400 days (DB-7 retention), so a
+    /// long-running poller cannot grow the tables without bound. Internal so
+    /// tests can drive the DELETE deterministically; the insert paths throttle
+    /// it to once per hour via the `snapshot_prune_last` setting.
+    func pruneOldSnapshots(now: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return }
+        let cutoff = now - 400 * 86400
+        for table in ["openrouter_snapshots", "opencodego_snapshots"] {
+            var stmt: OpaquePointer?
+            let sql = "DELETE FROM \(table) WHERE ts < ?;"
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
+            sqlite3_bind_int64(stmt, 1, cutoff)
+            if sqlite3_step(stmt) != SQLITE_DONE { markTransactionWriteFailure() }
+            sqlite3_finalize(stmt)
+        }
+    }
+
+    /// Throttled entry point used by insertORSnapshot/insertOGSnapshot: the
+    /// DELETE runs at most once per hour (same pattern as backfillCosts).
+    /// Caller must hold the lock.
+    private func pruneSnapshotsIfDue() {
+        let now = Int64(Date().timeIntervalSince1970)
+        if let last = Int64(setting("snapshot_prune_last") ?? "0"), now - last < 3600 { return }
+        pruneOldSnapshots(now: now)
+        _ = setSetting("snapshot_prune_last", "\(now)")
+    }
+
     @discardableResult
     func insertORSnapshot(_ s: ORSnapshot) -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -1248,6 +1290,7 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
+        pruneSnapshotsIfDue()
         return true
     }
 
@@ -1302,6 +1345,7 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
+        pruneSnapshotsIfDue()
         return true
     }
 
@@ -1475,17 +1519,19 @@ final class Database: @unchecked Sendable {
     /// OpenRouter spend since a timestamp: sum of per-UTC-day maxima from the
     /// snapshot history. For a cycle that starts mid-day, subtract the latest
     /// pre-cycle cumulative value from that first day's maximum so a complete
-    /// day's usage is not incorrectly attributed to the cycle.
+    /// day's usage is not incorrectly attributed to the cycle. The baseline is
+    /// the most recent snapshot with ts < start (any day — on the first day of
+    /// a cycle there may be no same-day snapshot yet); when none exists the
+    /// baseline is 0.
     func orSpendSince(_ start: Int64) -> Double {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return 0 }
         var stmt: OpaquePointer?
         let startDay = start / 86400
         var baseline: Double = 0
-        let baselineSQL = "SELECT usage_daily FROM openrouter_snapshots WHERE ts < ? AND ts / 86400 = ? ORDER BY ts DESC LIMIT 1;"
+        let baselineSQL = "SELECT usage_daily FROM openrouter_snapshots WHERE ts < ? ORDER BY ts DESC LIMIT 1;"
         if sqlite3_prepare_v2(db, baselineSQL, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_int64(stmt, 1, start)
-            sqlite3_bind_int64(stmt, 2, startDay)
             if sqlite3_step(stmt) == SQLITE_ROW { baseline = sqlite3_column_double(stmt, 0) }
             sqlite3_finalize(stmt)
         }
@@ -1684,6 +1730,9 @@ final class Database: @unchecked Sendable {
                     sqlite3_finalize(stmt)
                 }
             }
+            // Deletes do not grow MAX(id); bump the version stamp so the
+            // snapshot cache invalidates after a local rebuild (DB-1).
+            if ok { bumpDataVersion() }
             return ok
         }
     }
@@ -1698,7 +1747,10 @@ final class Database: @unchecked Sendable {
         }
         let tables = [
             "turns", "sessions", "scan_state", "session_totals",
-            "openrouter_snapshots", "opencodego_snapshots", "subscriptions"
+            "openrouter_snapshots", "opencodego_snapshots", "subscriptions",
+            // Resets the AUTOINCREMENT counters for turns/subscriptions so
+            // re-imported ids start from 1 again (DB-4 housekeeping).
+            "sqlite_sequence"
         ]
         for table in tables {
             guard sqlite3_exec(db, "DELETE FROM \(table);", nil, nil, nil) == SQLITE_OK else {
@@ -1716,14 +1768,29 @@ final class Database: @unchecked Sendable {
             }
             return false
         }
+        // Deletes do not move MAX(id), so the turns key component alone would
+        // not change; bump the version stamp so snapshot caches invalidate.
+        // Subscriptions were wiped: mirror the subscription write paths and
+        // re-notify the UI.
+        bumpDataVersion()
+        NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
     }
 
     func backup(to destination: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return false }
+        let fm = FileManager.default
+        // Pre-create with the private mode so the sqlite3 open never exposes
+        // a umask-default (0644) file; opening without SQLITE_OPEN_CREATE
+        // then cannot widen permissions either. An existing destination is
+        // left untouched (export targets) — only its mode is re-asserted.
+        if !fm.fileExists(atPath: destination) {
+            guard fm.createFile(atPath: destination, contents: nil,
+                                attributes: [.posixPermissions: 0o600]) else { return false }
+        }
         var target: OpaquePointer?
-        guard sqlite3_open_v2(destination, &target, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK,
+        guard sqlite3_open_v2(destination, &target, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
               let target else {
             if let target { sqlite3_close(target) }
             return false
@@ -1733,7 +1800,7 @@ final class Database: @unchecked Sendable {
         let step = sqlite3_backup_step(backup, -1)
         let finish = sqlite3_backup_finish(backup)
         guard step == SQLITE_DONE, finish == SQLITE_OK else { return false }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination)
         return true
     }
 
@@ -1779,16 +1846,31 @@ final class Database: @unchecked Sendable {
             return false
         }
         var step: Int32
+        var retries = 0
         repeat {
             step = sqlite3_backup_step(backup, -1)
-            if step == SQLITE_BUSY || step == SQLITE_LOCKED { sqlite3_sleep(10) }
+            if step == SQLITE_BUSY || step == SQLITE_LOCKED {
+                if retries >= 100 { break }
+                retries += 1
+                sqlite3_sleep(10)
+            }
         } while step == SQLITE_BUSY || step == SQLITE_LOCKED
         let finish = sqlite3_backup_finish(backup)
         if step != SQLITE_DONE || finish != SQLITE_OK {
             NSLog("[ToastMonitor] restore failed: step=%d finish=%d error=%s",
                   step, finish, sqlite3_errmsg(db))
+            return false
         }
-        return step == SQLITE_DONE && finish == SQLITE_OK
+        // The restored store may predate the current schema (a backup taken
+        // before later migrations). Close and re-open so migrate()/
+        // ensureBaseTables() run against the restored file, then force a
+        // snapshot-cache key change: MAX(id) cannot move on a restore that
+        // happens to restore identical content.
+        sqlite3_close(db)
+        self.db = nil
+        openLocked(dbPath)
+        bumpDataVersion()
+        return true
     }
 
     /// Sanitized diagnostics: table counts, model distribution, cost quality,
@@ -1875,12 +1957,15 @@ final class Database: @unchecked Sendable {
     /// 有效扫描 heartbeat）都会反映在计数与最大时间戳上。快照缓存用它
     /// 判断是否需要重算——版本未变时直接复用上次聚合结果。
     /// 包含当日本地日期：跨午夜后"今日"窗口必须滚动。
+    /// turns 用 MAX(id)（O(1) b-tree 尾）而不是 COUNT(*)：插入总是增长
+    /// MAX(id)，而删除路径不增长 —— clearAllData/resetLocalUsage/restore
+    /// 必须显式 bump `data_version`，否则清空后键不变化、缓存不失效。
     func dataVersionKey() -> String {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return "closed" }
         var stmt: OpaquePointer?
         let sql = """
-        SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM turns)
+        SELECT (SELECT COALESCE(MAX(id),0) || ':' || COALESCE(MAX(ts),0) FROM turns)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM opencodego_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM openrouter_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) FROM subscriptions)

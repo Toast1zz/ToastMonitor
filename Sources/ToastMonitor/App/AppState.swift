@@ -57,35 +57,38 @@ final class AppState: ObservableObject {
     @Published private(set) var manualRefreshing = false
 
     // Keep the established property names for existing views/callers.
-    var today: Database.ToolTotals { get { state.today } set { state.today = newValue } }
-    var week: Database.ToolTotals { get { state.week } set { state.week = newValue } }
-    var month: Database.ToolTotals { get { state.month } set { state.month = newValue } }
-    var all: Database.ToolTotals { get { state.all } set { state.all = newValue } }
-    var todayTokens: Int64 { get { state.todayTokens } set { state.todayTokens = newValue } }
-    var weekTokens: Int64 { get { state.weekTokens } set { state.weekTokens = newValue } }
-    var monthTokens: Int64 { get { state.monthTokens } set { state.monthTokens = newValue } }
-    var allTokens: Int64 { get { state.allTokens } set { state.allTokens = newValue } }
-    var byToolToday: [Database.ToolTotals] { get { state.byToolToday } set { state.byToolToday = newValue } }
-    var byToolWeek: [Database.ToolTotals] { get { state.byToolWeek } set { state.byToolWeek = newValue } }
-    var byToolMonth: [Database.ToolTotals] { get { state.byToolMonth } set { state.byToolMonth = newValue } }
-    var byToolAll: [Database.ToolTotals] { get { state.byToolAll } set { state.byToolAll = newValue } }
-    var apiValueToday: Double { get { state.apiValueToday } set { state.apiValueToday = newValue } }
-    var apiValueWeek: Double { get { state.apiValueWeek } set { state.apiValueWeek = newValue } }
-    var apiValueMonth: Double { get { state.apiValueMonth } set { state.apiValueMonth = newValue } }
-    var apiValueAll: Double { get { state.apiValueAll } set { state.apiValueAll = newValue } }
-    var costToday: UsageQueryService.CostQuality { get { state.costToday } set { state.costToday = newValue } }
-    var costWeek: UsageQueryService.CostQuality { get { state.costWeek } set { state.costWeek = newValue } }
-    var costMonth: UsageQueryService.CostQuality { get { state.costMonth } set { state.costMonth = newValue } }
-    var costAll: UsageQueryService.CostQuality { get { state.costAll } set { state.costAll = newValue } }
-    var modelAggs: [Database.ModelAgg] { get { state.modelAggs } set { state.modelAggs = newValue } }
-    var modelAggsToday: [Database.ModelAgg] { get { state.modelAggsToday } set { state.modelAggsToday = newValue } }
-    var modelAggsMonth: [Database.ModelAgg] { get { state.modelAggsMonth } set { state.modelAggsMonth = newValue } }
-    var modelAggsAll: [Database.ModelAgg] { get { state.modelAggsAll } set { state.modelAggsAll = newValue } }
-    var heatmap: [Int64: Int64] { get { state.heatmap } set { state.heatmap = newValue } }
-    var heatmapCost: [Int64: Double] { get { state.heatmapCost } set { state.heatmapCost = newValue } }
-    var subscriptions: [Database.Subscription] { get { state.subscriptions } set { state.subscriptions = newValue } }
-    var lastScan: Int64 { get { state.lastScan } set { state.lastScan = newValue } }
-    var snapshotFetchedAt: Int64 { get { state.snapshotFetchedAt } set { state.snapshotFetchedAt = newValue } }
+    // UI-10: read-only — every write flows through refresh()'s single
+    // `state = next` publish, so the per-property setters were dead code
+    // (verified: no caller writes these).
+    var today: Database.ToolTotals { state.today }
+    var week: Database.ToolTotals { state.week }
+    var month: Database.ToolTotals { state.month }
+    var all: Database.ToolTotals { state.all }
+    var todayTokens: Int64 { state.todayTokens }
+    var weekTokens: Int64 { state.weekTokens }
+    var monthTokens: Int64 { state.monthTokens }
+    var allTokens: Int64 { state.allTokens }
+    var byToolToday: [Database.ToolTotals] { state.byToolToday }
+    var byToolWeek: [Database.ToolTotals] { state.byToolWeek }
+    var byToolMonth: [Database.ToolTotals] { state.byToolMonth }
+    var byToolAll: [Database.ToolTotals] { state.byToolAll }
+    var apiValueToday: Double { state.apiValueToday }
+    var apiValueWeek: Double { state.apiValueWeek }
+    var apiValueMonth: Double { state.apiValueMonth }
+    var apiValueAll: Double { state.apiValueAll }
+    var costToday: UsageQueryService.CostQuality { state.costToday }
+    var costWeek: UsageQueryService.CostQuality { state.costWeek }
+    var costMonth: UsageQueryService.CostQuality { state.costMonth }
+    var costAll: UsageQueryService.CostQuality { state.costAll }
+    var modelAggs: [Database.ModelAgg] { state.modelAggs }
+    var modelAggsToday: [Database.ModelAgg] { state.modelAggsToday }
+    var modelAggsMonth: [Database.ModelAgg] { state.modelAggsMonth }
+    var modelAggsAll: [Database.ModelAgg] { state.modelAggsAll }
+    var heatmap: [Int64: Int64] { state.heatmap }
+    var heatmapCost: [Int64: Double] { state.heatmapCost }
+    var subscriptions: [Database.Subscription] { state.subscriptions }
+    var lastScan: Int64 { state.lastScan }
+    var snapshotFetchedAt: Int64 { state.snapshotFetchedAt }
 
     private var refreshTimer: Timer?
     private var refreshInFlight = false

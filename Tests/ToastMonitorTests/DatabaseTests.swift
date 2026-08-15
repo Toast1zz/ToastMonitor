@@ -427,3 +427,251 @@ extension DatabaseTests {
         XCTAssertNotEqual(after, "err")
     }
 }
+
+// MARK: - DB-1/DB-3/DB-5/DB-6/DB-7/DB-8 regression tests
+
+extension DatabaseTests {
+    /// DB-1: delete paths that do not move MAX(id) must still invalidate the
+    /// snapshot-cache key via the `data_version` bump. resetLocalUsage deletes
+    /// only the codex rows while a claude row keeps MAX(id) untouched — with
+    /// the MAX(id)-based turns key and no bump, the key would not change.
+    func testDataVersionKeyChangesAfterResetAndClear() {
+        let now = Int64(Date().timeIntervalSince1970)
+        let codex = TurnRecord(tool: .codex, sessionID: "s-codex", project: nil, model: "m",
+                               ts: now, inputTokens: 10, outputTokens: 5,
+                               cacheRead: 0, cacheWrite: 0, cost: 0, eventID: "c1")
+        let claude = TurnRecord(tool: .claude, sessionID: "s-claude", project: nil, model: "m",
+                                ts: now + 1, inputTokens: 20, outputTokens: 5,
+                                cacheRead: 0, cacheWrite: 0, cost: 0, eventID: "c2")
+        XCTAssertTrue(db.insertTurns([codex, claude]))
+        let keyAfterInsert = db.dataVersionKey()
+
+        XCTAssertTrue(db.resetLocalUsage([(.codex, ["/tmp/codex-roots"])]))
+        XCTAssertNotEqual(db.dataVersionKey(), keyAfterInsert,
+                          "resetLocalUsage must invalidate the snapshot cache key (DB-1)")
+
+        XCTAssertTrue(db.clearAllData())
+        XCTAssertNotEqual(db.dataVersionKey(), keyAfterInsert,
+                          "clearAllData must invalidate the snapshot cache key (DB-1)")
+    }
+
+    /// DB-3: after a successful restore the connection is re-opened so
+    /// migrate()/ensureBaseTables() re-run against the restored (possibly
+    /// older) schema. A v1-era store missing the v3 columns must work again
+    /// once restored.
+    func testRestoreRemigratesOlderSchema() throws {
+        let legacyPath = tmpPath + "-v1-schema.db"
+        defer {
+            try? FileManager.default.removeItem(atPath: legacyPath)
+            try? FileManager.default.removeItem(atPath: legacyPath + "-wal")
+            try? FileManager.default.removeItem(atPath: legacyPath + "-shm")
+        }
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(legacyPath, &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        let schema = """
+        CREATE TABLE turns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tool TEXT NOT NULL, session_id TEXT NOT NULL, project TEXT, model TEXT,
+          ts INTEGER NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0,
+          cost REAL NOT NULL DEFAULT 0, provider TEXT,
+          source_instance TEXT NOT NULL DEFAULT 'local', pricing_version TEXT,
+          event_id TEXT, cost_quality TEXT NOT NULL DEFAULT 'estimated'
+        );
+        CREATE TABLE sessions (
+          tool TEXT NOT NULL, session_id TEXT NOT NULL, title TEXT, project TEXT, model TEXT,
+          created INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(tool, session_id)
+        );
+        CREATE TABLE scan_state (
+          source TEXT PRIMARY KEY, size INTEGER NOT NULL DEFAULT 0,
+          mtime INTEGER NOT NULL DEFAULT 0, last_scan INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE session_totals (
+          tool TEXT NOT NULL, session_id TEXT NOT NULL, input INTEGER NOT NULL DEFAULT 0,
+          output INTEGER NOT NULL DEFAULT 0, cache_read INTEGER NOT NULL DEFAULT 0,
+          cache_write INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0,
+          updated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(tool, session_id)
+        );
+        CREATE TABLE openrouter_snapshots (
+          ts INTEGER PRIMARY KEY, usage REAL NOT NULL DEFAULT 0, usage_daily REAL NOT NULL DEFAULT 0,
+          usage_weekly REAL NOT NULL DEFAULT 0, usage_monthly REAL NOT NULL DEFAULT 0,
+          limit_amount REAL, limit_remaining REAL, limit_reset TEXT,
+          is_free_tier INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE opencodego_snapshots (
+          ts INTEGER PRIMARY KEY, rolling_pct REAL, rolling_reset INTEGER,
+          weekly_pct REAL, weekly_reset INTEGER, monthly_pct REAL, monthly_reset INTEGER
+        );
+        CREATE TABLE subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+          plan TEXT NOT NULL DEFAULT '', start_date INTEGER NOT NULL DEFAULT 0,
+          cycle TEXT NOT NULL DEFAULT 'monthly', price REAL NOT NULL DEFAULT 0,
+          currency TEXT NOT NULL DEFAULT 'USD'
+        );
+        CREATE TABLE settings (k TEXT PRIMARY KEY, v TEXT);
+        PRAGMA user_version=1;
+        """
+        XCTAssertEqual(sqlite3_exec(raw, schema, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+
+        XCTAssertTrue(db.restore(from: legacyPath), "restore of a valid older store must succeed")
+
+        // Re-opening re-ran the v3 migration: the v3-only columns exist again.
+        XCTAssertTrue(db.setScanState("src", size: 1, mtime: 2, identity: 3),
+                      "restored schema must be re-migrated so scan_state.identity exists (DB-3)")
+        XCTAssertEqual(db.scanState("src").identity, 3)
+        XCTAssertEqual(db.diagnosticsSummary()["user_version"] as? Int32, 3,
+                       "restore must re-run migrations against the restored file (DB-3)")
+        XCTAssertTrue(db.upsertSubscription(Database.Subscription(id: 0, name: "X", plan: "",
+                                                                  startDate: 1_700_000_000, cycle: "monthly",
+                                                                  price: 10, currency: "USD")),
+                      "subscriptions.end_date must be re-added by the re-run migration (DB-3)")
+    }
+
+    /// DB-5: backup destinations are created private (0600) and must be real
+    /// SQLite files; non-SQLite leftovers are excluded from backup discovery.
+    func testBackupFileIsPrivateSQLiteAndRoundTrips() throws {
+        XCTAssertTrue(db.insertTurns([TurnRecord(tool: .claude, sessionID: "s1", project: nil, model: "m",
+                                                 ts: 100, inputTokens: 10, outputTokens: 5,
+                                                 cacheRead: 0, cacheWrite: 0, cost: 0)]))
+        let dest = tmpPath + ".backup"
+        defer { try? FileManager.default.removeItem(atPath: dest) }
+        XCTAssertTrue(db.backup(to: dest))
+        let attrs = try FileManager.default.attributesOfItem(atPath: dest)
+        let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? -1
+        XCTAssertEqual(perms & 0o777, 0o600, "backup file must be private, never world-readable (DB-5)")
+        let head = try Data(contentsOf: URL(fileURLWithPath: dest)).prefix(16)
+        XCTAssertEqual(head, Data("SQLite format 3\u{0}".utf8), "backup must be a real SQLite database (DB-5)")
+        XCTAssertTrue(db.restore(from: dest), "backup must round-trip through restore")
+        XCTAssertEqual(db.turnCount(), 1)
+    }
+
+    /// DB-5: backup discovery skips non-SQLite leftovers (partial/aborted
+    /// writes, foreign files) so rotation cannot be polluted by them.
+    func testBackupDiscoverySkipsNonSQLiteLeftovers() throws {
+        let dir = NSTemporaryDirectory() + "tm-backups-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+
+        let garbage = dir + "/garbage.db"
+        try Data("not a sqlite database at all, just leftover bytes".utf8).write(to: URL(fileURLWithPath: garbage))
+        XCTAssertFalse(DataMaintenance.isSQLiteFile(URL(fileURLWithPath: garbage)),
+                       "non-SQLite leftovers must be excluded from the backup list (DB-5)")
+
+        XCTAssertTrue(db.insertTurns([TurnRecord(tool: .claude, sessionID: "s1", project: nil, model: "m",
+                                                 ts: 100, inputTokens: 10, outputTokens: 5,
+                                                 cacheRead: 0, cacheWrite: 0, cost: 0)]))
+        let real = dir + "/real.db"
+        XCTAssertTrue(db.backup(to: real))
+        XCTAssertTrue(DataMaintenance.isSQLiteFile(URL(fileURLWithPath: real)))
+    }
+
+    /// DB-6: hostile/malformed parser values are clamped at the boundary —
+    /// negative tokens and non-finite cost become 0, oversized values cap.
+    func testTurnRecordClampsTokensAndCost() {
+        let t = TurnRecord(tool: .codex, sessionID: "s1", project: nil, model: "m",
+                           ts: 100, inputTokens: -50, outputTokens: -10, reasoningTokens: -5,
+                           cacheRead: -20, cacheWrite: -2, cost: .nan)
+        XCTAssertEqual(t.inputTokens, 0)
+        XCTAssertEqual(t.outputTokens, 0)
+        XCTAssertEqual(t.reasoningTokens, 0)
+        XCTAssertEqual(t.cacheRead, 0)
+        XCTAssertEqual(t.cacheWrite, 0)
+        XCTAssertEqual(t.cost, 0)
+
+        let capped = TurnRecord(tool: .codex, sessionID: "s2", project: nil, model: "m",
+                                ts: 200, inputTokens: TurnRecord.maxTokens + 1,
+                                outputTokens: 1, cacheRead: 0, cacheWrite: 0,
+                                cost: 2_000_000_000)
+        XCTAssertEqual(capped.inputTokens, TurnRecord.maxTokens)
+        XCTAssertEqual(capped.cost, TurnRecord.maxCost)
+
+        // Totals stay sane after a real insert.
+        XCTAssertTrue(db.insertTurns([t, capped]))
+        let totals = db.totals(from: 0, to: 1_000_000)
+        XCTAssertEqual(totals.count, 2)
+        XCTAssertEqual(totals.input, TurnRecord.maxTokens)
+        XCTAssertEqual(totals.cost, TurnRecord.maxCost, accuracy: 0.001)
+    }
+
+    /// DB-7: quota-snapshot tables are bounded — rows older than 400 days are
+    /// pruned by the retention helper.
+    func testSnapshotRetentionPrunesOlderThan400Days() {
+        let now = Int64(Date().timeIntervalSince1970)
+        let old = now - 401 * 86400
+        let recent = now - 100 * 86400
+        // Warm the auto-prune throttle (inserts prune at most once/hour when
+        // unset) so the fixtures below are not pruned on arrival; this test
+        // drives pruneOldSnapshots explicitly.
+        db.setSetting("snapshot_prune_last", "\(now)")
+        let snap = { (ts: Int64) in Database.ORSnapshot(ts: ts, usage: 1, usageDaily: 1, usageWeekly: 1,
+                                                        usageMonthly: 1, limit: nil, limitRemaining: nil,
+                                                        limitReset: nil, isFreeTier: false, creditsTotal: nil,
+                                                        creditsUsage: nil, accountUsage: nil, accountBalance: nil,
+                                                        isManagementKey: false) }
+        XCTAssertTrue(db.insertORSnapshot(snap(old)))
+        XCTAssertTrue(db.insertORSnapshot(snap(recent)))
+        let og = { (ts: Int64) in Database.OGSnapshot(ts: ts, rollingPct: 1, rollingReset: ts,
+                                                      weeklyPct: 1, weeklyReset: ts, monthlyPct: 1, monthlyReset: ts) }
+        XCTAssertTrue(db.insertOGSnapshot(og(old)))
+        XCTAssertTrue(db.insertOGSnapshot(og(recent)))
+        XCTAssertEqual(db.orSnapshots(limit: 100).count, 2)
+        XCTAssertEqual(db.ogSnapshots(limit: 100).count, 2)
+
+        db.pruneOldSnapshots(now: now)
+        XCTAssertEqual(db.orSnapshots(limit: 100).count, 1)
+        XCTAssertEqual(db.orSnapshots(limit: 100).first?.ts, recent)
+        XCTAssertEqual(db.ogSnapshots(limit: 100).count, 1)
+        XCTAssertEqual(db.ogSnapshots(limit: 100).first?.ts, recent)
+    }
+
+    /// DB-7: the snapshot insert paths prune at most once per hour
+    /// (settings-key throttle, same pattern as backfillCosts).
+    func testSnapshotPruneThrottledToOncePerHourOnInsert() {
+        let now = Int64(Date().timeIntervalSince1970)
+        let old = now - 401 * 86400
+        let snap = Database.ORSnapshot(ts: old, usage: 1, usageDaily: 1, usageWeekly: 1,
+                                       usageMonthly: 1, limit: nil, limitRemaining: nil, limitReset: nil,
+                                       isFreeTier: false, creditsTotal: nil, creditsUsage: nil,
+                                       accountUsage: nil, accountBalance: nil, isManagementKey: false)
+        // Throttle armed: inserting an old row must NOT prune.
+        XCTAssertTrue(db.setSetting("snapshot_prune_last", "\(now)"))
+        XCTAssertTrue(db.insertORSnapshot(snap))
+        XCTAssertEqual(db.orSnapshots(limit: 100).count, 1)
+
+        // Throttle expired: the next insert prunes the old row.
+        XCTAssertTrue(db.setSetting("snapshot_prune_last", "0"))
+        XCTAssertTrue(db.insertORSnapshot(.init(ts: now, usage: 2, usageDaily: 2, usageWeekly: 2,
+                                                usageMonthly: 2, limit: nil, limitRemaining: nil, limitReset: nil,
+                                                isFreeTier: false, creditsTotal: nil, creditsUsage: nil,
+                                                accountUsage: nil, accountBalance: nil, isManagementKey: false)))
+        let remaining = db.orSnapshots(limit: 100)
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertEqual(remaining.first?.ts, now)
+    }
+
+    /// DB-8: on the first day of a cycle there may be no same-day snapshot
+    /// before the cycle start; the baseline must come from the most recent
+    /// snapshot on ANY earlier day (else pre-cycle usage is double-counted).
+    func testOrSpendBaselineFallsBackToPriorDaySnapshot() {
+        let day0 = Int64(2_000_000_000 / 86400) * 86400
+        let day1 = day0 + 86400
+        let snap = { (ts: Int64, daily: Double) in
+            Database.ORSnapshot(ts: ts, usage: 0, usageDaily: daily, usageWeekly: daily,
+                                usageMonthly: daily, limit: nil, limitRemaining: nil, limitReset: nil,
+                                isFreeTier: false, creditsTotal: nil, creditsUsage: nil,
+                                accountUsage: nil, accountBalance: nil, isManagementKey: false)
+        }
+        // No snapshot on day1 before the cycle start: the baseline must come
+        // from day0 (usage_daily 3). First-day contribution = 7 - 3 = 4.
+        // Old behavior (same-day-only baseline) would count the full 7.
+        XCTAssertTrue(db.insertORSnapshot(snap(day0 + 100, 3)))   // prior day: baseline source
+        XCTAssertTrue(db.insertORSnapshot(snap(day1 + 5_000, 7))) // cycle-start day, after start
+        XCTAssertEqual(db.orSpendSince(day1 + 2_000), 4, accuracy: 0.0001)
+
+        // With no snapshots after the start there is nothing to sum.
+        XCTAssertEqual(db.orSpendSince(day1 + 50_000), 0, accuracy: 0.0001)
+    }
+}

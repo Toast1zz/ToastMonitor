@@ -130,6 +130,21 @@ enum FileScanner {
         return (objects, Int64(start) + Int64(consumed))
     }
 
+    /// True when `offset` rests on a JSONL line boundary: offset == 0, or
+    /// the byte just before it is a newline (0x0A). Incremental parsers
+    /// require this of their append-only cursor so a truncate-then-regrow
+    /// that was never observed as a shrink (same inode, new file larger than
+    /// the old cursor) is detected: the cursor then sits mid-line, which a
+    /// genuine append can never produce, and the file is rescanned from 0.
+    static func isLineBoundary(path: String, offset: Int64) -> Bool {
+        guard offset > 0 else { return true }
+        guard let fh = FileHandle(forReadingAtPath: path) else { return false }
+        defer { fh.closeFile() }
+        fh.seek(toFileOffset: UInt64(offset - 1))
+        let byte = fh.readData(ofLength: 1)
+        return byte.count == 1 && byte[byte.startIndex] == 0x0A
+    }
+
     /// A truncate followed by a regrow can leave the inode unchanged and the
     /// new file larger than the last cursor. Persisting this marker in the
     /// parser context forces the next scan to reread the header from offset 0.
@@ -152,6 +167,33 @@ enum FileScanner {
             object["_full_rescan"] = true
         } else {
             object.removeValue(forKey: "_full_rescan")
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Consecutive scans that made no progress on a file (e.g. a zstd frame
+    /// boundary parked at a false magic that can never decompress). After 3
+    /// stalled scans the parser forces a full rescan from offset 0.
+    static func contextStallCount(_ context: String?) -> Int {
+        guard let context,
+              let data = context.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return 0 }
+        return (object["_stall_count"] as? NSNumber)?.intValue ?? 0
+    }
+
+    static func contextWithStallCount(_ context: String?, count: Int) -> String? {
+        var object: [String: Any] = [:]
+        if let context,
+           let data = context.data(using: .utf8),
+           let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            object = decoded
+        }
+        if count > 0 {
+            object["_stall_count"] = count
+        } else {
+            object.removeValue(forKey: "_stall_count")
         }
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return String(data: data, encoding: .utf8)

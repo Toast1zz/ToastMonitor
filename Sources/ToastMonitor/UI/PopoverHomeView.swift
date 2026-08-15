@@ -28,6 +28,17 @@ private let shortDayFormatter: DateFormatter = {
 struct PopoverHomeView: View {
     static let testPeriodNotification = Notification.Name("tmTestPopoverPeriod")
 
+    /// UI-1 决策：面板隐藏时跳过分钟 tick（不推进 now、不重载热力图）。
+    static func minuteTickAllowed(panelVisible: Bool) -> Bool {
+        panelVisible
+    }
+
+    /// UI-1 决策：可见性通知 → (新可见状态, 是否需要本次重载热力图)。
+    /// 仅在 隐藏→显示 转换时重载；其余转换（含保持显示）不重载。
+    static func visibilityTransition(visible: Bool, wasVisible: Bool) -> (visible: Bool, reload: Bool) {
+        (visible, visible && !wasVisible)
+    }
+
     enum Period: String, CaseIterable, Identifiable {
         case today = "Today"
         case week = "7 Days"
@@ -59,8 +70,9 @@ struct PopoverHomeView: View {
     @AppStorage("popoverFullTokens") private var fullTokens = false
     /// 年度每日用量（Popover 自持：AppState 只在 dashboard 可见时填 heatmap）。
     @State private var heatmapData: [Int64: Int64] = [:]
-    /// Trend 悬停命中的日数据；无悬停时标题行显示 Peak。
-    @State private var hoveredTrend: (key: Int64, tokens: Int64)?
+    /// 面板是否可见。PopoverHomeView 常驻（面板不销毁视图），隐藏时分钟
+    /// tick 与热力图重载都必须停，否则每 60s 跑一次 371 天聚合（UI-1）。
+    @State private var panelVisible = false
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var totals: Database.ToolTotals {
@@ -138,9 +150,23 @@ struct PopoverHomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { reloadHeatmap() }
-        .onReceive(minuteTicker) {
-            now = $0
+        .onReceive(minuteTicker) { tick in
+            // UI-1: 面板隐藏时跳过整轮 tick——不推进 now、不重载热力图。
+            // 显示时再由可见性通知补一次加载，所以数据不会等下一个 60s。
+            guard Self.minuteTickAllowed(panelVisible: panelVisible) else { return }
+            now = tick
             reloadHeatmap()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.popoverVisibility)) { note in
+            // UI-1: 面板常驻，可见性由通知驱动。仅在 隐藏→显示 转换时
+            // 立即重载热力图（初始 onAppear 已负责首次加载）。
+            let visible = (note.object as? Bool) ?? false
+            let transition = Self.visibilityTransition(visible: visible, wasVisible: panelVisible)
+            panelVisible = transition.visible
+            if transition.reload {
+                now = Date()
+                reloadHeatmap()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
             guard let raw = note.object as? String else { return }
@@ -366,22 +392,17 @@ struct PopoverHomeView: View {
     }
 
     /// 最近 60 天每日用量曲线板块（参考图布局：折线 + 右上角 peak）。
+    /// 悬停状态由 TrendChartView 独占（UI-2），标题行只显示 Peak。
     private var trendBlock: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
                 SectionTitle("Trend")
                 Spacer()
-                if let h = hoveredTrend {
-                    Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens))")
-                        .font(TMType.monoRegular(TMType.caption))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Peak \(Format.compact(trendPeak))")
-                        .font(TMType.monoRegular(TMType.caption))
-                        .foregroundStyle(.secondary)
-                }
+                Text("Peak \(Format.compact(trendPeak))")
+                    .font(TMType.monoRegular(TMType.caption))
+                    .foregroundStyle(.secondary)
             }
-            trendChart
+            TrendChartView(series: trendSeries)
         }
         // Keep the x-axis labels inside the measured scroll document. A
         // visual `offset` is not included in SwiftUI's layout size, which let
@@ -473,61 +494,6 @@ struct PopoverHomeView: View {
             weeks.append(column)
         }
         return weeks
-    }
-
-    private static func dayDate(_ key: Int64) -> Date {
-        var c = DateComponents()
-        c.year = Int(key / 10_000)
-        c.month = Int(key / 100) % 100
-        c.day = Int(key % 100)
-        return Calendar.current.date(from: c) ?? .distantPast
-    }
-
-    /// Charts 平滑折线（catmullRom）。冷启动延迟由热力图缓存解决：
-    /// 打开时先用上次持久化的数据立即渲染，再异步刷新新曲线。
-    private var trendChart: some View {
-        Chart(trendSeries, id: \.key) { d in
-            LineMark(
-                x: .value("Day", dayFromKey(d.key)),
-                y: .value("Tokens", d.tokens)
-            )
-            .foregroundStyle(TMDesign.accent)
-            .interpolationMethod(.catmullRom)
-        }
-        .chartXAxis {
-            // 3 个日期标签，颜色与 Activity 月份标签一致（TMDesign.quiet）。
-            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
-                AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
-                    .font(.system(size: 9))
-                    .foregroundStyle(TMDesign.quiet)
-            }
-        }
-        .chartYAxis(.hidden)
-        .frame(height: 76)
-        .chartOverlay { proxy in
-            GeometryReader { geo in
-                Rectangle().fill(Color.clear).contentShape(Rectangle())
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active(let location):
-                            guard let date = proxy.value(atX: location.x, as: Date.self) else { return }
-                            let day = Calendar.current.startOfDay(for: date)
-                            if let hit = trendSeries.first(where: {
-                                Calendar.current.isDate(dayFromKey($0.key), inSameDayAs: day)
-                            }) {
-                                hoveredTrend = hit
-                            } else {
-                                hoveredTrend = nil
-                            }
-                        case .ended:
-                            hoveredTrend = nil
-                        }
-                    }
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Daily usage trend")
     }
 
     private func resetText(_ at: Int64?) -> String? {
@@ -626,6 +592,73 @@ struct PopoverHomeView: View {
                   critical: critical, resetSuffix: resetSuffix)
     }
 
+}
+
+/// 趋势折线图独占悬停状态（UI-2，同 PopoverHeatmap 模式）：悬停只重渲
+/// 本子视图，不重渲整页。悬停信息行放在图上方、固定行高，无悬停时空占位。
+private struct TrendChartView: View {
+    /// 最近 60 天（含今天）按日排序的用量序列。
+    let series: [(key: Int64, tokens: Int64)]
+
+    @State private var hoveredTrend: (key: Int64, tokens: Int64)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                if let h = hoveredTrend {
+                    Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens))")
+                        .font(TMType.monoRegular(TMType.caption))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .frame(height: 16)
+            // Charts 平滑折线（catmullRom）。冷启动延迟由热力图缓存解决：
+            // 打开时先用上次持久化的数据立即渲染，再异步刷新新曲线。
+            Chart(series, id: \.key) { d in
+                LineMark(
+                    x: .value("Day", dayFromKey(d.key)),
+                    y: .value("Tokens", d.tokens)
+                )
+                .foregroundStyle(TMDesign.accent)
+                .interpolationMethod(.catmullRom)
+            }
+            .chartXAxis {
+                // 3 个日期标签，颜色与 Activity 月份标签一致（TMDesign.quiet）。
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                    AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
+                        .font(.system(size: 9))
+                        .foregroundStyle(TMDesign.quiet)
+                }
+            }
+            .chartYAxis(.hidden)
+            .frame(height: 76)
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(Color.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location):
+                                guard let date = proxy.value(atX: location.x, as: Date.self) else { return }
+                                let day = Calendar.current.startOfDay(for: date)
+                                if let hit = series.first(where: {
+                                    Calendar.current.isDate(dayFromKey($0.key), inSameDayAs: day)
+                                }) {
+                                    hoveredTrend = hit
+                                } else {
+                                    hoveredTrend = nil
+                                }
+                            case .ended:
+                                hoveredTrend = nil
+                            }
+                        }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Daily usage trend")
+        }
+    }
 }
 
 /// The period choices replace the visible dashboard content, so on macOS 27

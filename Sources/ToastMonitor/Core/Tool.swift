@@ -101,55 +101,61 @@ enum ToolKind: String, CaseIterable, Identifiable {
     }
 }
 
-/// One LLM turn (one model call) extracted from a tool's logs.
-struct TurnRecord: Equatable {
-    let tool: ToolKind
-    let sessionID: String
-    let project: String?
-    let model: String?
-    let ts: Int64
-    let inputTokens: Int64
-    let outputTokens: Int64
-    /// Reasoning is recorded separately. Providers commonly include it in
-    /// output_tokens, so aggregate token totals must not add it a second time.
-    let reasoningTokens: Int64
-    let cacheRead: Int64
-    let cacheWrite: Int64
-    let cost: Double
-    let provider: String?
-    /// Stable source namespace ("local", or a hash of the remote feed URL).
-    let sourceInstance: String
-    /// Price-table revision used when costQuality == "estimated".
-    let pricingVersion: String?
-    /// Stable upstream or canonical content identity.
-    let eventID: String?
-    /// 'actual' | 'estimated' | 'unknown'.
-    let costQuality: String
+    /// One LLM turn (one model call) extracted from a tool's logs.
+    struct TurnRecord: Equatable {
+        let tool: ToolKind
+        let sessionID: String
+        let project: String?
+        let model: String?
+        let ts: Int64
+        let inputTokens: Int64
+        let outputTokens: Int64
+        /// Reasoning is recorded separately. Providers commonly include it in
+        /// output_tokens, so aggregate token totals must not add it a second time.
+        let reasoningTokens: Int64
+        let cacheRead: Int64
+        let cacheWrite: Int64
+        let cost: Double
+        let provider: String?
+        /// Stable source namespace ("local", or a hash of the remote feed URL).
+        let sourceInstance: String
+        /// Price-table revision used when costQuality == "estimated".
+        let pricingVersion: String?
+        /// Stable upstream or canonical content identity.
+        let eventID: String?
+        /// 'actual' | 'estimated' | 'unknown'.
+        let costQuality: String
 
-    init(tool: ToolKind, sessionID: String, project: String?, model: String?, ts: Int64,
-         inputTokens: Int64, outputTokens: Int64, reasoningTokens: Int64 = 0,
-         cacheRead: Int64, cacheWrite: Int64, cost: Double,
-         provider: String? = nil, sourceInstance: String = "local",
-         pricingVersion: String? = Pricing.version, eventID: String? = nil,
-         costQuality: String = "estimated") {
-        self.tool = tool
-        self.sessionID = sessionID
-        self.project = project
-        self.model = model
-        self.ts = ts
-        self.inputTokens = inputTokens
-        self.outputTokens = outputTokens
-        self.reasoningTokens = reasoningTokens
-        self.cacheRead = cacheRead
-        self.cacheWrite = cacheWrite
-        self.cost = cost
-        self.provider = provider
-        self.sourceInstance = sourceInstance
-        self.pricingVersion = costQuality == "estimated" ? pricingVersion : nil
-        self.eventID = eventID
-        self.costQuality = costQuality
+        /// Ceiling for token counts (DB-6): hostile/malformed logs must not be
+        /// able to overflow Int64 sums or poison daily/weekly aggregates.
+        static let maxTokens: Int64 = 9_000_000_000_000_000
+        /// Ceiling for a single turn's estimated/actual cost (USD).
+        static let maxCost: Double = 1_000_000_000
+
+        init(tool: ToolKind, sessionID: String, project: String?, model: String?, ts: Int64,
+             inputTokens: Int64, outputTokens: Int64, reasoningTokens: Int64 = 0,
+             cacheRead: Int64, cacheWrite: Int64, cost: Double,
+             provider: String? = nil, sourceInstance: String = "local",
+             pricingVersion: String? = Pricing.version, eventID: String? = nil,
+             costQuality: String = "estimated") {
+            self.tool = tool
+            self.sessionID = sessionID
+            self.project = project
+            self.model = model
+            self.ts = ts
+            self.inputTokens = min(max(inputTokens, 0), Self.maxTokens)
+            self.outputTokens = min(max(outputTokens, 0), Self.maxTokens)
+            self.reasoningTokens = min(max(reasoningTokens, 0), Self.maxTokens)
+            self.cacheRead = min(max(cacheRead, 0), Self.maxTokens)
+            self.cacheWrite = min(max(cacheWrite, 0), Self.maxTokens)
+            self.cost = cost.isFinite ? min(max(cost, 0), Self.maxCost) : 0
+            self.provider = provider
+            self.sourceInstance = sourceInstance
+            self.pricingVersion = costQuality == "estimated" ? pricingVersion : nil
+            self.eventID = eventID
+            self.costQuality = costQuality
+        }
     }
-}
 
 /// Session-level info upserted from sources that expose it.
 struct SessionInfo: Equatable {

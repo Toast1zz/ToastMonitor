@@ -2,21 +2,24 @@
 # Sign an update manifest (appcast.json) with the release Ed25519 private key.
 #
 # Usage:
-#   ./scripts/sign-update-manifest.sh <version> <artifact.zip> [download_url]
+#   ./scripts/sign-update-manifest.sh <version> <artifact.zip> [download_url] [output]
 #
-# The download URL defaults to the GitHub latest-release asset name so a
+# The download URL defaults to the tag-pinned GitHub release asset name so a
 # freshly uploaded release just works:
-#   https://github.com/Toast1zz/ToastMonitor/releases/latest/download/<basename>
+#   https://github.com/Toast1zz/ToastMonitor/releases/download/v<version>/<basename>
 #
-# Outputs appcast.json (the signed envelope) to the current directory and
-# prints the path. The private key lives at ~/.config/toastmonitor/update-key.pem
-# (0600, never committed).
+# Output defaults to appcast.json in the repository root; pass an explicit
+# fourth argument (e.g. dist/release/appcast.json) to place it elsewhere.
+# The private key lives at ~/.config/toastmonitor/update-key.pem (0600, never
+# committed). It travels to the signer as an argv argument — never via an
+# environment variable, which `ps e` would expose to same-uid observers.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:?usage: sign-update-manifest.sh <version> <artifact.zip> [download_url]}"
+VERSION="${1:?usage: sign-update-manifest.sh <version> <artifact.zip> [download_url] [output]}"
 ARCHIVE="${2:?missing artifact zip}"
+OUT="${4:-appcast.json}"
 KEY="$HOME/.config/toastmonitor/update-key.pem"
 [[ -f "$KEY" ]] || { echo "update key not found: $KEY" >&2; exit 1; }
 [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "invalid version: $VERSION" >&2; exit 1; }
@@ -38,6 +41,7 @@ echo "version:    $VERSION"
 echo "artifact:   $ARCHIVE"
 echo "sha256:     $SHA256"
 echo "download:   $DOWNLOAD_URL"
+echo "output:     $OUT"
 
 # payload JSON -> base64 -> Ed25519 signature over the base64 text.
 # The payload's hex sha256 keeps the app-side hex parser simple.
@@ -45,7 +49,16 @@ PAYLOAD=$(printf '{"version":"%s","download_url":"%s","sha256":"%s"}' \
     "$VERSION" "$DOWNLOAD_URL" "$SHA256")
 B64=$(printf '%s' "$PAYLOAD" | base64 | tr -d '\n')
 
-SIGN=$(cat > /tmp/tm-sign-input.txt <<< "$B64"; TM_KEY="$KEY" swift -e '
+# Throwaway 0600 input file (unique per run — no fixed /tmp path that another
+# run or a symlink could clobber). The key path is passed as argv.
+INPUT="$(mktemp -t tm-sign-input.XXXXXX)"
+trap 'rm -f "$INPUT"' EXIT
+chmod 600 "$INPUT"
+printf '%s' "$B64" > "$INPUT"
+
+# Fail loudly on signing errors (missing swift, invalid key): the empty
+# SIGN guard below would otherwise publish an appcast the app rejects.
+SIGN="$(swift -e '
 import CryptoKit
 import Foundation
 extension Data {
@@ -60,15 +73,24 @@ extension Data {
         self.init(bytes)
     }
 }
-let keyPath = ProcessInfo.processInfo.environment["TM_KEY"]!
+let keyPath = CommandLine.arguments[1]
+let inputPath = CommandLine.arguments[2]
 let hex = try! String(contentsOfFile: keyPath, encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines)
 let key = try! Curve25519.Signing.PrivateKey(rawRepresentation: Data(hex: hex))
-let payload = try! String(contentsOfFile: "/tmp/tm-sign-input.txt", encoding: .utf8)
+let payload = try! String(contentsOfFile: inputPath, encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines)
-print(try! key.signature(for: Data(payload.utf8)).base64EncodedString())
-' 2>/dev/null | tail -1)
+// Loop-back: verify the signature with the derived public key so a broken
+// key or signing path can never emit an appcast the app would reject.
+let signature = try key.signature(for: Data(payload.utf8))
+guard key.publicKey.isValidSignature(signature, for: Data(payload.utf8)) else {
+    exit(2)
+}
+print(signature.base64EncodedString())
+' "$KEY" "$INPUT")"
+[[ -n "$SIGN" ]] || { echo "signing failed (swift missing or key invalid)" >&2; exit 1; }
 
-printf '{"payload":"%s","signature":"%s"}\n' "$B64" "$SIGN" > appcast.json
-echo "== appcast.json written =="
-python3 -c "import json; d=json.load(open('appcast.json')); print('payload bytes:', len(d['payload']), '| signature bytes:', len(d['signature']))"
+mkdir -p "$(dirname "$OUT")"
+printf '{"payload":"%s","signature":"%s"}\n' "$B64" "$SIGN" > "$OUT"
+echo "== $OUT written =="
+python3 -c "import json; d=json.load(open('$OUT')); print('payload bytes:', len(d['payload']), '| signature bytes:', len(d['signature']))"

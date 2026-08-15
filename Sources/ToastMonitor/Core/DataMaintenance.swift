@@ -109,7 +109,7 @@ enum DataMaintenance {
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: keys,
                                                                   options: [.skipsHiddenFiles])) ?? []
-        return urls.filter { $0.pathExtension == "db" }.sorted {
+        return urls.filter { $0.pathExtension == "db" && isSQLiteFile($0) }.sorted {
             let a = (try? $0.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
             let b = (try? $1.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
             return a > b
@@ -133,6 +133,16 @@ enum DataMaintenance {
             return false
         }
         return true
+    }
+
+    /// True when the file carries the SQLite magic header ("SQLite format 3\0").
+    /// Corrupt/aborted backup leftovers (partial writes, 0-byte files, foreign
+    /// files copied into the directory) must not show up in the backup list or
+    /// be considered for rotation.
+    static func isSQLiteFile(_ url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return false }
+        let magic = Data("SQLite format 3\u{0}".utf8)
+        return data.count >= magic.count && data.prefix(magic.count) == magic
     }
 
     static func pruneBackups(keeping count: Int) {

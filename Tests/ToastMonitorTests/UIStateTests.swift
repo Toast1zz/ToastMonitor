@@ -69,4 +69,70 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(PanelController.clampedHeight(
             natural: 1_200, available: 860), 860)
     }
+
+    // MARK: - UI-1: minute ticker + heatmap reload gated on panel visibility
+
+    func testMinuteTickSkippedWhilePanelHidden() {
+        XCTAssertFalse(PopoverHomeView.minuteTickAllowed(panelVisible: false))
+        XCTAssertTrue(PopoverHomeView.minuteTickAllowed(panelVisible: true))
+    }
+
+    func testHeatmapReloadsOnlyOnHiddenToVisibleTransition() {
+        // 隐藏 → 隐藏：不重载
+        let (v1, r1) = PopoverHomeView.visibilityTransition(visible: false, wasVisible: false)
+        XCTAssertEqual(v1, false)
+        XCTAssertFalse(r1)
+        // 隐藏 → 显示（关键转换）：必须重载
+        let (v2, r2) = PopoverHomeView.visibilityTransition(visible: true, wasVisible: false)
+        XCTAssertEqual(v2, true)
+        XCTAssertTrue(r2)
+        // 保持显示：不重复重载
+        let (v3, r3) = PopoverHomeView.visibilityTransition(visible: true, wasVisible: true)
+        XCTAssertEqual(v3, true)
+        XCTAssertFalse(r3)
+        // 显示 → 隐藏：不重载
+        let (v4, r4) = PopoverHomeView.visibilityTransition(visible: false, wasVisible: true)
+        XCTAssertEqual(v4, false)
+        XCTAssertFalse(r4)
+    }
+
+    // MARK: - UI-10: AppState snapshot accessors are read-only getters
+
+    /// UI-10 removed the dead per-property setters; every accessor must still
+    /// read through to the backing snapshot. Touching each property here also
+    /// fails the build if a getter is ever deleted or renamed. The only
+    /// value-level assertion is on `tool == "all"`, which holds both for the
+    /// zero-initialized state and after any refresh (totals always key "all").
+    func testAppStateSnapshotGettersRemainExposed() {
+        let app = AppState.shared
+        XCTAssertEqual(app.today.tool, "all")
+        XCTAssertEqual(app.week.tool, "all")
+        XCTAssertEqual(app.month.tool, "all")
+        XCTAssertEqual(app.all.tool, "all")
+        _ = app.todayTokens
+        _ = app.weekTokens
+        _ = app.monthTokens
+        _ = app.allTokens
+        _ = app.byToolToday
+        _ = app.byToolWeek
+        _ = app.byToolMonth
+        _ = app.byToolAll
+        _ = app.apiValueToday
+        _ = app.apiValueWeek
+        _ = app.apiValueMonth
+        _ = app.apiValueAll
+        _ = app.costToday
+        _ = app.costWeek
+        _ = app.costMonth
+        _ = app.costAll
+        _ = app.modelAggs
+        _ = app.modelAggsToday
+        _ = app.modelAggsMonth
+        _ = app.modelAggsAll
+        _ = app.heatmap
+        _ = app.heatmapCost
+        _ = app.subscriptions
+        _ = app.lastScan
+        _ = app.snapshotFetchedAt
+    }
 }

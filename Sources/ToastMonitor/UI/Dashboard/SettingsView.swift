@@ -2,8 +2,13 @@ import SwiftUI
 
 /// 设置: per-tool data source (local Mac vs remote VPS feed) + feed URL.
 struct SettingsView: View {
+    /// UI-3: 订阅后 poll 完成时 feed 状态行随 @Published 刷新。
+    @ObservedObject private var remote = HermesRemoteClient.shared
     @State private var feedURL = ""
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
+    /// UI-8: 生效值缓存（onAppear 加载、toggle 后更新）。body 每格渲染
+    /// 直接读 tool.sourceIsRemote 会同步查 DB（每帧每工具一次）。
+    @State private var effectiveSources: [ToolKind: Bool] = [:]
     @State private var saved = false
     @State private var feedError: String?
     @State private var feedDisabled = false
@@ -55,6 +60,7 @@ struct SettingsView: View {
                                                 guard sourceGeneration[tool] == gen else { return }
                                                 if ok {
                                                     sources[tool] = newValue
+                                                    effectiveSources[tool] = newValue
                                                     sourceSaved[tool] = true
                                                     sourceFailed[tool] = nil
                                                 } else {
@@ -62,6 +68,7 @@ struct SettingsView: View {
                                                     // effective persisted value after a
                                                     // failed write.
                                                     sources[tool] = tool.sourceIsRemote
+                                                    effectiveSources[tool] = tool.sourceIsRemote
                                                     sourceFailed[tool] = true
                                                     sourceSaved[tool] = nil
                                                 }
@@ -87,7 +94,9 @@ struct SettingsView: View {
                                 }
                                 Spacer()
                                 // Actual effective value, not the draft.
-                                Text(tool.sourceIsRemote ? "Reads VPS feed" : "Reads local logs")
+                                // UI-8: 走缓存，body 渲染不查 DB。
+                                Text((effectiveSources[tool] ?? (tool.defaultSource == "remote"))
+                                     ? "Reads VPS feed" : "Reads local logs")
                                     .font(TMType.regular(TMType.micro))
                                     .foregroundStyle(TMDesign.quiet)
                                 if sourceSaved[tool] == true {
@@ -138,7 +147,7 @@ struct SettingsView: View {
                 // Operational status stays on this page, but uses one
                 // compact list instead of a second nested page or one card
                 // per collector.
-                SourcesView(embedded: true)
+                SourcesView(embedded: true, localSources: effectiveSources)
 
                 // 远程 Feed
                 VStack(alignment: .leading, spacing: 10) {
@@ -174,7 +183,7 @@ struct SettingsView: View {
                         .font(TMType.regular(12))
                         .help("Pull now")
                     }
-                    let st = HermesRemoteClient.shared.status
+                    let st = remote.status
                     HStack {
                         if st.lastSync > 0 {
                             Text(st.lastRows > 0
@@ -212,9 +221,10 @@ struct SettingsView: View {
             .padding(.vertical, 18)
         }
         .onAppear {
-            feedURL = HermesRemoteClient.shared.feedURL
+            feedURL = remote.feedURL
             for t in tools {
                 sources[t] = t.sourceIsRemote
+                effectiveSources[t] = t.sourceIsRemote
             }
             codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
         }

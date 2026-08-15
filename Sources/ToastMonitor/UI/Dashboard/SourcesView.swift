@@ -14,6 +14,9 @@ struct SourcesView: View {
 
     private let tools: [ToolKind] = ToolKind.allCases.filter { $0 != .openrouter }
     var embedded = false
+    /// UI-8: SettingsView 传入的生效来源缓存，避免 body 渲染时同步查 DB。
+    /// nil = 独立使用（未内嵌），退回原来的 DB 读取。
+    var localSources: [ToolKind: Bool]? = nil
 
     var body: some View {
         Group {
@@ -41,20 +44,26 @@ struct SourcesView: View {
                             // 完成回调是唯一真相源：只按代际过滤（迟到成功必须
                             // 能覆盖 10s 超时文案，不能被 testing 状态丢弃）。
                             guard gen == testGeneration else { return }
-                            testing = false
-                            let remoteErr = HermesRemoteClient.shared.status.error
-                            let localFailed = receipt.failedSources
-                            if localFailed.isEmpty && remoteErr == nil {
-                                testOK = true
-                                testResult = "Scan complete (\(receipt.turns) new)"
-                            } else {
-                                testOK = false
-                                var parts = localFailed
-                                if let remoteErr { parts.append("Remote Feed: \(remoteErr)") }
-                                testResult = "Error: \(parts.joined(separator: ", "))"
+                            // UI-7: 远程状态必须在 poll 的完成回调里读——本地
+                            // 扫描往往先结束，立即读 status 会拿到 poll 开始前
+                            // 的旧值。poll 在扫描成功后串行执行（或并行亦可），
+                            // 其完成回调在主线程、poll 结束后触发。
+                            HermesRemoteClient.shared.poll {
+                                guard gen == testGeneration else { return }
+                                testing = false
+                                let remoteErr = HermesRemoteClient.shared.status.error
+                                let localFailed = receipt.failedSources
+                                if localFailed.isEmpty && remoteErr == nil {
+                                    testOK = true
+                                    testResult = "Scan complete (\(receipt.turns) new)"
+                                } else {
+                                    testOK = false
+                                    var parts = localFailed
+                                    if let remoteErr { parts.append("Remote Feed: \(remoteErr)") }
+                                    testResult = "Error: \(parts.joined(separator: ", "))"
+                                }
                             }
                         }
-                        HermesRemoteClient.shared.poll()
                         // 超时只兜底"仍在等待"；迟到的完成回调会覆盖此文案。
                         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
                             guard gen == testGeneration, testing else { return }
@@ -110,7 +119,8 @@ struct SourcesView: View {
 
     private func sourceRow(_ tool: ToolKind) -> some View {
         let h = health.sources.first { $0.tool == tool.rawValue }
-        let isRemote = tool.sourceIsRemote
+        // UI-8: 优先走缓存；未内嵌时退回 DB 读取。
+        let isRemote = localSources?[tool] ?? tool.sourceIsRemote
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: tool.symbol)

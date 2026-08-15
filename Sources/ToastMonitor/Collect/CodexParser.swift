@@ -87,10 +87,14 @@ enum CodexParser {
             // from 0 so edited events are not silently lost (dedupe handles
             // the already-imported ones).
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
+            // The cursor must rest on a JSONL line boundary: a truncate +
+            // regrow that happened entirely between polls leaves it mid-line
+            // and the rewritten events would be skipped by the append path.
             let sameAppendOnlyFile = prev.identity == st.identity
                 && st.size > prev.size
                 && prev.mtime != 0
                 && !pendingRewrite
+                && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
             let offset = sameAppendOnlyFile ? prev.size : 0
             let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
             if DebugLog.enabled {
@@ -180,7 +184,7 @@ enum CodexParser {
                        let lastUsage = info["last_token_usage"] as? [String: Any] {
                         let eventID = EventIdentity.codex(
                             sessionID: sid, timestamp: ts, model: eventModel,
-                            usage: lastUsage)
+                            usage: lastUsage, offset: item.offset)
                         turns.append(TurnRecord(tool: .codex, sessionID: sid, project: nil,
                                                 model: eventModel, ts: ts, inputTokens: input, outputTokens: output,
                                                 reasoningTokens: reasoning,

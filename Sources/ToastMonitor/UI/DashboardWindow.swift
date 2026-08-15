@@ -53,6 +53,12 @@ final class WindowManager {
         if target == .regular {
             NSApp.setActivationPolicy(.regular)
         } else {
+            // UI-5: NSApp.hide 会静默收起 popover 面板但不触发可见性通知。
+            // 面板可见时先补发 false，否则 AppState/CollectorEngine 会带着
+            // foreground=true 空转（1s 定时器、quota 客户端全在跑）。
+            if PanelController.isPanelVisible {
+                NotificationCenter.default.post(name: TMNotifications.popoverVisibility, object: false)
+            }
             NSApp.setActivationPolicy(.accessory)
             // Demoting is asynchronous on some macOS versions; without this
             // the app icon can linger in the app switcher for a second or two.

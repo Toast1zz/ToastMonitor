@@ -132,18 +132,6 @@ enum UpdateChecker {
                                sha256: payload.sha256.lowercased())
     }
 
-    /// Optionally verifies the signed manifest's artifact hash. This method
-    /// streams through a temporary file and never opens or executes it.
-    static func verifyArtifact(
-        at url: URL,
-        sha256 expected: String,
-        timeout: TimeInterval = 30
-    ) async throws -> Bool {
-        let file = try await downloadArtifact(at: url, sha256: expected, timeout: timeout)
-        defer { try? FileManager.default.removeItem(at: file) }
-        return true
-    }
-
     /// Downloads the signed artifact to a temporary file, streaming and
     /// verifying its SHA-256 without ever opening or executing it. The
     /// temporary file is left in place for the caller (the installer); callers
@@ -165,7 +153,10 @@ enum UpdateChecker {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = boundedTimeout
-        configuration.timeoutIntervalForResource = boundedTimeout
+        // The resource timeout bounds the whole download, not a single
+        // request: a ~100 MB zip over a slow link takes minutes. Keep the
+        // per-request timeout strict but allow the transfer itself to run.
+        configuration.timeoutIntervalForResource = max(boundedTimeout, 600)
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let temporaryURL: URL
@@ -214,7 +205,27 @@ enum UpdateChecker {
         configuration.timeoutIntervalForResource = boundedTimeout
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
+        // Stream to a temp file instead of data(for:): async data(for:) does
+        // not reliably deliver data-level delegate callbacks, so the
+        // per-chunk cap would not be enforced mid-transfer for chunked
+        // responses. The download path hits the delegate's didWriteData cap
+        // while transferring; the file-size check below is the final word.
+        let temporaryURL: URL
+        let response: URLResponse
+        do {
+            (temporaryURL, response) = try await session.download(for: request)
+        } catch {
+            if delegate.exceededLimit {
+                throw limit == metadataLimit ? CheckError.responseTooLarge : CheckError.artifactTooLarge
+            }
+            throw CheckError.network(error.localizedDescription)
+        }
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        let values = try? temporaryURL.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = values?.fileSize, size <= limit else {
+            throw limit == metadataLimit ? CheckError.responseTooLarge : CheckError.artifactTooLarge
+        }
+        let data = try Data(contentsOf: temporaryURL)
         guard data.count <= limit else {
             throw limit == metadataLimit ? CheckError.responseTooLarge : CheckError.artifactTooLarge
         }

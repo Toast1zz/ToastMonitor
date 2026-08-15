@@ -140,6 +140,7 @@ struct PopoverRootView: View {
         CollectorEngine.shared.scheduleScan()
         OpenRouterClient.shared.refresh()
         OpenCodeGoClient.shared.refresh()
+        CodexQuotaClient.shared.refresh()
         HermesRemoteClient.shared.maybePoll()
     }
 }

@@ -14,6 +14,9 @@ name: CI
 # disabled (disable via Settings -> Actions, or `gh api -X PUT
 # repos/<owner>/<repo>/actions/workflows/ci.yml/disable`). When macOS 27
 # lands, switch `runs-on` to macos-27 and re-enable.
+# Note: `swift test` no longer needs the release signing key (UpdateChecker
+# tests use a self-contained key pair), so a clean runner can run the full
+# suite as-is.
 permissions:
   contents: read
 
@@ -26,6 +29,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # SwiftPM builds are expensive (~minutes); cache the build dir keyed on
+      # the manifest and source hashes so the repeated gate steps reuse the
+      # compiled product.
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swift-${{ runner.os }}-${{ hashFiles('Package.swift') }}-${{ hashFiles('Sources/**/*.swift', 'Tests/**/*.swift') }}
+          restore-keys: |
+            swift-${{ runner.os }}-${{ hashFiles('Package.swift') }}-
 
       - name: Swift build (debug)
         run: swift build

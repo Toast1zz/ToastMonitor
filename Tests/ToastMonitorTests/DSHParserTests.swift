@@ -364,4 +364,195 @@ final class DSHParserTests: XCTestCase {
         XCTAssertNil(Zstd.nextFrameOffset(in: data, fromOffset: 4), "magic before the cursor is not a match")
         XCTAssertNil(Zstd.nextFrameOffset(in: data, fromOffset: 7))
     }
+
+    // MARK: - PARSER-2: truncate + regrow without an observed shrink
+
+    func testLogModeTruncateRegrowWithoutObservedShrinkRescans() throws {
+        // The log is rewritten to DIFFERENT, LARGER content in one shot: the
+        // shrink happens between polls, so the parser never observes it. The
+        // old cursor lands mid-line in the new file, which a genuine append
+        // can never do → the file must be rescanned from 0.
+        let path = (tempDir as NSString).appendingPathComponent("regrow.jsonl")
+        let initial = """
+        {"type":"session","version":0,"id":"session-regrow-1","createdAt":1786628702000,"cwd":"/tmp/z","delegationDepth":0,"agentPreset":"standard"}
+        {"type":"assistant/chunk","seq":3,"time":1786628706000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":100,"outputTokens":50}}}}
+        {"type":"assistant/chunk","seq":4,"time":1786628706001,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"opencodego","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+        """
+        try Data(initial.utf8).write(to: URL(fileURLWithPath: path))
+        let (first, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertTrue(db.insertTurns(first))
+
+        let replacement = """
+        {"type":"session","version":0,"id":"session-regrow-2","createdAt":1786628702000,"cwd":"/tmp/z","delegationDepth":0,"agentPreset":"standard"}
+        {"type":"assistant/chunk","seq":20,"time":1786628800000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":500,"outputTokens":250}}}}
+        {"type":"assistant/chunk","seq":21,"time":1786628800001,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"opencodego","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+        {"type":"assistant/chunk","seq":22,"time":1786628800002,"data":{"turn":1,"step":2,"chunk":{"type":"usage","usage":{"inputTokens":600,"outputTokens":300}}}}
+        {"type":"assistant/chunk","seq":23,"time":1786628800003,"data":{"turn":1,"step":2,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"opencodego","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+        """
+        XCTAssertGreaterThan(Data(replacement.utf8).count, Data(initial.utf8).count,
+                             "regrown file must be larger than the old cursor")
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.truncate(atOffset: 0)
+        try fh.write(contentsOf: Data(replacement.utf8))
+        try fh.close()
+
+        let (second, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertEqual(second.count, 2, "the rewritten file is fully re-read from 0")
+        XCTAssertTrue(second.allSatisfy { $0.sessionID == "session-regrow-2" })
+        XCTAssertTrue(db.insertTurns(second))
+        XCTAssertEqual(dshTurnCount(), 3, "old step deduped by event id; both rewritten steps imported")
+    }
+
+    // MARK: - PARSER-3: delta baseline high-water mark (cache mode)
+
+    func testCacheModeRollbackBaselineIsHighWaterMark() {
+        try? FileManager.default.removeItem(atPath: DSHParser.projCachePath)
+        try? FileManager.default.createDirectory(
+            atPath: (DSHParser.projCachePath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try? FileManager.default.copyItem(atPath: projCacheFixturePath, toPath: DSHParser.projCachePath)
+
+        let (first, _) = DSHParser.scanProjCache(database: db)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first[0].inputTokens, 1000)
+        XCTAssertEqual(first[0].outputTokens, 500)
+
+        // The source rolls back below the recorded baseline.
+        let raw = (try? String(contentsOfFile: DSHParser.projCachePath, encoding: .utf8)) ?? ""
+        let lowered = raw
+            .replacingOccurrences(of: "\"uncachedInputTokens\": 1000", with: "\"uncachedInputTokens\": 300")
+            .replacingOccurrences(of: "\"outputTokens\": 500", with: "\"outputTokens\": 200")
+            .replacingOccurrences(of: "\"cacheReadTokens\": 8000", with: "\"cacheReadTokens\": 4000")
+            .replacingOccurrences(of: "\"cacheWriteTokens\": 10", with: "\"cacheWriteTokens\": 5")
+        try? Data(lowered.utf8).write(to: URL(fileURLWithPath: DSHParser.projCachePath))
+        let (rolled, _) = DSHParser.scanProjCache(database: db)
+        XCTAssertTrue(rolled.isEmpty, "rollback must not emit negative deltas")
+        let totals = db.sessionTotals()
+        XCTAssertEqual(totals["dsh|session-aaa"]?.input, 1000, "baseline input never drops")
+        XCTAssertEqual(totals["dsh|session-aaa"]?.output, 500, "baseline output never drops")
+        XCTAssertEqual(totals["dsh|session-aaa"]?.cacheRead, 8000)
+        XCTAssertEqual(totals["dsh|session-aaa"]?.cacheWrite, 10)
+
+        // Regrowth beyond the old peak counts only the increase past the max.
+        let grown = lowered
+            .replacingOccurrences(of: "\"uncachedInputTokens\": 300", with: "\"uncachedInputTokens\": 1400")
+            .replacingOccurrences(of: "\"outputTokens\": 200", with: "\"outputTokens\": 900")
+            .replacingOccurrences(of: "\"cacheReadTokens\": 4000", with: "\"cacheReadTokens\": 9000")
+            .replacingOccurrences(of: "\"cacheWriteTokens\": 5", with: "\"cacheWriteTokens\": 20")
+        try? Data(grown.utf8).write(to: URL(fileURLWithPath: DSHParser.projCachePath))
+        let (third, _) = DSHParser.scanProjCache(database: db)
+        XCTAssertEqual(third.count, 1)
+        XCTAssertEqual(third[0].inputTokens, 400, "1400 - max(1000, 300) = 400, not 1100")
+        XCTAssertEqual(third[0].outputTokens, 400, "900 - max(500, 200) = 400, not 700")
+        XCTAssertEqual(third[0].cacheRead, 1000, "9000 - max(8000, 4000) = 1000")
+        XCTAssertEqual(third[0].cacheWrite, 10, "20 - max(10, 5) = 10")
+    }
+
+    // MARK: - PARSER-4: zstd false-magic stall resets the cursor
+
+    func testLogModeZstdFalseMagicStallResetsCursorAfterThreeNoProgressScans() throws {
+        // A valid frame followed by a broken tail whose first bytes are a
+        // false zstd magic. Every scan re-reads the tail, hits the false
+        // magic, fails to decompress, and parks the cursor there — after 3
+        // no-progress scans the parser must force a full rescan from 0.
+        let good = """
+        {"type":"session","version":0,"id":"session-stall-1","createdAt":1786628702000,"cwd":"/tmp/z","delegationDepth":0,"agentPreset":"standard"}
+        {"type":"assistant/chunk","seq":3,"time":1786628706000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":100,"outputTokens":50}}}}
+        {"type":"assistant/chunk","seq":4,"time":1786628706001,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"opencodego","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
+        """
+        // Simulates a zstd decoder that fails on the broken tail: accepts a
+        // slice only when every complete line after the frame magic parses
+        // as JSON — the garbage tail (no complete line) is rejected.
+        let strict: (Data) -> Data? = { data in
+            let bytes = [UInt8](data)
+            guard let firstNL = bytes.firstIndex(of: 0x0a) else { return nil }
+            var i = firstNL + 1
+            while i < bytes.count {
+                guard let nl = bytes[i...].firstIndex(of: 0x0a) else { return nil }
+                guard nl > i,
+                      (try? JSONSerialization.jsonObject(with: Data(bytes[i..<nl]))) != nil
+                else { return nil }
+                i = nl + 1
+            }
+            return data
+        }
+
+        var data = Self.zstdMagic
+        data.append(Data("\n".utf8))
+        // Swift multi-line strings drop the newline before the closing
+        // delimiter; the strict decoder below requires every line (incl. the
+        // last) to be newline-terminated, so append one explicitly.
+        data.append(Data((good + "\n").utf8))
+        data.append(Self.zstdMagic) // false magic the broken tail starts with
+        data.append(Data("\n".utf8))
+        data.append(Data("corrupt-garbage-no-newline".utf8))
+        let path = (tempDir as NSString).appendingPathComponent("stall.jsonl.zstd")
+        try data.write(to: URL(fileURLWithPath: path))
+
+        // Scan 1: the good frame is recovered; the cursor parks on the false
+        // magic (no progress is possible from there).
+        let (first, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: strict)
+        XCTAssertEqual(first.count, 1)
+        let parked = db.scanState(path).size
+        XCTAssertGreaterThan(parked, 0)
+        XCTAssertEqual(FileScanner.contextStallCount(db.scanState(path).context), 0)
+
+        // Three scans over a still-growing file make no progress: the stall
+        // counter climbs to 3.
+        for expected in 1...3 {
+            let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            try fh.seekToEnd()
+            try fh.write(contentsOf: Data("extra-garbage-\(expected)".utf8))
+            try fh.close()
+            let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: strict)
+            XCTAssertTrue(turns.isEmpty)
+            XCTAssertEqual(db.scanState(path).size, parked, "cursor stays parked at the false magic")
+            XCTAssertEqual(FileScanner.contextStallCount(db.scanState(path).context), expected)
+        }
+
+        // The next scan (stall == 3) forces offset 0: the good frame is
+        // re-recovered from the file start and the stall counter resets.
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data("more-garbage".utf8))
+        try fh.close()
+        let (again, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: strict)
+        XCTAssertEqual(again.count, 1, "full rescan re-recovers the good frame")
+        XCTAssertEqual(again[0].eventID, "dsh-log:session-stall-1:3")
+        XCTAssertEqual(FileScanner.contextStallCount(db.scanState(path).context), 0,
+                       "progress resets the stall counter")
+    }
+
+    // MARK: - PARSER-5: headerless files advance the cursor
+
+    func testLogModeHeaderlessFileAdvancesCursorInsteadOfReReading() throws {
+        // A transcript without a `session` event can never be attributed to a
+        // session: the parser must advance past it instead of re-reading and
+        // re-decompressing the same tail on every scan.
+        let path = (tempDir as NSString).appendingPathComponent("headerless.jsonl")
+        let lines = """
+        {"type":"assistant/chunk","seq":1,"time":1786628706000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":100,"outputTokens":50}}}}
+        {"type":"assistant/chunk","seq":2,"time":1786628706001,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"x","provider":"x","model":"m","stopReason":"toolUse"}}}}
+        """
+        try Data(lines.utf8).write(to: URL(fileURLWithPath: path))
+        let size1 = Int64(Data(lines.utf8).count)
+
+        let (first, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertTrue(first.isEmpty, "content without a session header can never be attributed")
+        XCTAssertEqual(db.scanState(path).size, size1,
+                       "cursor must advance past unattributable content instead of re-reading it every scan")
+
+        // Appending more content: only the new tail is read and skipped.
+        let more = "\n{\"type\":\"assistant/chunk\",\"seq\":9,\"time\":1786628800000,\"data\":{\"turn\":1,\"step\":2,\"chunk\":{\"type\":\"usage\",\"usage\":{\"inputTokens\":200,\"outputTokens\":80}}}}\n"
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data(more.utf8))
+        try fh.close()
+
+        let (second, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertTrue(second.isEmpty)
+        XCTAssertEqual(db.scanState(path).size, size1 + Int64(Data(more.utf8).count),
+                       "the appended tail was consumed and the cursor advanced again")
+    }
 }

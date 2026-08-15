@@ -162,7 +162,12 @@ final class CodexQuotaClient: ObservableObject {
 
         redirectBlocker.boundedDataTask(in: session, request: req,
                                         maxBytes: Self.maxResponseBytes) { [weak self] data, resp, err in
-                guard let self else { return }
+            guard let self else { return }
+            // This completion runs on a URLSession delegate queue; all
+            // state mutations below are @MainActor-isolated.
+            DispatchQueue.main.async {
+                // Always clear inFlight — even for a stale generation —
+                // or the guard would never recover from an old response.
                 self.inFlight = false
                 guard self.refreshGeneration == generation else { return }
                 if let err {
@@ -205,6 +210,7 @@ final class CodexQuotaClient: ObservableObject {
                 }
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
+            }
         }.resume()
     }
 }

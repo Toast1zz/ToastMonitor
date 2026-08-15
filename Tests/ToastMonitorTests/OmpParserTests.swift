@@ -102,7 +102,7 @@ final class OmpParserTests: XCTestCase {
         let initial = """
         {"type":"session","id":"stable-session","timestamp":"2026-08-07T10:00:00.000Z"}
         {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5}}}
-        """
+        """ + "\n" // newline-terminated so the append-only cursor sits on a line boundary
         try initial.write(toFile: path, atomically: true, encoding: .utf8)
 
         let first = OmpParser.scan(knownPaths: [path], database: db)
@@ -117,9 +117,11 @@ final class OmpParserTests: XCTestCase {
         try fh.close()
 
         let appended = OmpParser.scan(knownPaths: [path], database: db)
+        let filename = (path as NSString).lastPathComponent
+        // Append-only path: only the new event is parsed, with the session
+        // identity restored from scan_state (not the filename stem).
         XCTAssertEqual(appended.turns.count, 1)
         XCTAssertEqual(appended.turns[0].sessionID, "stable-session")
-        let filename = (path as NSString).lastPathComponent
         XCTAssertEqual(appended.turns[0].eventID, "omp:\(filename):a2")
     }
     func testShrinkThenRegrowRescansTranscriptHeader() throws {
@@ -160,6 +162,45 @@ final class OmpParserTests: XCTestCase {
     }
 
 
+
+    func testTruncateRegrowWithoutObservedShrinkImportsRewrittenEvents() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-regrow-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let initial = """
+        {"type":"session","id":"s1","timestamp":"2026-08-07T10:00:00.000Z"}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10,"output":5}}}
+        {"type":"message","id":"a2","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","usage":{"input":11,"output":6}}}
+        """
+        try initial.write(toFile: path, atomically: true, encoding: .utf8)
+        let first = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(first.turns.count, 2)
+        XCTAssertTrue(db.insertTurns(first.turns))
+
+        // One-shot truncate + regrow to DIFFERENT, LARGER content: the shrink
+        // happens between polls, so the parser never observes it. The old
+        // cursor lands mid-line inside the new file — a genuine append can
+        // never do that — so the file must be rescanned from 0.
+        let replacement = """
+        {"type":"session","id":"s1","timestamp":"2026-08-07T11:00:00.000Z"}
+        {"type":"message","id":"b1","timestamp":"2026-08-07T11:00:01.000Z","message":{"role":"assistant","usage":{"input":20,"output":7}}}
+        {"type":"message","id":"b2","timestamp":"2026-08-07T11:00:02.000Z","message":{"role":"assistant","usage":{"input":211,"output":8}}}
+        {"type":"message","id":"b3","timestamp":"2026-08-07T11:00:03.000Z","message":{"role":"assistant","usage":{"input":22,"output":9}}}
+        """
+        XCTAssertGreaterThan(Data(replacement.utf8).count, Data(initial.utf8).count,
+                             "regrown file must be larger than the old cursor")
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.truncate(atOffset: 0)
+        try fh.write(contentsOf: Data(replacement.utf8))
+        try fh.close()
+
+        let second = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(second.turns.count, 3, "rewritten events must be re-read from 0, not skipped")
+        XCTAssertTrue(second.turns.allSatisfy { $0.eventID?.contains(":b") == true })
+        XCTAssertTrue(db.insertTurns(second.turns))
+        XCTAssertEqual(db.totals(from: 0, to: Int64.max, tool: .omp).count, 5,
+                       "old events deduped; all three rewritten events imported")
+    }
 
     func testMissingMessageIDsUseDistinctContentIdentity() throws {
         let path = FileManager.default.temporaryDirectory

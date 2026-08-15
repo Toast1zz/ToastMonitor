@@ -16,6 +16,10 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
         var response: URLResponse?
         var data = Data()
         var overflowed = false
+        /// Set when willPerformHTTPRedirection rejected a redirect for this
+        /// task; turns the generic NSURLErrorCancelled into a descriptive
+        /// error at completion.
+        var redirectBlocked = false
 
         init(maxBytes: Int, completion: @escaping (Data?, URLResponse?, Error?) -> Void) {
             self.maxBytes = max(1, maxBytes)
@@ -44,6 +48,9 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
+        lock.lock()
+        tasks[task.taskIdentifier]?.redirectBlocked = true
+        lock.unlock()
         completionHandler(nil)
     }
 
@@ -96,6 +103,7 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
         let response = state.response
         let data = state.overflowed ? nil : state.data
         let overflowed = state.overflowed
+        let redirectBlocked = state.redirectBlocked
         let completion = state.completion
         let maxBytes = state.maxBytes
         lock.unlock()
@@ -105,6 +113,17 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
                 domain: "ToastMonitor.Network",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Response too large (over \(maxBytes) bytes)"]))
+        } else if redirectBlocked,
+                  let error = error as NSError?,
+                  error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled {
+            // Rejecting a redirect surfaces as a generic -999 cancellation.
+            // Report what actually happened instead of "The operation
+            // couldn't be completed." (a redirect was deliberately blocked so
+            // a Bearer token / auth cookie is never forwarded).
+            completion(nil, response, NSError(
+                domain: "ToastMonitor.Network",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Redirect rejected (HTTP redirect cancelled)"]))
         } else {
             completion(data, response, error)
         }

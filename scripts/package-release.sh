@@ -8,7 +8,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
+# Only an exact tag hit is a release version (see build-app.sh); untagged
+# commits package as 1.0 rather than impersonating the last release.
+TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
 VERSION="${TAG_VERSION#v}"
 if [[ -z "$VERSION" ]]; then VERSION="1.0"; fi
 echo "== packaging ToastMonitor v$VERSION =="
