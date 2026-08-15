@@ -51,15 +51,15 @@ final class SubscriptionMathTests: XCTestCase {
         XCTAssertEqual(info.progress, 20.0 / 30.0, accuracy: 0.001)
     }
 
-    /// Plans without a linked local data source (ChatGPT) must degrade to no
-    /// forecast rather than crashing or fabricating numbers. Codex/Claude/Go
-    /// branches read live quota/turn data and are exercised in the app.
+    /// Plans without a linked data source must degrade to no forecast rather
+    /// than crashing or fabricating numbers. Unknown plan strings hit the
+    /// default branch; ChatGPT/Codex share the OpenAI branch (Codex turns).
     func testUnlinkedPlanForecastIsNil() {
         let start = now.addingTimeInterval(-10 * 86400)
         let end = now.addingTimeInterval(20 * 86400)
-        XCTAssertNil(SubscriptionMath.forecast(plan: "chatgpt", cycleStart: start, cycleEnd: end, now: now),
-                     "ChatGPT has no local data source: forecast must be nil")
-        XCTAssertNil(SubscriptionMath.cycleValue(plan: "chatgpt", cycle: "monthly", cycleStart: start),
-                     "ChatGPT has no cycle value source: value must be nil")
+        XCTAssertNil(SubscriptionMath.forecast(plan: "not-a-plan", cycleStart: start, cycleEnd: end, now: now),
+                     "unknown plans must not fabricate a forecast")
+        XCTAssertNil(SubscriptionMath.cycleValue(plan: "not-a-plan", cycle: "monthly", cycleStart: start),
+                     "unknown plans must not fabricate a value")
     }
 }

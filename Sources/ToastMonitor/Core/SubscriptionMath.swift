@@ -67,8 +67,10 @@ enum SubscriptionMath {
             return Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
                                             to: Int64(Date().timeIntervalSince1970),
                                             tool: "claude")
-        case "codex":
-            // Codex Pro bills the Codex traffic; same API-list-price value.
+        case "openai", "chatgpt", "codex":
+            // OpenAI subscription (ChatGPT and Codex are the same monthly
+            // plan under different names) bills the Codex traffic; value =
+            // what those turns cost at API list prices inside the cycle.
             return Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
                                             to: Int64(Date().timeIntervalSince1970),
                                             tool: "codex")
@@ -172,8 +174,8 @@ enum SubscriptionMath {
             let projected = used + rate * Double(daysLeft)
             return Forecast(used: used, dailyRate: rate, limit: projected,
                             projectedEnd: projected, exhaustDate: nil, isBreakeven: false)
-        case "codex":
-            // Codex Pro: value = Codex turns at API list prices.
+        case "openai", "chatgpt", "codex":
+            // OpenAI subscription: value = Codex turns at API list prices.
             let used = Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
                                                 to: Int64(now.timeIntervalSince1970),
                                                 tool: "codex")

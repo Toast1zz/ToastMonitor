@@ -964,7 +964,13 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         var out = ToolTotals(tool: tool?.rawValue ?? "all", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, count: 0)
         guard let db else { return out }
-        var sql = "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), SUM(cost), COUNT(*) FROM turns WHERE ts>=? AND ts<=?"
+        // Codex billed inside a ChatGPT/Codex subscription is covered by the
+        // subscription's fixed cost; its estimated API price must not also
+        // appear as variable spend (subscriptions pay subscriptions, API pays
+        // API). Tokens stay counted; only the cost sum is zeroed.
+        let codexCovered = codexBilledBySubscription()
+        let costExpr = codexCovered ? "SUM(CASE WHEN tool='codex' THEN 0.0 ELSE cost END)" : "SUM(cost)"
+        var sql = "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), \(costExpr), COUNT(*) FROM turns WHERE ts>=? AND ts<=?"
         if tool != nil { sql += " AND tool=?" }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
@@ -983,6 +989,13 @@ final class Database: @unchecked Sendable {
         return out
     }
 
+    /// True when the user declared Codex usage is covered by a ChatGPT/Codex
+    /// subscription (setting `codex_billing_mode` = "subscription"). In that
+    /// mode Codex estimated costs are excluded from variable spend.
+    func codexBilledBySubscription() -> Bool {
+        setting("codex_billing_mode") == "subscription"
+    }
+
     func totalsByTool(from: Int64, to: Int64) -> [ToolTotals] {
         lock.lock(); defer { lock.unlock() }
         var out: [ToolTotals] = []
@@ -995,14 +1008,19 @@ final class Database: @unchecked Sendable {
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
         sqlite3_bind_int64(stmt, 1, from)
         sqlite3_bind_int64(stmt, 2, to)
+        // Codex cost is covered by a ChatGPT/Codex subscription: keep the
+        // token row but zero its cost so it cannot appear as API spend.
+        let codexCovered = codexBilledBySubscription()
         while sqlite3_step(stmt) == SQLITE_ROW {
+            let tool = String(cString: sqlite3_column_text(stmt, 0))
+            let cost = (codexCovered && tool == "codex") ? 0.0 : sqlite3_column_double(stmt, 5)
             out.append(ToolTotals(
-                tool: String(cString: sqlite3_column_text(stmt, 0)),
+                tool: tool,
                 input: sqlite3_column_int64(stmt, 1),
                 output: sqlite3_column_int64(stmt, 2),
                 cacheRead: sqlite3_column_int64(stmt, 3),
                 cacheWrite: sqlite3_column_int64(stmt, 4),
-                cost: sqlite3_column_double(stmt, 5),
+                cost: cost,
                 count: sqlite3_column_int64(stmt, 6)))
         }
         sqlite3_finalize(stmt)

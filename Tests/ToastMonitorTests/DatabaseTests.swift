@@ -28,6 +28,41 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(ToolKind.codex.totalTokens(input: 100, output: 20, cacheRead: 1_000), 120)
     }
 
+    /// P: Codex billed inside a ChatGPT/Codex subscription must not show up as
+    /// API variable spend: tokens stay counted, cost is zeroed. Switching the
+    /// billing mode back to API restores the cost.
+    func testCodexBillingModeFiltersEstimatedCost() {
+        let now = Int64(Date().timeIntervalSince1970)
+        let codexTurn = TurnRecord(tool: .codex, sessionID: "s-codex", project: nil,
+                                   model: "gpt-5.6-sol", ts: now - 60, inputTokens: 100,
+                                   outputTokens: 50, cacheRead: 0, cacheWrite: 0, cost: 12.5)
+        let claudeTurn = TurnRecord(tool: .claude, sessionID: "s-claude", project: nil,
+                                    model: "claude-sonnet-4-5", ts: now - 60, inputTokens: 100,
+                                    outputTokens: 50, cacheRead: 0, cacheWrite: 0, cost: 3.0)
+        XCTAssertTrue(db.insertTurns([codexTurn, claudeTurn]))
+
+        // Default (API mode): Codex cost is variable spend.
+        let apiTotals = db.totals(from: now - 3600, to: now)
+        XCTAssertEqual(apiTotals.cost, 15.5, accuracy: 0.001)
+        let apiByTool = db.totalsByTool(from: now - 3600, to: now)
+        XCTAssertEqual(apiByTool.first { $0.tool == "codex" }?.cost ?? -1, 12.5, accuracy: 0.001)
+
+        // Subscription mode: Codex cost covered, tokens still counted.
+        XCTAssertTrue(db.setSetting("codex_billing_mode", "subscription"))
+        let subTotals = db.totals(from: now - 3600, to: now)
+        XCTAssertEqual(subTotals.cost, 3.0, accuracy: 0.001, "Codex cost must not appear as variable spend")
+        XCTAssertEqual(subTotals.input, 200, "tokens are still counted")
+        let subByTool = db.totalsByTool(from: now - 3600, to: now)
+        XCTAssertEqual(subByTool.first { $0.tool == "codex" }?.cost ?? -1, 0.0, accuracy: 0.001)
+        XCTAssertEqual(subByTool.first { $0.tool == "codex" }?.input ?? 0, 100, "codex token row survives")
+        XCTAssertEqual(db.codexBilledBySubscription(), true)
+
+        // Back to API mode: cost restored.
+        XCTAssertTrue(db.setSetting("codex_billing_mode", "api"))
+        XCTAssertEqual(db.totals(from: now - 3600, to: now).cost, 15.5, accuracy: 0.001)
+        XCTAssertEqual(db.codexBilledBySubscription(), false)
+    }
+
     // P0-3: 重放去重（同一事件重复导入只保留一条）——当前行为正确。
     func testReplaySameEventDedupes() {
         let t = TurnRecord(tool: .codex, sessionID: "s1", project: nil, model: "gpt-5.6-sol",

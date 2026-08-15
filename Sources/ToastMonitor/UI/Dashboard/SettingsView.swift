@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var sourceGeneration: [ToolKind: Int] = [:]
 
     private let tools = ToolKind.allCases.filter { $0 != .openrouter }
+    /// Codex billing draft: "subscription" (ChatGPT/Codex plan covers the
+    /// usage) or "api" (per-token API spend). Persisted via Database setting.
+    @State private var codexBilling: String = "api"
 
     var body: some View {
         ScrollView {
@@ -27,77 +30,107 @@ struct SettingsView: View {
                     SectionTitle("Data Sources")
 
                     ForEach(tools) { tool in
-                        HStack(spacing: 10) {
-                            Image(systemName: tool.symbol)
-                                .font(TMType.regular(12))
-                                .foregroundStyle(tool.color)
-                                .frame(width: 18)
-                            Text(tool.displayName)
-                                .font(TMType.regular(12.5))
-                                .frame(width: 100, alignment: .leading)
-                            if tool.supportsRemoteSource {
-                                Picker("Source", selection: Binding(
-                                    get: { sources[tool] ?? (tool.defaultSource == "remote") },
-                                    set: { newValue in
-                                    // P0-4: persist immediately (off main thread), show effect.
-                                    let gen = (sourceGeneration[tool] ?? 0) + 1
-                                    sourceGeneration[tool] = gen
-                                    DispatchQueue.global(qos: .userInitiated).async {
-                                        let ok = tool.setSource(remote: newValue)
-                                        DispatchQueue.main.async {
-                                            // Generation guard: a stale write's
-                                            // completion must not overwrite the
-                                            // feedback of a newer one.
-                                            guard sourceGeneration[tool] == gen else { return }
-                                            if ok {
-                                                sources[tool] = newValue
-                                                sourceSaved[tool] = true
-                                                sourceFailed[tool] = nil
-                                            } else {
-                                                // Keep the picker aligned with the
-                                                // effective persisted value after a
-                                                // failed write.
-                                                sources[tool] = tool.sourceIsRemote
-                                                sourceFailed[tool] = true
-                                                sourceSaved[tool] = nil
-                                            }
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                                if sourceSaved[tool] != nil { sourceSaved[tool] = nil }
-                                                if sourceFailed[tool] != nil { sourceFailed[tool] = nil }
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 10) {
+                                Image(systemName: tool.symbol)
+                                    .font(TMType.regular(12))
+                                    .foregroundStyle(tool.color)
+                                    .frame(width: 18)
+                                Text(tool.displayName)
+                                    .font(TMType.regular(12.5))
+                                    .frame(width: 100, alignment: .leading)
+                                if tool.supportsRemoteSource {
+                                    Picker("Source", selection: Binding(
+                                        get: { sources[tool] ?? (tool.defaultSource == "remote") },
+                                        set: { newValue in
+                                        // P0-4: persist immediately (off main thread), show effect.
+                                        let gen = (sourceGeneration[tool] ?? 0) + 1
+                                        sourceGeneration[tool] = gen
+                                        DispatchQueue.global(qos: .userInitiated).async {
+                                            let ok = tool.setSource(remote: newValue)
+                                            DispatchQueue.main.async {
+                                                // Generation guard: a stale write's
+                                                // completion must not overwrite the
+                                                // feedback of a newer one.
+                                                guard sourceGeneration[tool] == gen else { return }
+                                                if ok {
+                                                    sources[tool] = newValue
+                                                    sourceSaved[tool] = true
+                                                    sourceFailed[tool] = nil
+                                                } else {
+                                                    // Keep the picker aligned with the
+                                                    // effective persisted value after a
+                                                    // failed write.
+                                                    sources[tool] = tool.sourceIsRemote
+                                                    sourceFailed[tool] = true
+                                                    sourceSaved[tool] = nil
+                                                }
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                                    if sourceSaved[tool] != nil { sourceSaved[tool] = nil }
+                                                    if sourceFailed[tool] != nil { sourceFailed[tool] = nil }
+                                                }
                                             }
                                         }
+                                        }
+                                    )) {
+                                        Text("Local (Mac)").tag(false)
+                                        Text("Remote (VPS)").tag(true)
                                     }
-                                    }
-                                )) {
-                                    Text("Local (Mac)").tag(false)
-                                    Text("Remote (VPS)").tag(true)
+                                    .pickerStyle(.segmented)
+                                    .labelsHidden()
+                                    .frame(width: 200)
+                                } else {
+                                    Text("Local only")
+                                        .font(TMType.regular(TMType.caption))
+                                        .foregroundStyle(TMDesign.quiet)
+                                        .frame(width: 200, alignment: .leading)
                                 }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                .frame(width: 200)
-                            } else {
-                                Text("Local only")
-                                    .font(TMType.regular(TMType.caption))
+                                Spacer()
+                                // Actual effective value, not the draft.
+                                Text(tool.sourceIsRemote ? "Reads VPS feed" : "Reads local logs")
+                                    .font(TMType.regular(TMType.micro))
                                     .foregroundStyle(TMDesign.quiet)
-                                    .frame(width: 200, alignment: .leading)
+                                if sourceSaved[tool] == true {
+                                    Text("Saved ✓")
+                                        .font(TMType.regular(TMType.micro))
+                                        .foregroundStyle(TMDesign.accent)
+                                }
+                                if sourceFailed[tool] == true {
+                                    Text("Save failed")
+                                        .font(TMType.regular(TMType.micro))
+                                        .foregroundStyle(TMDesign.danger)
+                                }
                             }
-                            Spacer()
-                            // Actual effective value, not the draft.
-                            Text(tool.sourceIsRemote ? "Reads VPS feed" : "Reads local logs")
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.quiet)
-                            if sourceSaved[tool] == true {
-                                Text("Saved ✓")
-                                    .font(TMType.regular(TMType.micro))
-                                    .foregroundStyle(TMDesign.accent)
-                            }
-                            if sourceFailed[tool] == true {
-                                Text("Save failed")
-                                    .font(TMType.regular(TMType.micro))
-                                    .foregroundStyle(TMDesign.danger)
+                            .padding(.vertical, 2)
+
+                            if tool == .codex {
+                                HStack(spacing: 10) {
+                                    Text("Billing")
+                                        .font(TMType.regular(TMType.caption))
+                                        .foregroundStyle(TMDesign.quiet)
+                                        .frame(width: 100, alignment: .leading)
+                                    Picker("Codex billing", selection: $codexBilling) {
+                                        Text("ChatGPT / Codex subscription").tag("subscription")
+                                        Text("API usage (per-token)").tag("api")
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .labelsHidden()
+                                    .frame(width: 320)
+                                    Text(codexBilling == "subscription"
+                                         ? "Codex cost covered by the subscription"
+                                         : "Codex usage billed as API spend")
+                                        .font(TMType.regular(TMType.micro))
+                                        .foregroundStyle(TMDesign.quiet)
+                                }
+                                .padding(.leading, 28)
+                                .onChange(of: codexBilling) { _, newValue in
+                                    let v = newValue
+                                    DispatchQueue.global(qos: .userInitiated).async {
+                                        _ = Database.shared.setSetting("codex_billing_mode", v)
+                                    }
+                                }
                             }
                         }
-                        .padding(.vertical, 2)
                     }
                 }
                 .tmPanelSurface()
@@ -183,6 +216,7 @@ struct SettingsView: View {
             for t in tools {
                 sources[t] = t.sourceIsRemote
             }
+            codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
         }
         .onChange(of: feedURL) { _, _ in
             saved = false
@@ -394,8 +428,7 @@ struct SubscriptionSettingsSection: View {
                     Text("OpenCode Go").tag("go")
                     Text("OpenRouter").tag("openrouter")
                     Text("Claude Pro").tag("claude")
-                    Text("Codex").tag("codex")
-                    Text("ChatGPT").tag("chatgpt")
+                    Text("ChatGPT / Codex").tag("openai")
                 }
                 DatePicker("Start date", selection: $startDate, displayedComponents: .date)
                 Toggle("Has end date", isOn: $hasEndDate)
@@ -494,8 +527,7 @@ struct SubscriptionSettingsSection: View {
         case "go": return "g.circle.fill"
         case "openrouter": return ToolKind.openrouter.symbol
         case "claude": return ToolKind.claude.symbol
-        case "codex": return ToolKind.codex.symbol
-        case "chatgpt": return "bubble.left.and.bubble.right"
+        case "openai", "chatgpt", "codex": return ToolKind.codex.symbol
         default: return "calendar"
         }
     }
@@ -505,8 +537,7 @@ struct SubscriptionSettingsSection: View {
         case "go": return TMDesign.accent
         case "openrouter": return ToolKind.openrouter.color
         case "claude": return ToolKind.claude.color
-        case "codex": return ToolKind.codex.color
-        case "chatgpt": return TMDesign.toolColor(hue: 160, sat: 0.55, bri: 0.62)
+        case "openai", "chatgpt", "codex": return ToolKind.codex.color
         default: return .gray
         }
     }
