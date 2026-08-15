@@ -72,10 +72,23 @@ cd ~/Projects/ToastMonitor
 
 ### Release artifacts
 
+Every release ships the two zips plus a signed update manifest (`appcast.json`)
+that powers in-app updates (Settings → Updates in the menu-bar popover). The
+manifest is Ed25519-signed with a key pair whose private half never leaves the
+maintainer's machine (`~/.config/toastmonitor/update-key.pem`, 0600); the app
+bakes in the public half.
+
 ```bash
-./scripts/package-release.sh   # builds, signs and zips both arm64 and universal apps
-gh release create vX.Y.Z dist/release/*.zip --title "..." --generate-notes
+./scripts/package-release.sh         # builds, signs and zips both arm64 and universal apps
+./scripts/sign-update-manifest.sh 1.2.3 dist/release/ToastMonitor-1.2.3-universal.zip
+cp appcast.json docs/appcast.json && cp appcast.json appcast.json
+git add -A && git commit -m "Publish update manifest for v1.2.3" && git push
+gh release create vX.Y.Z dist/release/*.zip dist/release/appcast.json --title "..." --notes "..."
 ```
+
+- The update feed is hosted on GitHub Pages (`https://toast1zz.github.io/ToastMonitor/appcast.json`, deployed from `docs/` on `main`); short cache headers make a new manifest visible to clients within a minute
+- Manifest `download_url` is tag-pinned (`/releases/download/vX.Y.Z/…`) — note the `v` prefix; `/releases/latest/...` lags fresh releases and raw.githubusercontent caches stale manifests for many minutes
+- Verify the live feed with `curl -s https://toast1zz.github.io/ToastMonitor/appcast.json`
 
 ## Command line (headless / development)
 
