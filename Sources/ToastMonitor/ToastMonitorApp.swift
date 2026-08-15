@@ -571,6 +571,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    /// Dock icon click (or Cmd-Tab activate) while the dashboard is closed
+    /// reopens it, matching regular app behavior once the policy is .regular.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            WindowManager.shared.show()
+        }
+        return true
+    }
 }
 
 // MARK: - Crash signal handler (async-signal-safe)

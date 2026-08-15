@@ -14,9 +14,20 @@ final class WindowManager {
 
     static let visibilityNotification = TMNotifications.dashboardVisibility
 
+    /// The dashboard is a visible app window, so opening it promotes the app
+    /// to a regular (Dock) application; closing or hiding demotes back to a
+    /// menu-bar accessory. Guarding on the current policy makes repeated
+    /// show/hide cheap and avoids AppKit policy churn.
+    private func setDockPresence(_ visible: Bool) {
+        let target: NSApplication.ActivationPolicy = visible ? .regular : .accessory
+        guard NSApp.activationPolicy() != target else { return }
+        NSApp.setActivationPolicy(target)
+    }
+
     func toggle() {
         if let window, window.isVisible {
             window.orderOut(nil)
+            setDockPresence(false)
             NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
         } else {
             show()
@@ -24,6 +35,7 @@ final class WindowManager {
     }
 
     func show(tab: DashboardView.Tab? = nil) {
+        setDockPresence(true)
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -77,6 +89,7 @@ final class WindowManager {
             queue: .main
         ) { _ in
             NotificationCenter.default.post(name: TMNotifications.dashboardVisibility, object: false)
+            self.setDockPresence(false)
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
