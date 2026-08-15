@@ -62,6 +62,22 @@ final class UpdateCheckerTests: XCTestCase {
             Data(base64Encoded: "AAAA")!,
             for: Data(b64.utf8)))
     }
+
+    /// Failures surface user-friendly copy, never raw technical strings, and a
+    /// reachable-but-404 feed reads as a connectivity problem.
+    func testFriendlyMessages() {
+        let network = UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.network("boom"))
+        XCTAssertTrue(network.contains("Unable to check"))
+        XCTAssertFalse(network.contains("boom"))
+
+        let invalidResponse = UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.invalidResponse)
+        XCTAssertTrue(invalidResponse.contains("Unable to check"))
+        XCTAssertFalse(invalidResponse.contains("invalid"))
+
+        XCTAssertTrue(UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.invalidSignature).contains("invalid"))
+        XCTAssertTrue(UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.malformedManifest).contains("invalid"))
+        XCTAssertFalse(UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.malformedManifest).contains("Unable"))
+    }
 }
 
 private extension Data {

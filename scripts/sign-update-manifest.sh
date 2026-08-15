@@ -25,7 +25,10 @@ KEY="$HOME/.config/toastmonitor/update-key.pem"
 if [[ -n "${3:-}" ]]; then
     DOWNLOAD_URL="$3"
 else
-    DOWNLOAD_URL="https://github.com/Toast1zz/ToastMonitor/releases/latest/download/$(basename "$ARCHIVE")"
+    # Fixed per-release URL: `/releases/latest/...` depends on GitHub's latest
+    # resolution, which can lag a freshly published release. A tag-pinned URL
+    # is stable forever and still redirects to the object store over HTTPS.
+    DOWNLOAD_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/$VERSION/$(basename "$ARCHIVE")"
 fi
 [[ "$DOWNLOAD_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
 
@@ -62,7 +65,7 @@ let hex = try! String(contentsOfFile: keyPath, encoding: .utf8)
 let key = try! Curve25519.Signing.PrivateKey(rawRepresentation: Data(hex: hex))
 let payload = try! String(contentsOfFile: "/tmp/tm-sign-input.txt", encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines)
-print(key.signature(for: Data(payload.utf8)).base64EncodedString())
+print(try! key.signature(for: Data(payload.utf8)).base64EncodedString())
 ' 2>/dev/null | tail -1)
 
 printf '{"payload":"%s","signature":"%s"}\n' "$B64" "$SIGN" > appcast.json

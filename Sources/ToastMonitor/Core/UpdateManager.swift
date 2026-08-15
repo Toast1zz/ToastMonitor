@@ -16,9 +16,11 @@ import Foundation
 final class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
 
-    /// HTTPS metadata endpoint shipped with the app; release artifacts are
-    /// attached to GitHub Releases under this fixed name.
-    static let endpoint = URL(string: "https://github.com/Toast1zz/ToastMonitor/releases/latest/download/appcast.json")!
+    /// HTTPS metadata endpoint shipped with the app. The signed manifest is
+    /// committed to the repository (main branch) by the release process; a
+    /// fixed raw URL avoids GitHub's `/releases/latest` resolution, which can
+    /// lag newly published releases.
+    static let endpoint = URL(string: "https://raw.githubusercontent.com/Toast1zz/ToastMonitor/main/appcast.json")!
     /// Ed25519 public key (raw, 32 bytes) of the release signing key.
     static let publicKey = Data(hex: "4381a84e55358fe6a10dbd58be54a10e7b16b7f7d9b2c290e42ea6c5125b1d70")
 
@@ -48,15 +50,18 @@ final class UpdateManager: ObservableObject {
     }
 
     /// Called once at launch; no-op unless the auto-check setting is on.
+    /// Failures are silent: an unavailable feed must never disturb the user,
+    /// only a verified newer version may surface.
     func startAutoCheckIfEnabled() {
         guard !autoCheckStarted, Self.autoCheckEnabled else { return }
         autoCheckStarted = true
-        Task { await check() }
+        Task { await check(silentFailure: true) }
     }
 
     /// Manual or automatic check. `force` bypasses the auto setting for the
-    /// manual button; auto checks are always non-forced.
-    func check(force: Bool = false) async {
+    /// manual button; `silentFailure` keeps errors from reaching the UI
+    /// (auto-checks), while a manual check explains what happened.
+    func check(force: Bool = false, silentFailure: Bool = false) async {
         guard !checking, !installing else { return }
         if !force, !Self.autoCheckEnabled { return }
         checking = true
@@ -66,13 +71,33 @@ final class UpdateManager: ObservableObject {
             let found = try await UpdateChecker.check(
                 endpoint: Self.endpoint,
                 currentVersion: currentVersion,
-                publicKey: Self.publicKey)
+                publicKey: Self.publicKey,
+                timeout: 5)
             available = found
             lastCheckAt = Date()
         } catch {
-            lastError = (error as? UpdateChecker.CheckError)?.errorDescription
-                ?? "Update check failed"
+            lastError = silentFailure ? nil : Self.friendlyMessage(for: error)
             available = nil
+        }
+    }
+
+    /// Maps low-level check failures to user-facing copy. A 404 or network
+    /// trouble is "couldn't reach the feed", never a raw technical string.
+    nonisolated static func friendlyMessage(for error: Error) -> String {
+        guard let checkError = error as? UpdateChecker.CheckError else {
+            return "Unable to check for updates. Try again later."
+        }
+        switch checkError {
+        case .invalidResponse, .network:
+            return "Unable to check for updates — check your connection and try again."
+        case .invalidEndpoint, .invalidDownloadURL:
+            return "Update service is misconfigured."
+        case .malformedManifest, .invalidSignature:
+            return "Update feed is invalid. Try again later."
+        case .responseTooLarge, .artifactTooLarge:
+            return "Update feed is too large."
+        case .invalidVersion:
+            return "Update version info is invalid."
         }
     }
 

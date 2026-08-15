@@ -63,7 +63,7 @@ enum UpdateChecker {
         endpoint: URL,
         currentVersion: String,
         publicKey: Data,
-        timeout: TimeInterval = 10
+        timeout: TimeInterval = 5
     ) async throws -> AvailableUpdate? {
         guard isHTTPS(endpoint), endpoint.user == nil else { throw CheckError.invalidEndpoint }
         guard let current = semanticVersion(currentVersion),
