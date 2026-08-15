@@ -62,6 +62,13 @@ final class LaunchAtLoginSettings: ObservableObject {
 struct PopoverSettingsView: View {
     @ObservedObject private var launch = LaunchAtLoginSettings.shared
     @ObservedObject private var updates = UpdateManager.shared
+    /// Optimistic local mirrors of the persisted settings so a toggle flips
+    /// instantly; the database write happens off the main thread (the shared
+    /// DB lock can be held by background scans, which made synchronous writes
+    /// feel like a ~1s delay).
+    @State private var closeOnResign: Bool = PanelController.dismissOnResign
+    @State private var dockIconOn: Bool = WindowManager.dockIconEnabled
+    @State private var autoCheckOn: Bool = UpdateManager.autoCheckEnabled
     let onBack: () -> Void
 
     var body: some View {
@@ -91,7 +98,12 @@ struct PopoverSettingsView: View {
         }
         .frame(width: 400)
         .environment(\.controlSize, .small)
-        .onAppear { launch.refresh() }
+        .onAppear {
+            launch.refresh()
+            closeOnResign = PanelController.dismissOnResign
+            dockIconOn = WindowManager.dockIconEnabled
+            autoCheckOn = UpdateManager.autoCheckEnabled
+        }
         .onReceive(NotificationCenter.default.publisher(for: PanelController.settingsBackNotification)) { _ in
             onBack()
         }
@@ -151,25 +163,32 @@ struct PopoverSettingsView: View {
             .font(.system(size: 12.5, weight: .medium))
             .accessibilityHint("Open ToastMonitor in the menu bar when you sign in")
 
-            Toggle("Close when clicking elsewhere", isOn: Binding(
-                get: { PanelController.dismissOnResign },
-                set: { Database.shared.setSetting(
-                    PanelController.dismissOnResignKey, $0 ? "1" : "0") }
-            ))
-            .toggleStyle(TMSwitchStyle())
-            .font(.system(size: 12.5, weight: .medium))
-            .accessibilityHint("Keep the panel open when you click other windows or apps")
-
-            Toggle("Show icon in Dock when the dashboard is open", isOn: Binding(
-                get: { WindowManager.dockIconEnabled },
-                set: { newValue in
-                    Database.shared.setSetting(WindowManager.dockIconSetting, newValue ? "1" : "0")
-                    WindowManager.shared.refreshDockPresence()
+            Toggle("Close when clicking elsewhere", isOn: $closeOnResign)
+                .toggleStyle(TMSwitchStyle())
+                .font(.system(size: 12.5, weight: .medium))
+                .accessibilityHint("Keep the panel open when you click other windows or apps")
+                .onChange(of: closeOnResign) { _, newValue in
+                    // Persisted off the main thread; the panel reads the
+                    // setting per event, so it applies immediately after.
+                    let v = newValue ? "1" : "0"
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        _ = Database.shared.setSetting(PanelController.dismissOnResignKey, v)
+                    }
                 }
-            ))
-            .toggleStyle(TMSwitchStyle())
-            .font(.system(size: 12.5, weight: .medium))
-            .accessibilityHint("Appear as a Dock application while the dashboard window is open")
+
+            Toggle("Show icon in Dock when the dashboard is open", isOn: $dockIconOn)
+                .toggleStyle(TMSwitchStyle())
+                .font(.system(size: 12.5, weight: .medium))
+                .accessibilityHint("Appear as a Dock application while the dashboard window is open")
+                .onChange(of: dockIconOn) { _, newValue in
+                    let v = newValue ? "1" : "0"
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        _ = Database.shared.setSetting(WindowManager.dockIconSetting, v)
+                    }
+                    // Policy switch is cheap; do it now so the Dock reacts
+                    // immediately, using the optimistic value, not the DB.
+                    WindowManager.shared.applyDockIconSetting(newValue)
+                }
 
             if let msg = launch.message {
                 Text(msg)
@@ -187,21 +206,31 @@ struct PopoverSettingsView: View {
                 .font(.system(size: TMType.caption, weight: .semibold))
                 .foregroundStyle(TMDesign.quiet)
 
-            Toggle("Automatically check for updates", isOn: Binding(
-                get: { UpdateManager.autoCheckEnabled },
-                set: { Database.shared.setSetting(
-                    UpdateManager.autoCheckSetting, $0 ? "1" : "0") }
-            ))
-            .toggleStyle(TMSwitchStyle())
-            .font(.system(size: 12.5, weight: .medium))
-            .accessibilityHint("Check for new versions in the background at launch")
+            Toggle("Automatically check for updates", isOn: $autoCheckOn)
+                .toggleStyle(TMSwitchStyle())
+                .font(.system(size: 12.5, weight: .medium))
+                .accessibilityHint("Check for new versions in the background at launch")
+                .onChange(of: autoCheckOn) { _, newValue in
+                    let v = newValue ? "1" : "0"
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        _ = Database.shared.setSetting(UpdateManager.autoCheckSetting, v)
+                    }
+                    // Turning auto-check on starts the launch + 24h cadence
+                    // immediately (including one check right away).
+                    if newValue {
+                        UpdateManager.shared.startAutoCheckIfEnabled()
+                    }
+                }
 
             HStack(spacing: 8) {
-                Button("Check for Updates…") {
+                // Ellipsis only while a check is actually running; a static
+                // "…" after a finished check reads as "still checking".
+                Button(updates.checking ? "Checking…" : "Check for Updates") {
                     Task { await UpdateManager.shared.check(force: true) }
                 }
                 .buttonStyle(.borderless)
                 .font(.system(size: 12))
+                .disabled(updates.checking)
 
                 if updates.checking {
                     ProgressView()

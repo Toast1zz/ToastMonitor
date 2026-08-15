@@ -53,11 +53,20 @@ final class UpdateManager: ObservableObject {
 
     /// Called once at launch; no-op unless the auto-check setting is on.
     /// Failures are silent: an unavailable feed must never disturb the user,
-    /// only a verified newer version may surface.
+    /// only a verified newer version may surface. While the app keeps running
+    /// (menu-bar apps run for days), a background check repeats at most once
+    /// per 24 hours so a new release is noticed without a restart.
     func startAutoCheckIfEnabled() {
-        guard !autoCheckStarted, Self.autoCheckEnabled else { return }
+        guard !autoCheckStarted else { return }
         autoCheckStarted = true
-        Task { await check(silentFailure: true) }
+        Task {
+            await check(silentFailure: true)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(24 * 60 * 60))
+                guard Self.autoCheckEnabled else { continue }
+                await check(silentFailure: true)
+            }
+        }
     }
 
     /// Manual or automatic check. `force` bypasses the auto setting for the

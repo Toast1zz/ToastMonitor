@@ -27,12 +27,28 @@ final class WindowManager {
     /// menu-bar accessory. Guarding on the current policy makes repeated
     /// show/hide cheap and avoids AppKit policy churn.
     private func setDockPresence(_ visible: Bool) {
+        applyPolicy(showDock: visible && Self.dockIconEnabled)
+    }
+
+    /// Applies the Dock policy for the current window visibility and the
+    /// given Dock-icon preference (the setting itself is persisted by the
+    /// caller, so this never blocks on a database read).
+    func applyDockIconSetting(_ enabled: Bool) {
+        applyPolicy(showDock: (window?.isVisible ?? false) && enabled)
+    }
+
+    /// Re-applies the Dock policy from the current window state and setting;
+    /// called when the setting changes while the dashboard is open.
+    func refreshDockPresence() {
+        applyPolicy(showDock: (window?.isVisible ?? false) && Self.dockIconEnabled)
+    }
+
+    private func applyPolicy(showDock: Bool) {
         // The main menu is built once and keeps Cmd+W/Cmd+Q/Edit working even
         // when the Dock icon is disabled (accessory apps get no menu bar, but
         // the menu's key equivalents still route through the app).
         ensureMainMenu()
-        let target: NSApplication.ActivationPolicy =
-            (visible && Self.dockIconEnabled) ? .regular : .accessory
+        let target: NSApplication.ActivationPolicy = showDock ? .regular : .accessory
         guard NSApp.activationPolicy() != target else { return }
         if target == .regular {
             NSApp.setActivationPolicy(.regular)
@@ -44,12 +60,6 @@ final class WindowManager {
             // surface but forces the switcher to drop us now.
             NSApp.hide(nil)
         }
-    }
-
-    /// Re-applies the Dock policy from the current window state and setting;
-    /// called when the setting changes while the dashboard is open.
-    func refreshDockPresence() {
-        setDockPresence(window?.isVisible ?? false)
     }
 
     /// Builds the standard application menu once. The app runs without a
