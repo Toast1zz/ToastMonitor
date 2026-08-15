@@ -222,22 +222,12 @@ struct PopoverSettingsView: View {
                     }
                 }
 
-            HStack(spacing: 8) {
-                // Ellipsis only while a check is actually running; a static
-                // "…" after a finished check reads as "still checking".
-                Button(updates.checking ? "Checking…" : "Check for Updates") {
-                    Task { await UpdateManager.shared.check(force: true) }
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 12))
-                .disabled(updates.checking)
-
+            HStack(spacing: 10) {
                 if updates.checking {
-                    ProgressView()
+                    Button("Checking…") {}
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
-                    Text("Checking…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .disabled(true)
                 } else if let update = updates.available {
                     Text("ToastMonitor \(update.version) is available")
                         .font(.system(size: 11))
@@ -247,15 +237,28 @@ struct PopoverSettingsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                } else if let error = updates.lastError {
-                    Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(TMDesign.danger)
-                        .lineLimit(2)
-                } else if updates.lastCheckAt != nil {
-                    Text("You're up to date")
-                        .font(.system(size: 11))
-                        .foregroundStyle(TMDesign.quiet)
+                } else {
+                    // A real button (bordered + icon), not bare text, so it
+                    // reads as the manual trigger; it stays visible after a
+                    // check so a re-check is always one click away.
+                    Button {
+                        Task { await UpdateManager.shared.check(force: true) }
+                    } label: {
+                        Label("Check for Updates", systemImage: "arrow.clockwise")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    if let error = updates.lastError {
+                        Text(error)
+                            .font(.system(size: 11))
+                            .foregroundStyle(TMDesign.danger)
+                            .lineLimit(2)
+                    } else if updates.lastCheckAt != nil {
+                        Text("You're up to date")
+                            .font(.system(size: 11))
+                            .foregroundStyle(TMDesign.quiet)
+                    }
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
