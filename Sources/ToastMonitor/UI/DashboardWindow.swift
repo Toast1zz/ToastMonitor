@@ -1,5 +1,4 @@
 import AppKit
-import CoreServices
 import SwiftUI
 
 /// Owns the dashboard window (single instance, close = hide).
@@ -24,6 +23,10 @@ final class WindowManager {
         guard NSApp.activationPolicy() != target else { return }
         if visible {
             NSApp.setActivationPolicy(.regular)
+            // A regular app needs a real main menu: Cmd+W (Close Window),
+            // Cmd+Q (Quit), and the Edit menu that makes Cmd+C/V/X work in
+            // dashboard text fields. Without it those shortcuts are dead.
+            ensureMainMenu()
         } else {
             NSApp.setActivationPolicy(.accessory)
             // Demoting is asynchronous on some macOS versions; without this
@@ -31,33 +34,62 @@ final class WindowManager {
             // Hiding with no visible windows is a no-op for the menu-bar
             // surface but forces the switcher to drop us now.
             NSApp.hide(nil)
-            // The Dock's "Recent applications" list (right-click Dock →
-            // Recent Applications) records any app that ran as a regular
-            // application; demoting to .accessory does NOT clear that record,
-            // so closing the dashboard removes it explicitly.
-            removeSelfFromDockRecents()
         }
     }
 
-    /// Removes this app from the Dock's "Recent applications" list via the
-    /// public LaunchServices API (kLSSharedFileListRecentApplicationItems).
-    /// The Dock persists that record independently of the activation policy,
-    /// so the app must clean it up itself when the dashboard closes.
-    private func removeSelfFromDockRecents() {
-        let recentKey = kLSSharedFileListRecentApplicationItems.takeRetainedValue()
-        guard let list = LSSharedFileListCreate(nil, recentKey, nil)?.takeRetainedValue(),
-              let snapshot = LSSharedFileListCopySnapshot(list, nil)?.takeRetainedValue()
-        else { return }
-        let items = snapshot as? [LSSharedFileListItem] ?? []
-        let myPath = Bundle.main.bundleURL.standardizedFileURL.path
-        for item in items {
-            var error: Unmanaged<CFError>?
-            guard let resolved = LSSharedFileListItemCopyResolvedURL(
-                item, 0, &error)?.takeRetainedValue() else { continue }
-            let itemPath = (resolved as URL).standardizedFileURL.path
-            guard itemPath == myPath else { continue }
-            LSSharedFileListItemRemove(list, item)
-        }
+    /// Builds the standard application menu once. The app runs without a
+    /// main menu in menu-bar (accessory) mode; the dashboard is a regular
+    /// window, so it gets the usual menus while open.
+    private func ensureMainMenu() {
+        guard NSApp.mainMenu == nil else { return }
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "About ToastMonitor",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide ToastMonitor",
+                        action: #selector(NSApplication.hide(_:)),
+                        keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit ToastMonitor",
+                        action: #selector(NSApplication.terminate(_:)),
+                        keyEquivalent: "q")
+
+        let fileItem = NSMenuItem()
+        mainMenu.addItem(fileItem)
+        let fileMenu = NSMenu(title: "File")
+        fileItem.submenu = fileMenu
+        fileMenu.addItem(withTitle: "Close Window",
+                         action: #selector(NSWindow.performClose(_:)),
+                         keyEquivalent: "w")
+
+        // Cmd+C/V/X/A and Undo/Redo resolve through the responder chain; the
+        // dashboard's SwiftUI text fields need these menu items to exist.
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Minimize",
+                           action: #selector(NSWindow.performMiniaturize(_:)),
+                           keyEquivalent: "m")
+
+        NSApp.mainMenu = mainMenu
     }
 
     func toggle() {
