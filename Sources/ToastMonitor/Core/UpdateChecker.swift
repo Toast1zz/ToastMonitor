@@ -37,7 +37,7 @@ enum UpdateChecker {
         }
     }
 
-    private struct Envelope: Decodable {
+    struct Envelope: Decodable {
         let payload: String
         let signature: String
     }
@@ -85,10 +85,22 @@ enum UpdateChecker {
             throw CheckError.invalidResponse
         }
         let envelope: Envelope
-        let payload: Payload
         do {
             envelope = try JSONDecoder().decode(Envelope.self, from: data)
-            guard let payloadData = envelope.payload.data(using: .utf8) else {
+        } catch {
+            throw CheckError.malformedManifest
+        }
+        return try parseEnvelope(envelope, publicKey: publicKey, current: current)
+    }
+
+    /// Verifies one envelope (the payload is base64-encoded JSON, signed via
+    /// the payload's base64 text) and returns the update when newer.
+    static func parseEnvelope(_ envelope: Envelope, publicKey: Data, current: [Int]) throws -> AvailableUpdate? {
+        let payload: Payload
+        do {
+            // The release script base64-encodes the JSON payload; decoding the
+            // base64 first is what makes the manifest parse at all.
+            guard let payloadData = Data(base64Encoded: envelope.payload) else {
                 throw CheckError.malformedManifest
             }
             payload = try JSONDecoder().decode(Payload.self, from: payloadData)
