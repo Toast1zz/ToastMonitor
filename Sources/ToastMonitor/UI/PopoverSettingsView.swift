@@ -61,6 +61,7 @@ final class LaunchAtLoginSettings: ObservableObject {
 /// 只放前端/外观类设置；订阅、凭据、来源等数据配置一律在主面板。
 struct PopoverSettingsView: View {
     @ObservedObject private var launch = LaunchAtLoginSettings.shared
+    @ObservedObject private var updates = UpdateManager.shared
     let onBack: () -> Void
 
     var body: some View {
@@ -74,6 +75,7 @@ struct PopoverSettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     generalSection
+                    updatesSection
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
@@ -162,6 +164,66 @@ struct PopoverSettingsView: View {
                 Text(msg)
                     .font(.system(size: 11))
                     .foregroundStyle(TMDesign.danger)
+            }
+        }
+    }
+
+    // MARK: - 更新
+
+    private var updatesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Updates")
+                .font(.system(size: TMType.caption, weight: .semibold))
+                .foregroundStyle(TMDesign.quiet)
+
+            Toggle("Automatically check for updates", isOn: Binding(
+                get: { UpdateManager.autoCheckEnabled },
+                set: { Database.shared.setSetting(
+                    UpdateManager.autoCheckSetting, $0 ? "1" : "0") }
+            ))
+            .toggleStyle(TMSwitchStyle())
+            .font(.system(size: 12.5, weight: .medium))
+            .accessibilityHint("Check for new versions in the background at launch")
+
+            HStack(spacing: 8) {
+                Button("Check for Updates…") {
+                    Task { await UpdateManager.shared.check(force: true) }
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 12))
+
+                if updates.checking {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Checking…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else if let update = updates.available {
+                    Text("ToastMonitor \(update.version) is available")
+                        .font(.system(size: 11))
+                        .foregroundStyle(TMDesign.accent)
+                    Button("Download & Install") {
+                        Task { await UpdateManager.shared.installAndRelaunch() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                } else if let error = updates.lastError {
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundStyle(TMDesign.danger)
+                        .lineLimit(2)
+                } else if updates.lastCheckAt != nil {
+                    Text("You're up to date")
+                        .font(.system(size: 11))
+                        .foregroundStyle(TMDesign.quiet)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+
+            if updates.installing {
+                Text("Downloading, verifying and installing…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
         }
     }

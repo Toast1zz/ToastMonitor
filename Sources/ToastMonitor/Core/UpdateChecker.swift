@@ -127,6 +127,20 @@ enum UpdateChecker {
         sha256 expected: String,
         timeout: TimeInterval = 30
     ) async throws -> Bool {
+        let file = try await downloadArtifact(at: url, sha256: expected, timeout: timeout)
+        defer { try? FileManager.default.removeItem(at: file) }
+        return true
+    }
+
+    /// Downloads the signed artifact to a temporary file, streaming and
+    /// verifying its SHA-256 without ever opening or executing it. The
+    /// temporary file is left in place for the caller (the installer); callers
+    /// that only verify should remove it (see `verifyArtifact`).
+    static func downloadArtifact(
+        at url: URL,
+        sha256 expected: String,
+        timeout: TimeInterval = 30
+    ) async throws -> URL {
         guard isHTTPS(url), url.user == nil,
               expected.count == 64, expected.allSatisfy({ $0.isHexDigit }) else {
             throw CheckError.invalidDownloadURL
@@ -150,15 +164,16 @@ enum UpdateChecker {
             if delegate.exceededLimit { throw CheckError.artifactTooLarge }
             throw CheckError.network(error.localizedDescription)
         }
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
               let finalURL = http.url, isHTTPS(finalURL) else {
+            try? FileManager.default.removeItem(at: temporaryURL)
             throw CheckError.invalidResponse
         }
         let values = try temporaryURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
         guard values.isRegularFile == true, let size = values.fileSize,
               Int64(size) <= artifactLimit else {
+            try? FileManager.default.removeItem(at: temporaryURL)
             throw CheckError.artifactTooLarge
         }
         let handle = try FileHandle(forReadingFrom: temporaryURL)
@@ -168,7 +183,11 @@ enum UpdateChecker {
             hasher.update(data: chunk)
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        return digest == expected.lowercased()
+        guard digest == expected.lowercased() else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw CheckError.invalidSignature
+        }
+        return temporaryURL
     }
 
     private static func fetch(_ url: URL, timeout: TimeInterval, limit: Int) async throws -> (Data, URLResponse) {
@@ -200,7 +219,7 @@ enum UpdateChecker {
         }
     }
 
-    private static func semanticVersion(_ value: String) -> [Int]? {
+    static func semanticVersion(_ value: String) -> [Int]? {
         guard validText(value, maxBytes: 64) else { return nil }
         let parts = value.split(separator: ".", omittingEmptySubsequences: false)
         guard (2...3).contains(parts.count), parts.allSatisfy({ $0.allSatisfy { $0.isNumber } }) else {
@@ -210,7 +229,7 @@ enum UpdateChecker {
         return numbers.count == parts.count ? numbers : nil
     }
 
-    private static func isNewer(_ lhs: [Int], than rhs: [Int]) -> Bool {
+    static func isNewer(_ lhs: [Int], than rhs: [Int]) -> Bool {
         for index in 0..<max(lhs.count, rhs.count) {
             let left = index < lhs.count ? lhs[index] : 0
             let right = index < rhs.count ? rhs[index] : 0

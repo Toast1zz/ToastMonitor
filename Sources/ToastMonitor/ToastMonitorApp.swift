@@ -364,6 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CodexQuotaClient.shared.start()
         HermesRemoteClient.shared.start()
         setupMenuBar()
+        UpdateManager.shared.startAutoCheckIfEnabled()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             AppState.shared.refresh()
         }
