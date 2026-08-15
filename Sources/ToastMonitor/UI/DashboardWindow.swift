@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import SwiftUI
 
 /// Owns the dashboard window (single instance, close = hide).
@@ -26,10 +27,36 @@ final class WindowManager {
         } else {
             NSApp.setActivationPolicy(.accessory)
             // Demoting is asynchronous on some macOS versions; without this
-            // the app icon can linger in the app switcher / recent tasks for
-            // a second or two. Hiding with no visible windows is a no-op for
-            // the menu-bar surface but forces the switcher to drop us now.
+            // the app icon can linger in the app switcher for a second or two.
+            // Hiding with no visible windows is a no-op for the menu-bar
+            // surface but forces the switcher to drop us now.
             NSApp.hide(nil)
+            // The Dock's "Recent applications" list (right-click Dock →
+            // Recent Applications) records any app that ran as a regular
+            // application; demoting to .accessory does NOT clear that record,
+            // so closing the dashboard removes it explicitly.
+            removeSelfFromDockRecents()
+        }
+    }
+
+    /// Removes this app from the Dock's "Recent applications" list via the
+    /// public LaunchServices API (kLSSharedFileListRecentApplicationItems).
+    /// The Dock persists that record independently of the activation policy,
+    /// so the app must clean it up itself when the dashboard closes.
+    private func removeSelfFromDockRecents() {
+        let recentKey = kLSSharedFileListRecentApplicationItems.takeRetainedValue()
+        guard let list = LSSharedFileListCreate(nil, recentKey, nil)?.takeRetainedValue(),
+              let snapshot = LSSharedFileListCopySnapshot(list, nil)?.takeRetainedValue()
+        else { return }
+        let items = snapshot as? [LSSharedFileListItem] ?? []
+        let myPath = Bundle.main.bundleURL.standardizedFileURL.path
+        for item in items {
+            var error: Unmanaged<CFError>?
+            guard let resolved = LSSharedFileListItemCopyResolvedURL(
+                item, 0, &error)?.takeRetainedValue() else { continue }
+            let itemPath = (resolved as URL).standardizedFileURL.path
+            guard itemPath == myPath else { continue }
+            LSSharedFileListItemRemove(list, item)
         }
     }
 
