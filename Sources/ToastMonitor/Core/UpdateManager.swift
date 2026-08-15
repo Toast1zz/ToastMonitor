@@ -17,10 +17,12 @@ final class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
 
     /// HTTPS metadata endpoint shipped with the app. The signed manifest is
-    /// committed to the repository (main branch) by the release process; a
-    /// fixed raw URL avoids GitHub's `/releases/latest` resolution, which can
-    /// lag newly published releases.
-    static let endpoint = URL(string: "https://raw.githubusercontent.com/Toast1zz/ToastMonitor/main/appcast.json")!
+    /// hosted on GitHub Pages (deployed from docs/ on main) and refreshed by
+    /// the release process. GitHub Pages serves short-lived cache headers, so
+    /// a freshly published manifest is visible to clients within a minute —
+    /// unlike raw.githubusercontent.com (long CDN cache) or /releases/latest
+    /// (resolution lag), both of which showed stale data in practice.
+    static let endpoint = URL(string: "https://toast1zz.github.io/ToastMonitor/appcast.json")!
     /// Ed25519 public key (raw, 32 bytes) of the release signing key.
     static let publicKey = Data(hex: "4381a84e55358fe6a10dbd58be54a10e7b16b7f7d9b2c290e42ea6c5125b1d70")
 
