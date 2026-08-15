@@ -160,6 +160,17 @@ struct PopoverSettingsView: View {
             .font(.system(size: 12.5, weight: .medium))
             .accessibilityHint("Keep the panel open when you click other windows or apps")
 
+            Toggle("Show icon in Dock when the dashboard is open", isOn: Binding(
+                get: { WindowManager.dockIconEnabled },
+                set: { newValue in
+                    Database.shared.setSetting(WindowManager.dockIconSetting, newValue ? "1" : "0")
+                    WindowManager.shared.refreshDockPresence()
+                }
+            ))
+            .toggleStyle(TMSwitchStyle())
+            .font(.system(size: 12.5, weight: .medium))
+            .accessibilityHint("Appear as a Dock application while the dashboard window is open")
+
             if let msg = launch.message {
                 Text(msg)
                     .font(.system(size: 11))

@@ -14,19 +14,28 @@ final class WindowManager {
 
     static let visibilityNotification = TMNotifications.dashboardVisibility
 
+    /// Setting key: "1" (default) shows a Dock icon while the dashboard is
+    /// open; "0" keeps the app a pure menu-bar accessory even then.
+    static let dockIconSetting = "dock_icon_on_dashboard"
+
+    static var dockIconEnabled: Bool {
+        Database.shared.setting(dockIconSetting) ?? "1" == "1"
+    }
+
     /// The dashboard is a visible app window, so opening it promotes the app
     /// to a regular (Dock) application; closing or hiding demotes back to a
     /// menu-bar accessory. Guarding on the current policy makes repeated
     /// show/hide cheap and avoids AppKit policy churn.
     private func setDockPresence(_ visible: Bool) {
-        let target: NSApplication.ActivationPolicy = visible ? .regular : .accessory
+        // The main menu is built once and keeps Cmd+W/Cmd+Q/Edit working even
+        // when the Dock icon is disabled (accessory apps get no menu bar, but
+        // the menu's key equivalents still route through the app).
+        ensureMainMenu()
+        let target: NSApplication.ActivationPolicy =
+            (visible && Self.dockIconEnabled) ? .regular : .accessory
         guard NSApp.activationPolicy() != target else { return }
-        if visible {
+        if target == .regular {
             NSApp.setActivationPolicy(.regular)
-            // A regular app needs a real main menu: Cmd+W (Close Window),
-            // Cmd+Q (Quit), and the Edit menu that makes Cmd+C/V/X work in
-            // dashboard text fields. Without it those shortcuts are dead.
-            ensureMainMenu()
         } else {
             NSApp.setActivationPolicy(.accessory)
             // Demoting is asynchronous on some macOS versions; without this
@@ -35,6 +44,12 @@ final class WindowManager {
             // surface but forces the switcher to drop us now.
             NSApp.hide(nil)
         }
+    }
+
+    /// Re-applies the Dock policy from the current window state and setting;
+    /// called when the setting changes while the dashboard is open.
+    func refreshDockPresence() {
+        setDockPresence(window?.isVisible ?? false)
     }
 
     /// Builds the standard application menu once. The app runs without a
@@ -351,14 +366,25 @@ private final class DashboardPageController: NSViewController {
         attach(initialTab)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
-            guard let self, event.window == self.view.window,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                  let raw = event.charactersIgnoringModifiers,
-                  let number = Int(raw), (1...DashboardView.Tab.allCases.count).contains(number)
+            guard let self, event.window == self.view.window else { return event }
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard modifiers == .command,
+                  let raw = event.charactersIgnoringModifiers
             else { return event }
-            let tab = DashboardView.Tab.allCases[number - 1]
-            self.select(tab)
-            return nil
+            // Cmd+1…4 switch pages; Cmd+W closes the window. The menu-bar
+            // equivalent may not route when the Dock icon is disabled, so
+            // handle Cmd+W here as a fallback.
+            if let number = Int(raw),
+               (1...DashboardView.Tab.allCases.count).contains(number) {
+                let tab = DashboardView.Tab.allCases[number - 1]
+                self.select(tab)
+                return nil
+            }
+            if raw.lowercased() == "w" {
+                self.view.window?.performClose(nil)
+                return nil
+            }
+            return event
         }
     }
 
