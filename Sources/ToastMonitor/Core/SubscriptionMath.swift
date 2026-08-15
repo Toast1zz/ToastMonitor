@@ -67,6 +67,11 @@ enum SubscriptionMath {
             return Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
                                             to: Int64(Date().timeIntervalSince1970),
                                             tool: "claude")
+        case "codex":
+            // Codex Pro bills the Codex traffic; same API-list-price value.
+            return Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
+                                            to: Int64(Date().timeIntervalSince1970),
+                                            tool: "codex")
         default:
             return nil
         }
@@ -163,6 +168,15 @@ enum SubscriptionMath {
             let used = Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
                                                 to: Int64(now.timeIntervalSince1970),
                                                 tool: "claude")
+            let rate = used / Double(daysElapsed)
+            let projected = used + rate * Double(daysLeft)
+            return Forecast(used: used, dailyRate: rate, limit: projected,
+                            projectedEnd: projected, exhaustDate: nil, isBreakeven: false)
+        case "codex":
+            // Codex Pro: value = Codex turns at API list prices.
+            let used = Database.shared.apiValue(from: Int64(cycleStart.timeIntervalSince1970),
+                                                to: Int64(now.timeIntervalSince1970),
+                                                tool: "codex")
             let rate = used / Double(daysElapsed)
             let projected = used + rate * Double(daysLeft)
             return Forecast(used: used, dailyRate: rate, limit: projected,

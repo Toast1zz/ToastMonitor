@@ -50,4 +50,16 @@ final class SubscriptionMathTests: XCTestCase {
         XCTAssertEqual(info.dayOfCycle, 21, "20 days elapsed → 1-based day 21")
         XCTAssertEqual(info.progress, 20.0 / 30.0, accuracy: 0.001)
     }
+
+    /// Plans without a linked local data source (ChatGPT) must degrade to no
+    /// forecast rather than crashing or fabricating numbers. Codex/Claude/Go
+    /// branches read live quota/turn data and are exercised in the app.
+    func testUnlinkedPlanForecastIsNil() {
+        let start = now.addingTimeInterval(-10 * 86400)
+        let end = now.addingTimeInterval(20 * 86400)
+        XCTAssertNil(SubscriptionMath.forecast(plan: "chatgpt", cycleStart: start, cycleEnd: end, now: now),
+                     "ChatGPT has no local data source: forecast must be nil")
+        XCTAssertNil(SubscriptionMath.cycleValue(plan: "chatgpt", cycle: "monthly", cycleStart: start),
+                     "ChatGPT has no cycle value source: value must be nil")
+    }
 }

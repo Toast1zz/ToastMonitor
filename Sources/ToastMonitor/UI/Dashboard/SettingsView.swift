@@ -394,6 +394,8 @@ struct SubscriptionSettingsSection: View {
                     Text("OpenCode Go").tag("go")
                     Text("OpenRouter").tag("openrouter")
                     Text("Claude Pro").tag("claude")
+                    Text("Codex").tag("codex")
+                    Text("ChatGPT").tag("chatgpt")
                 }
                 DatePicker("Start date", selection: $startDate, displayedComponents: .date)
                 Toggle("Has end date", isOn: $hasEndDate)
@@ -488,11 +490,25 @@ struct SubscriptionSettingsSection: View {
     }
 
     private func planIcon(_ p: String) -> String {
-        p == "go" ? "g.circle.fill" : (p == "openrouter" ? ToolKind.openrouter.symbol : (p == "claude" ? ToolKind.claude.symbol : "calendar"))
+        switch p {
+        case "go": return "g.circle.fill"
+        case "openrouter": return ToolKind.openrouter.symbol
+        case "claude": return ToolKind.claude.symbol
+        case "codex": return ToolKind.codex.symbol
+        case "chatgpt": return "bubble.left.and.bubble.right"
+        default: return "calendar"
+        }
     }
 
     private func planColor(_ p: String) -> Color {
-        p == "go" ? TMDesign.accent : (p == "openrouter" ? ToolKind.openrouter.color : (p == "claude" ? ToolKind.claude.color : .gray))
+        switch p {
+        case "go": return TMDesign.accent
+        case "openrouter": return ToolKind.openrouter.color
+        case "claude": return ToolKind.claude.color
+        case "codex": return ToolKind.codex.color
+        case "chatgpt": return TMDesign.toolColor(hue: 160, sat: 0.55, bri: 0.62)
+        default: return .gray
+        }
     }
 }
 
