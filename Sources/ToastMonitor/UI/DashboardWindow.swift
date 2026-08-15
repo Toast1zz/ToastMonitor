@@ -21,7 +21,16 @@ final class WindowManager {
     private func setDockPresence(_ visible: Bool) {
         let target: NSApplication.ActivationPolicy = visible ? .regular : .accessory
         guard NSApp.activationPolicy() != target else { return }
-        NSApp.setActivationPolicy(target)
+        if visible {
+            NSApp.setActivationPolicy(.regular)
+        } else {
+            NSApp.setActivationPolicy(.accessory)
+            // Demoting is asynchronous on some macOS versions; without this
+            // the app icon can linger in the app switcher / recent tasks for
+            // a second or two. Hiding with no visible windows is a no-op for
+            // the menu-bar surface but forces the switcher to drop us now.
+            NSApp.hide(nil)
+        }
     }
 
     func toggle() {
