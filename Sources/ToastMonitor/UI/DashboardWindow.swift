@@ -352,6 +352,30 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
 /// Normal dashboard windows keep one mounted hosting controller per page.
 /// Switching changes visibility only; it never reconstructs or reattaches a
 /// large SwiftUI tree inside the toolbar's click event.
+/// The dashboard canvas is a Core Animation layer, so assigning a dynamic
+/// NSColor before the view belongs to a window can freeze the wrong
+/// appearance.  That is what produced the mixed state of a light toolbar over
+/// a dark canvas.  Re-resolve the semantic color after AppKit has attached the
+/// view and whenever the window appearance changes.
+private final class DashboardRootView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshBackgroundColor()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshBackgroundColor()
+    }
+
+    func refreshBackgroundColor() {
+        guard wantsLayer else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+    }
+}
+
 @MainActor
 private final class DashboardPageController: NSViewController {
     private let initialTab: DashboardView.Tab
@@ -371,9 +395,9 @@ private final class DashboardPageController: NSViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unused") }
 
     override func loadView() {
-        let root = NSView()
+        let root = DashboardRootView()
         root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        root.refreshBackgroundColor()
         view = root
     }
 

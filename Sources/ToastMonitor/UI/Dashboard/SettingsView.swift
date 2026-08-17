@@ -144,6 +144,9 @@ struct SettingsView: View {
                 }
                 .tmPanelSurface()
 
+                UsagePeriodSettingsSection()
+                    .tmPanelSurface()
+
                 // Operational status stays on this page, but uses one
                 // compact list instead of a second nested page or one card
                 // per collector.

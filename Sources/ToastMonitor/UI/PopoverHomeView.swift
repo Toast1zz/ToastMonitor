@@ -45,12 +45,22 @@ struct PopoverHomeView: View {
         case month = "30 Days"
         case all = "All Time"
         var id: String { rawValue }
+
+        var slot: UsagePeriodSlot {
+            switch self {
+            case .today: return .today
+            case .week: return .week
+            case .month: return .month
+            case .all: return .all
+            }
+        }
     }
 
     @ObservedObject private var app = AppState.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
+    @ObservedObject private var periodSettings = UsagePeriodSettings.shared
     @State private var period: Period = {
         let args = CommandLine.arguments
         guard let flag = args.firstIndex(of: "--period"), flag + 1 < args.count else {
@@ -193,7 +203,7 @@ struct PopoverHomeView: View {
                     // transition, so toggling 缩写/完整 animates the same way
                     // as a live token update.
                     .animation(.easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
-                    .accessibilityLabel("\(period.rawValue) token usage")
+                    .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
                     .font(TMType.regular(13))
@@ -238,15 +248,16 @@ struct PopoverHomeView: View {
 
     @ViewBuilder
     private var periodControl: some View {
+        let labels = Period.allCases.map { periodSettings.configuration.label(for: $0.slot) }
         if #available(macOS 26.0, *) {
-            NativePeriodSelector(selection: $period)
+            NativePeriodSelector(selection: $period, labels: labels)
                 // PopoverRootView intentionally makes ordinary controls
                 // small. This top-level range selector is the exception: the
                 // native macOS 26/27 metric is a 36 pt extra-large capsule.
                 .environment(\.controlSize, .extraLarge)
                 .accessibilityLabel("Period")
         } else {
-            NativePeriodSelector(selection: $period)
+            NativePeriodSelector(selection: $period, labels: labels)
                 .environment(\.controlSize, .large)
                 .accessibilityLabel("Period")
         }
@@ -460,26 +471,18 @@ struct PopoverHomeView: View {
 
     /// 近 26 周（6 个月）网格：key 与 heatmapData 的 yyyymmdd（本地日）对齐。
     private var activityWeeks: [[Int64?]] {
-        Self.buildHeatmapWeeks(now: Date())
+        Self.buildHeatmapWeeks(now: Date(), configuration: periodSettings.configuration)
     }
 
-    /// 本周第一天的日期归一化到周一（不依赖 firstWeekday 的周日/周一习惯）。
-    /// 周日（weekday 1）是本轮 firstWeekday=1 时的周首日，周一是其后一天；
-    /// 通用公式 2 - weekday：周日 → +1，周一 → 0，周二 → -1 …
-    private static func weekStartMonday(now: Date, calendar: Calendar) -> Date? {
-        guard let first = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return nil }
-        let weekday = calendar.component(.weekday, from: first)  // 1 = 周日 … 7 = 周六
-        return calendar.date(byAdding: .day, value: 2 - weekday, to: first)
-    }
-
-    private static func buildHeatmapWeeks(now: Date) -> [[Int64?]] {
+    private static func buildHeatmapWeeks(now: Date,
+                                          configuration: UsagePeriodConfiguration) -> [[Int64?]] {
         var weeks: [[Int64?]] = []
-        let calendar = Calendar.current
-        guard let monday = weekStartMonday(now: now, calendar: calendar) else { return weeks }
+        let calendar = configuration.configuredCalendar()
+        let weekStart = configuration.startOfConfiguredWeek(now, calendar: calendar)
         for week in 0..<26 {
             var column: [Int64?] = []
             for day in 0..<7 {
-                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 25 * 7, to: monday) else {
+                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 25 * 7, to: weekStart) else {
                     column.append(nil)
                     continue
                 }
@@ -668,6 +671,7 @@ private struct TrendChartView: View {
 /// no material or glass wrapper.
 private struct NativePeriodSelector: NSViewRepresentable {
     @Binding var selection: PopoverHomeView.Period
+    var labels: [String]
 
     func makeCoordinator() -> Coordinator {
         Coordinator(selection: $selection)
@@ -675,7 +679,7 @@ private struct NativePeriodSelector: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSSegmentedControl {
         let control = NSSegmentedControl(
-            labels: PopoverHomeView.Period.allCases.map(\.rawValue),
+            labels: labels,
             trackingMode: .selectOne,
             target: context.coordinator,
             action: #selector(Coordinator.selectionChanged(_:))
@@ -701,6 +705,11 @@ private struct NativePeriodSelector: NSViewRepresentable {
 
     func updateNSView(_ control: NSSegmentedControl, context: Context) {
         context.coordinator.selection = $selection
+        for (index, label) in labels.enumerated() where index < control.segmentCount {
+            if control.label(forSegment: index) != label {
+                control.setLabel(label, forSegment: index)
+            }
+        }
         // SwiftUI can propagate the root `.small` environment into the
         // represented NSControl after makeNSView. Reassert the platform's
         // native metric on updates so its intrinsic height remains 36 pt.

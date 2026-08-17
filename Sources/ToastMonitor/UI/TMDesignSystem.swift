@@ -6,6 +6,7 @@ import AppKit
 enum TMNotifications {
     static let popoverVisibility = Notification.Name("tmPopoverVisibility")
     static let dashboardVisibility = Notification.Name("tmDashboardVisibility")
+    static let usagePeriodSettingsChanged = Notification.Name("tmUsagePeriodSettingsChanged")
 }
 
 /// Shared visual language for the menu bar surface and the dashboard.

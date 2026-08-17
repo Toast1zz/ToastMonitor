@@ -206,38 +206,39 @@ struct PlansView: View {
         }
     }
 
-    /// 月度用量历史按「周期内的每一天」绘制：快照每 60s 一条，直接画
-    /// 会把横轴挤成小时级刻度。每天取当天最后一条快照作为该日值。
+    /// 月额度剩余历史按「每天收盘点 + 同日额度变化事件」绘制。
+    /// 数据库会保留额度增加/重置前后的真实点，避免把当天的跳变压成
+    /// 一个最终值。周额度和 5h 窗口已经在卡片上方单独展示。
     private var goHistory: some View {
-        let daily = Self.dailySeries(goSnapshots, month: \.monthlyPct, week: \.weeklyPct)
+        let daily = Self.dailyMonthlyRemaining(goSnapshots)
+        let currentRemaining = goClient.state.monthlyPct.map { max(0, min(100, 100 - $0)) }
         return VStack(alignment: .leading, spacing: 6) {
             if daily.count >= 2 {
                 HStack(spacing: 12) {
-                    Text("Monthly usage history (daily)")
+                    Text("Monthly quota remaining (daily)")
                         .font(TMType.semibold(TMType.caption))
                     Spacer()
-                    legendItem(color: TMDesign.accent, dashed: false, text: "Monthly")
-                    legendItem(color: TMDesign.accentShade(0.6), dashed: true, text: "Weekly")
+                    if let currentRemaining {
+                        Text("\(Int(currentRemaining.rounded()))% left")
+                            .font(TMType.monoRegular(TMType.micro))
+                            .foregroundStyle(TMDesign.quiet)
+                    }
                 }
                 Chart(daily) { point in
-                    if let pct = point.month {
+                    if let remaining = point.remaining {
                         LineMark(
-                            x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.day))),
-                            y: .value("Usage %", pct)
+                            x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.ts))),
+                            y: .value("Remaining %", remaining)
                         )
                         .foregroundStyle(TMDesign.accent)
-                        .interpolationMethod(.catmullRom)
-                    }
-                    if let pct = point.week {
-                        LineMark(
-                            x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.day))),
-                            y: .value("Usage %", pct)
-                        )
-                        .foregroundStyle(TMDesign.accentShade(0.6))
-                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: Self.historyDash))
-                        .interpolationMethod(.catmullRom)
+                        // A quota reset is a real discontinuity. Linear
+                        // interpolation keeps the daily samples honest and
+                        // avoids inventing a smooth curve between reset and
+                        // post-reset values.
+                        .interpolationMethod(.linear)
                     }
                 }
+                .chartYScale(domain: 0...100)
                 .chartXAxis {
                     AxisMarks(values: .stride(by: .day, count: max(daily.count / 6, 1))) { _ in
                         AxisGridLine()
@@ -247,15 +248,13 @@ struct PlansView: View {
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
                         AxisGridLine()
-                        AxisValueLabel {
-                            if let v = value.as(Double.self) { Text("\(Int(v))%") }
-                        }
+                        AxisValueLabel { if let v = value.as(Double.self) { Text("\(Int(v))%") } }
                     }
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("OpenCode Go monthly usage history chart")
+                .accessibilityLabel("OpenCode Go monthly quota remaining history chart")
                 .accessibilityValue(Text(goHistoryAccessibilitySummary(daily)))
-                .accessibilityHint("VoiceOver browses daily monthly and weekly usage")
+                .accessibilityHint("VoiceOver browses daily monthly quota remaining; increases indicate a quota reset")
                 .frame(height: 110)
             } else {
                 Text("Not enough snapshots")
@@ -266,43 +265,35 @@ struct PlansView: View {
         .padding(.top, 4)
     }
 
-    /// Shared dash pattern for the weekly line and its legend capsule, so
-    /// the in-chart line and the legend swatch always render identically.
+    /// Shared dash pattern for secondary quota guides elsewhere in Plans.
     private static let historyDash: [CGFloat] = [4, 3]
-
-    private func legendItem(color: Color, dashed: Bool, text: String) -> some View {
-        HStack(spacing: 4) {
-            Capsule()
-                .stroke(color, style: StrokeStyle(lineWidth: 2, dash: dashed ? Self.historyDash : []))
-                .frame(width: 14, height: 2)
-            Text(text)
-                .font(TMType.regular(TMType.micro))
-                .foregroundStyle(TMDesign.quiet)
-        }
-    }
 
     private struct DailyPoint: Identifiable {
         let day: Int64
-        let month: Double?
-        let week: Double?
-        var id: Int64 { day }
+        let remaining: Double?
+        let ts: Int64
+        var id: Int64 { ts }
     }
 
-    /// Last snapshot per calendar day (monthly/weekly pct).
-    private static func dailySeries(_ snaps: [Database.OGSnapshot],
-                                    month: KeyPath<Database.OGSnapshot, Double?>,
-                                    week: KeyPath<Database.OGSnapshot, Double?>) -> [DailyPoint] {
-        var byDay: [Int64: (month: Double?, week: Double?)] = [:]
-        for s in snaps {
-            let day = Int64(Calendar.current.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(s.ts))).timeIntervalSince1970)
-            byDay[day] = (s[keyPath: month], s[keyPath: week])
+    /// Converts provider-reported used percent to the remaining percent the
+    /// chart communicates to the user. The database has already retained one
+    /// daily point plus any intra-day quota-change points, so do not collapse
+    /// the samples by day again here.
+    private static func dailyMonthlyRemaining(_ snaps: [Database.OGSnapshot]) -> [DailyPoint] {
+        return snaps.map { snapshot in
+            let day = Int64(Calendar.current.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(snapshot.ts))).timeIntervalSince1970)
+            return DailyPoint(
+                day: day,
+                remaining: snapshot.monthlyPct.map { max(0, min(100, 100 - $0)) },
+                ts: snapshot.ts
+            )
         }
-        return byDay.map { DailyPoint(day: $0.key, month: $0.value.month, week: $0.value.week) }
-            .sorted { $0.day < $1.day }
+        .sorted { $0.ts < $1.ts }
     }
     private func goHistoryAccessibilitySummary(_ daily: [DailyPoint]) -> String {
-        let weekly = daily.compactMap(\.week)
-        return "\(daily.count) days, weekly data \(weekly.count) days"
+        let days = Set(daily.map(\.day)).count
+        let current = daily.last?.remaining.map { "\(Int($0.rounded()))% remaining" } ?? "no current value"
+        return "\(days) days, \(current)"
     }
 
     private var subForGo: Database.Subscription? {
@@ -381,27 +372,31 @@ struct PlansView: View {
     }
 
     private var orHistory: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if orSnapshots.count >= 2 {
-                Text("Usage history (daily)")
+        let useAccountBalance = orSnapshots.contains { $0.accountBalance != nil }
+        let balanceSnapshots = orSnapshots.filter {
+            useAccountBalance ? $0.accountBalance != nil : $0.limitRemaining != nil
+        }
+        return VStack(alignment: .leading, spacing: 6) {
+            if balanceSnapshots.count >= 2 {
+                Text("Balance history (daily)")
                     .font(TMType.semibold(TMType.caption))
-                Chart(orSnapshots) { s in
-                    LineMark(
-                        x: .value("Time", Date(timeIntervalSince1970: TimeInterval(s.ts))),
-                        y: .value("Usage", s.usage)
-                    )
-                    .foregroundStyle(TMDesign.accent.opacity(0.85))
-                    .interpolationMethod(.catmullRom)
-                    if let limit = s.limit {
-                        RuleMark(y: .value("Limit", limit))
-                            .foregroundStyle(TMDesign.quiet.opacity(0.5))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: Self.historyDash))
+                Chart(balanceSnapshots) { s in
+                    if let balance = useAccountBalance ? s.accountBalance : s.limitRemaining {
+                        LineMark(
+                            x: .value("Time", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                            y: .value("Balance", balance)
+                        )
+                        .foregroundStyle(TMDesign.accent.opacity(0.85))
+                        // Balance changes are measured values. Linear segments
+                        // prevent a smoothing spline from inventing an upward
+                        // bump between two declining snapshots.
+                        .interpolationMethod(.linear)
                     }
                 }
                 .chartXAxis {
                     // Same day-stride axis as goHistory so both history
                     // charts share tick density and label format.
-                    AxisMarks(values: .stride(by: .day, count: max(orSnapshots.count / 6, 1))) { _ in
+                    AxisMarks(values: .stride(by: .day, count: max(balanceSnapshots.count / 6, 1))) { _ in
                         AxisGridLine()
                         AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                     }
@@ -415,9 +410,9 @@ struct PlansView: View {
                     }
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("OpenRouter usage history chart")
-                .accessibilityValue(Text(orHistoryAccessibilitySummary(orSnapshots)))
-                .accessibilityHint("VoiceOver browses daily usage and quota")
+                .accessibilityLabel("OpenRouter balance history chart")
+                .accessibilityValue(Text(orHistoryAccessibilitySummary(balanceSnapshots, useAccountBalance: useAccountBalance)))
+                .accessibilityHint("VoiceOver browses daily OpenRouter balance; decreases indicate usage")
                 .frame(height: 110)
             } else {
                 Text("Not enough snapshots")
@@ -427,8 +422,11 @@ struct PlansView: View {
         }
         .padding(.top, 4)
     }
-    private func orHistoryAccessibilitySummary(_ snapshots: [Database.ORSnapshot]) -> String {
-        "\(snapshots.count) days"
+    private func orHistoryAccessibilitySummary(_ snapshots: [Database.ORSnapshot], useAccountBalance: Bool) -> String {
+        let current = snapshots.last.flatMap { useAccountBalance ? $0.accountBalance : $0.limitRemaining }
+            .map(Format.money)
+            ?? "no current balance"
+        return "\(snapshots.count) days, current balance \(current)"
     }
 
     // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）

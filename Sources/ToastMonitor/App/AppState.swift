@@ -96,6 +96,10 @@ final class AppState: ObservableObject {
     /// re-run as manual once the in-flight one completes so the toolbar
     /// spinner reflects the user's request.
     private var pendingManual = false
+    /// A settings/data refresh arrived while a snapshot was in flight. Keep
+    /// one follow-up request so changing the period cannot leave the UI on
+    /// the previous mode's cached snapshot.
+    private var pendingRefresh = false
     /// 快照加载开始时间；超过看门狗阈值视为卡死，允许下一次刷新重试。
     /// 若不重置，一次永不完成的加载会让 refreshInFlight 永久为 true，
     /// didCollect 与定时器刷新全部被合并锁挡掉——popover 冻结在旧快照，
@@ -135,6 +139,9 @@ final class AppState: ObservableObject {
             }
         }
         NotificationCenter.default.addObserver(forName: Database.subscriptionsDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+        NotificationCenter.default.addObserver(forName: TMNotifications.usagePeriodSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
     }
@@ -185,6 +192,7 @@ final class AppState: ObservableObject {
                 }
             } else {
                 if manual { pendingManual = true }
+                pendingRefresh = true
                 return
             }
         }
@@ -243,14 +251,15 @@ final class AppState: ObservableObject {
             }
         }
 
+        let configuration = UsagePeriodSettings.shared.configuration
         if dashboardVisible {
-            UsageQueryService.shared.loadSnapshot { [weak self] snap in
+            UsageQueryService.shared.loadSnapshot(configuration: configuration) { [weak self] snap in
                 guard let self else { return }
                 publish(snap.light, snap)
                 self.finishRefresh(generation: generation)
             }
         } else {
-            UsageQueryService.shared.loadLightSnapshot { [weak self] light in
+            UsageQueryService.shared.loadLightSnapshot(configuration: configuration) { [weak self] light in
                 guard let self else { return }
                 publish(light, nil)
                 self.finishRefresh(generation: generation)
@@ -262,9 +271,12 @@ final class AppState: ObservableObject {
         guard generation == refreshGeneration else { return }
         refreshInFlight = false
         manualRefreshing = false
-        if pendingManual {
-            pendingManual = false
-            refresh(manual: true)
+        let rerunManual = pendingManual
+        let rerun = pendingRefresh
+        pendingManual = false
+        pendingRefresh = false
+        if rerunManual || rerun {
+            refresh(manual: rerunManual)
         }
     }
 }

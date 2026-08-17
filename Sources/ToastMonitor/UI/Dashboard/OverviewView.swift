@@ -7,6 +7,7 @@ struct OverviewView: View {
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
+    @ObservedObject private var periodSettings = UsagePeriodSettings.shared
     @State private var period: Period = .today
 
     /// Page-wide period: hero totals and the distribution section follow it.
@@ -18,6 +19,15 @@ struct OverviewView: View {
         case month = "30 Days"
         case all = "All Time"
         var id: String { rawValue }
+
+        var slot: UsagePeriodSlot {
+            switch self {
+            case .today: return .today
+            case .week: return .week
+            case .month: return .month
+            case .all: return .all
+            }
+        }
     }
 
     private let cellGutter: CGFloat = 3
@@ -63,7 +73,7 @@ struct OverviewView: View {
     private var periodControl: some View {
         Picker("Date Range", selection: $period) {
             ForEach(Period.allCases) { p in
-                Text(p.rawValue).tag(p)
+                Text(periodSettings.configuration.label(for: p.slot)).tag(p)
             }
         }
         .pickerStyle(.menu)
@@ -73,12 +83,7 @@ struct OverviewView: View {
     }
 
     private var periodTitle: String {
-        switch period {
-        case .today: return "Today's Usage"
-        case .week: return "Last 7 Days"
-        case .month: return "Last 30 Days"
-        case .all: return "All Time"
-        }
+        periodSettings.configuration.title(for: period.slot)
     }
 
     private var periodTokens: Int64 {
@@ -201,30 +206,22 @@ struct OverviewView: View {
         let calendar = Calendar.current
         let components = calendar.dateComponents([.year], from: now)
         let day = calendar.ordinality(of: .day, in: .year, for: now) ?? -1
-        let key = "\(components.year ?? 0)-\(day)-\(TimeZone.current.identifier)"
+        let key = "\(components.year ?? 0)-\(day)-\(TimeZone.current.identifier)-\(periodSettings.weekStart.rawValue)"
         guard Self.cachedWeeksKey != key else { return Self.cachedWeeks }
-        Self.cachedWeeks = Self.buildHeatmapWeeks(now: now)
+        Self.cachedWeeks = Self.buildHeatmapWeeks(now: now, configuration: periodSettings.configuration)
         Self.cachedWeeksKey = key
         return Self.cachedWeeks
     }
 
-    /// 本周第一天的日期归一化到周一（不依赖 firstWeekday 的周日/周一习惯）。
-    /// 周日（weekday 1）是本轮 firstWeekday=1 时的周首日，周一是其后一天；
-    /// 通用公式 2 - weekday：周日 → +1，周一 → 0，周二 → -1 …
-    private static func weekStartMonday(now: Date, calendar: Calendar) -> Date? {
-        guard let first = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)) else { return nil }
-        let weekday = calendar.component(.weekday, from: first)  // 1 = 周日 … 7 = 周六
-        return calendar.date(byAdding: .day, value: 2 - weekday, to: first)
-    }
-
-    private static func buildHeatmapWeeks(now: Date) -> [[Int64?]] {
+    private static func buildHeatmapWeeks(now: Date,
+                                          configuration: UsagePeriodConfiguration) -> [[Int64?]] {
         var weeks: [[Int64?]] = []
-        let calendar = Calendar.current
-        guard let monday = weekStartMonday(now: now, calendar: calendar) else { return weeks }
+        let calendar = configuration.configuredCalendar()
+        let weekStart = configuration.startOfConfiguredWeek(now, calendar: calendar)
         for week in 0..<53 {
             var column: [Int64?] = []
             for day in 0..<7 {
-                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 52 * 7, to: monday) else {
+                guard let date = calendar.date(byAdding: .day, value: week * 7 + day - 52 * 7, to: weekStart) else {
                     column.append(nil)
                     continue
                 }

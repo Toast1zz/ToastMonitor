@@ -79,16 +79,20 @@ struct PopoverSettingsView: View {
                     Divider().opacity(0.7)
                 }
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    generalSection
-                    updatesSection
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
-                .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(kind: "body", page: "settings")
+            VStack(alignment: .leading, spacing: 22) {
+                generalSection
+                UsagePeriodSettingsSection()
+                updatesSection
             }
+            // This page is intentionally an intrinsic-height settings sheet,
+            // not a scrolling document. A ScrollView would enter its
+            // overflow state for one layout pass when Calendar periods adds
+            // the week-start row, showing a scrollbar before the panel can
+            // apply the new measured height.
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .fixedSize(horizontal: false, vertical: true)
+            .reportPopoverHeight(kind: "body", page: "settings")
             fixedSlice(kind: "footer") {
                 VStack(spacing: 0) {
                     Divider().opacity(0.7)
@@ -97,6 +101,7 @@ struct PopoverSettingsView: View {
             }
         }
         .frame(width: 400)
+        .frame(maxHeight: .infinity, alignment: .top)
         .environment(\.controlSize, .small)
         .onAppear {
             launch.refresh()

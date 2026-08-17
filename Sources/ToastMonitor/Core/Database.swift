@@ -1371,22 +1371,42 @@ final class Database: @unchecked Sendable {
         return out
     }
     /// Returns the latest quota snapshot for every local calendar day in the
-    /// complete history. The UI draws daily points, so a row-count limit would
-    /// silently drop older days when polling is frequent.
+    /// complete history, plus the two sides of an intra-day balance increase
+    /// or quota reset. Keeping those event points matters: a user can add
+    /// quota during the day, and retaining only that day's final snapshot
+    /// would erase the actual jump in the balance history.
     func ogSnapshotsByDay() -> [OGSnapshot] {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return [] }
         var out: [OGSnapshot] = []
         var stmt: OpaquePointer?
         let sql = """
-        SELECT s.ts, s.rolling_pct, s.rolling_reset, s.weekly_pct, s.weekly_reset,
-               s.monthly_pct, s.monthly_reset
-        FROM opencodego_snapshots s
-        JOIN (
-          SELECT date(ts, 'unixepoch', 'localtime') AS day, MAX(ts) AS ts
-          FROM opencodego_snapshots GROUP BY day
-        ) d ON d.ts = s.ts
-        ORDER BY s.ts;
+        WITH ordered AS (
+          SELECT s.*,
+                 date(s.ts, 'unixepoch', 'localtime') AS day,
+                 LAG(s.monthly_pct) OVER (ORDER BY s.ts) AS previous_monthly_pct,
+                 LEAD(s.monthly_pct) OVER (ORDER BY s.ts) AS next_monthly_pct,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY date(s.ts, 'unixepoch', 'localtime')
+                   ORDER BY s.ts DESC
+                 ) AS day_rank
+          FROM opencodego_snapshots s
+        )
+        SELECT ts, rolling_pct, rolling_reset, weekly_pct, weekly_reset,
+               monthly_pct, monthly_reset
+        FROM ordered
+        WHERE day_rank = 1
+           OR (
+             monthly_pct IS NOT NULL
+             AND previous_monthly_pct IS NOT NULL
+             AND monthly_pct < previous_monthly_pct
+           )
+           OR (
+             monthly_pct IS NOT NULL
+             AND next_monthly_pct IS NOT NULL
+             AND next_monthly_pct < monthly_pct
+           )
+        ORDER BY ts;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
         while sqlite3_step(stmt) == SQLITE_ROW {

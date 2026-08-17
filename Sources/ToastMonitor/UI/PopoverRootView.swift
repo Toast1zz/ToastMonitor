@@ -42,6 +42,10 @@ struct PopoverRootView: View {
             }
         }
         .frame(width: 400)
+        // NSHostingView otherwise centers an intrinsic-height root while the
+        // AppKit panel is resizing. Fill the host and keep the entire page
+        // pinned to the menu-bar edge so extra height is revealed downward.
+        .frame(maxHeight: .infinity, alignment: .top)
         .environment(\.controlSize, .small)
         .onChange(of: showSettings) { _, open in
             NotificationCenter.default.post(
