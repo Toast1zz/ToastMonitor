@@ -230,12 +230,12 @@ struct PopoverSettingsView: View {
                 .foregroundStyle(TMDesign.quiet)
             quotaRowToggle("go", title: "OpenCode Go")
             quotaRowToggle("codex", title: "Codex Plus")
-            quotaRowToggle("cc", title: "Command Code")
+            quotaRowToggle("cc", title: "Command Code GOAT")
             quotaRowToggle("router", title: "OpenRouter")
 
             // Command Code session management (experimental).
             Divider().opacity(0.5)
-            Text("Command Code (experimental)")
+            Text("Command Code GOAT (experimental)")
                 .font(.system(size: TMType.caption, weight: .semibold))
                 .foregroundStyle(TMDesign.quiet)
             if ccQuota.state.configured {
@@ -276,7 +276,7 @@ struct PopoverSettingsView: View {
     /// Cookie header from the Studio browser session, or a bare session token.
     private var ccSessionForm: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Command Code Session")
+            Text("Command Code GOAT Session")
                 .font(.system(size: 14, weight: .semibold))
             Text("Paste the Cookie header from your logged-in commandcode.ai "
                  + "browser session (or just the session token). Stored only "

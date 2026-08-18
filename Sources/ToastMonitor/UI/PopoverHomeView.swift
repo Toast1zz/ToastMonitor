@@ -595,19 +595,18 @@ struct PopoverHomeView: View {
     }
 
     /// Command Code GOAT quota (experimental private billing API).
+    /// Shows the last good snapshot while a refresh is in flight — never a
+    /// Stale interstitial — and replaces it when fresh data lands.
     private var commandCodeStatusRow: some View {
         let state = ccQuota.state
-        let stale = state.lastSync > 0
-            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        let name = "Command Code" + (state.error == nil ? "" : " ⚠")
+        let name = "Command Code GOAT" + (state.error == nil ? "" : " ⚠")
         var status = state.configured ? "Loading" : "Not configured"
         var resetSuffix: String?
         if state.error != nil {
             status = "Error"
-        } else if stale, state.monthlyCreditsRemaining != nil {
-            status = "Stale"
         } else if let percent = state.monthlyUsedPercent {
-            // Known plan: remaining = 100 − used.
+            // Known plan: remaining = 100 − used. Cached value is shown
+            // while refreshing; it updates in place when new data lands.
             status = "\(Int((100 - percent).rounded()))% left"
             if let end = state.billingPeriodEnd {
                 let remaining = end.timeIntervalSince1970 - now.timeIntervalSince1970
