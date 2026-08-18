@@ -84,12 +84,18 @@ final class Database: @unchecked Sendable {
         // OpenCode upstream stored `model` as a JSON object
         // ({"id":...,"providerID":...}) in some versions; normalize any
         // already-imported rows once (idempotent, no-op afterwards).
-        execChecked("""
-        UPDATE sessions SET model = json_extract(model, '$.id')
-        WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
-        UPDATE turns SET model = json_extract(model, '$.id')
-        WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
-        """)
+        // Gated by a one-time flag: the UPDATE scans the whole sessions +
+        // turns tables, which stalls startup on large stores if run on every
+        // launch.
+        if setting("model_json_normalized") != "1" {
+            execChecked("""
+            UPDATE sessions SET model = json_extract(model, '$.id')
+            WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
+            UPDATE turns SET model = json_extract(model, '$.id')
+            WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
+            """)
+            setSetting("model_json_normalized", "1")
+        }
     }
     /// Older stores can report user_version=1 while missing tables that were
     /// created by the original bootstrap. Recreate absent tables before

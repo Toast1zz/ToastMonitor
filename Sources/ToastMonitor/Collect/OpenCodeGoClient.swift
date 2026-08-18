@@ -415,15 +415,19 @@ final class OpenCodeGoClient: ObservableObject {
             pattern: "\(key):\\$R\\[\\d+\\]=\\{[^}]*resetInSec:\(numberPattern)[^}]*usagePercent:\(numberPattern)[^}]*\\}")
 
         if let m = pctFirst?.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-           let pct = Double(html[Range(m.range(at: 1), in: html)!]),
-           let reset = Double(html[Range(m.range(at: 2), in: html)!]),
+           let r1 = Range(m.range(at: 1), in: html),
+           let r2 = Range(m.range(at: 2), in: html),
+           let pct = Double(html[r1]),
+           let reset = Double(html[r2]),
            let boundedPct = boundedPercent(pct),
            let boundedReset = boundedReset(reset) {
             return WindowUsage(pct: boundedPct, reset: boundedReset)
         }
         if let m = resetFirst?.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-           let reset = Double(html[Range(m.range(at: 1), in: html)!]),
-           let pct = Double(html[Range(m.range(at: 2), in: html)!]),
+           let r1 = Range(m.range(at: 1), in: html),
+           let r2 = Range(m.range(at: 2), in: html),
+           let reset = Double(html[r1]),
+           let pct = Double(html[r2]),
            let boundedPct = boundedPercent(pct),
            let boundedReset = boundedReset(reset) {
             return WindowUsage(pct: boundedPct, reset: boundedReset)
@@ -452,10 +456,12 @@ final class OpenCodeGoClient: ObservableObject {
             let valueRe = try? NSRegularExpression(pattern: "data-slot=\"usage-value\">[^0-9]*(\\d+(?:\\.\\d+)?)")
             let resetRe = try? NSRegularExpression(pattern: "data-slot=\"(reset-time|reset-now)\">([\\s\\S]*?)<\\/span>")
             guard let vm = valueRe?.firstMatch(in: item, range: afterLabel),
-                  let pct = Double(item[Range(vm.range(at: 1), in: item)!]),
+                  let valueRange = Range(vm.range(at: 1), in: item),
+                  let pct = Double(item[valueRange]),
                   let pct = boundedPercent(pct) else { continue }
-            guard let rm = resetRe?.firstMatch(in: item, range: afterLabel) else { continue }
-            var resetText = item[Range(rm.range(at: 2), in: item)!]
+            guard let rm = resetRe?.firstMatch(in: item, range: afterLabel),
+                  let resetRange = Range(rm.range(at: 2), in: item) else { continue }
+            var resetText = item[resetRange]
                 .replacingOccurrences(of: "<!--$-->", with: "")
                 .replacingOccurrences(of: "<!--/-->", with: "")
             resetText = resetText.replacingOccurrences(of: "Resets?\\s*in\\s*", with: "", options: .regularExpression)

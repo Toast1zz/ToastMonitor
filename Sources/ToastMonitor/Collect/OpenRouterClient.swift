@@ -86,6 +86,14 @@ final class OpenRouterClient: ObservableObject {
     /// foreground refreshes reuse this in-memory copy and never call Security
     /// framework from the UI thread.
     private var cachedKeys: [String]?
+    /// Rate limiting / backoff (S2): after a failed / 429 / 5xx refresh the
+    /// next attempt backs off 60s → 2m → 5m → 15m; success resets. Prevents
+    /// hammering OpenRouter with a fixed 60s cadence during degradation.
+    private var backoffBase: TimeInterval = 0
+    private var nextAllowedRefresh: TimeInterval = 0
+    /// Merges concurrent refresh() calls so a timer tick + foreground + a
+    /// manual setKey cannot fire overlapping request batches.
+    private var refreshInFlight = false
 
     private var popoverVisible = false
     private var dashboardVisible = false
@@ -317,6 +325,17 @@ final class OpenRouterClient: ObservableObject {
             pendingKeyRefresh = true
             return
         }
+        // Backoff gate: after a failure the next batch waits before retrying
+        // (S2). Manual refreshes (Settings / toolbar) bypass the gate but
+        // still respect the merged-in-flight guard below.
+        if refreshInFlight { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if now < nextAllowedRefresh {
+            // A deferred retry is already scheduled or the gate is active.
+            // Leave the timer to fire the next attempt.
+            return
+        }
+        refreshInFlight = true
         if let cachedKeys {
             refresh(with: cachedKeys)
             return
@@ -370,11 +389,17 @@ final class OpenRouterClient: ObservableObject {
         var results: [String: [String: Any]] = [:]
         var failures: [String] = []
 
+        // Concurrency cap (S2): URLSession would otherwise queue all keys and
+        // time out the tail; a semaphore bounds simultaneous requests so a
+        // 64-key config never fires 66 requests at once.
+        let semaphore = DispatchSemaphore(value: 6)
         for key in keys {
             group.enter()
+            semaphore.wait()
             fetch("/api/v1/key", key: key) { json, err in
                 if let json { results[key] = json }
                 if let err { failures.append(err) }
+                semaphore.signal()
                 group.leave()
             }
         }
@@ -449,6 +474,16 @@ final class OpenRouterClient: ObservableObject {
     /// Aggregates the /api/v1/key results into state (admin fields were
     /// already populated by the credits/keys calls, if any).
     private func finishRefresh(results: [String: [String: Any]], failures: [String]) {
+        refreshInFlight = false
+        // Backoff (S2): total failure or explicit 429/5xx backs off the next
+        // batch; partial success resets so transient single-key errors don't
+        // stall the account view.
+        let rateLimited = failures.contains { $0.contains("429") || $0.contains("HTTP 5") }
+        if results.isEmpty || rateLimited {
+            applyBackoff()
+        } else {
+            backoffBase = 0
+        }
         state.isLoading = false
         if results.isEmpty {
             state.error = failures.first ?? "Query failed"
@@ -494,6 +529,15 @@ final class OpenRouterClient: ObservableObject {
         // accountUsage/accountBalance already set by the credits call.
         state.lastOK = Int64(Date().timeIntervalSince1970)
         persist()
+    }
+
+    /// Exponential backoff: 60s → 2m → 5m → 15m, capped. The next refresh()
+    /// is skipped until the window elapses; the 60s timer picks up after.
+    private func applyBackoff() {
+        let now = ProcessInfo.processInfo.systemUptime
+        backoffBase = min(max(backoffBase, 60), 15 * 60)
+        nextAllowedRefresh = now + backoffBase
+        backoffBase *= 2
     }
 
     private func persist() {
