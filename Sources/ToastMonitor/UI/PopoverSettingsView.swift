@@ -154,6 +154,22 @@ struct PopoverSettingsView: View {
 
     // MARK: - 通用
 
+    /// Restore toggle for a Quota row hidden from the popover's Quota section
+    /// (setting key `hide_quota_row_<key>`; on = row visible).
+    private func quotaRowToggle(_ key: String, title: String) -> some View {
+        Toggle("Show \(title) quota", isOn: Binding(
+            get: { Database.shared.setting("hide_quota_row_\(key)") != "1" },
+            set: { visible in
+                let v = visible ? nil : "1"
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = Database.shared.setSetting("hide_quota_row_\(key)", v)
+                }
+            }
+        ))
+        .toggleStyle(TMSwitchStyle())
+        .font(.system(size: 12.5, weight: .medium))
+    }
+
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("General")
@@ -194,6 +210,15 @@ struct PopoverSettingsView: View {
                     // immediately, using the optimistic value, not the DB.
                     WindowManager.shared.applyDockIconSetting(newValue)
                 }
+
+            // Quota rows hidden in the Quota section can be restored here.
+            Divider().opacity(0.5)
+            Text("Quota rows")
+                .font(.system(size: TMType.caption, weight: .semibold))
+                .foregroundStyle(TMDesign.quiet)
+            quotaRowToggle("go", title: "OpenCode Go")
+            quotaRowToggle("codex", title: "Codex Plus")
+            quotaRowToggle("router", title: "OpenRouter")
 
             if let msg = launch.message {
                 Text(msg)
