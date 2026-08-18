@@ -777,21 +777,30 @@ final class Database: @unchecked Sendable {
     }
 
     /// Current cumulative totals per session (for delta-based parsers).
+    private var totalsCache: (key: String, value: [String: (tool: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)])?
+
     func sessionTotals() -> [String: (tool: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return [:] }
+        // M6: session_totals is read on every foreground scan (1s); a heavy
+        // user can have tens of thousands of rows. Cache by dataVersionKey —
+        // writers invalidate explicitly, so the cache always matches the
+        // committed rows.
+        let key = dataVersionKey()
+        if let c = totalsCache, c.key == key { return c.value }
         var out: [String: (tool: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = [:]
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT tool, session_id, input, output, reasoning, cache_read, cache_write, cost FROM session_totals;", -1, &stmt, nil) == SQLITE_OK else { return out }
         while sqlite3_step(stmt) == SQLITE_ROW {
             let tool = String(cString: sqlite3_column_text(stmt, 0))
             let sid = String(cString: sqlite3_column_text(stmt, 1))
-            let key = "\(tool)|\(sid)"
-            out[key] = (tool, sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3),
-                        sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
-                        sqlite3_column_int64(stmt, 6), sqlite3_column_double(stmt, 7))
+            let k = "\(tool)|\(sid)"
+            out[k] = (tool, sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3),
+                      sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
+                      sqlite3_column_int64(stmt, 6), sqlite3_column_double(stmt, 7))
         }
         sqlite3_finalize(stmt)
+        totalsCache = (key, out)
         return out
     }
 
@@ -825,6 +834,10 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
+        // Invalidate the totals cache (M6): this write is not yet reflected
+        // in dataVersionKey until the surrounding transaction commits, so the
+        // writer must drop the cached rows explicitly.
+        totalsCache = nil
         return true
     }
 
