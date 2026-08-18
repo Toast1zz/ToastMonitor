@@ -380,8 +380,6 @@ final class Database: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_turns_backfill
           ON turns(id) WHERE cost = 0 AND tool != 'hermes'
                        AND model IS NOT NULL AND model != '';
-        -- Recent-session ordering (L4): sessions() sorts by updated DESC.
-        CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(tool, updated);
 
         CREATE TABLE IF NOT EXISTS sessions (
           tool TEXT NOT NULL,
@@ -393,6 +391,10 @@ final class Database: @unchecked Sendable {
           updated INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(tool, session_id)
         );
+        -- Recent-session ordering (L4): sessions() sorts by updated DESC.
+        -- Created after the sessions table (the earlier position referenced
+        -- a table that may not exist yet on fresh installs).
+        CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(tool, updated);
 
         CREATE TABLE IF NOT EXISTS scan_state (
           source TEXT PRIMARY KEY,
