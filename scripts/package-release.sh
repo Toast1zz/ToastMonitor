@@ -1,9 +1,19 @@
 #!/bin/bash
-# Build release artifacts for GitHub Releases: one arm64-only app and one
-# universal (arm64 + x86_64) app, both signed and zipped.
+# Build release artifacts for GitHub Releases.
+#
+# Default: a single arm64-only app (the appcast points here). Apple Silicon
+# users — by far the majority, including all M-series Macs — must receive the
+# arm64 build because the universal (x86_64) slice is linked against the
+# macOS 14 SDK, which makes macOS 26/27 serve legacy compatibility UI controls
+# (no system Liquid Glass).
+#
+# Set TM_ALSO_UNIVERSAL=1 to additionally produce the universal (arm64+x86_64)
+# app as an optional manual-download asset for the rare Intel Mac. It is never
+# the appcast's default target.
 #
 # Usage: ./scripts/package-release.sh
-# Produces dist/release/ToastMonitor-<version>-{arm64,universal}.zip
+# Produces dist/release/ToastMonitor-<version>-arm64.zip
+#   (+ dist/release/ToastMonitor-<version>-universal.zip when TM_ALSO_UNIVERSAL=1)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -17,7 +27,11 @@ echo "== packaging ToastMonitor v$VERSION =="
 rm -rf dist/release
 mkdir -p dist/release
 
-for arch in arm64 universal; do
+ARCHS="arm64"
+if [[ "${TM_ALSO_UNIVERSAL:-0}" == "1" ]]; then
+    ARCHS="arm64 universal"
+fi
+for arch in $ARCHS; do
     echo ""
     echo "== building $arch =="
     case "$arch" in
@@ -37,3 +51,6 @@ ls -la dist/release/
 echo ""
 echo "上传到 GitHub Release："
 echo "  gh release create v$VERSION dist/release/*.zip --title 'ToastMonitor v$VERSION' --generate-notes"
+echo ""
+echo "生成签名更新清单（appcast 默认指向 arm64）："
+echo "  ./scripts/sign-update-manifest.sh $VERSION dist/release/ToastMonitor-${VERSION}-arm64.zip"

@@ -32,7 +32,14 @@ else
     # resolution, which can lag a freshly published release. A tag-pinned URL
     # is stable forever and still redirects to the object store over HTTPS.
     # Note the leading "v": git tags are v1.2.2 while VERSION is 1.2.2.
-    DOWNLOAD_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/$(basename "$ARCHIVE")"
+    #
+    # The appcast points at the arm64-only artifact by default. The universal
+    # build links the x86_64 slice against the macOS 14 SDK, which makes the
+    # system serve legacy (compatibility) UI controls on macOS 26/27 — so
+    # Apple Silicon users must not receive it. Pass the universal zip plus an
+    # explicit download URL as $2/$3 to publish a universal build instead
+    # (rare: Intel Macs only).
+    DOWNLOAD_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-arm64.zip"
 fi
 [[ "$DOWNLOAD_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
 
