@@ -320,7 +320,8 @@ final class Database: @unchecked Sendable {
             // with turns_legacy; recreate it or session lookups go full-scan.
             "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(tool, session_id);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_event ON turns(tool, event_id) WHERE event_id IS NOT NULL;",
-            "CREATE INDEX IF NOT EXISTS idx_turns_backfill ON turns(id) WHERE cost = 0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
+            "CREATE INDEX IF NOT EXISTS idx_turns_backfill ON turns(id) WHERE cost = 0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(tool, updated);"
         ]
         for sql in statements {
             var err: UnsafeMutablePointer<CChar>?
@@ -379,6 +380,8 @@ final class Database: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_turns_backfill
           ON turns(id) WHERE cost = 0 AND tool != 'hermes'
                        AND model IS NOT NULL AND model != '';
+        -- Recent-session ordering (L4): sessions() sorts by updated DESC.
+        CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(tool, updated);
 
         CREATE TABLE IF NOT EXISTS sessions (
           tool TEXT NOT NULL,
