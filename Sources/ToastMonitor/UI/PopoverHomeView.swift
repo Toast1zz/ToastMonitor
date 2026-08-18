@@ -159,7 +159,10 @@ struct PopoverHomeView: View {
             .layoutPriority(1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { reloadHeatmap() }
+        .onAppear {
+            loadQuotaRowHidden()
+            reloadHeatmap()
+        }
         .onReceive(minuteTicker) { tick in
             // UI-1: 面板隐藏时跳过整轮 tick——不推进 now、不重载热力图。
             // 显示时再由可见性通知补一次加载，所以数据不会等下一个 60s。
@@ -378,10 +381,30 @@ struct PopoverHomeView: View {
     private var quotaSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionTitle("Quota")
-            goStatusRow
-            codexStatusRow
-            routerStatusRow
+            if !(quotaRowHidden["go"] ?? false) { goStatusRow }
+            if !(quotaRowHidden["codex"] ?? false) { codexStatusRow }
+            if !(quotaRowHidden["router"] ?? false) { routerStatusRow }
         }
+    }
+
+    /// Per-row visibility (key = "go" / "codex" / "router"), mirrored from
+    /// the `hide_quota_row_<key>` setting. Mutations update this state
+    /// immediately so the row disappears on click; persistence is instant too.
+    @State private var quotaRowHidden: [String: Bool] = [:]
+
+    private static func quotaRowHiddenKey(_ key: String) -> String {
+        "hide_quota_row_\(key)"
+    }
+
+    private func loadQuotaRowHidden() {
+        for key in ["go", "codex", "router"] {
+            quotaRowHidden[key] = Database.shared.setting(Self.quotaRowHiddenKey(key)) == "1"
+        }
+    }
+
+    private func hideQuotaRow(_ key: String) {
+        quotaRowHidden[key] = true
+        _ = Database.shared.setSetting(Self.quotaRowHiddenKey(key), "1")
     }
 
     // MARK: - 活动与趋势（历史维度，与周期选择无关）
@@ -529,7 +552,8 @@ struct PopoverHomeView: View {
         return statusRow(name: "OpenCode Go", status: status,
                          statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false,
-                         resetSuffix: resetSuffix)
+                         resetSuffix: resetSuffix,
+                         hideKey: "go")
     }
 
     /// Window label derives from limit_window_seconds: 604800 = weekly (Plus today).
@@ -564,7 +588,8 @@ struct PopoverHomeView: View {
         return statusRow(name: "Codex Plus", status: status,
                          statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false,
-                         resetSuffix: resetSuffix)
+                         resetSuffix: resetSuffix,
+                         hideKey: "codex")
     }
 
     private var routerStatusRow: some View {
@@ -586,13 +611,16 @@ struct PopoverHomeView: View {
             status = "Idle"
         }
         return statusRow(name: "OpenRouter", status: status,
-                         statusColor: orClient.hasKey ? .primary : TMDesign.quiet)
+                         statusColor: orClient.hasKey ? .primary : TMDesign.quiet,
+                         hideKey: "router")
     }
 
     private func statusRow(name: String, status: String, statusColor: Color,
-                           critical: Bool = false, resetSuffix: String? = nil) -> some View {
+                           critical: Bool = false, resetSuffix: String? = nil,
+                           hideKey: String? = nil) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
-                  critical: critical, resetSuffix: resetSuffix)
+                  critical: critical, resetSuffix: resetSuffix,
+                  hideAction: hideKey.map { key in { self.hideQuotaRow(key) } })
     }
 
 }
@@ -757,13 +785,17 @@ private struct HeroValue: Equatable {
 
 /// 额度状态行：名称 primary，状态按健康状态着色。纯信息行，不引导跳转。
 /// 状态主文本是 SF Pro Regular + 等宽数字；可选的 "resets in …" 后缀单独用
-/// SF Mono Regular，不让整行变成等宽。
+/// SF Mono Regular，不让整行变成等宽。提供 hideAction 时行尾会出现一个
+/// 眼睛按钮（hover 显示），点击将该配额行隐藏。
 private struct StatusRow: View {
     let name: String
     let status: String
     let statusColor: Color
     var critical = false
     var resetSuffix: String?
+    var hideAction: (() -> Void)?
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -788,8 +820,21 @@ private struct StatusRow: View {
                     .opacity(resetSuffix == nil ? 0 : 1)
             }
             .layoutPriority(1)
+
+            if let hideAction, hovering {
+                Button(action: hideAction) {
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Hide this quota row")
+                .padding(.leading, 2)
+            }
         }
         .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(Text([status, resetSuffix].compactMap { $0 }.joined(separator: " · ")))
