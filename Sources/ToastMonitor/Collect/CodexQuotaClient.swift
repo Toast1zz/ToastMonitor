@@ -47,6 +47,9 @@ final class CodexQuotaClient: ObservableObject {
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
+    /// Backoff (M1): failed refreshes wait 60s → 2m → 5m → 15m; success resets.
+    private var backoffBase: TimeInterval = 0
+    private var nextAllowedRefresh: TimeInterval = 0
 
     private let session: URLSession
     /// Retained because URLSession delegates are weak.
@@ -113,6 +116,8 @@ final class CodexQuotaClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
+        // Backoff gate (M1): skip attempts inside the backoff window.
+        if ProcessInfo.processInfo.systemUptime < nextAllowedRefresh { return }
         inFlight = true
         refreshGeneration &+= 1
         let generation = refreshGeneration
@@ -172,26 +177,31 @@ final class CodexQuotaClient: ObservableObject {
                 guard self.refreshGeneration == generation else { return }
                 if let err {
                     self.state.error = err.localizedDescription
+                    self.applyBackoff()
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
                     self.state.error = "No HTTP response"
+                    self.applyBackoff()
                     return
                 }
                 if (300..<400).contains(http.statusCode) {
                     self.state.error = "Redirect rejected (HTTP \(http.statusCode))"
+                    self.applyBackoff()
                     return
                 }
                 guard http.statusCode == 200 else {
                     self.state.error = (http.statusCode == 401 || http.statusCode == 403)
                         ? "Codex login expired — reconfigure (sign in with codex to restore)"
                         : "usage API HTTP \(http.statusCode)"
+                    self.applyBackoff()
                     return
                 }
                 guard http.expectedContentLength <= 10_000_000,
                       let data, data.count <= 10_000_000,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     self.state.error = "Failed to parse usage response"
+                    self.applyBackoff()
                     return
                 }
                 if let rawPlan = json["plan_type"] as? String,
@@ -212,7 +222,16 @@ final class CodexQuotaClient: ObservableObject {
                 }
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
+                self.backoffBase = 0
             }
         }.resume()
+    }
+
+    /// Exponential backoff (M1): 60s → 2m → 5m → 15m, capped.
+    private func applyBackoff() {
+        let now = ProcessInfo.processInfo.systemUptime
+        backoffBase = min(max(backoffBase, 60), 15 * 60)
+        nextAllowedRefresh = now + backoffBase
+        backoffBase *= 2
     }
 }

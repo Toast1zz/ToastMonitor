@@ -59,6 +59,11 @@ final class CommandCodeQuotaClient: ObservableObject {
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
+    /// Backoff (M1): failed refreshes wait 60s → 2m → 5m → 15m before the
+    /// next attempt; success resets. Prevents fixed-cadence hammering while
+    /// the remote API is down or rate-limiting.
+    private var backoffBase: TimeInterval = 0
+    private var nextAllowedRefresh: TimeInterval = 0
 
     private let session: URLSession
     /// Retained because URLSession delegates are weak.
@@ -178,6 +183,9 @@ final class CommandCodeQuotaClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
+        // Backoff gate (M1): skip attempts inside the backoff window; the
+        // 60s timer picks up after it elapses.
+        if ProcessInfo.processInfo.systemUptime < nextAllowedRefresh { return }
         inFlight = true
         refreshGeneration &+= 1
         let generation = refreshGeneration
@@ -206,6 +214,15 @@ final class CommandCodeQuotaClient: ObservableObject {
             self.keychainLocked = locked
         }
         return ck
+    }
+
+    /// Exponential backoff (M1): 60s → 2m → 5m → 15m, capped. The next
+    /// refresh() is skipped until the window elapses.
+    private func applyBackoff() {
+        let now = ProcessInfo.processInfo.systemUptime
+        backoffBase = min(max(backoffBase, 60), 15 * 60)
+        nextAllowedRefresh = now + backoffBase
+        backoffBase *= 2
     }
 
     private func requestUsage(cookie: String, generation: UInt64) {
@@ -266,11 +283,14 @@ final class CommandCodeQuotaClient: ObservableObject {
             switch (creditsResult, subsResult) {
             case (.failure(let creditsError), _):
                 self.state.error = Self.message(for: creditsError)
+                self.applyBackoff()
                 return
             case (_, .failure(let subsError)):
                 self.state.error = Self.message(for: subsError)
+                self.applyBackoff()
                 return
             default:
+                self.backoffBase = 0
                 break
             }
             guard case .success(let creditsData)? = creditsResult,
