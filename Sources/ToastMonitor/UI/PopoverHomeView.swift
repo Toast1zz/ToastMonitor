@@ -623,7 +623,8 @@ struct PopoverHomeView: View {
         }
         return statusRow(name: name, status: status,
                          statusColor: .primary,
-                         critical: state.monthlyUsedPercent.map { $0 < 20 } ?? false,
+                         // Star = running low: remaining below 20% (used > 80%).
+                         critical: state.monthlyUsedPercent.map { $0 > 80 } ?? false,
                          resetSuffix: resetSuffix,
                          hideKey: "cc")
     }
