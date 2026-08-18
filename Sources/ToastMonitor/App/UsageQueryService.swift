@@ -61,6 +61,9 @@ final class UsageQueryService: @unchecked Sendable {
     /// 5s 保险轮询与 didCollect 驱动的刷新都不再触发全量聚合。
     private var cachedLight: (key: String, snapshot: LightSnapshot)?
     private var cachedSnapshot: (key: String, snapshot: Snapshot)?
+    /// 日聚合/热力图缓存（M8）：与快照同键策略。popover 可见期间每分钟
+    /// 的 minuteTicker 不再反复跑 371 天 strftime+GROUP BY 全量聚合。
+    private var cachedDailyAggs: (key: String, aggs: [Database.DayAgg])?
 
     private init() {}
 
@@ -99,7 +102,14 @@ final class UsageQueryService: @unchecked Sendable {
 
     func loadDailyAggs(days: Int, completion: @escaping @MainActor @Sendable ([Database.DayAgg]) -> Void) {
         queue.async {
+            let now = Date()
+            let key = "\(Database.shared.dataVersionKey())|days=\(days)"
+            if let c = self.cachedDailyAggs, c.key == key {
+                DispatchQueue.main.async { completion(c.aggs) }
+                return
+            }
             let aggs = Database.shared.dailyAggregates(days: days)
+            self.cachedDailyAggs = (key, aggs)
             DispatchQueue.main.async { completion(aggs) }
         }
     }
