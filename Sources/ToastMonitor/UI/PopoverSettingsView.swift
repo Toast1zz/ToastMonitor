@@ -285,7 +285,7 @@ struct PopoverSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             SecureField("Cookie header or session token",
-                        text: $ccCookie, prompt: Text("__Secure-better-auth.session_token=…"))
+                        text: $ccCookie, prompt: Text("__Secure-commandcode_prod_.session_token=…"))
                 .font(.system(size: 12, design: .monospaced))
                 .textFieldStyle(.roundedBorder)
             if let message = ccFormMessage {

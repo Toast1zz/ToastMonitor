@@ -607,8 +607,8 @@ struct PopoverHomeView: View {
         } else if stale, state.monthlyCreditsRemaining != nil {
             status = "Stale"
         } else if let percent = state.monthlyUsedPercent {
-            // Known plan: percentage of the monthly allowance.
-            status = "\(Int(percent.rounded()))% left"
+            // Known plan: remaining = 100 − used.
+            status = "\(Int((100 - percent).rounded()))% left"
             if let end = state.billingPeriodEnd {
                 let remaining = end.timeIntervalSince1970 - now.timeIntervalSince1970
                 if remaining > 0 {
