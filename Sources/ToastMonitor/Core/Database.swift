@@ -1275,6 +1275,24 @@ final class Database: @unchecked Sendable {
         _ = setSetting("snapshot_prune_last", "\(now)")
     }
 
+    /// Weekly WAL checkpoint + VACUUM (L1). Deletes/updates (clearAllData,
+    /// snapshot prune, resetLocalUsage) never shrink the SQLite file, so a
+    /// long-running store grows unbounded. Gated weekly AND on file size so
+    /// small stores skip the work entirely. Caller must hold the lock; it is
+    /// invoked from the snapshot-insert path that already gates hourly.
+    private func optimizeIfDue() {
+        let now = Int64(Date().timeIntervalSince1970)
+        if let last = Int64(setting("vacuum_last") ?? "0"), now - last < 7 * 86400 { return }
+        // TRUNCATE checkpoint folds the WAL back into the main file.
+        exec("PRAGMA wal_checkpoint(TRUNCATE);")
+        if !dbPath.isEmpty,
+           let size = (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size]) as? Int64,
+           size > 32 * 1024 * 1024 {
+            _ = execChecked("VACUUM;")
+        }
+        _ = setSetting("vacuum_last", "\(now)")
+    }
+
     @discardableResult
     func insertORSnapshot(_ s: ORSnapshot) -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -1308,6 +1326,7 @@ final class Database: @unchecked Sendable {
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
         pruneSnapshotsIfDue()
+        optimizeIfDue()
         return true
     }
 
