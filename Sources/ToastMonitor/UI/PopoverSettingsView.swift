@@ -139,7 +139,7 @@ struct PopoverSettingsView: View {
         HStack(spacing: 8) {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(TMType.semibold(12))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.primary.opacity(0.06)))
@@ -148,12 +148,12 @@ struct PopoverSettingsView: View {
             .help("Back (Esc)")
 
             Text("Settings")
-                .font(.system(size: 14, weight: .semibold))
+                .font(TMType.semibold(TMType.section))
 
             Spacer()
 
             Text("v\(appVersion)")
-                .font(.system(size: 10.5))
+                .font(TMType.regular(TMType.micro))
                 .foregroundStyle(.quaternary)
         }
         .padding(.horizontal, 20)
@@ -179,7 +179,7 @@ struct PopoverSettingsView: View {
             }
         ))
         .toggleStyle(TMSwitchStyle())
-        .font(.system(size: 12.5, weight: .medium))
+        .font(TMType.medium(TMType.body))
     }
 
     private var generalSection: some View {
@@ -193,12 +193,12 @@ struct PopoverSettingsView: View {
                 set: { launch.setEnabled($0) }
             ))
             .toggleStyle(TMSwitchStyle())
-            .font(.system(size: 12.5, weight: .medium))
+            .font(TMType.medium(TMType.body))
             .accessibilityHint("Open ToastMonitor in the menu bar when you sign in")
 
             Toggle("Close when clicking elsewhere", isOn: $closeOnResign)
                 .toggleStyle(TMSwitchStyle())
-                .font(.system(size: 12.5, weight: .medium))
+                .font(TMType.medium(TMType.body))
                 .accessibilityHint("Keep the panel open when you click other windows or apps")
                 .onChange(of: closeOnResign) { _, newValue in
                     // Persisted off the main thread; the panel reads the
@@ -211,7 +211,7 @@ struct PopoverSettingsView: View {
 
             Toggle("Show icon in Dock when the dashboard is open", isOn: $dockIconOn)
                 .toggleStyle(TMSwitchStyle())
-                .font(.system(size: 12.5, weight: .medium))
+                .font(TMType.medium(TMType.body))
                 .accessibilityHint("Appear as a Dock application while the dashboard window is open")
                 .onChange(of: dockIconOn) { _, newValue in
                     let v = newValue ? "1" : "0"
@@ -240,7 +240,7 @@ struct PopoverSettingsView: View {
                 .foregroundStyle(TMDesign.quiet)
             if ccQuota.state.configured {
                 Text("Session configured · last sync \(ccLastSyncText)")
-                    .font(.system(size: 11))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.quiet)
                 HStack(spacing: 8) {
                     Button("Refresh Now") { CommandCodeQuotaClient.shared.refresh() }
@@ -257,14 +257,14 @@ struct PopoverSettingsView: View {
             }
             if let ccError = ccQuota.state.error {
                 Text(ccError)
-                    .font(.system(size: 11))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.danger)
                     .lineLimit(2)
             }
 
             if let msg = launch.message {
                 Text(msg)
-                    .font(.system(size: 11))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.danger)
             }
         }
@@ -277,11 +277,11 @@ struct PopoverSettingsView: View {
     private var ccSessionForm: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Command Code GOAT Session")
-                .font(.system(size: 14, weight: .semibold))
+                .font(TMType.semibold(TMType.section))
             Text("Paste the Cookie header from your logged-in commandcode.ai "
                  + "browser session (or just the session token). Stored only "
                  + "in the macOS Keychain; experimental private API.")
-                .font(.system(size: 11))
+                .font(TMType.regular(TMType.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             SecureField("Cookie header or session token",
@@ -290,7 +290,7 @@ struct PopoverSettingsView: View {
                 .textFieldStyle(.roundedBorder)
             if let message = ccFormMessage {
                 Text(message)
-                    .font(.system(size: 11))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.danger)
                     .lineLimit(2)
             }
@@ -326,7 +326,7 @@ struct PopoverSettingsView: View {
 
             Toggle("Automatically check for updates", isOn: $autoCheckOn)
                 .toggleStyle(TMSwitchStyle())
-                .font(.system(size: 12.5, weight: .medium))
+                .font(TMType.medium(TMType.body))
                 .accessibilityHint("Check for new versions in the background at launch")
                 .onChange(of: autoCheckOn) { _, newValue in
                     let v = newValue ? "1" : "0"
@@ -348,7 +348,7 @@ struct PopoverSettingsView: View {
                         .disabled(true)
                 } else if let update = updates.available {
                     Text("ToastMonitor \(update.version) is available")
-                        .font(.system(size: 11))
+                        .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.accent)
                     Button("Download & Install") {
                         Task { await UpdateManager.shared.installAndRelaunch() }
@@ -363,18 +363,18 @@ struct PopoverSettingsView: View {
                         Task { await UpdateManager.shared.check(force: true) }
                     } label: {
                         Label("Check for Updates", systemImage: "arrow.clockwise")
-                            .font(.system(size: 11))
+                            .font(TMType.regular(TMType.caption))
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     if let error = updates.lastError {
                         Text(error)
-                            .font(.system(size: 11))
+                            .font(TMType.regular(TMType.caption))
                             .foregroundStyle(TMDesign.danger)
                             .lineLimit(2)
                     } else if updates.lastCheckAt != nil {
                         Text("You're up to date")
-                            .font(.system(size: 11))
+                            .font(TMType.regular(TMType.caption))
                             .foregroundStyle(TMDesign.quiet)
                     }
                 }
@@ -383,7 +383,7 @@ struct PopoverSettingsView: View {
 
             if updates.installing {
                 Text("Downloading, verifying and installing…")
-                    .font(.system(size: 11))
+                    .font(TMType.regular(TMType.caption))
                     .foregroundStyle(.secondary)
             }
         }
