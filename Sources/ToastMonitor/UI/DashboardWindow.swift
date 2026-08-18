@@ -68,10 +68,11 @@ final class WindowManager {
         }
     }
 
-    /// Builds the standard application menu once. The app runs without a
-    /// main menu in menu-bar (accessory) mode; the dashboard is a regular
-    /// window, so it gets the usual menus while open.
-    private func ensureMainMenu() {
+    /// Builds the standard application menu once. Built at launch (not only
+    /// when the dashboard opens) so its key equivalents — Cmd+V/C/X in the
+    /// popover's secure fields, Cmd+W, Cmd+Q — resolve even in accessory
+    /// mode where the menu bar itself is hidden.
+    func ensureMainMenu() {
         guard NSApp.mainMenu == nil else { return }
         let mainMenu = NSMenu()
 

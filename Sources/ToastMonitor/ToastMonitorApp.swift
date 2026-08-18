@@ -365,6 +365,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CommandCodeQuotaClient.shared.start()
         HermesRemoteClient.shared.start()
         setupMenuBar()
+        // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
+        // fields and everywhere else, not just while the dashboard is open.
+        WindowManager.shared.ensureMainMenu()
         UpdateManager.shared.startAutoCheckIfEnabled()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             AppState.shared.refresh()
