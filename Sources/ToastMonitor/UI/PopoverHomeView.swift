@@ -60,6 +60,7 @@ struct PopoverHomeView: View {
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
+    @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var periodSettings = UsagePeriodSettings.shared
     @State private var period: Period = {
         let args = CommandLine.arguments
@@ -383,6 +384,7 @@ struct PopoverHomeView: View {
             SectionTitle("Quota")
             if !(quotaRowHidden["go"] ?? false) { goStatusRow }
             if !(quotaRowHidden["codex"] ?? false) { codexStatusRow }
+            if !(quotaRowHidden["cc"] ?? false) { commandCodeStatusRow }
             if !(quotaRowHidden["router"] ?? false) { routerStatusRow }
         }
     }
@@ -397,7 +399,7 @@ struct PopoverHomeView: View {
     }
 
     private func loadQuotaRowHidden() {
-        for key in ["go", "codex", "router"] {
+        for key in ["go", "codex", "cc", "router"] {
             quotaRowHidden[key] = Database.shared.setting(Self.quotaRowHiddenKey(key)) == "1"
         }
     }
@@ -590,6 +592,40 @@ struct PopoverHomeView: View {
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
                          hideKey: "codex")
+    }
+
+    /// Command Code GOAT quota (experimental private billing API).
+    private var commandCodeStatusRow: some View {
+        let state = ccQuota.state
+        let stale = state.lastSync > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
+        let name = "Command Code" + (state.error == nil ? "" : " ⚠")
+        var status = state.configured ? "Loading" : "Not configured"
+        var resetSuffix: String?
+        if state.error != nil {
+            status = "Error"
+        } else if stale, state.monthlyCreditsRemaining != nil {
+            status = "Stale"
+        } else if let percent = state.monthlyUsedPercent {
+            // Known plan: percentage of the monthly allowance.
+            status = "\(Int(percent.rounded()))% left"
+            if let end = state.billingPeriodEnd {
+                let remaining = end.timeIntervalSince1970 - now.timeIntervalSince1970
+                if remaining > 0 {
+                    resetSuffix = "resets in \(Format.remaining(Int64(remaining)))"
+                }
+            }
+        } else if let remaining = state.monthlyCreditsRemaining {
+            // Unknown plan or no allowance: show remaining only, no percent.
+            status = "$\(Format.money(remaining)) left"
+        } else if state.configured && state.lastSync <= 0 {
+            status = "Loading"
+        }
+        return statusRow(name: name, status: status,
+                         statusColor: .primary,
+                         critical: state.monthlyUsedPercent.map { $0 < 20 } ?? false,
+                         resetSuffix: resetSuffix,
+                         hideKey: "cc")
     }
 
     private var routerStatusRow: some View {

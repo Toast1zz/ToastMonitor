@@ -362,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         OpenRouterClient.shared.start()
         OpenCodeGoClient.shared.start()
         CodexQuotaClient.shared.start()
+        CommandCodeQuotaClient.shared.start()
         HermesRemoteClient.shared.start()
         setupMenuBar()
         UpdateManager.shared.startAutoCheckIfEnabled()
