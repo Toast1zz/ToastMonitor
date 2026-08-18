@@ -69,7 +69,16 @@ struct PopoverSettingsView: View {
     @State private var closeOnResign: Bool = PanelController.dismissOnResign
     @State private var dockIconOn: Bool = WindowManager.dockIconEnabled
     @State private var autoCheckOn: Bool = UpdateManager.autoCheckEnabled
+    @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
+    @State private var showCCForm = false
+    @State private var ccCookie = ""
+    @State private var ccFormMessage: String?
     let onBack: () -> Void
+
+    private var ccLastSyncText: String {
+        guard ccQuota.state.lastSync > 0 else { return "never" }
+        return Format.remaining(Int64(Date().timeIntervalSince1970) - ccQuota.state.lastSync) + " ago"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -103,6 +112,9 @@ struct PopoverSettingsView: View {
         .frame(width: 400)
         .frame(maxHeight: .infinity, alignment: .top)
         .environment(\.controlSize, .small)
+        .sheet(isPresented: $showCCForm) {
+            ccSessionForm
+        }
         .onAppear {
             launch.refresh()
             closeOnResign = PanelController.dismissOnResign
@@ -218,7 +230,37 @@ struct PopoverSettingsView: View {
                 .foregroundStyle(TMDesign.quiet)
             quotaRowToggle("go", title: "OpenCode Go")
             quotaRowToggle("codex", title: "Codex Plus")
+            quotaRowToggle("cc", title: "Command Code")
             quotaRowToggle("router", title: "OpenRouter")
+
+            // Command Code session management (experimental).
+            Divider().opacity(0.5)
+            Text("Command Code (experimental)")
+                .font(.system(size: TMType.caption, weight: .semibold))
+                .foregroundStyle(TMDesign.quiet)
+            if ccQuota.state.configured {
+                Text("Session configured · last sync \(ccLastSyncText)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(TMDesign.quiet)
+                HStack(spacing: 8) {
+                    Button("Refresh Now") { CommandCodeQuotaClient.shared.refresh() }
+                    Button("Update Session…") { showCCForm = true }
+                    Button("Clear Session") { CommandCodeQuotaClient.shared.clear() }
+                        .foregroundStyle(TMDesign.danger)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            } else {
+                Button("Configure Command Code…") { showCCForm = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+            if let ccError = ccQuota.state.error {
+                Text(ccError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(TMDesign.danger)
+                    .lineLimit(2)
+            }
 
             if let msg = launch.message {
                 Text(msg)
@@ -229,6 +271,52 @@ struct PopoverSettingsView: View {
     }
 
     // MARK: - 更新
+
+    /// Secure session form for Command Code (experimental). Accepts the full
+    /// Cookie header from the Studio browser session, or a bare session token.
+    private var ccSessionForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Command Code Session")
+                .font(.system(size: 14, weight: .semibold))
+            Text("Paste the Cookie header from your logged-in commandcode.ai "
+                 + "browser session (or just the session token). Stored only "
+                 + "in the macOS Keychain; experimental private API.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            SecureField("Cookie header or session token",
+                        text: $ccCookie, prompt: Text("__Secure-better-auth.session_token=…"))
+                .font(.system(size: 12, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+            if let message = ccFormMessage {
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(TMDesign.danger)
+                    .lineLimit(2)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showCCForm = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save Session") {
+                    let raw = ccCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !raw.isEmpty else { return }
+                    if CommandCodeQuotaClient.shared.provision(cookie: raw) {
+                        showCCForm = false
+                        ccCookie = ""
+                        ccFormMessage = nil
+                    } else {
+                        ccFormMessage = CommandCodeQuotaClient.shared.state.error
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(ccCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
 
     private var updatesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
