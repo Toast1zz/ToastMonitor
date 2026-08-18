@@ -518,11 +518,11 @@ extension DatabaseTests {
 
         XCTAssertTrue(db.restore(from: legacyPath), "restore of a valid older store must succeed")
 
-        // Re-opening re-ran the v3 migration: the v3-only columns exist again.
+        // Re-opening re-ran the migrations: the v3-only columns exist again.
         XCTAssertTrue(db.setScanState("src", size: 1, mtime: 2, identity: 3),
                       "restored schema must be re-migrated so scan_state.identity exists (DB-3)")
         XCTAssertEqual(db.scanState("src").identity, 3)
-        XCTAssertEqual(db.diagnosticsSummary()["user_version"] as? Int32, 3,
+        XCTAssertEqual(db.diagnosticsSummary()["user_version"] as? Int32, 4,
                        "restore must re-run migrations against the restored file (DB-3)")
         XCTAssertTrue(db.upsertSubscription(Database.Subscription(id: 0, name: "X", plan: "",
                                                                   startDate: 1_700_000_000, cycle: "monthly",

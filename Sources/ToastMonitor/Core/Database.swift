@@ -512,6 +512,25 @@ final class Database: @unchecked Sendable {
                 transactionWriteError = false
             }
         }
+        // v4: openrouter_snapshots account columns. These used to be ensured
+        // on every insert (L2) — three pragma_table_info probes per snapshot
+        // write on the hot path. Fold into the versioned migration instead.
+        if previousVersion < 4 {
+            guard let db else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            transactionWriteError = false
+            ensureColumn("account_usage", "REAL", table: "openrouter_snapshots")
+            ensureColumn("account_balance", "REAL", table: "openrouter_snapshots")
+            ensureColumn("is_management_key", "INTEGER NOT NULL DEFAULT 0", table: "openrouter_snapshots")
+            let ok = !transactionWriteError && setUserVersion(4)
+            if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                transactionWriteError = false
+            } else {
+                rollbackOrPoison()
+                setUserVersion(previousVersion)
+                transactionWriteError = false
+            }
+        }
     }
 
     private func userVersion() -> Int32 {
@@ -1297,10 +1316,6 @@ final class Database: @unchecked Sendable {
     func insertORSnapshot(_ s: ORSnapshot) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return false }
-        // Migration for older DBs missing the account columns.
-        ensureColumn("account_usage", "REAL", table: "openrouter_snapshots")
-        ensureColumn("account_balance", "REAL", table: "openrouter_snapshots")
-        ensureColumn("is_management_key", "INTEGER NOT NULL DEFAULT 0", table: "openrouter_snapshots")
         var stmt: OpaquePointer?
         let sql = """
         INSERT OR REPLACE INTO openrouter_snapshots
