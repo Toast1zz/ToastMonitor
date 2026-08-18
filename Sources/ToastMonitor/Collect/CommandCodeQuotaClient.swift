@@ -225,21 +225,22 @@ final class CommandCodeQuotaClient: ObservableObject {
         var creditsResult: Result<Data, HTTPError>?
         var subsResult: Result<Data, HTTPError>?
 
-        // Both requests run on the shared ephemeral session with the
-        // redirect-blocking delegate; credentials never follow a redirect.
+        // Enter BEFORE resume: group.notify must observe a non-zero count.
+        // Entering inside the completion (asynchronously) let notify fire
+        // immediately with nil results, leaving isLoading stuck true.
+        group.enter()
         let creditsTask = redirectBlocker.boundedDataTask(
             in: session, request: makeRequest(creditsURL),
             maxBytes: Self.maxResponseBytes
         ) { data, resp, err in
-            group.enter()
             creditsResult = Self.validate(data: data, response: resp, error: err)
             group.leave()
         }
+        group.enter()
         let subsTask = redirectBlocker.boundedDataTask(
             in: session, request: makeRequest(subsURL),
             maxBytes: Self.maxResponseBytes
         ) { data, resp, err in
-            group.enter()
             subsResult = Self.validate(data: data, response: resp, error: err)
             group.leave()
         }
@@ -265,7 +266,12 @@ final class CommandCodeQuotaClient: ObservableObject {
                 break
             }
             guard case .success(let creditsData)? = creditsResult,
-                  case .success(let subsData)? = subsResult else { return }
+                  case .success(let subsData)? = subsResult else {
+                // Defensive: both endpoints completed (group notified) but a
+                // result is missing — never leave a stuck Loading state.
+                self.state.error = "Billing request failed"
+                return
+            }
 
             let parsed = Self.parse(creditsData: creditsData, subsData: subsData)
             self.apply(parsed)
