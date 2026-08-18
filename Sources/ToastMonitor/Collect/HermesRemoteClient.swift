@@ -125,12 +125,16 @@ final class HermesRemoteClient: ObservableObject {
     /// Called from the collector loop; rate-limited internally (60s).
     func maybePoll() {
         guard remoteSourcesEnabled else { return }
+        // M2: only poll while the UI is visible. A background scan must not
+        // keep pulling the remote feed (up to 10MB) every ~15s and burn VPS
+        // bandwidth / risk being rate-limited by the remote end.
+        guard foreground else { return }
         // Keep the rate-limit check on the serial queue: lastPoll is only
         // mutated inside pollEnqueued, which always runs there.
         queue.async { [weak self] in
             guard let self else { return }
             let now = Int64(Date().timeIntervalSince1970)
-            guard now - self.lastPoll > 13 else { return }
+            guard now - self.lastPoll > 60 else { return }
             self.pollEnqueued(completion: nil)
         }
     }

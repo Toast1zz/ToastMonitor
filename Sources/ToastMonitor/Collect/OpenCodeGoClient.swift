@@ -306,7 +306,6 @@ final class OpenCodeGoClient: ObservableObject {
                 guard self.refreshGeneration == generation else { return }
                 self.inFlight = false
                 self.state.isLoading = false
-                self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 if let err {
                     self.state.error = err.localizedDescription
                     return
@@ -359,6 +358,9 @@ final class OpenCodeGoClient: ObservableObject {
                 self.state.monthlyPct = parsed.2?.pct
                 self.state.monthlyReset = parsed.2?.reset
                 self.state.lastOK = Int64(Date().timeIntervalSince1970)
+                // Only a successful fetch advances the sync clock (L7);
+                // otherwise the UI could show "just synced" over an error.
+                self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
                 self.persist()
             }
