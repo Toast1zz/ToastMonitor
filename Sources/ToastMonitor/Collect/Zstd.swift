@@ -57,7 +57,28 @@ enum Zstd {
     /// large session log (whose decompressed size exceeds the pipe buffer)
     /// cannot deadlock; a 30s watchdog terminates a wedged process so the
     /// collector queue is never blocked forever.
+    ///
+    /// Results are cached by input content (S1): the DSH collector re-reads
+    /// the same tail slice on every incremental scan, and decompression runs
+    /// inside the DB transaction that holds the global lock — caching avoids
+    /// re-spawning the subprocess for frames that already decoded.
+    private static let cache = NSCache<NSString, NSData>()
+
     static func decompress(_ data: Data) -> Data? {
+        // Whole-input cache: key on a cheap content hash. NSCache is
+        // thread-safe and evicts under memory pressure.
+        let key = NSString(string: "\(data.count):\(data.hashValue)")
+        if let hit = cache.object(forKey: key) {
+            return hit as Data
+        }
+        guard let out = decompressUncached(data) else { return nil }
+        if out.count <= 64 * 1024 * 1024 { // don't cache giant payloads
+            cache.setObject(out as NSData, forKey: key)
+        }
+        return out
+    }
+
+    private static func decompressUncached(_ data: Data) -> Data? {
         guard let executable = executablePath() else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
