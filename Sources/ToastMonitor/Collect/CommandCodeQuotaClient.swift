@@ -25,8 +25,15 @@ final class CommandCodeQuotaClient: ObservableObject {
     /// The three Better Auth session cookie names the app accepts. Provisioning
     /// stores whatever the user pastes as the full Cookie header; this list is
     /// only used for the token-only convenience form.
+    ///
+    /// NOTE: the live cookie name is Command Code's production prefix
+    /// (`__Secure-commandcode_prod_.session_token`), NOT the stock Better Auth
+    /// name the original skill assumed — verified against the real API on
+    /// 2026-08-18. The token-only convenience form wraps bare tokens in the
+    /// real name so they work without the session_data cookie.
     static let sessionCookieNames = [
-        "__Host-better-auth.session_token",
+        "__Secure-commandcode_prod_.session_token",
+        "__Host-commandcode_prod_.session_token",
         "__Secure-better-auth.session_token",
         "better-auth.session_token",
     ]
@@ -156,9 +163,10 @@ final class CommandCodeQuotaClient: ObservableObject {
 
     private static func normalizedCookie(_ raw: String) -> String? {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Bare token convenience: wrap in the Better Auth session cookie name.
+        // Bare token convenience: wrap in the real production cookie name.
+        // (The stock Better Auth name is NOT what the live API accepts.)
         if !value.contains("=") {
-            value = "__Secure-better-auth.session_token=\(value)"
+            value = "__Secure-commandcode_prod_.session_token=\(value)"
         }
         guard !value.isEmpty,
               value.count <= maxCookieLength,
