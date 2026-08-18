@@ -44,6 +44,9 @@ final class OpenCodeGoClient: ObservableObject {
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
+    /// Backoff (M1): failed refreshes wait 60s → 2m → 5m → 15m; success resets.
+    private var backoffBase: TimeInterval = 0
+    private var nextAllowedRefresh: TimeInterval = 0
     private var credentialsLoaded = false
     private var cachedCredentials: (workspaceId: String, cookie: String)?
     /// Set when a keychain read/write failed with errSecInteractionNotAllowed
@@ -241,6 +244,8 @@ final class OpenCodeGoClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
+        // Backoff gate (M1): skip attempts inside the backoff window.
+        if ProcessInfo.processInfo.systemUptime < nextAllowedRefresh { return }
         inFlight = true
         if credentialsLoaded {
             guard let cachedCredentials else {
@@ -308,47 +313,57 @@ final class OpenCodeGoClient: ObservableObject {
                 self.state.isLoading = false
                 if let err {
                     self.state.error = err.localizedDescription
+                    self.applyBackoff()
                     return
                 }
                 guard let data else {
                     self.state.error = "Empty response"
+                    self.applyBackoff()
                     return
                 }
                 guard data.count <= Self.maxHTMLLength else {
                     self.state.error = "Response too large (>10MB)"
+                    self.applyBackoff()
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
                     self.state.error = "No HTTP response"
+                    self.applyBackoff()
                     return
                 }
                 if (300..<400).contains(http.statusCode) {
                     self.state.error = "Redirect rejected (HTTP \(http.statusCode))"
+                    self.applyBackoff()
                     return
                 }
                 // Reject oversized responses from the header before buffering.
                 if http.expectedContentLength > 10_000_000 {
                     self.state.error = "Response too large (>10MB)"
+                    self.applyBackoff()
                     return
                 }
                 guard http.statusCode == 200 else {
                     self.state.error = (http.statusCode == 401 || http.statusCode == 403)
                         ? "Cookie expired, reconfigure needed (HTTP \(http.statusCode))"
                         : "HTTP \(http.statusCode)"
+                    self.applyBackoff()
                     return
                 }
                 if let mime = http.mimeType,
                    !mime.contains("html") && !mime.contains("json") && !mime.contains("text") {
                     self.state.error = "Non-web response (\(mime))"
+                    self.applyBackoff()
                     return
                 }
                 guard let html = String(data: data, encoding: .utf8) else {
                     self.state.error = "Failed to parse response"
+                    self.applyBackoff()
                     return
                 }
                 let parsed = Self.parse(html)
                 guard let parsed, parsed.0 != nil || parsed.1 != nil || parsed.2 != nil else {
                     self.state.error = "No usage data found (page structure may have changed)"
+                    self.applyBackoff()
                     return
                 }
                 self.state.rollingPct = parsed.0?.pct
@@ -362,9 +377,18 @@ final class OpenCodeGoClient: ObservableObject {
                 // otherwise the UI could show "just synced" over an error.
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
+                self.backoffBase = 0
                 self.persist()
             }
         }.resume()
+    }
+
+    /// Exponential backoff (M1): 60s → 2m → 5m → 15m, capped.
+    private func applyBackoff() {
+        let now = ProcessInfo.processInfo.systemUptime
+        backoffBase = min(max(backoffBase, 60), 15 * 60)
+        nextAllowedRefresh = now + backoffBase
+        backoffBase *= 2
     }
 
     private func persist() {
