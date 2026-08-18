@@ -223,6 +223,9 @@ final class UpdateManager: ObservableObject {
         // into place, roll back on failure — and relaunches. The old bundle
         // is kept until the new instance has had time to launch, so a failed
         // swap can never leave the app unlaunchable.
+        // Paths arrive as $1/$2 argv, never interpolated into the script, so
+        // a bundle path containing quotes / $() / backticks cannot inject
+        // shell commands (M7).
         let script = """
         #!/bin/bash
         set -euo pipefail
@@ -234,8 +237,8 @@ final class UpdateManager: ObservableObject {
             if ! pgrep -x ToastMonitor >/dev/null 2>&1; then break; fi
             sleep 0.5
         done
-        target='\(target.path)'
-        candidate='\(candidate.path)'
+        target="$1"
+        candidate="$2"
         old="$target.tm-backup"
         rm -rf "$old"
         if [ -d "$target" ]; then mv "$target" "$old"; fi
@@ -255,7 +258,7 @@ final class UpdateManager: ObservableObject {
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
         let installer = Process()
         installer.executableURL = URL(fileURLWithPath: "/bin/bash")
-        installer.arguments = [scriptURL.path]
+        installer.arguments = [scriptURL.path, target.path, candidate.path]
         // Detached on purpose: waiting here would deadlock — the script waits
         // for this process to exit, which only happens after we return.
         try installer.run()
