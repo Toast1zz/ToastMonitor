@@ -367,11 +367,15 @@ final class OpenCodeGoClient: ObservableObject {
 
     private func persist() {
         let s = state
-        Database.shared.insertOGSnapshot(Database.OGSnapshot(
+        let snap = Database.OGSnapshot(
             ts: Int64(Date().timeIntervalSince1970),
             rollingPct: s.rollingPct, rollingReset: s.rollingReset,
             weeklyPct: s.weeklyPct, weeklyReset: s.weeklyReset,
-            monthlyPct: s.monthlyPct, monthlyReset: s.monthlyReset))
+            monthlyPct: s.monthlyPct, monthlyReset: s.monthlyReset)
+        // DB write off the main actor (M4).
+        DispatchQueue.global(qos: .utility).async {
+            Database.shared.insertOGSnapshot(snap)
+        }
     }
 
     private static func hasDisallowedControl(_ value: String) -> Bool {

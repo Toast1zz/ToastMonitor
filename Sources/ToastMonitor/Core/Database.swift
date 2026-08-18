@@ -319,7 +319,8 @@ final class Database: @unchecked Sendable {
             // The legacy rebuild drops the fresh-install idx_turns_session
             // with turns_legacy; recreate it or session lookups go full-scan.
             "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(tool, session_id);",
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_event ON turns(tool, event_id) WHERE event_id IS NOT NULL;"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_event ON turns(tool, event_id) WHERE event_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS idx_turns_backfill ON turns(id) WHERE cost = 0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
         ]
         for sql in statements {
             var err: UnsafeMutablePointer<CChar>?
@@ -373,6 +374,11 @@ final class Database: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_turns_ts ON turns(ts);
         CREATE INDEX IF NOT EXISTS idx_turns_tool ON turns(tool, ts);
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(tool, session_id);
+        -- Partial index for the cost backfill scan (M5): only rows that still
+        -- need pricing, so the 60s backfill never full-scans the table.
+        CREATE INDEX IF NOT EXISTS idx_turns_backfill
+          ON turns(id) WHERE cost = 0 AND tool != 'hermes'
+                       AND model IS NOT NULL AND model != '';
 
         CREATE TABLE IF NOT EXISTS sessions (
           tool TEXT NOT NULL,

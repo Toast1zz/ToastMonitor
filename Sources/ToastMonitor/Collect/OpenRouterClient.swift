@@ -549,7 +549,11 @@ final class OpenRouterClient: ObservableObject {
             isFreeTier: s.isFreeTier, creditsTotal: s.creditsTotal, creditsUsage: s.creditsUsage,
             accountUsage: s.accountUsage, accountBalance: s.accountBalance,
             isManagementKey: s.isManagementKey)
-        Database.shared.insertORSnapshot(snap)
+        // DB write off the main actor: the shared lock may be held by the
+        // collector or the hourly prune (M4).
+        DispatchQueue.global(qos: .utility).async {
+            Database.shared.insertORSnapshot(snap)
+        }
     }
 
     private func fetch(_ path: String, key: String,

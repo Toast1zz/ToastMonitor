@@ -183,7 +183,9 @@ final class CodexQuotaClient: ObservableObject {
                     return
                 }
                 guard http.statusCode == 200 else {
-                    self.state.error = "usage API HTTP \(http.statusCode)"
+                    self.state.error = (http.statusCode == 401 || http.statusCode == 403)
+                        ? "Codex login expired — reconfigure (sign in with codex to restore)"
+                        : "usage API HTTP \(http.statusCode)"
                     return
                 }
                 guard http.expectedContentLength <= 10_000_000,
