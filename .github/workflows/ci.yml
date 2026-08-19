@@ -7,6 +7,7 @@ name: CI
     tags: ["v*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 # NOTE: the source uses macOS 27 SDK APIs (NSSegmentedControl.role etc.),
 # so this workflow needs an Xcode 27 toolchain. macOS 27 has shipped, but
