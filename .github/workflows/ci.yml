@@ -9,11 +9,9 @@ name: CI
     branches: [main]
 
 # NOTE: the source uses macOS 27 SDK APIs (NSSegmentedControl.role etc.),
-# so this workflow needs an Xcode 27 toolchain. GitHub's hosted runners do
-# not ship one until macOS 27 is released; until then this workflow stays
-# disabled (disable via Settings -> Actions, or `gh api -X PUT
-# repos/<owner>/<repo>/actions/workflows/ci.yml/disable`). When macOS 27
-# lands, switch `runs-on` to macos-27 and re-enable.
+# so this workflow needs an Xcode 27 toolchain. macOS 27 has shipped, but
+# GitHub's hosted runners label it `xcode-27` (public preview, arm64) — not
+# `macos-27`. If a plain `macos-27` label appears later, this can switch back.
 # Note: `swift test` no longer needs the release signing key (UpdateChecker
 # tests use a self-contained key pair), so a clean runner can run the full
 # suite as-is.
@@ -25,7 +23,7 @@ env:
 
 jobs:
   build-and-test:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,7 +67,7 @@ jobs:
   release-bundle:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-test
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4

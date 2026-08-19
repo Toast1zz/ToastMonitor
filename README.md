@@ -1,8 +1,8 @@
 # ToastMonitor
 
-[![macOS](https://img.shields.io/badge/macOS-14.0+-blue)](https://github.com/neko1chau/ToastMonitor)
+[![macOS](https://img.shields.io/badge/macOS-14.0+-blue)](https://github.com/Toast1zz/ToastMonitor)
 [![Swift](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
-[![License: MIT](https://img.shields.io/github/license/neko1chau/ToastMonitor)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/Toast1zz/ToastMonitor)](LICENSE)
 
 Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-party dependencies).
 
@@ -33,7 +33,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 
 - Only addresses you **explicitly configure** in Sources & Settings are contacted; the app ships no personal IPs or default remote hosts
 - Addresses are validated client-side; credential requests never follow redirects
-- Remote polling is throttled to ~15s by the same collection loop; local and remote sources can be disabled independently
+- Remote polling runs on a 15s timer behind a 60s internal rate limit (same collection loop); local and remote sources can be disabled independently
 
 ### DeepSeek Harness (DSH)
 
