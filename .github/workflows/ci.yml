@@ -69,6 +69,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-test
     runs-on: xcode-27
+    # Secrets cannot be referenced inside `if:` expressions (workflow fails
+    # to parse), so surface the identity into env and gate the steps below
+    # on env.TM_SIGNING_IDENTITY instead.
+    env:
+      TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
@@ -84,15 +89,14 @@ jobs:
           }
 
       - name: Assemble signed app
-        if: ${{ secrets.TM_SIGNING_IDENTITY != '' }}
+        if: ${{ env.TM_SIGNING_IDENTITY != '' }}
         env:
           TM_VERSION: ${{ github.ref_name }}
           TM_BUILD_NUMBER: ${{ github.run_number }}
-          TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
         run: ./scripts/build-app.sh
 
       - name: Upload app bundle
-        if: ${{ secrets.TM_SIGNING_IDENTITY != '' }}
+        if: ${{ env.TM_SIGNING_IDENTITY != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: ToastMonitor-${{ github.ref_name }}
