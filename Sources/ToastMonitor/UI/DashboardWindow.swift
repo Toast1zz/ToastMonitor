@@ -232,6 +232,10 @@ final class WindowManager {
         return CFAbsoluteTimeGetCurrent() - start
     }
 
+    deinit {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+    }
+
 }
 
 /// A system toolbar item group. On macOS 27 the `.tabs` role is what gives

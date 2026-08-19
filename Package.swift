@@ -13,9 +13,7 @@ let package = Package(
             path: "Sources/ToastMonitor",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
-                .linkedFramework("CoreServices"),
                 .linkedFramework("Security"),
-                .linkedFramework("LocalAuthentication"),
             ]
         ),
         .testTarget(

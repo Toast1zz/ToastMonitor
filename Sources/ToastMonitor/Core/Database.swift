@@ -2019,7 +2019,10 @@ final class Database: @unchecked Sendable {
 
     private func startOfDay(daysAgo: Int) -> Int64 {
         let cal = Calendar.current
-        let day = cal.date(byAdding: .day, value: -daysAgo, to: cal.startOfDay(for: Date()))!
+        let today = cal.startOfDay(for: Date())
+        guard let day = cal.date(byAdding: .day, value: -daysAgo, to: today) else {
+            return Int64(today.timeIntervalSince1970)
+        }
         return Int64(day.timeIntervalSince1970)
     }
 
