@@ -21,7 +21,11 @@ enum OmpParser {
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let fm = FileManager.default
-        guard fm.fileExists(atPath: root) else { return ([], []) }
+        // Only short-circuit on a missing ~/.omp when no explicit paths were
+        // supplied. Callers passing concrete file paths (the collector's
+        // listFiles output lives under root so this is unchanged in prod;
+        // tests pass fixture paths that must be honored on a clean runner).
+        guard !knownPaths.isEmpty || fm.fileExists(atPath: root) else { return ([], []) }
 
         for file in knownPaths {
             guard let st = FileScanner.fileStat(file) else { continue }
