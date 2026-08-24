@@ -152,27 +152,31 @@ final class AppState: ObservableObject {
     }
 
     /// Foreground = popover expanded or dashboard window visible. While the
-    /// user is looking, snapshot every second and refresh immediately on
-    /// activation; when everything is hidden the UI stops polling (the
-    /// collector's didCollect notification still lands fresh data).
+    /// user is looking, keep the existing 5s snapshot cadence and refresh
+    /// immediately on activation. When everything is hidden, retain a slower
+    /// cadence as a fallback; the collector's didCollect notification still
+    /// refreshes immediately when new data lands.
     private func updateForeground() {
         let fg = popoverVisible || dashboardVisible
-        guard fg != foreground else { return }
+        // At launch both flags are false. The missing timer is the signal that
+        // the initial background cadence still needs to be installed.
+        guard fg != foreground || refreshTimer == nil else { return }
         foreground = fg
         if let t = refreshTimer {
             t.invalidate()
             refreshTimer = nil
         }
-        if fg {
-            // 5s 保险轮询：实时性由 didCollect 的变更驱动保证（新数据到达
-            // 立即刷新），此处只兜底错过通知的场景，避免每秒完整聚合。
-            let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.refresh()
-                }
+        // 5s 保险轮询：实时性由 didCollect 的变更驱动保证（新数据到达
+        // 立即刷新）；后台 30s 轮询兜底 missed notifications/cache races。
+        let interval = TMRefreshPolicy.snapshotInterval(foreground: fg)
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refresh()
             }
-            RunLoop.main.add(t, forMode: .common)
-            refreshTimer = t
+        }
+        RunLoop.main.add(t, forMode: .common)
+        refreshTimer = t
+        if fg {
             refresh() // activation moment: show the latest numbers instantly
         }
     }

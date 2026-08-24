@@ -77,6 +77,17 @@ final class UIStateTests: XCTestCase {
         XCTAssertTrue(PopoverHomeView.minuteTickAllowed(panelVisible: true))
     }
 
+    func testBackgroundRefreshCadenceIsSlowerButNeverDisabled() {
+        XCTAssertEqual(TMRefreshPolicy.snapshotInterval(foreground: true), 5)
+        XCTAssertEqual(TMRefreshPolicy.snapshotInterval(foreground: false), 30)
+        XCTAssertEqual(TMRefreshPolicy.quotaInterval(foreground: true), 60)
+        XCTAssertEqual(TMRefreshPolicy.quotaInterval(foreground: false), 300)
+        XCTAssertGreaterThan(TMRefreshPolicy.backgroundSnapshotInterval,
+                             TMRefreshPolicy.foregroundSnapshotInterval)
+        XCTAssertGreaterThan(TMRefreshPolicy.backgroundQuotaInterval,
+                             TMRefreshPolicy.foregroundQuotaInterval)
+    }
+
     func testHeatmapReloadsOnlyOnHiddenToVisibleTransition() {
         // 隐藏 → 隐藏：不重载
         let (v1, r1) = PopoverHomeView.visibilityTransition(visible: false, wasVisible: false)

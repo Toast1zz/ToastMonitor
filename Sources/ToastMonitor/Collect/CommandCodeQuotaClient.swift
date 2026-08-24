@@ -10,9 +10,9 @@ import Combine
 /// Auth: Better Auth session cookie stored ONLY in the macOS Keychain. The
 /// cookie is read once per refresh and kept in memory only for the request.
 ///
-/// Fetch policy: background refresh only while the Popover or Dashboard is
-/// visible, at most once per 60 seconds. Failures keep the last good snapshot
-/// and are labelled stale — never zeroed or fabricated.
+/// Fetch policy: foreground refreshes remain at once per 60 seconds;
+/// background refreshes continue at a slower cadence. Failures keep the last
+/// good snapshot and are labelled stale — never zeroed or fabricated.
 @MainActor
 final class CommandCodeQuotaClient: ObservableObject {
     static let shared = CommandCodeQuotaClient()
@@ -87,14 +87,13 @@ final class CommandCodeQuotaClient: ObservableObject {
 
     private func updateForeground() {
         let fg = popoverVisible || dashboardVisible
-        guard fg != foreground else { return }
+        // At launch the app is hidden and the timer has not been installed
+        // yet, so the missing timer is also a valid state transition.
+        guard fg != foreground || timer == nil else { return }
         foreground = fg
+        startTimer(interval: TMRefreshPolicy.quotaInterval(foreground: fg))
         if fg {
-            startTimer()
             refresh()
-        } else {
-            timer?.invalidate()
-            timer = nil
         }
     }
 
@@ -122,9 +121,9 @@ final class CommandCodeQuotaClient: ObservableObject {
         updateForeground()
     }
 
-    private func startTimer() {
+    private func startTimer(interval: TimeInterval) {
         timer?.invalidate()
-        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
