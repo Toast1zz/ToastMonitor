@@ -1,10 +1,35 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Verifies signed update metadata without downloading or executing an update.
 /// The caller supplies the HTTPS endpoint and the public key shipped by the
 /// release process; this avoids inventing a mutable or unsigned default host.
 enum UpdateChecker {
+    /// The artifact to download must match the architecture the app is
+    /// actually running under. A universal app can run natively as arm64 or
+    /// under Rosetta as x86_64, so compile-time `#if arch(...)` is not enough.
+    enum Architecture: String, Sendable {
+        case arm64
+        case x86_64
+
+        static var current: Self {
+            var systemInfo = utsname()
+            uname(&systemInfo)
+            let capacity = MemoryLayout.size(ofValue: systemInfo.machine)
+            let machine = withUnsafePointer(to: &systemInfo.machine) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) {
+                    String(cString: $0)
+                }
+            }
+            return from(machine: machine)
+        }
+
+        static func from(machine: String) -> Self {
+            machine == Self.x86_64.rawValue ? .x86_64 : .arm64
+        }
+    }
+
     struct AvailableUpdate: Equatable, Sendable {
         let version: String
         let downloadURL: URL
@@ -42,15 +67,30 @@ enum UpdateChecker {
         let signature: String
     }
 
+    private struct Artifact: Decodable {
+        let downloadURL: URL
+        let sha256: String
+
+        enum CodingKeys: String, CodingKey {
+            case downloadURL = "download_url"
+            case sha256
+        }
+    }
+
     private struct Payload: Decodable {
         let version: String
         let downloadURL: URL
         let sha256: String
+        /// New clients select their native artifact from this map. The legacy
+        /// fields remain mandatory as a universal bootstrap for older clients
+        /// that ignore unknown JSON keys.
+        let artifacts: [String: Artifact]?
 
         enum CodingKeys: String, CodingKey {
             case version
             case downloadURL = "download_url"
             case sha256
+            case artifacts
         }
     }
 
@@ -95,7 +135,12 @@ enum UpdateChecker {
 
     /// Verifies one envelope (the payload is base64-encoded JSON, signed via
     /// the payload's base64 text) and returns the update when newer.
-    static func parseEnvelope(_ envelope: Envelope, publicKey: Data, current: [Int]) throws -> AvailableUpdate? {
+    static func parseEnvelope(
+        _ envelope: Envelope,
+        publicKey: Data,
+        current: [Int],
+        architecture: Architecture = .current
+    ) throws -> AvailableUpdate? {
         let payload: Payload
         do {
             // The release script base64-encodes the JSON payload; decoding the
@@ -121,15 +166,22 @@ enum UpdateChecker {
               key.isValidSignature(signature, for: Data(envelope.payload.utf8)) else {
             throw CheckError.invalidSignature
         }
-        guard isHTTPS(payload.downloadURL), payload.downloadURL.user == nil,
-              validText(payload.sha256, maxBytes: 64),
-              payload.sha256.count == 64,
-              payload.sha256.allSatisfy({ $0.isHexDigit }) else {
+        let fallback = Artifact(downloadURL: payload.downloadURL, sha256: payload.sha256)
+        guard isValidArtifact(fallback) else {
             throw CheckError.invalidDownloadURL
         }
+        let artifact: Artifact
+        if let artifacts = payload.artifacts {
+            guard let selected = artifacts[architecture.rawValue], isValidArtifact(selected) else {
+                throw CheckError.invalidDownloadURL
+            }
+            artifact = selected
+        } else {
+            artifact = fallback
+        }
         return AvailableUpdate(version: payload.version,
-                               downloadURL: payload.downloadURL,
-                               sha256: payload.sha256.lowercased())
+                               downloadURL: artifact.downloadURL,
+                               sha256: artifact.sha256.lowercased())
     }
 
     /// Downloads the signed artifact to a temporary file, streaming and
@@ -234,6 +286,13 @@ enum UpdateChecker {
 
     private static func isHTTPS(_ url: URL) -> Bool {
         url.scheme?.lowercased() == "https" && url.host != nil
+    }
+
+    private static func isValidArtifact(_ artifact: Artifact) -> Bool {
+        isHTTPS(artifact.downloadURL) && artifact.downloadURL.user == nil &&
+            validText(artifact.sha256, maxBytes: 64) &&
+            artifact.sha256.count == 64 &&
+            artifact.sha256.allSatisfy({ $0.isHexDigit })
     }
 
     private static func validText(_ value: String, maxBytes: Int) -> Bool {
