@@ -24,6 +24,12 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertFalse(UpdateChecker.isNewer([1, 2], than: [1, 2, 1]))
     }
 
+    func testArchitectureDetection() {
+        XCTAssertEqual(UpdateChecker.Architecture.from(machine: "arm64"), .arm64)
+        XCTAssertEqual(UpdateChecker.Architecture.from(machine: "Apple Silicon"), .arm64)
+        XCTAssertEqual(UpdateChecker.Architecture.from(machine: "x86_64"), .x86_64)
+    }
+
     /// The release pipeline's manifest envelope must verify against the
     /// app's baked-in public key. This test builds an envelope the way
     /// sign-update-manifest.sh does — with a SELF-CONTAINED throwaway key
@@ -63,6 +69,48 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertThrowsError(try UpdateChecker.parseEnvelope(broken, publicKey: publicKey, current: [1, 2])) { error in
             XCTAssertEqual(error as? UpdateChecker.CheckError, .malformedManifest)
         }
+    }
+
+    func testArchitectureSpecificManifestSelectsMatchingArtifact() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let publicKey = Data(key.publicKey.rawRepresentation)
+        let armHash = String(repeating: "a1", count: 32)
+        let universalHash = String(repeating: "b2", count: 32)
+        let payload = """
+        {"version":"9.9.9","download_url":"https://example.com/universal.zip","sha256":"\(universalHash)","artifacts":{"arm64":{"download_url":"https://example.com/arm64.zip","sha256":"\(armHash)"},"x86_64":{"download_url":"https://example.com/universal.zip","sha256":"\(universalHash)"}}}
+        """
+        let b64 = Data(payload.utf8).base64EncodedString()
+        let signature = try key.signature(for: Data(b64.utf8)).base64EncodedString()
+        let envelope = UpdateChecker.Envelope(payload: b64, signature: signature)
+
+        let arm = try UpdateChecker.parseEnvelope(envelope,
+                                                  publicKey: publicKey,
+                                                  current: [1, 2],
+                                                  architecture: .arm64)
+        XCTAssertEqual(arm?.downloadURL.absoluteString, "https://example.com/arm64.zip")
+        XCTAssertEqual(arm?.sha256, armHash)
+
+        let intel = try UpdateChecker.parseEnvelope(envelope,
+                                                    publicKey: publicKey,
+                                                    current: [1, 2],
+                                                    architecture: .x86_64)
+        XCTAssertEqual(intel?.downloadURL.absoluteString, "https://example.com/universal.zip")
+        XCTAssertEqual(intel?.sha256, universalHash)
+
+        // A legacy single-artifact manifest remains valid for newer clients,
+        // regardless of the architecture selector.
+        let legacyPayload = """
+        {"version":"9.9.9","download_url":"https://example.com/universal.zip","sha256":"\(universalHash)"}
+        """
+        let legacyB64 = Data(legacyPayload.utf8).base64EncodedString()
+        let legacySignature = try key.signature(for: Data(legacyB64.utf8)).base64EncodedString()
+        let legacyEnvelope = UpdateChecker.Envelope(payload: legacyB64, signature: legacySignature)
+        let legacy = try UpdateChecker.parseEnvelope(legacyEnvelope,
+                                                     publicKey: publicKey,
+                                                     current: [1, 2],
+                                                     architecture: .x86_64)
+        XCTAssertEqual(legacy?.downloadURL.absoluteString, "https://example.com/universal.zip")
+        XCTAssertEqual(legacy?.sha256, universalHash)
     }
 
     /// Offline verification of the SHIPPED manifest against the baked-in

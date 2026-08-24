@@ -2,14 +2,22 @@
 # Sign an update manifest (appcast.json) with the release Ed25519 private key.
 #
 # Usage:
+#   ./scripts/sign-update-manifest.sh <version> <arm64.zip> <universal.zip> [output]
 #   ./scripts/sign-update-manifest.sh <version> <artifact.zip> [download_url] [output]
 #
 # The download URL defaults to the tag-pinned GitHub release asset name so a
 # freshly uploaded release just works:
 #   https://github.com/Toast1zz/ToastMonitor/releases/download/v<version>/<basename>
 #
+# The first form writes an architecture-aware manifest. It keeps the
+# universal artifact in the legacy `download_url` fields so older clients can
+# bootstrap; newer clients select the signed `artifacts` entry for their
+# running architecture. The second form remains supported for old/single-
+# artifact releases.
+#
 # Output defaults to appcast.json in the repository root; pass an explicit
-# fourth argument (e.g. dist/release/appcast.json) to place it elsewhere.
+# fourth argument in the architecture-aware form (e.g. dist/release/appcast.json)
+# or fourth argument after a custom URL in the legacy form.
 # The private key lives at ~/.config/toastmonitor/update-key.pem (0600, never
 # committed). It travels to the signer as an argv argument — never via an
 # environment variable, which `ps e` would expose to same-uid observers.
@@ -19,41 +27,62 @@ cd "$ROOT"
 
 VERSION="${1:?usage: sign-update-manifest.sh <version> <artifact.zip> [download_url] [output]}"
 ARCHIVE="${2:?missing artifact zip}"
-OUT="${4:-appcast.json}"
 KEY="$HOME/.config/toastmonitor/update-key.pem"
 [[ -f "$KEY" ]] || { echo "update key not found: $KEY" >&2; exit 1; }
 [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "invalid version: $VERSION" >&2; exit 1; }
 [[ -f "$ARCHIVE" ]] || { echo "artifact not found: $ARCHIVE" >&2; exit 1; }
 
-if [[ -n "${3:-}" ]]; then
-    DOWNLOAD_URL="$3"
+UNIVERSAL_ARCHIVE=""
+if [[ -n "${3:-}" && -f "$3" ]]; then
+    UNIVERSAL_ARCHIVE="$3"
+    OUT="${4:-appcast.json}"
+    ARM64_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-arm64.zip"
+    UNIVERSAL_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-universal.zip"
+    LEGACY_ARCHIVE="$UNIVERSAL_ARCHIVE"
+    LEGACY_URL="$UNIVERSAL_URL"
 else
+    OUT="${4:-appcast.json}"
+    if [[ -n "${3:-}" ]]; then
+        LEGACY_URL="$3"
+    else
     # Fixed per-release URL: `/releases/latest/...` depends on GitHub's latest
     # resolution, which can lag a freshly published release. A tag-pinned URL
     # is stable forever and still redirects to the object store over HTTPS.
     # Note the leading "v": git tags are v1.2.2 while VERSION is 1.2.2.
     #
-    # The appcast points at the arm64-only artifact by default. The universal
-    # build links the x86_64 slice against the macOS 14 SDK, which makes the
-    # system serve legacy (compatibility) UI controls on macOS 26/27 — so
-    # Apple Silicon users must not receive it. Pass the universal zip plus an
-    # explicit download URL as $2/$3 to publish a universal build instead
-    # (rare: Intel Macs only).
-    DOWNLOAD_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-arm64.zip"
+        LEGACY_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-arm64.zip"
+    fi
+    LEGACY_ARCHIVE="$ARCHIVE"
 fi
-[[ "$DOWNLOAD_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
+[[ "$LEGACY_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
 
 SHA256="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
+if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
+    [[ -f "$UNIVERSAL_ARCHIVE" ]] || { echo "universal artifact not found: $UNIVERSAL_ARCHIVE" >&2; exit 1; }
+    UNIVERSAL_SHA256="$(shasum -a 256 "$UNIVERSAL_ARCHIVE" | awk '{print $1}')"
+fi
 echo "version:    $VERSION"
 echo "artifact:   $ARCHIVE"
 echo "sha256:     $SHA256"
-echo "download:   $DOWNLOAD_URL"
+echo "download:   $LEGACY_URL"
+if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
+    echo "universal:  $UNIVERSAL_ARCHIVE"
+    echo "sha256:     $UNIVERSAL_SHA256"
+fi
 echo "output:     $OUT"
 
 # payload JSON -> base64 -> Ed25519 signature over the base64 text.
 # The payload's hex sha256 keeps the app-side hex parser simple.
-PAYLOAD=$(printf '{"version":"%s","download_url":"%s","sha256":"%s"}' \
-    "$VERSION" "$DOWNLOAD_URL" "$SHA256")
+if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
+    # Keep the legacy fields pointed at universal so v1.5.2-and-earlier
+    # clients can cross the bootstrap boundary on both CPU families.
+    PAYLOAD=$(printf '{"version":"%s","download_url":"%s","sha256":"%s","artifacts":{"arm64":{"download_url":"%s","sha256":"%s"},"x86_64":{"download_url":"%s","sha256":"%s"}}}' \
+        "$VERSION" "$LEGACY_URL" "$UNIVERSAL_SHA256" \
+        "$ARM64_URL" "$SHA256" "$UNIVERSAL_URL" "$UNIVERSAL_SHA256")
+else
+    PAYLOAD=$(printf '{"version":"%s","download_url":"%s","sha256":"%s"}' \
+        "$VERSION" "$LEGACY_URL" "$SHA256")
+fi
 B64=$(printf '%s' "$PAYLOAD" | base64 | tr -d '\n')
 
 # Throwaway 0600 input file (unique per run — no fixed /tmp path that another

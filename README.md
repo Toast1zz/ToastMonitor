@@ -72,20 +72,25 @@ cd ~/Projects/ToastMonitor
 
 ### Release artifacts
 
-Every release ships the two zips plus a signed update manifest (`appcast.json`)
-that powers in-app updates (Settings → Updates in the menu-bar popover). The
-manifest is Ed25519-signed with a key pair whose private half never leaves the
-maintainer's machine (`~/.config/toastmonitor/update-key.pem`, 0600); the app
-bakes in the public half.
+Every release ships the arm64 and universal zips plus a signed,
+architecture-aware update manifest (`appcast.json`) that powers in-app updates
+(Settings → Updates in the menu-bar popover). Apple Silicon selects arm64;
+Intel selects the universal artifact. The legacy top-level fields remain a
+universal bootstrap for older clients. The manifest is Ed25519-signed with a
+key pair whose private half never leaves the maintainer's machine
+(`~/.config/toastmonitor/update-key.pem`, 0600); the app bakes in the public
+half.
 
 ```bash
-./scripts/package-release.sh         # builds, signs and zips both arm64 and universal apps
-# Sign the manifest directly into dist/release/ so the release upload picks it
-# up (the script supports an explicit output path as its fourth argument).
-./scripts/sign-update-manifest.sh 1.2.3 dist/release/ToastMonitor-1.2.3-universal.zip "" dist/release/appcast.json
+./scripts/package-release.sh         # builds and zips both arm64 and universal apps
+# Sign an architecture-aware manifest directly into dist/release/.
+./scripts/sign-update-manifest.sh 1.2.3 \
+  dist/release/ToastMonitor-1.2.3-arm64.zip \
+  dist/release/ToastMonitor-1.2.3-universal.zip \
+  dist/release/appcast.json
 cp dist/release/appcast.json docs/appcast.json && cp dist/release/appcast.json appcast.json
 git add -A && git commit -m "Publish update manifest for v1.2.3" && git push
-gh release create vX.Y.Z dist/release/*.zip dist/release/appcast.json --title "..." --notes "..."
+gh release create vX.Y.Z dist/release/*.zip --title "..." --notes "..."
 ```
 
 - The update feed is hosted on GitHub Pages (`https://toast1zz.github.io/ToastMonitor/appcast.json`, deployed from `docs/` on `main`); short cache headers make a new manifest visible to clients within a minute
