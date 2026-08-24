@@ -9,6 +9,24 @@ enum TMNotifications {
     static let usagePeriodSettingsChanged = Notification.Name("tmUsagePeriodSettingsChanged")
 }
 
+/// Shared refresh cadence. Foreground values preserve the existing live UI
+/// behavior; background values keep the menu-bar state current without
+/// polling at the same cadence when no panel is visible.
+enum TMRefreshPolicy {
+    static let foregroundSnapshotInterval: TimeInterval = 5
+    static let backgroundSnapshotInterval: TimeInterval = 30
+    static let foregroundQuotaInterval: TimeInterval = 60
+    static let backgroundQuotaInterval: TimeInterval = 5 * 60
+
+    static func snapshotInterval(foreground: Bool) -> TimeInterval {
+        foreground ? foregroundSnapshotInterval : backgroundSnapshotInterval
+    }
+
+    static func quotaInterval(foreground: Bool) -> TimeInterval {
+        foreground ? foregroundQuotaInterval : backgroundQuotaInterval
+    }
+}
+
 /// Shared visual language for the menu bar surface and the dashboard.
 ///
 /// The app intentionally avoids a web-style card stack. macOS already gives us

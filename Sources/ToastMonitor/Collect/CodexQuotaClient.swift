@@ -69,14 +69,13 @@ final class CodexQuotaClient: ObservableObject {
 
     private func updateForeground() {
         let fg = popoverVisible || dashboardVisible
-        guard fg != foreground else { return }
+        // At launch the app is hidden and the timer has not been installed
+        // yet, so the missing timer is also a valid state transition.
+        guard fg != foreground || timer == nil else { return }
         foreground = fg
+        startTimer(interval: TMRefreshPolicy.quotaInterval(foreground: fg))
         if fg {
-            startTimer()
             refresh()
-        } else {
-            timer?.invalidate()
-            timer = nil
         }
     }
 
@@ -105,9 +104,9 @@ final class CodexQuotaClient: ObservableObject {
         updateForeground()
     }
 
-    private func startTimer() {
+    private func startTimer(interval: TimeInterval) {
         timer?.invalidate()
-        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)

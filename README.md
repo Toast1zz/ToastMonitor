@@ -33,7 +33,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 
 - Only addresses you **explicitly configure** in Sources & Settings are contacted; the app ships no personal IPs or default remote hosts
 - Addresses are validated client-side; credential requests never follow redirects
-- Remote polling runs on a 15s timer behind a 60s internal rate limit (same collection loop); local and remote sources can be disabled independently
+- Remote feed polling uses a 15s foreground timer and continues in background at no more than one request per 60s through the collector loop; local and remote sources can be disabled independently
 
 ### DeepSeek Harness (DSH)
 
@@ -56,7 +56,7 @@ macOS ships no zstd support (Compression.framework covers LZ4/ZLIB/LZMA/LZFSE/BR
 ## Quotas (built-in, no opencode-quota dependency)
 
 - **OpenCode Go plan** (a separate entry from the OpenCode tool) — reads `opencode.ai/workspace/<id>/go` SolidJS SSR/data-slot data: 5h=$12 / week=$30 / month=$60 bars, reset countdown and history. Credentials: paste in Plans & Balance, or `--provision-go <workspaceId>` reading the cookie from stdin (opencode-quota's opencode-go.json works)
-- **OpenRouter** — `/api/v1/key` + `/api/v1/credits` snapshotted every 60s while the UI is visible (polling stops in background). Key: paste in the panel or `--provision-or-key` from stdin; the secret lives only in the macOS Keychain
+- **OpenRouter** — `/api/v1/key` + `/api/v1/credits` snapshotted every 60s while the UI is visible and every 5 minutes in background. Key: paste in the panel or `--provision-or-key` from stdin; the secret lives only in the macOS Keychain
 
 ## Install & build
 
