@@ -345,6 +345,7 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
         OpenCodeGoClient.shared.refresh()
         HermesRemoteClient.shared.maybePoll()
         CodexQuotaClient.shared.refresh()
+        ClaudeQuotaClient.shared.refresh(force: true)
     }
 
     func select(_ tab: DashboardView.Tab) {

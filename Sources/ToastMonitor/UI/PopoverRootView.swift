@@ -145,6 +145,7 @@ struct PopoverRootView: View {
         OpenRouterClient.shared.refresh()
         OpenCodeGoClient.shared.refresh()
         CodexQuotaClient.shared.refresh()
+        ClaudeQuotaClient.shared.refresh(force: true)
         HermesRemoteClient.shared.maybePoll()
     }
 }

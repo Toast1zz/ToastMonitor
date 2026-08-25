@@ -8,19 +8,24 @@ struct PlansView: View {
     private enum CredentialTarget: Equatable {
         case openCodeGo
         case openRouter
+        case commandCode
     }
 
     @EnvironmentObject var app: AppState
+    @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
+    @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @State private var goSnapshots: [Database.OGSnapshot] = []
     @State private var orSnapshots: [Database.ORSnapshot] = []
     @State private var showGoForm = false
     @State private var showORForm = false
+    @State private var showCCForm = false
     @State private var goWS = ""
     @State private var goCookie = ""
     @State private var orKey = ""
     @State private var orAppend = false
+    @State private var ccCookie = ""
     @State private var pendingCredentialClear: CredentialTarget?
     /// Each credential form shows only its own message/color — saving Go
     /// must never flash a message inside the OpenRouter form (and vice versa).
@@ -28,6 +33,8 @@ struct PlansView: View {
     @State private var goFormFailed = false
     @State private var orFormMessage: String?
     @State private var orFormFailed = false
+    @State private var ccFormMessage: String?
+    @State private var ccFormFailed = false
     /// Last observed state markers; onReceive only reloads history when the
     /// client actually produced a new result (isLoading flips are ignored).
     @State private var goLastSeen: (lastOK: Int64, lastSync: Int64)?
@@ -39,8 +46,10 @@ struct PlansView: View {
                 SectionTitle("Plans & Balance")
                     .padding(.top, 18)
                     .padding(.bottom, 12)
+                claudeCard
                 goCard
                 orCard
+                ccCard
                 subsCard
             }
             .padding(.horizontal, 24)
@@ -79,11 +88,21 @@ struct PlansView: View {
                 orAppend = false
             }
         }
+        .onChange(of: showCCForm) { _, open in
+            if open {
+                ccFormMessage = nil
+            } else {
+                ccCookie = ""
+            }
+        }
         .sheet(isPresented: $showGoForm) {
             goCredentialSheet
         }
         .sheet(isPresented: $showORForm) {
             openRouterCredentialSheet
+        }
+        .sheet(isPresented: $showCCForm) {
+            ccCredentialSheet
         }
         .confirmationDialog("Clear saved credentials?", isPresented: Binding(
             get: { pendingCredentialClear != nil },
@@ -91,10 +110,19 @@ struct PlansView: View {
                 Button("Cancel", role: .cancel) { pendingCredentialClear = nil }
                 Button("Clear Credentials", role: .destructive) { clearPendingCredentials() }
             } message: {
-                Text(pendingCredentialClear == .openCodeGo
-                     ? "ToastMonitor will stop showing OpenCode Go quota data until credentials are configured again."
-                     : "ToastMonitor will remove the saved OpenRouter key from Keychain and stop showing its balance.")
+                Text(pendingCredentialClearMessage)
             }
+    }
+
+    private var pendingCredentialClearMessage: String {
+        switch pendingCredentialClear {
+        case .openCodeGo:
+            return "ToastMonitor will stop showing OpenCode Go quota data until credentials are configured again."
+        case .commandCode:
+            return "ToastMonitor will remove the saved Command Code GOAT session from Keychain and stop showing its quota."
+        case .openRouter, nil:
+            return "ToastMonitor will remove the saved OpenRouter key from Keychain and stop showing its balance."
+        }
     }
 
     private func loadSnapshots() {
@@ -429,6 +457,182 @@ struct PlansView: View {
         return "\(snapshots.count) days, current balance \(current)"
     }
 
+    // MARK: - Claude (undocumented endpoint, opt-in, off by default)
+
+    private var claudeCard: some View {
+        let cq = claudeQuota.state
+        return serviceCard(title: "Claude", icon: ToolKind.claude.symbol, color: ToolKind.claude.color) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Reads Claude Code's rate-limit percentages from an undocumented "
+                     + "Anthropic endpoint, using your existing Claude Code login. This is "
+                     + "not an officially supported integration — Anthropic's Consumer Terms "
+                     + "restrict OAuth tokens from Free/Pro/Max plans to Claude Code and "
+                     + "claude.ai. Off by default; enable at your own risk.")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Enable Claude quota monitoring", isOn: Binding(
+                    get: { claudeQuota.enabled },
+                    set: { claudeQuota.setEnabled($0) }
+                ))
+
+                if claudeQuota.enabled {
+                    statusHeader(
+                        isLoading: cq.lastSync <= 0 && cq.error == nil && cq.configured,
+                        configured: cq.configured,
+                        error: cq.error,
+                        lastSync: cq.lastSync,
+                        syncedText: cq.lastSync > 0 ? "Updated \(Format.dateTime(cq.lastSync))" : nil,
+                        refresh: { claudeQuota.refresh(force: true) }
+                    )
+                    if let err = cq.error, cq.configured {
+                        Text(err)
+                            .font(TMType.regular(TMType.caption))
+                            .foregroundStyle(TMDesign.danger.opacity(0.85))
+                            .lineLimit(2)
+                    }
+                    if let weekly = cq.sevenDay {
+                        claudeWindowRow("Weekly window", window: weekly)
+                    }
+                    if let fiveHour = cq.fiveHour {
+                        claudeWindowRow("5h window", window: fiveHour)
+                    }
+                    if let opus = cq.sevenDayOpus {
+                        claudeWindowRow("Weekly Opus window", window: opus)
+                    }
+                }
+            }
+        }
+    }
+
+    private func claudeWindowRow(_ label: String, window: ClaudeQuotaClient.Window) -> some View {
+        let remaining = 100 - window.usedPercent
+        return HStack(spacing: 8) {
+            Text(label)
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            Spacer()
+            Text("\(remaining)% left")
+                .font(TMType.semibold(TMType.caption))
+                .tmMonospacedDigit()
+                .foregroundStyle(remaining < 5 ? TMDesign.danger : (remaining < 20 ? TMDesign.accent : TMDesign.quiet))
+            if let resetAt = window.resetAt {
+                let remainingSecs = resetAt - Int64(Date().timeIntervalSince1970)
+                if remainingSecs > 0 {
+                    Text("resets in \(Format.remaining(remainingSecs))")
+                        .font(TMType.monoRegular(TMType.micro))
+                        .foregroundStyle(TMDesign.quiet)
+                }
+            }
+        }
+    }
+
+    // MARK: - Command Code GOAT (experimental private billing API)
+
+    private var ccCard: some View {
+        let cc = ccQuota.state
+        return serviceCard(title: "Command Code GOAT", icon: "c.circle.fill", color: TMDesign.accent) {
+            VStack(alignment: .leading, spacing: 12) {
+                statusHeader(
+                    isLoading: cc.isLoading,
+                    configured: cc.configured,
+                    error: cc.error,
+                    lastSync: cc.lastSync,
+                    syncedText: cc.lastSync > 0 ? "Updated \(Format.dateTime(cc.lastSync))" : nil,
+                    refresh: cc.configured ? { ccQuota.refresh() } : nil
+                )
+                if let err = cc.error, cc.configured {
+                    Text(err)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.danger.opacity(0.85))
+                        .lineLimit(2)
+                }
+
+                credentialsRow(
+                    configured: cc.configured,
+                    summary: cc.configured ? (cc.planName ?? "Session configured") : "Not configured — quota unavailable",
+                    actionTitle: cc.configured ? "Update Session…" : "Configure",
+                    action: { showCCForm = true },
+                    clearAction: {
+                        pendingCredentialClear = .commandCode
+                    }
+                )
+                if let ccFormMessage {
+                    Text(ccFormMessage)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(ccFormFailed ? TMDesign.danger : TMDesign.accent)
+                }
+
+                if cc.configured {
+                    if let total = cc.monthlyCreditsTotal, let pct = cc.monthlyUsedPercent {
+                        quotaBar(
+                            title: "Monthly credits",
+                            usedPct: pct,
+                            resetAt: cc.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) },
+                            limit: total,
+                            color: TMDesign.accent,
+                            reference: nil
+                        )
+                    } else if let remaining = cc.monthlyCreditsRemaining {
+                        // Unknown plan or no allowance reported: show the raw
+                        // balance rather than fabricating a percentage.
+                        liveStat("Credits left", Format.money(remaining))
+                    }
+                }
+            }
+        }
+    }
+
+    private var ccCredentialSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Command Code GOAT Session")
+                .font(.title2.weight(.semibold))
+            Text("Paste the Cookie header from your logged-in commandcode.ai browser "
+                 + "session (or just the session token). Stored only in the macOS "
+                 + "Keychain; experimental private API.")
+                .font(TMType.regular(TMType.body))
+                .foregroundStyle(.secondary)
+            Form {
+                SecureField("Cookie header or session token", text: $ccCookie,
+                            prompt: Text("__Secure-commandcode_prod_.session_token=…"))
+                    .font(.system(size: TMType.body, design: .monospaced))
+            }
+            .formStyle(.grouped)
+            if let ccFormMessage, ccFormFailed {
+                Text(ccFormMessage)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showCCForm = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { saveCommandCodeCredentials() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(TMDesign.accent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(ccCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private func saveCommandCodeCredentials() {
+        let raw = ccCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        if ccQuota.provision(cookie: raw) {
+            ccQuota.refresh()
+            showCCForm = false
+            ccFormMessage = "Command Code GOAT session saved"
+            ccFormFailed = false
+        } else {
+            ccFormMessage = ccQuota.state.error ?? "Save failed (Keychain unavailable)"
+            ccFormFailed = true
+        }
+    }
+
     // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
 
     private var subsCard: some View {
@@ -645,6 +849,11 @@ struct PlansView: View {
             orAppend = false
             orFormMessage = "OpenRouter key cleared"
             orFormFailed = false
+        case .commandCode:
+            ccQuota.clear()
+            ccCookie = ""
+            ccFormMessage = "Command Code GOAT session cleared"
+            ccFormFailed = false
         case .none:
             break
         }

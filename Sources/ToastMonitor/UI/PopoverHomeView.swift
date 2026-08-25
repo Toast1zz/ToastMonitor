@@ -61,6 +61,7 @@ struct PopoverHomeView: View {
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
+    @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
     @ObservedObject private var periodSettings = UsagePeriodSettings.shared
     @State private var period: Period = {
         let args = CommandLine.arguments
@@ -382,6 +383,7 @@ struct PopoverHomeView: View {
     private var quotaSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionTitle("Quota")
+            if !(quotaRowHidden["claude"] ?? false) { claudeStatusRow }
             if !(quotaRowHidden["go"] ?? false) { goStatusRow }
             if !(quotaRowHidden["codex"] ?? false) { codexStatusRow }
             if !(quotaRowHidden["cc"] ?? false) { commandCodeStatusRow }
@@ -399,7 +401,7 @@ struct PopoverHomeView: View {
     }
 
     private func loadQuotaRowHidden() {
-        for key in ["go", "codex", "cc", "router"] {
+        for key in ["claude", "go", "codex", "cc", "router"] {
             quotaRowHidden[key] = Database.shared.setting(Self.quotaRowHiddenKey(key)) == "1"
         }
     }
@@ -536,26 +538,112 @@ struct PopoverHomeView: View {
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = "Not configured"
         var resetSuffix: String?
-        if goClient.configured {
-            if state.error != nil {
-                status = "Error"
-            } else if stale {
-                status = "Stale"
-            } else if let remaining {
-                status = "\(Int(remaining))% left"
-                resetSuffix = resetText(state.monthlyReset.map { state.lastSync + $0 })
-            } else if state.isLoading && state.lastSync <= 0 {
-                status = "Loading"
-            } else {
-                // 刷新期间保留上次结果，不闪 Loading。
-                status = "Idle"
-            }
+        if !goClient.configured {
+            // A locked/re-authorized Keychain reads back exactly like
+            // "never configured" from credentials() — surface which one it
+            // actually is instead of always saying "Not configured", or a
+            // real credentials loss looks identical to a rebuild-triggered
+            // Keychain re-auth prompt that never happened.
+            status = (state.error?.contains("钥匙串") == true) ? "Keychain locked" : "Not configured"
+        } else if state.error != nil {
+            status = "Error"
+        } else if stale {
+            status = "Stale"
+        } else if let remaining {
+            status = "\(Int(remaining))% monthly left"
+            resetSuffix = resetText(state.monthlyReset.map { state.lastSync + $0 })
+        } else if state.isLoading && state.lastSync <= 0 {
+            status = "Loading"
+        } else {
+            // 刷新期间保留上次结果，不闪 Loading。
+            status = "Idle"
         }
+        // Go also reports a weekly window alongside the monthly one; shown
+        // as a quiet subtitle only once real data has loaded, same pattern
+        // as Claude's 5h line — a plan with unlimited/no weekly cap simply
+        // never sets weeklyPct, so this stays hidden rather than showing 0%.
+        let weeklySubtitle = state.weeklyPct.map { "\(Int(100 - $0))% weekly left" }
         return statusRow(name: "OpenCode Go", status: status,
                          statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
+                         subtitle: weeklySubtitle,
                          hideKey: "go")
+    }
+
+    /// Claude subscription quota, from the same OAuth usage endpoint Claude
+    /// Code's own status line reads. Claude bills against two independent
+    /// windows at once (a 5h rolling one and a weekly one). The weekly one
+    /// is the number that matters day to day, so it takes the value column
+    /// — same two-line shape (status + reset) as every other Quota row, so
+    /// rows stay the same height. The 5h window goes under the name instead,
+    /// as a quiet subtitle; it still turns the row critical (★) on its own
+    /// if it's the one running low, even though it isn't the headline number.
+    ///
+    /// Claude's cadence (5min foreground-only, plus real backoff after a
+    /// 429) means it sits without a fresh answer far more often than the
+    /// other quota rows. A cached number that's a few minutes old is still
+    /// useful; the word "Stale" on its own is not — so, matching how
+    /// Command Code GOAT already handles this, the last known percentage
+    /// stays on screen instead of being replaced by a status word, and a
+    /// bare "Error" only appears once there's truly nothing cached to fall
+    /// back on. The reset countdown on the second line is unaffected by any
+    /// of this — it comes straight from the server and stays accurate
+    /// whether or not the percentage above it is fresh, so it's shown as-is
+    /// either way. Staleness gets its own small pill next to the percentage
+    /// instead — a single signal, not a second one stacked on top via a
+    /// dimmed color as well.
+    private var claudeStatusRow: some View {
+        let state = claudeQuota.state
+        let weekly = state.sevenDay
+        let remaining = weekly.map { 100 - $0.usedPercent }
+        let stale = state.lastSync > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
+        var status = state.configured ? "Loading" : "Not configured"
+        var resetSuffix: String?
+        var staleBadge: String?
+        if !claudeQuota.enabled {
+            // Opt-in, off by default (see ClaudeQuotaClient) — distinct from
+            // "Not configured" so it reads as a choice, not a missing login.
+            status = "Off — enable in Dashboard"
+        } else if let remaining, let weekly {
+            status = "\(remaining)% weekly left"
+            resetSuffix = resetText(weekly.resetAt)
+            if stale {
+                let age = now.timeIntervalSince1970 - TimeInterval(state.lastSync)
+                staleBadge = "\(Format.remaining(Int64(age))) ago"
+            }
+        } else if state.error != nil {
+            status = "Error"
+        }
+        return statusRow(name: claudeRowName, status: status,
+                         statusColor: .primary,
+                         critical: claudeQuota.enabled
+                            && ((remaining.map { $0 < 20 } ?? false) || state.hasCriticalSecondaryWindow),
+                         resetSuffix: resetSuffix,
+                         subtitle: claudeQuota.enabled ? claudeSubtitle(state) : nil,
+                         staleBadge: staleBadge,
+                         hideKey: "claude")
+    }
+
+    /// The 5h window (and, rarely, a weekly-Opus one) rendered as a compact
+    /// caption under the name — "84% 5h left", joined with " · " if both are
+    /// present. Shown whenever cached data exists, even mid-error or while
+    /// stale — same "prefer the cached number" reasoning as the row above.
+    private func claudeSubtitle(_ state: ClaudeQuotaClient.State) -> String? {
+        let windows = [state.fiveHour, state.sevenDayOpus].compactMap { $0 }
+        guard !windows.isEmpty else { return nil }
+        return windows.map { "\(100 - $0.usedPercent)% \($0.label) left" }.joined(separator: " · ")
+    }
+
+    /// "Claude Max" / "Claude Pro" when the plan is known, plain "Claude"
+    /// otherwise — the credentials blob does not always carry a plan.
+    private var claudeRowName: String {
+        let plan = claudeQuota.state.planType?.lowercased() ?? ""
+        let suffix = claudeQuota.state.error == nil ? "" : " ⚠"
+        if plan.contains("max") { return "Claude Max" + suffix }
+        if plan.contains("pro") { return "Claude Pro" + suffix }
+        return "Claude" + suffix
     }
 
     /// Window label derives from limit_window_seconds: 604800 = weekly (Plus today).
@@ -570,7 +658,9 @@ struct PopoverHomeView: View {
     private var codexStatusRow: some View {
         let state = codexQuota.state
         let remaining = state.primaryPct.map { 100 - Double($0) }
-        let sub = app.subscriptions.first { $0.plan == "codex" }
+        // The plan picker stores "openai" for the ChatGPT/Codex subscription;
+        // "codex" alone never matched anything a user could actually save.
+        let sub = app.subscriptions.first { $0.plan == "openai" || $0.plan == "codex" }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         // 刷新期间保留上次结果：只有从未同步过才显示 Loading。
@@ -607,7 +697,7 @@ struct PopoverHomeView: View {
         } else if let percent = state.monthlyUsedPercent {
             // Known plan: remaining = 100 − used. Cached value is shown
             // while refreshing; it updates in place when new data lands.
-            status = "\(Int((100 - percent).rounded()))% left"
+            status = "\(Int((100 - percent).rounded()))% monthly left"
             if let end = state.billingPeriodEnd {
                 let remaining = end.timeIntervalSince1970 - now.timeIntervalSince1970
                 if remaining > 0 {
@@ -653,9 +743,11 @@ struct PopoverHomeView: View {
 
     private func statusRow(name: String, status: String, statusColor: Color,
                            critical: Bool = false, resetSuffix: String? = nil,
+                           subtitle: String? = nil, staleBadge: String? = nil,
                            hideKey: String? = nil) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
-                  critical: critical, resetSuffix: resetSuffix,
+                  critical: critical, resetSuffix: resetSuffix, subtitle: subtitle,
+                  staleBadge: staleBadge,
                   hideAction: hideKey.map { key in { self.hideQuotaRow(key) } })
     }
 
@@ -828,32 +920,68 @@ private struct StatusRow: View {
     let status: String
     let statusColor: Color
     var critical = false
+    /// Now sits under the name rather than under the value, so the name
+    /// column and the value column both read top-to-bottom as "headline,
+    /// then detail" — name/when on the left, percent/percent on the right.
     var resetSuffix: String?
+    /// A quiet second value under the primary one — for a source that bills
+    /// against more than one window at once (Claude's 5h + weekly), this
+    /// carries the window not already shown as the primary value.
+    var subtitle: String?
+    /// A small pill next to the status text (e.g. "6m ago") flagging that
+    /// the number is cached rather than fresh. Deliberately a capsule, not
+    /// plain text appended to the status string — plain text read as part
+    /// of the sentence and was easy to miss at a glance; a distinct chip
+    /// reads as metadata immediately.
+    var staleBadge: String?
     var hideAction: (() -> Void)?
 
     @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(name)
-                .font(TMType.medium(TMType.body))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
             // 固定两行高度：空字符串 Text 固有高度会塌缩为 0，所以用
             // 显式 frame 占位——Loading → 数据切换时行高恒定，面板不跳。
-            VStack(alignment: .trailing, spacing: 2) {
-                Text((critical ? "★ " : "") + status)
-                    .font(TMType.monoRegular(TMType.body))
-                    .foregroundStyle(statusColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(TMType.medium(TMType.body))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .frame(height: 16, alignment: .trailing)
+                    .frame(height: 16, alignment: .leading)
                 Text(resetSuffix ?? "")
                     .font(TMType.monoRegular(TMType.micro))
-                    .foregroundStyle(statusColor.opacity(0.7))
+                    .foregroundStyle(TMDesign.quiet)
+                    .lineLimit(1)
+                    .frame(height: 13, alignment: .leading)
+                    .opacity(resetSuffix == nil ? 0 : 1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 5) {
+                    // Badge first, status text last: the HStack is
+                    // trailing-aligned, so the status text's right edge —
+                    // where every other row's number also lands — never
+                    // moves whether or not the badge is present.
+                    if let staleBadge {
+                        Text(staleBadge)
+                            .font(TMType.monoRegular(TMType.micro))
+                            .foregroundStyle(TMDesign.quiet)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(TMDesign.quiet.opacity(0.14), in: Capsule(style: .continuous))
+                    }
+                    Text((critical ? "★ " : "") + status)
+                        .font(TMType.monoRegular(TMType.body))
+                        .foregroundStyle(statusColor)
+                        .lineLimit(1)
+                }
+                .frame(height: 16, alignment: .trailing)
+                Text(subtitle ?? "")
+                    .font(TMType.monoRegular(TMType.micro))
+                    .foregroundStyle(TMDesign.quiet)
                     .lineLimit(1)
                     .frame(height: 13, alignment: .trailing)
-                    .opacity(resetSuffix == nil ? 0 : 1)
+                    .opacity(subtitle == nil ? 0 : 1)
             }
             .layoutPriority(1)
 
