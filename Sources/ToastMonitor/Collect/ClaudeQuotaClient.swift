@@ -207,29 +207,42 @@ final class ClaudeQuotaClient: ObservableObject {
         // Credential lookup touches disk (and possibly the Keychain); never
         // on the main actor.
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let credentials = Self.loadCredentials()
+            var credentials = Self.loadCredentials()
+            if let creds = credentials, let expiresAt = creds.expiresAt,
+               expiresAt <= Int64(Date().timeIntervalSince1970) {
+                // Expired: rather than give up immediately, delegate to the
+                // real `claude` CLI (see ClaudeCLIRefresher) and let its own
+                // startup sequence refresh the token, then re-read whatever
+                // it wrote. This blocks for up to ~25s, which is exactly why
+                // it happens here and not on the main actor.
+                if ClaudeCLIRefresher.refresh() {
+                    credentials = Self.loadCredentials()
+                }
+            }
+            let resolved = credentials
             Task { @MainActor [weak self] in
                 guard let self, self.refreshGeneration == generation else { return }
-                guard let credentials else {
+                guard let resolved else {
                     self.inFlight = false
                     self.state.configured = false
                     self.state.error = "Claude login not found (run claude /login to restore)"
                     return
                 }
                 self.state.configured = true
-                if let expiresAt = credentials.expiresAt,
+                if let expiresAt = resolved.expiresAt,
                    expiresAt <= Int64(Date().timeIntervalSince1970) {
-                    // Claude Code refreshes the token itself on its next run;
-                    // refreshing it here would race that and rewrite the file.
+                    // Still expired even after attempting a CLI-delegated
+                    // refresh (no `claude` binary found, the probe couldn't
+                    // complete in time, or the login is genuinely gone).
                     self.inFlight = false
                     self.state.error = "Claude login expired (run claude to refresh)"
                     self.applyBackoff(retryAfterHeader: nil)
                     return
                 }
                 if self.state.planType == nil {
-                    self.state.planType = credentials.subscriptionType
+                    self.state.planType = resolved.subscriptionType
                 }
-                self.requestUsage(accessToken: credentials.accessToken, generation: generation)
+                self.requestUsage(accessToken: resolved.accessToken, generation: generation)
             }
         }
     }
