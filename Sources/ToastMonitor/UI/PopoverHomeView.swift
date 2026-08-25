@@ -616,12 +616,16 @@ struct PopoverHomeView: View {
         } else if state.error != nil {
             status = "Error"
         }
+        // The star has to sit on whichever number is actually low — the
+        // weekly line if that's the tight one, the 5h/Opus subtitle if
+        // that's the one about to run out, never just the primary line by
+        // default regardless of which window earned it.
         return statusRow(name: claudeRowName, status: status,
                          statusColor: .primary,
-                         critical: claudeQuota.enabled
-                            && ((remaining.map { $0 < 20 } ?? false) || state.hasCriticalSecondaryWindow),
+                         critical: claudeQuota.enabled && (remaining.map { $0 < 20 } ?? false),
                          resetSuffix: resetSuffix,
                          subtitle: claudeQuota.enabled ? claudeSubtitle(state) : nil,
+                         subtitleCritical: claudeQuota.enabled && state.hasCriticalSecondaryWindow,
                          staleBadge: staleBadge,
                          hideKey: "claude")
     }
@@ -743,11 +747,12 @@ struct PopoverHomeView: View {
 
     private func statusRow(name: String, status: String, statusColor: Color,
                            critical: Bool = false, resetSuffix: String? = nil,
-                           subtitle: String? = nil, staleBadge: String? = nil,
+                           subtitle: String? = nil, subtitleCritical: Bool = false,
+                           staleBadge: String? = nil,
                            hideKey: String? = nil) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
                   critical: critical, resetSuffix: resetSuffix, subtitle: subtitle,
-                  staleBadge: staleBadge,
+                  subtitleCritical: subtitleCritical, staleBadge: staleBadge,
                   hideAction: hideKey.map { key in { self.hideQuotaRow(key) } })
     }
 
@@ -928,6 +933,11 @@ private struct StatusRow: View {
     /// against more than one window at once (Claude's 5h + weekly), this
     /// carries the window not already shown as the primary value.
     var subtitle: String?
+    /// Puts the ★ on the subtitle line instead of the status line — for a
+    /// source with more than one window, the one running low isn't always
+    /// the one shown as the primary value, and the star has to follow
+    /// whichever number actually earned it.
+    var subtitleCritical = false
     /// A small pill next to the status text (e.g. "6m ago") flagging that
     /// the number is cached rather than fresh. Deliberately a capsule, not
     /// plain text appended to the status string — plain text read as part
@@ -976,7 +986,7 @@ private struct StatusRow: View {
                         .lineLimit(1)
                 }
                 .frame(height: 16, alignment: .trailing)
-                Text(subtitle ?? "")
+                Text((subtitleCritical ? "★ " : "") + (subtitle ?? ""))
                     .font(TMType.monoRegular(TMType.micro))
                     .foregroundStyle(TMDesign.quiet)
                     .lineLimit(1)
