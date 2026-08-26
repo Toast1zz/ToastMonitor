@@ -2,11 +2,57 @@ import Foundation
 
 /// Claude Code parser: ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
 /// Assistant entries carry `usage` with input/output/cache tokens.
+///
+/// A second, separate tree also holds real Claude Code transcripts in the
+/// exact same format: Claude Desktop's Cowork feature, when a task runs in
+/// "local agent mode" (a sandboxed `claude` CLI on this Mac rather than in
+/// Anthropic's cloud), writes one under Desktop's own data directory. Chat
+/// and cloud-executed Cowork tasks leave no local file at all — this only
+/// ever covers the subset that actually ran locally. See coworkLocalAgentRoot.
 enum ClaudeCodeParser {
 
     static var root: String {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects").path
+    }
+
+    /// Cowork's local-agent-mode sandbox: `<root>/<org>/<project>/local_<uuid>/.claude/projects/...`.
+    /// FileScanner.listFiles() deliberately skips dot-prefixed entries for
+    /// ordinary project roots, which would silently skip the `.claude`
+    /// component here — listCoworkFiles() starts its walk past that, so the
+    /// dot-skip never applies to it.
+    static var coworkLocalAgentRoot: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude/local-agent-mode-sessions").path
+    }
+
+    /// Enumerates JSONL transcripts under coworkLocalAgentRoot. Best-effort:
+    /// any directory that doesn't exist or can't be listed (no Claude
+    /// Desktop, no Cowork use, a locked-down permission) is simply skipped
+    /// rather than surfaced as an error — this is a bonus source, not a
+    /// required one.
+    static func listCoworkFiles(root: String = coworkLocalAgentRoot) -> [String] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: root) else { return [] }
+        var out: [String] = []
+        guard let orgs = try? fm.contentsOfDirectory(atPath: root) else { return [] }
+        for org in orgs {
+            let orgPath = (root as NSString).appendingPathComponent(org)
+            guard let projects = try? fm.contentsOfDirectory(atPath: orgPath) else { continue }
+            for project in projects {
+                let projectPath = (orgPath as NSString).appendingPathComponent(project)
+                guard let sessions = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
+                for session in sessions where session.hasPrefix("local_") {
+                    let claudeProjectsPath = (projectPath as NSString)
+                        .appendingPathComponent(session)
+                        .appending("/.claude/projects")
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: claudeProjectsPath, isDirectory: &isDir), isDir.boolValue else { continue }
+                    out.append(contentsOf: FileScanner.listFiles(claudeProjectsPath, maxDepth: 2))
+                }
+            }
+        }
+        return out
     }
 
     /// Returns (turns, sessions) parsed from all changed files.
@@ -15,7 +61,10 @@ enum ClaudeCodeParser {
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let fm = FileManager.default
-        guard fm.fileExists(atPath: root) else { return ([], []) }
+        // Either tree existing is enough to proceed — a Cowork-only user
+        // (Claude Desktop, never the standalone CLI) has no ~/.claude/projects
+        // at all, and must not be short-circuited out of the scan.
+        guard fm.fileExists(atPath: root) || fm.fileExists(atPath: coworkLocalAgentRoot) else { return ([], []) }
 
         for file in knownPaths {
             guard let st = FileScanner.fileStat(file) else { continue }

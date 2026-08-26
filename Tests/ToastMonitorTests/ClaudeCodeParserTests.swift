@@ -146,3 +146,61 @@ final class ClaudeCodeParserTests: XCTestCase {
         try? FileManager.default.removeItem(at: dir)
     }
 }
+
+/// Cowork's "local agent mode" writes real Claude Code transcripts under a
+/// separate tree (Claude Desktop's own data directory), one level below a
+/// leading-dot `.claude` component that the ordinary file lister skips.
+final class ClaudeCodeParserCoworkTests: XCTestCase {
+
+    private func makeScratchRoot() -> String {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("cowork-scan-\(UUID().uuidString)").path
+    }
+
+    func testListCoworkFilesFindsTranscriptPastTheDotClaudeComponent() throws {
+        let root = makeScratchRoot()
+        let sessionDir = "\(root)/org1/proj1/local_abc/.claude/projects/-encoded-cwd"
+        try FileManager.default.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: "\(sessionDir)/session1.jsonl", contents: Data())
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let found = ClaudeCodeParser.listCoworkFiles(root: root)
+        XCTAssertEqual(found, ["\(sessionDir)/session1.jsonl"])
+    }
+
+    func testListCoworkFilesIgnoresSessionDirsNotPrefixedLocal() throws {
+        let root = makeScratchRoot()
+        let sessionDir = "\(root)/org1/proj1/not-a-local-session/.claude/projects/-encoded"
+        try FileManager.default.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: "\(sessionDir)/session1.jsonl", contents: Data())
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        XCTAssertEqual(ClaudeCodeParser.listCoworkFiles(root: root), [])
+    }
+
+    func testListCoworkFilesReturnsEmptyWhenRootMissing() {
+        XCTAssertEqual(ClaudeCodeParser.listCoworkFiles(root: "/nonexistent/cowork/root"), [])
+    }
+
+    /// A real Cowork transcript is byte-for-byte the same JSONL shape as a
+    /// standalone-CLI one, so it must parse through the same code path with
+    /// no special-casing.
+    func testCoworkTranscriptParsesLikeAnyOtherClaudeTranscript() throws {
+        let root = makeScratchRoot()
+        let sessionDir = "\(root)/org1/proj1/local_abc/.claude/projects/-encoded-cwd"
+        try FileManager.default.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
+        let line = """
+        {"type":"assistant","sessionId":"cowork-session-1","timestamp":"2026-08-25T10:00:00Z","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}
+        """
+        try line.write(toFile: "\(sessionDir)/cowork-session-1.jsonl", atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let files = ClaudeCodeParser.listCoworkFiles(root: root)
+        XCTAssertEqual(files.count, 1)
+        let (turns, sessions) = ClaudeCodeParser.scan(knownPaths: files)
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns.first?.inputTokens, 100)
+        XCTAssertEqual(turns.first?.outputTokens, 50)
+        XCTAssertEqual(sessions.first?.sessionID, "cowork-session-1")
+    }
+}
