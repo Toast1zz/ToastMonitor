@@ -185,7 +185,8 @@ final class CollectorEngine: @unchecked Sendable {
             }
         }
 
-        let claudeFiles = FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 2)
+        let claudeFiles = (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 2)
+            + ClaudeCodeParser.listCoworkFiles())
             .filter { $0.hasSuffix(".jsonl") }
         ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) }) {
             ClaudeCodeParser.scan(knownPaths: claudeFiles)
