@@ -83,7 +83,7 @@ enum OpenCodeParser {
         return (obj["providerID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    static func scan(database: Database = .shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.opencode.sourceIsRemote else { return ([], []) } // source = VPS feed
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []

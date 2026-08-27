@@ -18,6 +18,26 @@ final class CollectorEngine: @unchecked Sendable {
     static let shared = CollectorEngine()
     static let didCollect = Notification.Name("ToastMonitorDidCollect")
 
+    /// Parses a source without a database transaction, then validates and
+    /// commits its rows plus cursor/baseline mutations in one short write.
+    /// Internal so integration tests can hold `scan` open and prove ordinary
+    /// database reads are not blocked by parser IO.
+    static func prepareAndCommit(
+        database: Database,
+        sourcePaths: [String],
+        scan: (any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo])
+    ) -> (committed: Bool, turns: [TurnRecord], sessions: [SessionInfo]) {
+        let staged = StagedParserStateStore(database: database, sourcePaths: sourcePaths)
+        let out = scan(staged)
+        let committed = database.inTransaction {
+            staged.validateForCommit()
+                && database.insertTurns(out.turns)
+                && database.upsertSessions(out.sessions)
+                && staged.apply()
+        }
+        return (committed, out.turns, out.sessions)
+    }
+
     private let queue = DispatchQueue(label: "toastmonitor.collector", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var pending = false
@@ -29,6 +49,18 @@ final class CollectorEngine: @unchecked Sendable {
     /// Source DBs do not use scan_state cursors; their main/WAL mtimes form
     /// an in-memory preflight watermark so idle scans avoid opening a tx.
     private var sourceSignatures: [String: String] = [:]
+    private var fileLists: [String: (loadedAt: CFAbsoluteTime, paths: [String])] = [:]
+
+    private func cachedFileList(_ key: String, maxAge: CFAbsoluteTime = 60,
+                                load: () -> [String]) -> [String] {
+        let now = CFAbsoluteTimeGetCurrent()
+        if let cached = fileLists[key], now - cached.loadedAt < maxAge {
+            return cached.paths
+        }
+        let paths = load()
+        fileLists[key] = (now, paths)
+        return paths
+    }
 
     private func sourceSignature(_ path: String) -> String? {
         guard let main = FileScanner.fileStat(path) else { return nil }
@@ -141,8 +173,9 @@ final class CollectorEngine: @unchecked Sendable {
         var failedSources: [String] = []
 
         func ingest(_ source: String, preflight: () -> Bool,
-                    scan: () -> (turns: [TurnRecord], sessions: [SessionInfo]),
-                    sourcePath: String? = nil) {
+                    sourcePaths: [String],
+                    scan: (any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo]),
+                    signaturePath: String? = nil) {
             let sourceStart = CFAbsoluteTimeGetCurrent()
             guard preflight() else {
                 let duration = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
@@ -152,25 +185,21 @@ final class CollectorEngine: @unchecked Sendable {
                 return
             }
 
-            // Keep parser cursor/session-total writes in the same transaction
-            // as turn/session inserts. A failed insert must roll back both.
-            var out: (turns: [TurnRecord], sessions: [SessionInfo]) = ([], [])
-            let ok = Database.shared.inTransaction {
-                out = scan()
-                return Database.shared.insertTurns(out.turns)
-                    && Database.shared.upsertSessions(out.sessions)
-            }
+            let prepared = Self.prepareAndCommit(database: .shared,
+                                                 sourcePaths: sourcePaths,
+                                                 scan: scan)
+            let out = (turns: prepared.turns, sessions: prepared.sessions)
             let duration = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
-            if !ok {
+            if !prepared.committed {
                 failedSources.append(source)
                 Task { @MainActor in
                     SourceHealthHub.shared.record(tool: source, rows: out.turns.count,
                                                   failed: max(out.turns.count, 1), durationMs: duration,
-                                                  error: "Write failed — cursor/baseline rolled back")
+                                                  error: "Source changed or write failed — retrying")
                 }
                 return
             }
-            if let sourcePath { rememberSource(sourcePath) }
+            if let signaturePath { rememberSource(signaturePath) }
             if out.turns.isEmpty && out.sessions.isEmpty {
                 Task { @MainActor in
                     SourceHealthHub.shared.recordIdle(tool: source, durationMs: duration)
@@ -185,28 +214,39 @@ final class CollectorEngine: @unchecked Sendable {
             }
         }
 
-        let claudeFiles = (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 2)
-            + ClaudeCodeParser.listCoworkFiles())
-            .filter { $0.hasSuffix(".jsonl") }
-        ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) }) {
-            ClaudeCodeParser.scan(knownPaths: claudeFiles)
+        let claudeFiles = cachedFileList("claude") {
+            (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 2)
+                + ClaudeCodeParser.listCoworkFiles())
+                .filter { $0.hasSuffix(".jsonl") }
+        }
+        ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) },
+               sourcePaths: claudeFiles) { state in
+            ClaudeCodeParser.scan(knownPaths: claudeFiles, database: state)
         }
 
-        let codexFiles = FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4)
-            .filter { $0.hasSuffix(".jsonl") }
-        ingest("codex", preflight: { self.fileSourcesChanged(codexFiles) }) {
-            CodexParser.scan()
+        let codexFiles = cachedFileList("codex") {
+            FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4)
+                .filter { $0.hasSuffix(".jsonl") }
+        }
+        ingest("codex", preflight: { self.fileSourcesChanged(codexFiles) },
+               sourcePaths: codexFiles) { state in
+            CodexParser.scan(database: state)
         }
 
         ingest("opencode", preflight: { self.sourceChanged(OpenCodeParser.dbPath) },
-               scan: { OpenCodeParser.scan() }, sourcePath: OpenCodeParser.dbPath)
+               sourcePaths: [OpenCodeParser.dbPath, OpenCodeParser.dbPath + "-wal"],
+               scan: { OpenCodeParser.scan(database: $0) }, signaturePath: OpenCodeParser.dbPath)
 
         ingest("hermes", preflight: { self.sourceChanged(HermesParser.dbPath) },
-               scan: { HermesParser.scan() }, sourcePath: HermesParser.dbPath)
-        let ompFiles = FileScanner.listFiles(OmpParser.root, maxDepth: 3)
-            .filter { $0.hasSuffix(".jsonl") }
-        ingest("omp", preflight: { self.fileSourcesChanged(ompFiles) }) {
-            OmpParser.scan(knownPaths: ompFiles)
+               sourcePaths: [HermesParser.dbPath, HermesParser.dbPath + "-wal"],
+               scan: { HermesParser.scan(database: $0) }, signaturePath: HermesParser.dbPath)
+        let ompFiles = cachedFileList("omp") {
+            FileScanner.listFiles(OmpParser.root, maxDepth: 3)
+                .filter { $0.hasSuffix(".jsonl") }
+        }
+        ingest("omp", preflight: { self.fileSourcesChanged(ompFiles) },
+               sourcePaths: ompFiles) { state in
+            OmpParser.scan(knownPaths: ompFiles, database: state)
         }
 
         // DeepSeek Harness: incremental raw event logs when a zstd CLI is
@@ -214,16 +254,24 @@ final class CollectorEngine: @unchecked Sendable {
         // (see DSHParser.resolveMode) so the two accounting paths never mix.
         switch DSHParser.resolveMode() {
         case .log:
-            let dshFiles = DSHParser.listSessionFiles()
-            ingest("dsh", preflight: { self.fileSourcesChanged(dshFiles) }) {
-                DSHParser.scanLogs(knownPaths: dshFiles)
+            let dshFiles = cachedFileList("dsh") { DSHParser.listSessionFiles() }
+            ingest("dsh", preflight: { self.fileSourcesChanged(dshFiles) },
+                   sourcePaths: dshFiles) { state in
+                DSHParser.scanLogs(knownPaths: dshFiles, database: state)
             }
         case .cache:
             ingest("dsh", preflight: { self.sourceChanged(DSHParser.projCachePath) },
-                   scan: { DSHParser.scanProjCache() }, sourcePath: DSHParser.projCachePath)
+                   sourcePaths: [DSHParser.projCachePath],
+                   scan: { DSHParser.scanProjCache(database: $0) },
+                   signaturePath: DSHParser.projCachePath)
         }
 
         HermesRemoteClient.shared.maybePoll()
+        // Unconditional (not gated on new turns/sessions): a week with zero
+        // new usage still deserves a backup, since settings/subscriptions
+        // can change independently of collector activity. Self-throttled
+        // internally, so calling this every tick costs one setting read.
+        DataMaintenance.maybeCreateRoutineBackupIfDue()
         if !turns.isEmpty || !sessions.isEmpty {
             Database.shared.backfillCosts()
         }

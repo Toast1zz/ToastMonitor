@@ -82,6 +82,7 @@ struct PopoverHomeView: View {
     @AppStorage("popoverFullTokens") private var fullTokens = false
     /// 年度每日用量（Popover 自持：AppState 只在 dashboard 可见时填 heatmap）。
     @State private var heatmapData: [Int64: Int64] = [:]
+    @State private var detectedTools: [ToolKind] = []
     /// 面板是否可见。PopoverHomeView 常驻（面板不销毁视图），隐藏时分钟
     /// tick 与热力图重载都必须停，否则每 60s 跑一次 371 天聚合（UI-1）。
     @State private var panelVisible = false
@@ -133,7 +134,7 @@ struct PopoverHomeView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 10)
                 .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(kind: "pinned", page: "home")
+                .reportPopoverHeight(.pinned, page: .home)
 
             ScrollView(.vertical, showsIndicators: false) {
                 // 板块节奏统一：每块之间一条等宽分割线（撑满内容区），
@@ -154,7 +155,7 @@ struct PopoverHomeView: View {
                 }
                 .padding(.horizontal, 20)
                 .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(kind: "body", page: "home")
+                .reportPopoverHeight(.body, page: .home)
             }
             .id(period)
             .frame(minHeight: 0, maxHeight: .infinity)
@@ -163,6 +164,7 @@ struct PopoverHomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             loadQuotaRowHidden()
+            loadDetectedTools()
             reloadHeatmap()
         }
         .onReceive(minuteTicker) { tick in
@@ -233,6 +235,7 @@ struct PopoverHomeView: View {
                         .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
                 }
+                .help(spentHelp)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Spent")
                 .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
@@ -244,11 +247,19 @@ struct PopoverHomeView: View {
                         .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
                 }
+                .help("What these model calls would cost at official API list prices. This is not a billed amount.")
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Value")
                 .accessibilityValue(Text(estimatedShown > 0 ? Format.money(estimatedShown) : "—"))
             }
         }
+    }
+
+    private var spentHelp: String {
+        let base = "Billed turn costs, OpenRouter usage, and subscription amortization."
+        return period == .all
+            ? base + " OpenRouter only exposes its recent monthly window, not full account history."
+            : base
     }
 
     @ViewBuilder
@@ -313,9 +324,22 @@ struct PopoverHomeView: View {
         }
         return VStack(alignment: .leading, spacing: 8) {
             if rows.isEmpty {
-                Text("No source data yet")
-                    .font(.caption)
-                    .foregroundStyle(TMDesign.quiet)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Get Started")
+                        .font(TMType.semibold(TMType.body))
+                    Text(detectedTools.isEmpty
+                         ? "No supported local tools detected"
+                         : "Detected: \(detectedTools.map(\.displayName).joined(separator: ", "))")
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
+                        .lineLimit(2)
+                    Button("Configure Sources") {
+                        WindowManager.shared.show(tab: .settings)
+                        NotificationCenter.default.post(name: PanelController.hideNotification,
+                                                        object: nil)
+                    }
+                    .controlSize(.small)
+                }
             } else {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -358,6 +382,22 @@ struct PopoverHomeView: View {
                     .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens, \(percentText(row, total: total)) of total"))
                 }
             }
+        }
+    }
+
+    private func loadDetectedTools() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            var tools: [ToolKind] = []
+            if fm.fileExists(atPath: ClaudeCodeParser.root)
+                || fm.fileExists(atPath: ClaudeCodeParser.coworkLocalAgentRoot) { tools.append(.claude) }
+            if fm.fileExists(atPath: CodexParser.sessionsRoot) { tools.append(.codex) }
+            if fm.fileExists(atPath: OpenCodeParser.dbPath) { tools.append(.opencode) }
+            if fm.fileExists(atPath: HermesParser.dbPath) { tools.append(.hermes) }
+            if fm.fileExists(atPath: OmpParser.root) { tools.append(.omp) }
+            if fm.fileExists(atPath: DSHParser.projCachePath)
+                || !DSHParser.listSessionFiles().isEmpty { tools.append(.dsh) }
+            DispatchQueue.main.async { detectedTools = tools }
         }
     }
 
@@ -536,27 +576,29 @@ struct PopoverHomeView: View {
         let remaining = state.monthlyPct.map { 100 - $0 }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        var status = "Not configured"
+        var status = goClient.configured ? "Loading" : "Not configured"
         var resetSuffix: String?
+        // Same "prefer the cached number" reasoning as Claude's row: a
+        // stale percentage is still more useful than the word "Stale", so
+        // the last known value stays on screen with a small freshness badge
+        // instead of being replaced.
+        var staleBadge: String?
         if !goClient.configured {
             // A locked/re-authorized Keychain reads back exactly like
             // "never configured" from credentials() — surface which one it
             // actually is instead of always saying "Not configured", or a
             // real credentials loss looks identical to a rebuild-triggered
             // Keychain re-auth prompt that never happened.
-            status = (state.error?.contains("钥匙串") == true) ? "Keychain locked" : "Not configured"
-        } else if state.error != nil {
-            status = "Error"
-        } else if stale {
-            status = "Stale"
+            status = (state.error?.localizedCaseInsensitiveContains("keychain") == true) ? "Keychain locked" : "Not configured"
         } else if let remaining {
             status = "\(Int(remaining))% monthly left"
             resetSuffix = resetText(state.monthlyReset.map { state.lastSync + $0 })
-        } else if state.isLoading && state.lastSync <= 0 {
-            status = "Loading"
-        } else {
-            // 刷新期间保留上次结果，不闪 Loading。
-            status = "Idle"
+            if stale {
+                let age = now.timeIntervalSince1970 - TimeInterval(state.lastSync)
+                staleBadge = "\(Format.remaining(Int64(age))) ago"
+            }
+        } else if state.error != nil {
+            status = "Error"
         }
         // Go also reports a weekly window alongside the monthly one; shown
         // as a quiet subtitle only once real data has loaded, same pattern
@@ -568,6 +610,7 @@ struct PopoverHomeView: View {
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
                          subtitle: weeklySubtitle,
+                         staleBadge: staleBadge,
                          hideKey: "go")
     }
 
@@ -671,13 +714,16 @@ struct PopoverHomeView: View {
         var status = sub == nil ? "Not configured"
                     : (state.lastSync <= 0 ? "Loading" : "Idle")
         var resetSuffix: String?
-        if state.error != nil {
-            status = "Error"
-        } else if stale, state.primaryPct != nil {
-            status = "Stale"
-        } else if let remaining {
+        var staleBadge: String?
+        if let remaining {
             status = "\(Int(remaining))% of \(windowLabel) left"
             resetSuffix = resetText(state.resetAt)
+            if stale {
+                let age = now.timeIntervalSince1970 - TimeInterval(state.lastSync)
+                staleBadge = "\(Format.remaining(Int64(age))) ago"
+            }
+        } else if state.error != nil {
+            status = "Error"
         } else if let sub {
             status = "Subscribed · \(Format.money(sub.price))/mo"
         }
@@ -685,6 +731,7 @@ struct PopoverHomeView: View {
                          statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
+                         staleBadge: staleBadge,
                          hideKey: "codex")
     }
 
@@ -694,11 +741,12 @@ struct PopoverHomeView: View {
     private var commandCodeStatusRow: some View {
         let state = ccQuota.state
         let name = "Command Code GOAT" + (state.error == nil ? "" : " ⚠")
+        let stale = state.lastSync > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = state.configured ? "Loading" : "Not configured"
         var resetSuffix: String?
-        if state.error != nil {
-            status = "Error"
-        } else if let percent = state.monthlyUsedPercent {
+        var staleBadge: String?
+        if let percent = state.monthlyUsedPercent {
             // Known plan: remaining = 100 − used. Cached value is shown
             // while refreshing; it updates in place when new data lands.
             status = "\(Int((100 - percent).rounded()))% monthly left"
@@ -708,6 +756,12 @@ struct PopoverHomeView: View {
                     resetSuffix = "resets in \(Format.remaining(Int64(remaining)))"
                 }
             }
+            if stale {
+                let age = now.timeIntervalSince1970 - TimeInterval(state.lastSync)
+                staleBadge = "\(Format.remaining(Int64(age))) ago"
+            }
+        } else if state.error != nil {
+            status = "Error"
         } else if let remaining = state.monthlyCreditsRemaining {
             // Unknown plan or no allowance: show remaining only, no percent.
             status = "$\(Format.money(remaining)) left"
@@ -719,6 +773,7 @@ struct PopoverHomeView: View {
                          // Star = running low: remaining below 20% (used > 80%).
                          critical: state.monthlyUsedPercent.map { $0 > 80 } ?? false,
                          resetSuffix: resetSuffix,
+                         staleBadge: staleBadge,
                          hideKey: "cc")
     }
 
@@ -726,15 +781,18 @@ struct PopoverHomeView: View {
         let state = orClient.state
         let stale = state.lastOK > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastOK) > 120
-        let status: String
+        var status: String
+        var staleBadge: String?
         if !orClient.hasKey {
             status = "Not configured"
-        } else if state.error != nil {
-            status = "Error"
-        } else if stale {
-            status = "Stale"
         } else if let balance = state.accountBalance {
             status = "Balance \(Format.money(balance))"
+            if stale {
+                let age = now.timeIntervalSince1970 - TimeInterval(state.lastOK)
+                staleBadge = "\(Format.remaining(Int64(age))) ago"
+            }
+        } else if state.error != nil {
+            status = "Error"
         } else if state.isLoading && state.lastOK <= 0 {
             status = "Loading"
         } else {
@@ -742,6 +800,7 @@ struct PopoverHomeView: View {
         }
         return statusRow(name: "OpenRouter", status: status,
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet,
+                         staleBadge: staleBadge,
                          hideKey: "router")
     }
 
@@ -821,6 +880,12 @@ private struct TrendChartView: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Daily usage trend")
+            .accessibilityChildren {
+                ForEach(series, id: \.key) { day in
+                    Text(shortDayFormatter.string(from: dayFromKey(day.key)))
+                        .accessibilityValue("\(Format.full(day.tokens)) tokens")
+                }
+            }
         }
     }
 }
@@ -957,12 +1022,12 @@ private struct StatusRow: View {
                     .font(TMType.medium(TMType.body))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .frame(height: 16, alignment: .leading)
+                    .frame(height: TMLayout.quotaPrimaryLineHeight, alignment: .leading)
                 Text(resetSuffix ?? "")
                     .font(TMType.monoRegular(TMType.micro))
                     .foregroundStyle(TMDesign.quiet)
                     .lineLimit(1)
-                    .frame(height: 13, alignment: .leading)
+                    .frame(height: TMLayout.quotaSecondaryLineHeight, alignment: .leading)
                     .opacity(resetSuffix == nil ? 0 : 1)
             }
             Spacer(minLength: 8)
@@ -980,17 +1045,22 @@ private struct StatusRow: View {
                             .padding(.vertical, 1)
                             .background(TMDesign.quiet.opacity(0.14), in: Capsule(style: .continuous))
                     }
-                    Text((critical ? "★ " : "") + status)
-                        .font(TMType.monoRegular(TMType.body))
-                        .foregroundStyle(statusColor)
-                        .lineLimit(1)
+                    if critical {
+                        TMStatusCapsule(text: status, compact: true)
+                            .lineLimit(1)
+                    } else {
+                        Text(status)
+                            .font(TMType.monoRegular(TMType.body))
+                            .foregroundStyle(statusColor)
+                            .lineLimit(1)
+                    }
                 }
-                .frame(height: 16, alignment: .trailing)
+                .frame(height: TMLayout.quotaPrimaryLineHeight, alignment: .trailing)
                 Text((subtitleCritical ? "★ " : "") + (subtitle ?? ""))
                     .font(TMType.monoRegular(TMType.micro))
                     .foregroundStyle(TMDesign.quiet)
                     .lineLimit(1)
-                    .frame(height: 13, alignment: .trailing)
+                    .frame(height: TMLayout.quotaSecondaryLineHeight, alignment: .trailing)
                     .opacity(subtitle == nil ? 0 : 1)
             }
             .layoutPriority(1)
@@ -1026,9 +1096,9 @@ private struct PopoverHeatmap: View {
     private let labelGap: CGFloat = 14
     private let cellGutter: CGFloat = 3
 
-    /// 内容区固定 360pt（面板 400 − 水平 padding 40），cell 按列数均分。
+    /// Grid cells divide the shared popover content width evenly.
     private var gridHeight: CGFloat {
-        let contentWidth: CGFloat = 360
+        let contentWidth = TMLayout.popoverContentWidth
         let cell = max((contentWidth - CGFloat(weeks.count - 1) * cellGutter) / CGFloat(weeks.count), 2)
         return labelGap + 7 * cell + 6 * cellGutter
     }
@@ -1086,7 +1156,7 @@ private struct PopoverHeatmap: View {
             }
             .frame(height: gridHeight)
         }
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Activity heatmap, six months")
     }
 
@@ -1110,5 +1180,9 @@ private struct PopoverHeatmap: View {
                     hoveredDay = nil
                 }
             }
+            .accessibilityElement()
+            .accessibilityLabel(key.map { shortDayFormatter.string(from: dayFromKey($0)) } ?? "")
+            .accessibilityValue("\(Format.full(v)) tokens")
+            .accessibilityHidden(key == nil)
     }
 }

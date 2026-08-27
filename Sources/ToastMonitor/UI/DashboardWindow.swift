@@ -382,8 +382,12 @@ private final class DashboardRootView: NSView {
     }
 }
 
+/// Internal (not private): the --render-dashboard screenshot hook in
+/// ToastMonitorApp.swift builds one off-screen so it renders through the
+/// exact same page-hosting machinery the real window uses, rather than a
+/// separate SwiftUI reimplementation that could visually drift from it.
 @MainActor
-private final class DashboardPageController: NSViewController {
+final class DashboardPageController: NSViewController {
     private let initialTab: DashboardView.Tab
     private var selectedTab: DashboardView.Tab
     private var hosts: [DashboardView.Tab: NSViewController] = [:]
@@ -476,6 +480,8 @@ private final class DashboardPageController: NSViewController {
             page = AnyView(UsageAnalysisView().environmentObject(AppState.shared))
         case .plans:
             page = AnyView(PlansView().environmentObject(AppState.shared))
+        case .sessions:
+            page = AnyView(SessionsView())
         case .settings:
             page = AnyView(SettingsView().environmentObject(AppState.shared))
         }
@@ -500,65 +506,26 @@ private final class DashboardPageController: NSViewController {
     }
 }
 
-/// The full surface is task-oriented rather than a collection of duplicated
-/// provider pages. Tools and models are dimensions within analysis; sessions
-/// are an audit view; plans are a financial context.
-struct DashboardView: View {
-    static let selectTab = Notification.Name("ToastMonitorDashboardSelectTab")
-    static let didSelectTab = Notification.Name("ToastMonitorDashboardDidSelectTab")
-    @State private var tab: Tab = .overview
-
-    init(initialTab: Tab? = nil) {
-        if let initialTab { _tab = State(initialValue: initialTab) }
-    }
-
+/// Namespace for the dashboard's page enumeration. Page hosting and
+/// switching (both native-toolbar-driven and Cmd+1…4) live entirely in
+/// DashboardPageController / DashboardToolbarController above — there used
+/// to be a second, SwiftUI-only tab-switching implementation here (a
+/// `DashboardView: View` with its own `tab` state, its own Cmd+1…4 hidden
+/// buttons, and a selectTab/didSelectTab notification pair that nothing
+/// outside this type ever posted or observed). That second implementation
+/// was reachable only from the --render-dashboard screenshot hook, so a
+/// screenshot and the real window were never guaranteed to look alike and
+/// every navigation fix had to be made twice. Dead code and duplication
+/// both removed; `renderDashboard` in ToastMonitorApp.swift now builds an
+/// off-screen DashboardPageController directly.
+enum DashboardView {
     enum Tab: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case analysis = "Analysis"
         case plans = "Plans"
+        case sessions = "Sessions"
         case settings = "Settings"
 
         var id: String { rawValue }
     }
-
-    var body: some View {
-        Group {
-            switch tab {
-            case .overview:
-            OverviewView()
-            case .analysis:
-            UsageAnalysisView()
-            case .plans:
-            PlansView()
-            case .settings:
-                SettingsView()
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(TMDesign.canvas)
-        .onReceive(NotificationCenter.default.publisher(for: Self.selectTab)) { note in
-            guard let requested = note.object as? Tab, requested != tab else { return }
-            // The toolbar owns the polished native selection animation. Page
-            // replacement must not inherit unrelated chart/control animations
-            // and attempt to animate an entire, structurally different tree.
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { tab = requested }
-        }
-        .onAppear {
-            NotificationCenter.default.post(name: Self.didSelectTab, object: tab)
-        }
-        .onChange(of: tab) { _, selected in
-            NotificationCenter.default.post(name: Self.didSelectTab, object: selected)
-        }
-        // Cmd+1…4 快速切页（隐藏按钮注册快捷键）。
-        .overlay(alignment: .bottomTrailing) {
-            ForEach(Array(Tab.allCases.enumerated()), id: \.element) { i, item in
-                Button("") { tab = item }
-                    .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
-                    .hidden()
-            }
-        }
-    }
-
 }

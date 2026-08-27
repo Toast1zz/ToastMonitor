@@ -165,7 +165,7 @@ final class OpenCodeGoClient: ObservableObject {
             }
             configured = false
             state.error = locked
-                ? "钥匙串被锁定/需要解锁，cookie 未保存"
+                ? "Keychain is locked; cookie was not saved"
                 : "Keychain write failed — cookie not saved"
             return false
         }
@@ -251,7 +251,7 @@ final class OpenCodeGoClient: ObservableObject {
                 inFlight = false
                 configured = false
                 var cleared = State()
-                cleared.error = keychainLocked ? "钥匙串被锁定/需要解锁" : "Not configured"
+                cleared.error = keychainLocked ? "Keychain is locked" : "Not configured"
                 state = cleared
                 return
             }
@@ -271,7 +271,7 @@ final class OpenCodeGoClient: ObservableObject {
                     self.inFlight = false
                     self.configured = false
                     var cleared = State()
-                    cleared.error = self.keychainLocked ? "钥匙串被锁定/需要解锁" : "Not configured"
+                    cleared.error = self.keychainLocked ? "Keychain is locked" : "Not configured"
                     self.state = cleared
                     return
                 }

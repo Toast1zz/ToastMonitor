@@ -2,6 +2,32 @@ import SwiftUI
 import AppKit
 import Darwin
 
+private let cliHelp = """
+Usage: ToastMonitor [option]
+
+General:
+  --help, -h                         Show this help
+  --version                          Show the app version
+  --export-diagnostics PATH          Write redacted diagnostics JSON
+  --probe-vault                      Report credential presence and read latency
+
+Credentials (secret values are read from stdin):
+  --set-or-key                       Store an OpenRouter API key
+  --provision-or-key                 Store an OpenRouter API key
+  --clear-or-key                     Remove OpenRouter credentials
+  --provision-go WORKSPACE_ID        Store OpenCode Go credentials
+  --clear-go                         Remove OpenCode Go credentials
+  --provision-hermes URL             Configure the Hermes remote feed
+
+UI verification:
+  --render-popover PATH [HEIGHT] [--period today|week|month|all]
+  --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions|settings]
+  --show-panel [--backdrop white|dark] [--capture PATH]
+  --show-dashboard [--capture-dashboard PATH]
+  --show-dashboard --benchmark-dashboard-switches
+  --verify-status-toggle
+"""
+
 /// Pure AppKit entry point. No SwiftUI Scene at all: a WindowGroup or
 /// Settings scene makes macOS re-open an empty window when the last window
 /// closes (user reported the mystery "ToastMonitor" blank window). The
@@ -11,6 +37,16 @@ import Darwin
 enum ToastMonitorMain {
     @MainActor
     static func main() {
+        let args = CommandLine.arguments
+        if args.contains("--help") || args.contains("-h") {
+            print(cliHelp)
+            return
+        }
+        if args.contains("--version") {
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0 (dev)"
+            print("ToastMonitor \(version)")
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -23,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private var statusItem: NSStatusItem?
     @MainActor private var panelController: PanelController?
     @MainActor private var appStateObserver: Any?
+    @MainActor private var quotaAlertObserver: Any?
     private var debugBackdrop: NSWindow?
     /// Read secrets from stdin so they never appear in argv/`ps` output or
     /// shell history. Callers may pipe one line or an EOF-terminated value.
@@ -54,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard args.indices.contains(index) else { return defaultValue }
         guard let value = Double(args[index]),
               value.isFinite, range.contains(value) else {
-            print("\(label) 尺寸无效（范围 \(range.lowerBound)-\(range.upperBound)）")
+            print("\(label) has an invalid dimension (expected \(range.lowerBound)-\(range.upperBound))")
             exit(1)
         }
         return value
@@ -130,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installCrashHandlers()
         // Headless CLI modes (used for provisioning the keychain over SSH).
         let args = CommandLine.arguments
+        if args.contains("--help") || args.contains("-h") { print(cliHelp); exit(0) }
         if args.contains("--version") {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0 (dev)"
             print("ToastMonitor \(version)")
@@ -200,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let flag = args.firstIndex(of: "--provision-go") {
             guard flag + 1 < args.count, !args[flag + 1].isEmpty else {
-                print("--provision-go 缺少 workspace ID")
+                print("--provision-go requires a workspace ID")
                 exit(1)
             }
             Database.shared.open()
@@ -218,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let flag = args.firstIndex(of: "--provision-hermes") {
             guard flag + 1 < args.count, !args[flag + 1].isEmpty else {
-                print("--provision-hermes 缺少 URL")
+                print("--provision-hermes requires a URL")
                 exit(1)
             }
             Database.shared.open()
@@ -231,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let flag = args.firstIndex(of: "--export-diagnostics") {
             guard flag + 1 < args.count, !args[flag + 1].isEmpty else {
-                print("--export-diagnostics 缺少输出路径")
+                print("--export-diagnostics requires an output path")
                 exit(1)
             }
             Database.shared.open()
@@ -248,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Headless UI verification: render the popover root to a PNG.
         // Usage: ToastMonitor --render-popover /tmp/popover.png [height]
         if let flag = args.firstIndex(of: "--render-popover") {
-            guard flag + 1 < args.count else { print("--render-popover 缺少输出路径"); exit(1) }
+            guard flag + 1 < args.count else { print("--render-popover requires an output path"); exit(1) }
             let outPath = args[flag + 1]
             let height = boundedRenderDimension(args, index: flag + 2,
                                                 defaultValue: 620, range: 64...10_000,
@@ -281,19 +319,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // window or Keychain access (OpenRouter/Go clients are not started).
         // Usage: ToastMonitor --render-dashboard /tmp/dash.png
         if let flag = args.firstIndex(of: "--render-dashboard") {
-            guard flag + 1 < args.count else { print("--render-dashboard 缺少输出路径"); exit(1) }
+            guard flag + 1 < args.count else { print("--render-dashboard requires an output path"); exit(1) }
             let outPath = args[flag + 1]
             let height = boundedRenderDimension(args, index: flag + 2,
                                                 defaultValue: 720, range: 200...10_000,
-                                                label: "--render-dashboard 高度")
+                                                label: "--render-dashboard height")
             let width = boundedRenderDimension(args, index: flag + 3,
                                                defaultValue: 1120, range: 320...20_000,
-                                               label: "--render-dashboard 宽度")
+                                               label: "--render-dashboard width")
             let tabName = flag + 4 < args.count ? args[flag + 4] : "overview"
             let tab: DashboardView.Tab? = {
                 switch tabName {
                 case "analysis": return .analysis
                 case "plans": return .plans
+                case "sessions": return .sessions
                 case "sources", "settings": return .settings
                 default: return .overview
                 }
@@ -365,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ClaudeQuotaClient.shared.start()
         CommandCodeQuotaClient.shared.start()
         HermesRemoteClient.shared.start()
+        QuotaAlertManager.shared.start()
         setupMenuBar()
         // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
         // fields and everywhere else, not just while the dashboard is open.
@@ -375,11 +415,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Renders the dashboard root into a PNG via off-screen NSHostingView
-    /// (used by --render-dashboard; no window server round-trip needed).
+    /// Renders the dashboard into a PNG via an off-screen DashboardPageController
+    /// — the exact same page-hosting/native-tab-switching machinery the real
+    /// window uses (WindowManager.show), not a separate SwiftUI reimplementation.
+    /// Screenshots taken through this hook are therefore pixel-faithful to what
+    /// the user actually sees; no window server round-trip needed.
     private func renderDashboard(to path: String, height: CGFloat = 720, width: CGFloat = 1120, tab: DashboardView.Tab? = nil) {
-        let root = DashboardView(initialTab: tab).environmentObject(AppState.shared)
-        renderSnapshot(root, to: path, height: height, width: width)
+        let controller = DashboardPageController(initialTab: tab ?? .overview)
+        let view = controller.view // triggers loadView()/viewDidLoad()
+        view.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        // Setting `.appearance` on an already-loaded view still triggers
+        // viewDidChangeEffectiveAppearance() (DashboardRootView reacts to that
+        // to repaint its background), so ordering relative to `.view` above
+        // does not matter.
+        if path.contains("dark") {
+            view.appearance = NSAppearance(named: .darkAqua)
+        } else if path.contains("light") {
+            view.appearance = NSAppearance(named: .aqua)
+        }
+        controller.prepareAllPages()
+        captureAndWritePNG(view, to: path)
     }
 
     private func renderSnapshot<V: View>(_ root: V, to path: String, height: CGFloat, width: CGFloat) {
@@ -390,13 +445,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hosting.appearance = NSAppearance(named: .aqua)
         }
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        hosting.layoutSubtreeIfNeeded()
+        captureAndWritePNG(hosting, to: path)
+    }
+
+    private func captureAndWritePNG(_ view: NSView, to path: String) {
+        view.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             print("render failed: no bitmap rep")
             exit(1)
         }
-        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        view.cacheDisplay(in: view.bounds, to: rep)
         guard let data = rep.representation(using: .png, properties: [:]) else {
             print("render failed: no PNG data")
             exit(1)
@@ -422,11 +481,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // attributedTitle (image attachment + text) natively.
             button.target = self
             button.action = #selector(togglePanel(_:))
-            button.sendAction(on: [.leftMouseUp])
-            button.setAccessibilityLabel("ToastMonitor 用量与额度")
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.setAccessibilityLabel("ToastMonitor usage and quotas")
             updateStatusLabel(button)
             // Refresh the label whenever AppState publishes changes.
             appStateObserver = AppState.shared.objectWillChange.sink { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let button = self.statusItem?.button else { return }
+                    self.updateStatusLabel(button)
+                }
+            }
+            quotaAlertObserver = QuotaAlertManager.shared.objectWillChange.sink { [weak self] _ in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, let button = self.statusItem?.button else { return }
                     self.updateStatusLabel(button)
@@ -533,8 +598,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .font: font,
             .foregroundColor: NSColor.labelColor,
         ]))
+        if QuotaAlertManager.shared.criticalCount > 0 {
+            attr.append(NSAttributedString(string: " ●", attributes: [
+                .font: NSFont.systemFont(ofSize: 8, weight: .bold),
+                .foregroundColor: NSColor.systemRed,
+            ]))
+        }
         button.attributedTitle = attr
-        button.setAccessibilityValue("今日 \(text) tokens")
+        button.setAccessibilityValue("Today: \(text) tokens")
 
         let or = OpenRouterClient.shared
         let todayActual = app.costToday.actual + or.state.usageDaily
@@ -562,6 +633,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePanel(_ sender: Any?) {
+        if let event = NSApp.currentEvent, event.type == .rightMouseUp {
+            showStatusMenu()
+            return
+        }
         // AppKit sends both click-count 1 and click-count 2 for a double click.
         // Act on the first event only so a fast double click cannot immediately
         // undo its own toggle.
@@ -571,6 +646,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         panelController?.toggle()
+    }
+
+    /// Right-click (or Control-click) context menu: the popover only offers
+    /// Open Dashboard/Refresh/Quit after first expanding it, so a menu-bar
+    /// power user reaching for those three things has to open a whole panel
+    /// just to close it again. `NSMenu.popUp` shows a standalone contextual
+    /// menu without assigning `statusItem.menu` — that property, once set,
+    /// makes AppKit show the menu on every click including the left one this
+    /// button already uses to toggle the panel.
+    private func showStatusMenu() {
+        guard let button = statusItem?.button else { return }
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open Dashboard", action: #selector(menuOpenDashboard), keyEquivalent: "")
+            .target = self
+        menu.addItem(withTitle: "Refresh Now", action: #selector(menuRefreshNow), keyEquivalent: "")
+            .target = self
+        menu.addItem(.separator())
+        let lastScan = AppState.shared.lastScan
+        let syncItem = NSMenuItem(
+            title: lastScan > 0 ? "Last synced \(Format.dateTime(lastScan))" : "Not yet synced",
+            action: nil, keyEquivalent: "")
+        syncItem.isEnabled = false
+        menu.addItem(syncItem)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit ToastMonitor",
+                     action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    @objc private func menuOpenDashboard() {
+        WindowManager.shared.show()
+    }
+
+    /// Same refresh sequence as the popover's toolbar button and the
+    /// dashboard toolbar's Refresh item (PopoverRootView.refresh(),
+    /// DashboardToolbarController.refreshData(_:)) — every source's
+    /// independent poller, triggered together.
+    @objc private func menuRefreshNow() {
+        AppState.shared.refresh(manual: true)
+        CollectorEngine.shared.scheduleScan()
+        OpenRouterClient.shared.refresh()
+        OpenCodeGoClient.shared.refresh()
+        CodexQuotaClient.shared.refresh()
+        ClaudeQuotaClient.shared.refresh(force: true)
+        HermesRemoteClient.shared.maybePoll()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

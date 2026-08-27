@@ -112,7 +112,7 @@ struct SourcesView: View {
             }
             remoteRow
         }
-        .tmPanelSurface()
+        .modifier(SourceSectionSurface(enabled: !embedded))
         .padding(.horizontal, embedded ? 0 : 24)
         .padding(.vertical, embedded ? 0 : 18)
     }
@@ -248,4 +248,17 @@ struct SourcesView: View {
         }
     }
 
+}
+
+private struct SourceSectionSurface: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.tmPanelSurface()
+        } else {
+            content.padding(.vertical, 4)
+        }
+    }
 }

@@ -17,7 +17,7 @@ final class UIStateTests: XCTestCase {
 
     func testSourceHealthDisplayNameIdentifiesRemoteFeed() {
         let remote = SourceHealth(tool: "remote-feed", mode: "remote")
-        XCTAssertEqual(remote.displayName, "远程 Feed")
+        XCTAssertEqual(remote.displayName, "Remote Feed")
         let omp = SourceHealth(tool: ToolKind.omp.rawValue, mode: "local")
         XCTAssertEqual(omp.displayName, ToolKind.omp.displayName)
     }
@@ -43,21 +43,21 @@ final class UIStateTests: XCTestCase {
     }
 
     func testPopoverHeightWaitsForEveryMeasuredSlice() {
-        XCTAssertNil(PanelController.mergedHeight(
-            header: 48, pinned: 0, body: 620, footer: 46,
-            allowsZeroPinned: false))
-        XCTAssertNil(PanelController.mergedHeight(
-            header: 0, pinned: 48, body: 620, footer: 46,
-            allowsZeroPinned: false))
-        XCTAssertEqual(PanelController.mergedHeight(
-            header: 48, pinned: 48, body: 620, footer: 46,
-            allowsZeroPinned: false), 762)
+        XCTAssertNil(PopoverHeightMeasurements(values: [
+            .header: 48, .body: 620, .footer: 46,
+        ]).naturalHeight(for: .home))
+        XCTAssertNil(PopoverHeightMeasurements(values: [
+            .pinned: 48, .body: 620, .footer: 46,
+        ]).naturalHeight(for: .home))
+        XCTAssertEqual(PopoverHeightMeasurements(values: [
+            .header: 48, .pinned: 48, .body: 620, .footer: 46,
+        ]).naturalHeight(for: .home), 762)
     }
 
     func testPopoverSettingsHeightAllowsNoPinnedSelector() {
-        XCTAssertEqual(PanelController.mergedHeight(
-            header: 48, pinned: 0, body: 260, footer: 42,
-            allowsZeroPinned: true), 350)
+        XCTAssertEqual(PopoverHeightMeasurements(values: [
+            .header: 48, .body: 260, .footer: 42,
+        ]).naturalHeight(for: .settings), 350)
     }
 
     func testPopoverShortPageKeepsItsNaturalHeight() {
@@ -145,5 +145,39 @@ final class UIStateTests: XCTestCase {
         _ = app.subscriptions
         _ = app.lastScan
         _ = app.snapshotFetchedAt
+    }
+
+    func testRefreshCoordinatorCoalescesPendingManualRequest() {
+        var coordinator = RefreshCoordinator()
+        let first = coordinator.request(manual: false, now: 100, watchdogSeconds: 10)
+        XCTAssertEqual(first?.generation, 1)
+        XCTAssertNil(coordinator.request(manual: true, now: 105, watchdogSeconds: 10))
+
+        let rerun = coordinator.finish(generation: 1)
+        XCTAssertEqual(rerun, .init(manual: true, requested: true))
+        XCTAssertFalse(coordinator.isInFlight)
+    }
+
+    func testRefreshCoordinatorWatchdogRejectsStaleCompletion() {
+        var coordinator = RefreshCoordinator()
+        let first = coordinator.request(manual: true, now: 100, watchdogSeconds: 10)!
+        let replacement = coordinator.request(manual: false, now: 111, watchdogSeconds: 10)!
+
+        XCTAssertTrue(replacement.restartedByWatchdog)
+        XCTAssertEqual(replacement.generation, first.generation + 1)
+        XCTAssertNil(coordinator.finish(generation: first.generation),
+                     "a stale completion must not clear the replacement request")
+        XCTAssertTrue(coordinator.isInFlight)
+        XCTAssertNotNil(coordinator.finish(generation: replacement.generation))
+        XCTAssertFalse(coordinator.isInFlight)
+    }
+
+    func testRefreshCoordinatorUsesStrictWatchdogBoundary() {
+        var coordinator = RefreshCoordinator()
+        _ = coordinator.request(manual: false, now: 100, watchdogSeconds: 10)
+        XCTAssertNil(coordinator.request(manual: false, now: 110, watchdogSeconds: 10),
+                     "exactly at the threshold the active request is still valid")
+        XCTAssertTrue(coordinator.request(manual: false, now: 110.001,
+                                          watchdogSeconds: 10)?.restartedByWatchdog == true)
     }
 }

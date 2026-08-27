@@ -11,7 +11,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the full panel
-- **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sources & Settings
+- **Full panel (5 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions / Settings
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
 - **Built-in quotas** — OpenCode Go plan bars with reset countdown, OpenRouter balance snapshots (no opencode-quota dependency)
 - **Cost estimation** — built-in model price table; unknown models count tokens without a price
@@ -108,7 +108,7 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 ```
 
 - `TM_DEBUG=1`: per-file scan decision logging
-- `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sources`
+- `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions / settings`
 - `--show-dashboard`: launch with the panel open
 - `--verify-status-toggle`: automated status-button toggle self-check (CI)
 

@@ -1,5 +1,55 @@
 import SwiftUI
 
+/// Deterministic state machine for AppState snapshot requests. Keeping time
+/// and generation policy here makes watchdog overlap semantics testable
+/// without timers, queues, or a live SwiftUI application.
+struct RefreshCoordinator {
+    struct Request: Equatable {
+        let generation: UInt64
+        let restartedByWatchdog: Bool
+    }
+
+    struct Rerun: Equatable {
+        let manual: Bool
+        let requested: Bool
+    }
+
+    private(set) var isInFlight = false
+    private(set) var startedAt: CFAbsoluteTime = 0
+    private(set) var generation: UInt64 = 0
+    private var pendingManual = false
+    private var pendingRefresh = false
+
+    mutating func request(manual: Bool, now: CFAbsoluteTime,
+                          watchdogSeconds: CFAbsoluteTime) -> Request? {
+        var restartedByWatchdog = false
+        if isInFlight {
+            if now - startedAt > watchdogSeconds {
+                isInFlight = false
+                restartedByWatchdog = true
+            } else {
+                if manual { pendingManual = true }
+                pendingRefresh = true
+                return nil
+            }
+        }
+        isInFlight = true
+        startedAt = now
+        generation &+= 1
+        return Request(generation: generation,
+                       restartedByWatchdog: restartedByWatchdog)
+    }
+
+    mutating func finish(generation candidate: UInt64) -> Rerun? {
+        guard candidate == generation else { return nil }
+        isInFlight = false
+        let rerun = Rerun(manual: pendingManual, requested: pendingRefresh)
+        pendingManual = false
+        pendingRefresh = false
+        return rerun
+    }
+}
+
 /// Main-thread UI state. All aggregates arrive as a background-computed
 /// Snapshot from UsageQueryService — refresh() never queries the DB directly.
 @MainActor
@@ -40,8 +90,7 @@ final class AppState: ObservableObject {
         init() {
             let zero = Database.ToolTotals(tool: "all", input: 0, output: 0,
                                            cacheRead: 0, cacheWrite: 0, cost: 0, count: 0)
-            let quality = UsageQueryService.CostQuality(estimated: 0, actual: 0,
-                                                        knownCount: 0, totalCount: 0)
+            let quality = UsageQueryService.CostQuality(estimated: 0, actual: 0)
             today = zero; week = zero; month = zero; all = zero
             todayTokens = 0; weekTokens = 0; monthTokens = 0; allTokens = 0
             byToolToday = []; byToolWeek = []; byToolMonth = []; byToolAll = []
@@ -91,25 +140,12 @@ final class AppState: ObservableObject {
     var snapshotFetchedAt: Int64 { state.snapshotFetchedAt }
 
     private var refreshTimer: Timer?
-    private var refreshInFlight = false
-    /// A manual refresh arrived while a snapshot was already in flight;
-    /// re-run as manual once the in-flight one completes so the toolbar
-    /// spinner reflects the user's request.
-    private var pendingManual = false
-    /// A settings/data refresh arrived while a snapshot was in flight. Keep
-    /// one follow-up request so changing the period cannot leave the UI on
-    /// the previous mode's cached snapshot.
-    private var pendingRefresh = false
+    private var refreshCoordinator = RefreshCoordinator()
     /// 快照加载开始时间；超过看门狗阈值视为卡死，允许下一次刷新重试。
     /// 若不重置，一次永不完成的加载会让 refreshInFlight 永久为 true，
     /// didCollect 与定时器刷新全部被合并锁挡掉——popover 冻结在旧快照，
     /// 而 quota 客户端独立轮询照常更新，形成"额度在动、来源不动"。
-    private var refreshStartedAt: CFAbsoluteTime = 0
     private static let refreshWatchdogSeconds: CFAbsoluteTime = 10
-    /// Monotonic request identity. A watchdog retry may overlap the request it
-    /// superseded; only the newest generation is allowed to publish or clear
-    /// the in-flight state.
-    private var refreshGeneration: UInt64 = 0
     private var popoverVisible = false
     private var dashboardVisible = false
     private var foreground = false
@@ -185,25 +221,15 @@ final class AppState: ObservableObject {
     /// `manual` marks user-initiated refreshes (toolbar button) so the
     /// spinner shows only for those.
     func refresh(manual: Bool = false) {
-        if refreshInFlight {
-            // Watchdog: 卡住超过阈值的在途加载不阻塞后续刷新。旧加载若
-            // 最终完成，其 generation guard 会同时拦住 publish 与 finish，
-            // 不能覆盖新一轮快照或清掉新一轮的 in-flight 状态。
-            if CFAbsoluteTimeGetCurrent() - refreshStartedAt > Self.refreshWatchdogSeconds {
-                refreshInFlight = false
-                if DebugLog.enabled {
-                    NSLog("[ToastMonitor][refresh] watchdog reset inFlight")
-                }
-            } else {
-                if manual { pendingManual = true }
-                pendingRefresh = true
-                return
-            }
+        guard let request = refreshCoordinator.request(
+            manual: manual,
+            now: CFAbsoluteTimeGetCurrent(),
+            watchdogSeconds: Self.refreshWatchdogSeconds
+        ) else { return }
+        let generation = request.generation
+        if request.restartedByWatchdog, DebugLog.enabled {
+            NSLog("[ToastMonitor][refresh] watchdog reset inFlight")
         }
-        refreshInFlight = true
-        refreshStartedAt = CFAbsoluteTimeGetCurrent()
-        refreshGeneration &+= 1
-        let generation = refreshGeneration
         if manual { manualRefreshing = true }
         if DebugLog.enabled {
             NSLog("[ToastMonitor][refresh] enter fg=%d popover=%d dashboard=%d",
@@ -212,7 +238,7 @@ final class AppState: ObservableObject {
 
         let publish: (UsageQueryService.LightSnapshot, UsageQueryService.Snapshot?) -> Void = {
             [weak self] light, complete in
-            guard let self, self.refreshGeneration == generation else { return }
+            guard let self, self.refreshCoordinator.generation == generation else { return }
             var next = self.state
             next.today = light.today
             next.week = light.week
@@ -272,15 +298,10 @@ final class AppState: ObservableObject {
     }
 
     private func finishRefresh(generation: UInt64) {
-        guard generation == refreshGeneration else { return }
-        refreshInFlight = false
+        guard let rerun = refreshCoordinator.finish(generation: generation) else { return }
         manualRefreshing = false
-        let rerunManual = pendingManual
-        let rerun = pendingRefresh
-        pendingManual = false
-        pendingRefresh = false
-        if rerunManual || rerun {
-            refresh(manual: rerunManual)
+        if rerun.manual || rerun.requested {
+            refresh(manual: rerun.manual)
         }
     }
 }

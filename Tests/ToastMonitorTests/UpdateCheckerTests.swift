@@ -3,6 +3,12 @@ import XCTest
 @testable import ToastMonitor
 
 final class UpdateCheckerTests: XCTestCase {
+    func testTeamIdentifierParsingIsStrict() {
+        XCTAssertEqual(UpdateManager.parseTeamIdentifier("Executable=x\nTeamIdentifier=ABCDE12345\n"),
+                       "ABCDE12345")
+        XCTAssertNil(UpdateManager.parseTeamIdentifier("TeamIdentifier=not-a-team\n"))
+        XCTAssertNil(UpdateManager.parseTeamIdentifier("Identifier=com.example\n"))
+    }
 
     func testSemanticVersionParsing() {
         XCTAssertEqual(UpdateChecker.semanticVersion("1.0"), [1, 0])

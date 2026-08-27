@@ -169,14 +169,25 @@ if [[ "${CI:-}" == "true" ]]; then
 elif [[ "$SKIP_INSTALL" == "1" ]]; then
     echo "skipping install (TM_SKIP_INSTALL=1)"
 else
+    TARGET_EXECUTABLE="$INSTALL_APP/Contents/MacOS/ToastMonitor"
+    RUNNING_PIDS=()
+    while read -r pid command; do
+        if [[ "$command" == "$TARGET_EXECUTABLE" ]]; then
+            RUNNING_PIDS+=("$pid")
+        fi
+    done < <(ps -axo pid=,comm=)
     WAS_RUNNING=0
-    if pgrep -x ToastMonitor >/dev/null; then
+    if [[ "${#RUNNING_PIDS[@]}" -gt 0 ]]; then
         WAS_RUNNING=1
         echo "ToastMonitor is running; quitting before install"
-        pkill -x ToastMonitor || true
-        # pkill returns before the process is actually gone; wait for it.
+        kill "${RUNNING_PIDS[@]}" || true
+        # SIGTERM returns before the target bundle's process is actually gone.
         for _ in 1 2 3 4 5; do
-            pgrep -x ToastMonitor >/dev/null || break
+            STILL_RUNNING=0
+            for pid in "${RUNNING_PIDS[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then STILL_RUNNING=1; fi
+            done
+            [[ "$STILL_RUNNING" == "0" ]] && break
             sleep 1
         done
     fi

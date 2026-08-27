@@ -202,12 +202,13 @@ final class UpdateManager: ObservableObject {
 
         // Re-verify identity beyond the archive hash: signature, bundle id and
         // the manifest version must all match before anything is replaced.
-        guard Self.verifyCodesign(candidate) else {
+        guard let runningTeamID = Self.teamIdentifier(Bundle.main.bundleURL),
+              Self.verifyCodesign(candidate, expectedTeamID: runningTeamID) else {
             throw UpdateChecker.CheckError.invalidSignature
         }
         let candidateBundleID = Bundle(path: candidate.path)?.bundleIdentifier
         let runningBundleID = Bundle.main.bundleIdentifier
-        guard candidateBundleID == runningBundleID, let runningBundleID else {
+        guard let runningBundleID, candidateBundleID == runningBundleID else {
             throw UpdateChecker.CheckError.invalidSignature
         }
         let candidateVersion = Bundle(path: candidate.path)?
@@ -233,8 +234,9 @@ final class UpdateManager: ObservableObject {
         # gone so the old and new instances never overlap (double collection,
         # DB contention). If it lingers (terminate blocked), proceed anyway —
         # swapping files under a running process is safe on macOS.
+        old_pid="$3"
         for _ in $(seq 1 40); do
-            if ! pgrep -x ToastMonitor >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$old_pid" >/dev/null 2>&1; then break; fi
             sleep 0.5
         done
         target="$1"
@@ -258,16 +260,18 @@ final class UpdateManager: ObservableObject {
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
         let installer = Process()
         installer.executableURL = URL(fileURLWithPath: "/bin/bash")
-        installer.arguments = [scriptURL.path, target.path, candidate.path]
+        installer.arguments = [scriptURL.path, target.path, candidate.path,
+                               String(ProcessInfo.processInfo.processIdentifier)]
         // Detached on purpose: waiting here would deadlock — the script waits
         // for this process to exit, which only happens after we return.
         try installer.run()
     }
 
-    private static func verifyCodesign(_ app: URL) -> Bool {
+    private static func verifyCodesign(_ app: URL, expectedTeamID: String) -> Bool {
         let verify = Process()
         verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        verify.arguments = ["--verify", "--deep", "--strict", app.path]
+        let requirement = "=designated => anchor apple generic and certificate leaf[subject.OU] = \"\(expectedTeamID)\""
+        verify.arguments = ["--verify", "--deep", "--strict", "--requirement", requirement, app.path]
         do {
             try verify.run()
             verify.waitUntilExit()
@@ -275,6 +279,36 @@ final class UpdateManager: ObservableObject {
         } catch {
             return false
         }
+    }
+
+    private static func teamIdentifier(_ app: URL) -> String? {
+        let inspect = Process()
+        inspect.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        inspect.arguments = ["--display", "--verbose=4", app.path]
+        let pipe = Pipe()
+        inspect.standardError = pipe
+        inspect.standardOutput = pipe
+        do {
+            try inspect.run()
+            inspect.waitUntilExit()
+            guard inspect.terminationStatus == 0 else { return nil }
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                                encoding: .utf8) ?? ""
+            return parseTeamIdentifier(output)
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated static func parseTeamIdentifier(_ output: String) -> String? {
+        let prefix = "TeamIdentifier="
+        guard let line = output.split(whereSeparator: \.isNewline)
+            .first(where: { $0.hasPrefix(prefix) }) else { return nil }
+        let teamID = line.dropFirst(prefix.count)
+        guard teamID.count == 10,
+              teamID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) })
+        else { return nil }
+        return String(teamID)
     }
 }
 

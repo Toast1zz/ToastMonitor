@@ -24,6 +24,7 @@ struct SettingsView: View {
     /// Codex billing draft: "subscription" (ChatGPT/Codex plan covers the
     /// usage) or "api" (per-token API spend). Persisted via Database setting.
     @State private var codexBilling: String = "api"
+    private let formLabelWidth: CGFloat = 150
 
     var body: some View {
         ScrollView {
@@ -33,124 +34,91 @@ struct SettingsView: View {
                     .padding(.bottom, 12)
                 VStack(alignment: .leading, spacing: 12) {
                     SectionTitle("Data Sources")
-
-                    ForEach(tools) { tool in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 10) {
-                                Image(systemName: tool.symbol)
-                                    .font(TMType.regular(12))
-                                    .foregroundStyle(tool.color)
-                                    .frame(width: 18)
-                                Text(tool.displayName)
-                                    .font(TMType.regular(12.5))
-                                    .frame(width: 100, alignment: .leading)
+                    Divider()
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                        ForEach(tools) { tool in
+                            GridRow {
+                                HStack(spacing: 10) {
+                                    Image(systemName: tool.symbol)
+                                        .font(TMType.regular(12))
+                                        .foregroundStyle(tool.color)
+                                        .frame(width: 18)
+                                    Text(tool.displayName)
+                                        .font(TMType.regular(12.5))
+                                }
+                                .frame(width: formLabelWidth, alignment: .leading)
                                 if tool.supportsRemoteSource {
-                                    Picker("Source", selection: Binding(
-                                        get: { sources[tool] ?? (tool.defaultSource == "remote") },
-                                        set: { newValue in
-                                        // P0-4: persist immediately (off main thread), show effect.
-                                        let gen = (sourceGeneration[tool] ?? 0) + 1
-                                        sourceGeneration[tool] = gen
-                                        DispatchQueue.global(qos: .userInitiated).async {
-                                            let ok = tool.setSource(remote: newValue)
-                                            DispatchQueue.main.async {
-                                                // Generation guard: a stale write's
-                                                // completion must not overwrite the
-                                                // feedback of a newer one.
-                                                guard sourceGeneration[tool] == gen else { return }
-                                                if ok {
-                                                    sources[tool] = newValue
-                                                    effectiveSources[tool] = newValue
-                                                    sourceSaved[tool] = true
-                                                    sourceFailed[tool] = nil
-                                                } else {
-                                                    // Keep the picker aligned with the
-                                                    // effective persisted value after a
-                                                    // failed write.
-                                                    sources[tool] = tool.sourceIsRemote
-                                                    effectiveSources[tool] = tool.sourceIsRemote
-                                                    sourceFailed[tool] = true
-                                                    sourceSaved[tool] = nil
-                                                }
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                                    if sourceSaved[tool] != nil { sourceSaved[tool] = nil }
-                                                    if sourceFailed[tool] != nil { sourceFailed[tool] = nil }
-                                                }
-                                            }
-                                        }
-                                        }
-                                    )) {
-                                        Text("Local (Mac)").tag(false)
-                                        Text("Remote (VPS)").tag(true)
+                                    Picker("Source", selection: sourceBinding(for: tool)) {
+                                        Text("Local").tag(false)
+                                        Text("Remote").tag(true)
                                     }
-                                    .pickerStyle(.segmented)
+                                    .pickerStyle(.menu)
                                     .labelsHidden()
-                                    .frame(width: 200)
+                                    .fixedSize()
+                                    .controlSize(.small)
+                                    .accessibilityLabel("\(tool.displayName) source")
                                 } else {
                                     Text("Local only")
                                         .font(TMType.regular(TMType.caption))
                                         .foregroundStyle(TMDesign.quiet)
-                                        .frame(width: 200, alignment: .leading)
+                                        .fixedSize()
                                 }
-                                Spacer()
-                                // Actual effective value, not the draft.
-                                // UI-8: 走缓存，body 渲染不查 DB。
-                                Text((effectiveSources[tool] ?? (tool.defaultSource == "remote"))
-                                     ? "Reads VPS feed" : "Reads local logs")
-                                    .font(TMType.regular(TMType.micro))
-                                    .foregroundStyle(TMDesign.quiet)
-                                if sourceSaved[tool] == true {
-                                    Text("Saved ✓")
-                                        .font(TMType.regular(TMType.micro))
-                                        .foregroundStyle(TMDesign.accent)
+                                ZStack {
+                                    if sourceSaved[tool] == true {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(TMDesign.accent)
+                                    } else if sourceFailed[tool] == true {
+                                        Image(systemName: "exclamationmark.triangle")
+                                            .foregroundStyle(TMDesign.danger)
+                                    } else {
+                                        Color.clear
+                                    }
                                 }
-                                if sourceFailed[tool] == true {
-                                    Text("Save failed")
-                                        .font(TMType.regular(TMType.micro))
-                                        .foregroundStyle(TMDesign.danger)
-                                }
+                                .font(TMType.regular(TMType.micro))
+                                .frame(width: 16)
                             }
-                            .padding(.vertical, 2)
 
                             if tool == .codex {
-                                HStack(spacing: 10) {
+                                GridRow {
                                     Text("Billing")
                                         .font(TMType.regular(TMType.caption))
-                                        .foregroundStyle(TMDesign.quiet)
-                                        .frame(width: 100, alignment: .leading)
+                                        .padding(.leading, 28)
+                                        .frame(width: formLabelWidth, alignment: .leading)
                                     Picker("Codex billing", selection: $codexBilling) {
-                                        Text("ChatGPT / Codex subscription").tag("subscription")
-                                        Text("API usage (per-token)").tag("api")
+                                        Text("Subscription").tag("subscription")
+                                        Text("API").tag("api")
                                     }
-                                    .pickerStyle(.segmented)
+                                    .pickerStyle(.menu)
                                     .labelsHidden()
-                                    .frame(width: 320)
-                                    Text(codexBilling == "subscription"
-                                         ? "Codex cost covered by the subscription"
-                                         : "Codex usage billed as API spend")
-                                        .font(TMType.regular(TMType.micro))
-                                        .foregroundStyle(TMDesign.quiet)
-                                }
-                                .padding(.leading, 28)
-                                .onChange(of: codexBilling) { _, newValue in
-                                    let v = newValue
-                                    DispatchQueue.global(qos: .userInitiated).async {
-                                        _ = Database.shared.setSetting("codex_billing_mode", v)
-                                    }
+                                    .fixedSize()
+                                    .controlSize(.small)
+                                    .help(codexBilling == "subscription"
+                                          ? "Treat Codex costs as covered by a ChatGPT/Codex subscription"
+                                          : "Count Codex costs as per-token API spend")
+                                    Color.clear.frame(width: 16)
                                 }
                             }
                         }
                     }
+                    .onChange(of: codexBilling) { _, newValue in
+                        let value = newValue
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            _ = Database.shared.setSetting("codex_billing_mode", value)
+                        }
+                    }
                 }
-                .tmPanelSurface()
+                .padding(.vertical, 4)
+                .frame(maxWidth: 520, alignment: .leading)
 
-                UsagePeriodSettingsSection()
-                    .tmPanelSurface()
+                Divider()
+                UsagePeriodSettingsSection(reservesWeekStartSpace: false)
+                Divider()
 
                 // Operational status stays on this page, but uses one
                 // compact list instead of a second nested page or one card
                 // per collector.
                 SourcesView(embedded: true, localSources: effectiveSources)
+                Divider()
 
                 // 远程 Feed
                 VStack(alignment: .leading, spacing: 10) {
@@ -216,10 +184,13 @@ struct SettingsView: View {
                         }
                     }
                 }
-                .tmPanelSurface()
+                .padding(.vertical, 4)
+                Divider()
 
                 DataMaintenanceSection()
             }
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .top)
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
         }
@@ -236,6 +207,38 @@ struct SettingsView: View {
             feedError = nil
             feedDisabled = false
         }
+    }
+
+    private func sourceBinding(for tool: ToolKind) -> Binding<Bool> {
+        Binding(
+            get: { sources[tool] ?? (tool.defaultSource == "remote") },
+            set: { newValue in
+                let generation = (sourceGeneration[tool] ?? 0) + 1
+                sourceGeneration[tool] = generation
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let ok = tool.setSource(remote: newValue)
+                    DispatchQueue.main.async {
+                        guard sourceGeneration[tool] == generation else { return }
+                        if ok {
+                            sources[tool] = newValue
+                            effectiveSources[tool] = newValue
+                            sourceSaved[tool] = true
+                            sourceFailed[tool] = nil
+                        } else {
+                            let persisted = tool.sourceIsRemote
+                            sources[tool] = persisted
+                            effectiveSources[tool] = persisted
+                            sourceFailed[tool] = true
+                            sourceSaved[tool] = nil
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            sourceSaved[tool] = nil
+                            sourceFailed[tool] = nil
+                        }
+                    }
+                }
+            }
+        )
     }
 
     /// Local validation mirroring HermesRemoteClient.provision, so the Save
@@ -452,7 +455,7 @@ struct SubscriptionSettingsSection: View {
                     Text("Monthly").tag("monthly")
                     Text("Yearly").tag("yearly")
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 TextField("Price per period (USD)", text: $price)
             }
             .formStyle(.grouped)
@@ -564,12 +567,25 @@ private struct DataMaintenanceSection: View {
     @State private var isWorking = false
     @State private var confirmsRepair = false
     @State private var confirmsRestore = false
+    /// Every managed snapshot (weekly automatic + pre-rebuild + pre-clear +
+    /// manual export leftovers do NOT show here — export goes to a
+    /// user-chosen path outside the managed directory). Newest first, same
+    /// ordering DataMaintenance.pruneBackups uses to decide what survives.
+    @State private var backups: [URL] = []
+    @State private var pendingRestoreBackup: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 SectionTitle("Data Maintenance")
                 Spacer()
+                Button {
+                    exportDatabase()
+                } label: {
+                    Label("Export Database", systemImage: "externaldrive.badge.plus")
+                }
+                .font(TMType.regular(11))
+                .disabled(isWorking)
                 Button("Preview local rebuild") { loadPreview() }
                     .font(TMType.regular(11))
                     .disabled(isWorking)
@@ -598,8 +614,12 @@ private struct DataMaintenanceSection: View {
                     .foregroundStyle(TMDesign.quiet)
                     .textSelection(.enabled)
             }
+
+            Divider().opacity(0.5)
+            backupsList
         }
-        .tmPanelSurface()
+        .padding(.vertical, 4)
+        .onAppear { loadBackups() }
         .confirmationDialog("Rebuild local usage data?", isPresented: $confirmsRepair) {
             Button("Back up & rebuild", role: .destructive) { repair() }
             Button("Cancel", role: .cancel) {}
@@ -609,6 +629,122 @@ private struct DataMaintenanceSection: View {
         .confirmationDialog("Restore pre-repair backup?", isPresented: $confirmsRestore) {
             Button("Restore backup", role: .destructive) { restore() }
             Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Restore this backup?", isPresented: Binding(
+            get: { pendingRestoreBackup != nil },
+            set: { if !$0 { pendingRestoreBackup = nil } })) {
+                Button("Restore backup", role: .destructive) { restoreManaged() }
+                Button("Cancel", role: .cancel) { pendingRestoreBackup = nil }
+            } message: {
+                Text("This replaces all current usage data, subscriptions and settings with the snapshot's contents.")
+            }
+    }
+
+    private func exportDatabase() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "ToastMonitor-backup-\(Int64(Date().timeIntervalSince1970)).db"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        isWorking = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = Database.shared.backup(to: url.path)
+            DispatchQueue.main.async {
+                message = ok ? "Database exported: \(url.path)" : "Database export failed"
+                isWorking = false
+            }
+        }
+    }
+
+    /// A backup is created automatically once a week (idle weeks included)
+    /// plus before any repair/clear operation; the newest 7 are kept. Listed
+    /// here so "the app has been quietly backing this up" is visible and
+    /// any of them — not just the current session's pre-repair one — can be
+    /// restored with one click, per the "只差编排" gap noted when this was
+    /// scoped: the backup/restore/integrity-check machinery already existed
+    /// end to end, it just had no way for a user to see or reach it.
+    private var backupsList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Automatic Backups")
+                    .font(.system(size: TMType.caption, weight: .semibold))
+                    .foregroundStyle(TMDesign.quiet)
+                Spacer()
+                Text("weekly, keeps newest 7")
+                    .font(TMType.regular(TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+            }
+            if backups.isEmpty {
+                Text("No backups yet — the first automatic one is created within a week of first use.")
+                    .font(TMType.regular(TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+            } else {
+                ForEach(backups, id: \.self) { url in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(Self.label(for: url))
+                                .font(TMType.regular(TMType.caption))
+                            Text(Self.dateAndSize(for: url))
+                                .font(TMType.regular(TMType.micro))
+                                .tmMonospacedDigit()
+                                .foregroundStyle(TMDesign.quiet)
+                        }
+                        Spacer()
+                        Button("Restore") { pendingRestoreBackup = url }
+                            .font(TMType.regular(11))
+                            .disabled(isWorking)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    /// The trailing "-yyyyMMdd-HHmmss.db" suffix is redundant with the date
+    /// line right below it — only the label (weekly / pre-rebuild / pre-clear
+    /// / manual) is worth a row of its own. Sliced by fixed length rather
+    /// than searching for the next "-", since a label can itself contain a
+    /// hyphen (createBackup's sanitizer allows "-" through unchanged, e.g.
+    /// "pre-rebuild") — the timestamp suffix's length is deterministic
+    /// ("-yyyyMMdd-HHmmss" is always exactly 16 characters) while the
+    /// label's is not.
+    private static func label(for url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        let prefix = "toastmonitor-"
+        guard name.hasPrefix(prefix) else { return name }
+        let withoutPrefix = name.dropFirst(prefix.count)
+        guard withoutPrefix.count > 16 else { return String(withoutPrefix) }
+        return String(withoutPrefix.dropLast(16))
+    }
+
+    private static func dateAndSize(for url: URL) -> String {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let date = values?.contentModificationDate
+            .map { Format.dateTime(Int64($0.timeIntervalSince1970)) } ?? "—"
+        let size = values?.fileSize.map { Format.bytes(Int64($0)) } ?? "—"
+        return "\(date) · \(size)"
+    }
+
+    private func loadBackups() {
+        DispatchQueue.global(qos: .utility).async {
+            let urls = DataMaintenance.availableBackups()
+            DispatchQueue.main.async { backups = urls }
+        }
+    }
+
+    private func restoreManaged() {
+        guard let target = pendingRestoreBackup else { return }
+        pendingRestoreBackup = nil
+        isWorking = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = DataMaintenance.restore(backupPath: target.path)
+            DispatchQueue.main.async {
+                message = ok ? "Restored: \(target.lastPathComponent)" : "Restore failed; original data retained"
+                isWorking = false
+                if ok {
+                    app.refresh()
+                    refreshPreviewQuietly()
+                }
+            }
         }
     }
 
@@ -633,9 +769,17 @@ private struct DataMaintenanceSection: View {
                 DispatchQueue.main.async {
                     receipt = value
                     message = "Backup: \(value.backupPath)"
+                    // Reset here rather than relying on loadPreview()'s side
+                    // effect: loadPreview() sets isWorking = true then wipes
+                    // `message` to nil before its own async read completes,
+                    // which cleared this success message before it could be
+                    // seen and left the spinner stuck if the scan callback
+                    // below never fired.
+                    isWorking = false
+                    loadBackups()
                     CollectorEngine.shared.scheduleScan(force: true) { _ in
                         app.refresh()
-                        loadPreview()
+                        refreshPreviewQuietly()
                     }
                 }
             } catch {
@@ -644,6 +788,16 @@ private struct DataMaintenanceSection: View {
                     isWorking = false
                 }
             }
+        }
+    }
+
+    /// Reloads the preview counts without touching `message` or `isWorking`
+    /// — used after repair/restore so the outcome message just set by the
+    /// caller stays visible instead of being cleared by loadPreview()'s reset.
+    private func refreshPreviewQuietly() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let value = DataMaintenance.preview()
+            DispatchQueue.main.async { preview = value }
         }
     }
 
@@ -657,7 +811,7 @@ private struct DataMaintenanceSection: View {
                 isWorking = false
                 if ok {
                     app.refresh()
-                    loadPreview()
+                    refreshPreviewQuietly()
                 }
             }
         }
