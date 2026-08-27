@@ -64,7 +64,13 @@ enum ClaudeCodeParser {
         // Either tree existing is enough to proceed — a Cowork-only user
         // (Claude Desktop, never the standalone CLI) has no ~/.claude/projects
         // at all, and must not be short-circuited out of the scan.
-        guard fm.fileExists(atPath: root) || fm.fileExists(atPath: coworkLocalAgentRoot) else { return ([], []) }
+        // Concrete fixture paths are valid even when neither production tree
+        // exists. This keeps parser tests hermetic on clean CI runners while
+        // preserving the normal no-op behavior for an empty live scan.
+        guard !knownPaths.isEmpty
+            || fm.fileExists(atPath: root)
+            || fm.fileExists(atPath: coworkLocalAgentRoot)
+        else { return ([], []) }
 
         for file in knownPaths {
             guard let st = FileScanner.fileStat(file) else { continue }
