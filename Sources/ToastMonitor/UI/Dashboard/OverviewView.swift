@@ -159,10 +159,24 @@ struct OverviewView: View {
             }
             HStack(spacing: 0) {
                 TMMiniMetric(label: "Calls", value: Format.count(periodCalls), font: TMType.regular(16))
-                TMMiniMetric(label: "Actual Spend", value: Format.money(actualSpend), font: TMType.regular(16))
+                TMMiniMetric(label: actualSpendLabel, value: Format.money(actualSpend), font: TMType.regular(16))
+                    .help(actualSpendHelp)
                 TMMiniMetric(label: "API-equivalent Value", value: Format.money(apiValue), font: TMType.regular(16))
+                    .help("What these model calls would cost at official API list prices. This is not a billed amount.")
             }
         }
+    }
+
+    private var actualSpendLabel: String {
+        if period == .all { return "Actual Spend · OR recent month" }
+        return "Actual Spend"
+    }
+
+    private var actualSpendHelp: String {
+        let base = "Billed turn costs, OpenRouter account usage, and subscription amortization."
+        return period == .all
+            ? base + " OpenRouter only exposes its recent monthly window, so All Time includes that recent month rather than full history."
+            : base
     }
 
 

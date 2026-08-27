@@ -13,7 +13,21 @@ final class Database: @unchecked Sendable {
     /// Duplicate conflicts are intentionally ignored by the turns UPSERT,
     /// but prepare/step/ALTER/commit errors must never be silently committed.
     private var transactionWriteError = false
+    typealias ScanState = (size: Int64, mtime: Int64, identity: Int64, context: String?)
+    private var scanStatesCache: [String: ScanState]?
     private(set) var dbPath: String = ""
+    /// In-memory mirror of the `settings` key/value table. A UI-thread read
+    /// (a Toggle's Binding.get evaluated every body pass, a stale check on
+    /// window resign, an onAppear batch) would otherwise acquire `lock` and
+    /// run a SQLite query — contending with whatever long write (a collector
+    /// scan, a repair) currently holds that lock. Reads go through this cache
+    /// instead and never touch `lock` or SQLite. Populated once per open()/
+    /// restore() (see loadSettingsCache, called from openLocked); every write
+    /// through setSetting keeps it in sync. bumpDataVersion and the
+    /// dataVersionKey()/diagnosticsSummary() readers intentionally bypass this
+    /// cache — they touch `data_version`/key names directly via SQL and are
+    /// never read back through `setting()`.
+    private let settingsCache = SettingsCacheStore()
 
     private init() {}
 
@@ -22,6 +36,13 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard db == nil else { return }
 
+        // Hermetic screenshot/benchmark hooks can point the singleton at a
+        // throwaway store without reading or mutating the user's real data.
+        if let override = ProcessInfo.processInfo.environment["TM_DATABASE_PATH"],
+           !override.isEmpty {
+            openLocked(override)
+            return
+        }
         let fm = FileManager.default
         let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("ToastMonitor", isDirectory: true)
@@ -54,6 +75,7 @@ final class Database: @unchecked Sendable {
     }
 
     private func openLocked(_ path: String) {
+        scanStatesCache = nil
         let fm = FileManager.default
         let dir = (path as NSString).deletingLastPathComponent
         // Create with the private mode up front (attributesForDirectory) so
@@ -81,6 +103,7 @@ final class Database: @unchecked Sendable {
         migrate()
         ensureBaseTables()
         migrateDropLegacyTurnsUnique()
+        loadSettingsCache()
         // OpenCode upstream stored `model` as a JSON object
         // ({"id":...,"providerID":...}) in some versions; normalize any
         // already-imported rows once (idempotent, no-op afterwards).
@@ -841,20 +864,32 @@ final class Database: @unchecked Sendable {
         return true
     }
 
-    func scanState(_ source: String) -> (size: Int64, mtime: Int64, identity: Int64, context: String?) {
+    func scanStates() -> [String: ScanState] {
         lock.lock(); defer { lock.unlock() }
-        guard let db else { return (0, 0, 0, nil) }
+        return scanStatesLocked()
+    }
+
+    private func scanStatesLocked() -> [String: ScanState] {
+        if let scanStatesCache { return scanStatesCache }
+        guard let db else { return [:] }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT size, mtime, identity, context FROM scan_state WHERE source=?;", -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0, nil) }
-        sqlite3_bind_text(stmt, 1, (source as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        var out: (Int64, Int64, Int64, String?) = (0, 0, 0, nil)
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            out = (sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1),
-                   sqlite3_column_int64(stmt, 2),
-                   sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 3)))
+        guard sqlite3_prepare_v2(db, "SELECT source, size, mtime, identity, context FROM scan_state;", -1, &stmt, nil) == SQLITE_OK else { return [:] }
+        var out: [String: ScanState] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let source = String(cString: sqlite3_column_text(stmt, 0))
+            out[source] = (sqlite3_column_int64(stmt, 1), sqlite3_column_int64(stmt, 2),
+                           sqlite3_column_int64(stmt, 3),
+                           sqlite3_column_type(stmt, 4) == SQLITE_NULL
+                               ? nil : String(cString: sqlite3_column_text(stmt, 4)))
         }
         sqlite3_finalize(stmt)
+        scanStatesCache = out
         return out
+    }
+
+    func scanState(_ source: String) -> ScanState {
+        lock.lock(); defer { lock.unlock() }
+        return scanStatesLocked()[source] ?? (0, 0, 0, nil)
     }
 
     @discardableResult
@@ -873,6 +908,7 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
+        scanStatesCache = nil
         return true
     }
 
@@ -918,18 +954,31 @@ final class Database: @unchecked Sendable {
 
     // MARK: - Settings
 
-    func setting(_ key: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        guard let db else { return nil }
+    /// Reads the full settings table into the in-memory cache once, at the
+    /// end of openLocked (fresh install and restore alike). Caller must
+    /// already hold `lock` (openLocked's caller does) and `db` must be open.
+    /// A NULL `v` row is skipped rather than cached as a present empty
+    /// value, matching the old direct-SQL reader's behavior: `sqlite3_
+    /// column_text` on a NULL column yields no C string, so the old code
+    /// left `out` as nil for that row.
+    private func loadSettingsCache() {
+        guard let db else { return }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT v FROM settings WHERE k=?;", -1, &stmt, nil) == SQLITE_OK else { return nil }
-        sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        var out: String?
-        if sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) {
-            out = String(cString: c)
+        guard sqlite3_prepare_v2(db, "SELECT k, v FROM settings WHERE v IS NOT NULL;", -1, &stmt, nil) == SQLITE_OK else { return }
+        var pairs: [(String, String)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let kc = sqlite3_column_text(stmt, 0), let vc = sqlite3_column_text(stmt, 1) else { continue }
+            pairs.append((String(cString: kc), String(cString: vc)))
         }
         sqlite3_finalize(stmt)
-        return out
+        settingsCache.load(pairs)
+    }
+
+    /// Cache-only read — never touches `lock` or SQLite (see settingsCache's
+    /// doc comment). Safe to call from any thread, including the main actor,
+    /// without risking contention with a long-held write lock.
+    func setting(_ key: String) -> String? {
+        settingsCache.get(key)
     }
 
     @discardableResult
@@ -949,6 +998,9 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
+        // Only mirror the write once it is durable — a failed write must
+        // leave the cache matching the last value actually committed.
+        settingsCache.set(key, value)
         return true
     }
 
@@ -1455,6 +1507,7 @@ final class Database: @unchecked Sendable {
                    ORDER BY s.ts DESC
                  ) AS day_rank
           FROM opencodego_snapshots s
+          WHERE s.ts >= ?
         )
         SELECT ts, rolling_pct, rolling_reset, weekly_pct, weekly_reset,
                monthly_pct, monthly_reset
@@ -1473,6 +1526,7 @@ final class Database: @unchecked Sendable {
         ORDER BY ts;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
+        sqlite3_bind_int64(stmt, 1, Int64(Date().timeIntervalSince1970) - 400 * 86400)
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(OGSnapshot(
                 ts: sqlite3_column_int64(stmt, 0),
@@ -1643,7 +1697,7 @@ final class Database: @unchecked Sendable {
         var stmt: OpaquePointer?
         let sql = """
         SELECT CAST(strftime('%Y%m%d', ts, 'unixepoch', 'localtime') AS INTEGER) AS day,
-               COALESCE(model, '(未知)') AS model,
+               COALESCE(NULLIF(model, ''), '(unknown)') AS model,
                SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), COUNT(*)
         FROM turns WHERE ts >= ? GROUP BY day, model ORDER BY day;
         """
@@ -1664,29 +1718,25 @@ final class Database: @unchecked Sendable {
     }
 
     /// Cost breakdown by quality (spec §5.2): estimated vs actual variable
-    /// spend, plus coverage (known / total billable turns). Hermes is
-    /// excluded (its traffic is billed inside OCG/OR/Codex plans).
-    func costBreakdown(from: Int64, to: Int64) -> (estimated: Double, actual: Double, knownCount: Int, totalCount: Int) {
+    /// spend. Hermes is excluded because its traffic is billed inside
+    /// OCG/OpenRouter/Codex plans.
+    func costBreakdown(from: Int64, to: Int64) -> (estimated: Double, actual: Double) {
         lock.lock(); defer { lock.unlock() }
-        guard let db else { return (0, 0, 0, 0) }
+        guard let db else { return (0, 0) }
         var stmt: OpaquePointer?
         let sql = """
         SELECT
           COALESCE(SUM(CASE WHEN cost_quality='estimated' THEN cost ELSE 0 END), 0),
-          COALESCE(SUM(CASE WHEN cost_quality='actual' THEN cost ELSE 0 END), 0),
-          SUM(CASE WHEN cost_quality != 'unknown' THEN 1 ELSE 0 END),
-          COUNT(*)
+          COALESCE(SUM(CASE WHEN cost_quality='actual' THEN cost ELSE 0 END), 0)
         FROM turns WHERE tool != 'hermes' AND ts BETWEEN ? AND ?;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0, 0) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0) }
         sqlite3_bind_int64(stmt, 1, from)
         sqlite3_bind_int64(stmt, 2, to)
-        var out = (0.0, 0.0, 0, 0)
+        var out = (0.0, 0.0)
         if sqlite3_step(stmt) == SQLITE_ROW {
             out.0 = sqlite3_column_double(stmt, 0)
             out.1 = sqlite3_column_double(stmt, 1)
-            out.2 = Int(sqlite3_column_int64(stmt, 2))
-            out.3 = Int(sqlite3_column_int64(stmt, 3))
         }
         sqlite3_finalize(stmt)
         return out
@@ -1694,15 +1744,28 @@ final class Database: @unchecked Sendable {
 
     /// API 价值：全部工具（含 hermes）的所有 turns 按模型官方单价重估。
     /// 与实际账单无关——回答「这些 token 按 API 价值多少钱」。
+    ///
+    /// Pricing.estimate is a per-token linear function of (input, output,
+    /// cacheRead, cacheWrite) that depends only on `model` — summing tokens
+    /// per model at the SQL level and pricing once per model yields the same
+    /// total as pricing every row individually, but turns an O(rows) scan
+    /// (hundreds of thousands of rows for the "All Time" period) into
+    /// O(distinct models) (typically a few dozen).
     func apiValue(from: Int64, to: Int64, tool: String? = nil) -> Double {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return 0 }
         var stmt: OpaquePointer?
         let sql: String
         if tool != nil {
-            sql = "SELECT model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE ts BETWEEN ? AND ? AND tool = ?;"
+            sql = """
+            SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write)
+            FROM turns WHERE ts BETWEEN ? AND ? AND tool = ? GROUP BY model;
+            """
         } else {
-            sql = "SELECT model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE ts BETWEEN ? AND ?;"
+            sql = """
+            SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write)
+            FROM turns WHERE ts BETWEEN ? AND ? GROUP BY model;
+            """
         }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
         sqlite3_bind_int64(stmt, 1, from)
@@ -1816,7 +1879,10 @@ final class Database: @unchecked Sendable {
             }
             // Deletes do not grow MAX(id); bump the version stamp so the
             // snapshot cache invalidates after a local rebuild (DB-1).
-            if ok { bumpDataVersion() }
+            if ok {
+                scanStatesCache = nil
+                bumpDataVersion()
+            }
             return ok
         }
     }
@@ -1857,6 +1923,7 @@ final class Database: @unchecked Sendable {
         // Subscriptions were wiped: mirror the subscription write paths and
         // re-notify the UI.
         bumpDataVersion()
+        scanStatesCache = nil
         NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
     }
@@ -2085,3 +2152,31 @@ final class Database: @unchecked Sendable {
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+/// Backing store for Database.settingsCache: a plain dictionary behind its
+/// own lock, deliberately separate from Database's own `lock` (the SQLite
+/// write mutex) so a settings read can never block on — or be blocked by —
+/// a long-running write transaction.
+private final class SettingsCacheStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: String] = [:]
+
+    func load(_ pairs: [(String, String)]) {
+        lock.lock(); defer { lock.unlock() }
+        values = Dictionary(pairs, uniquingKeysWith: { _, new in new })
+    }
+
+    func get(_ key: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return values[key]
+    }
+
+    func set(_ key: String, _ value: String?) {
+        lock.lock(); defer { lock.unlock() }
+        if let value {
+            values[key] = value
+        } else {
+            values.removeValue(forKey: key)
+        }
+    }
+}

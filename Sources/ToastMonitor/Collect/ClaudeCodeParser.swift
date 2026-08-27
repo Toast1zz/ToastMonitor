@@ -56,7 +56,7 @@ enum ClaudeCodeParser {
     }
 
     /// Returns (turns, sessions) parsed from all changed files.
-    static func scan(knownPaths: [String]) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(knownPaths: [String], database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.claude.sourceIsRemote else { return ([], []) } // source = VPS feed
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
@@ -68,7 +68,7 @@ enum ClaudeCodeParser {
 
         for file in knownPaths {
             guard let st = FileScanner.fileStat(file) else { continue }
-            let prev = Database.shared.scanState(file)
+            let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
 
             // Truncation can preserve an inode; a shorter file is still a
@@ -94,9 +94,9 @@ enum ClaudeCodeParser {
                 // Still record the offset so we don't re-read a file whose new
                 // content is only a partial line.
                 let pending = st.size < prev.size || pendingRewrite
-                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime,
-                                             identity: st.identity,
-                                             context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
+                database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                      identity: st.identity,
+                                      context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
                 continue
             }
 
@@ -158,9 +158,9 @@ enum ClaudeCodeParser {
                                             project: project, model: sessionModel, created: firstTs, updated: lastTs))
             }
             let pending = st.size < prev.size
-            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime,
-                                         identity: st.identity,
-                                         context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
+            database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                  identity: st.identity,
+                                  context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
         }
         return (turns, sessions)
     }

@@ -28,6 +28,19 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(ToolKind.codex.totalTokens(input: 100, output: 20, cacheRead: 1_000), 120)
     }
 
+    func testScanStateTableCacheInvalidatesAfterWrite() {
+        XCTAssertTrue(db.setScanState("cached-source", size: 10, mtime: 20,
+                                      identity: 30, context: "first"))
+        XCTAssertEqual(db.scanStates()["cached-source"]?.size, 10)
+        XCTAssertTrue(db.setScanState("cached-source", size: 40, mtime: 50,
+                                      identity: 60, context: "second"))
+        let refreshed = db.scanState("cached-source")
+        XCTAssertEqual(refreshed.size, 40)
+        XCTAssertEqual(refreshed.mtime, 50)
+        XCTAssertEqual(refreshed.identity, 60)
+        XCTAssertEqual(refreshed.context, "second")
+    }
+
     /// P: Codex billed inside a ChatGPT/Codex subscription must not show up as
     /// API variable spend: tokens stay counted, cost is zeroed. Switching the
     /// billing mode back to API restores the cost.
@@ -61,6 +74,41 @@ final class DatabaseTests: XCTestCase {
         XCTAssertTrue(db.setSetting("codex_billing_mode", "api"))
         XCTAssertEqual(db.totals(from: now - 3600, to: now).cost, 15.5, accuracy: 0.001)
         XCTAssertEqual(db.codexBilledBySubscription(), false)
+    }
+
+    /// apiValue groups tokens by model at the SQL level before pricing
+    /// (rather than pricing every row) — this checks that the grouped total
+    /// still equals the sum of per-row Pricing.estimate results, including
+    /// multiple turns of the same model across different tools, a distinct
+    /// model that only one tool used, and cache read/write tokens.
+    func testAPIValueMatchesPerRowPricingAfterGrouping() {
+        let now = Int64(Date().timeIntervalSince1970)
+        let turns = [
+            TurnRecord(tool: .claude, sessionID: "s1", project: nil, model: "claude-sonnet-4-5",
+                      ts: now - 300, inputTokens: 1_000, outputTokens: 200,
+                      cacheRead: 500, cacheWrite: 100, cost: 0),
+            TurnRecord(tool: .opencode, sessionID: "s2", project: nil, model: "claude-sonnet-4-5",
+                      ts: now - 200, inputTokens: 2_000, outputTokens: 400,
+                      cacheRead: 0, cacheWrite: 0, cost: 0),
+            TurnRecord(tool: .codex, sessionID: "s3", project: nil, model: "gpt-5.6-sol",
+                      ts: now - 100, inputTokens: 3_000, outputTokens: 600,
+                      cacheRead: 0, cacheWrite: 0, cost: 0),
+        ]
+        XCTAssertTrue(db.insertTurns(turns))
+
+        let expected = turns.reduce(0.0) { partial, t in
+            partial + (Pricing.estimate(model: t.model, input: t.inputTokens,
+                                        output: t.outputTokens, cacheRead: t.cacheRead,
+                                        cacheWrite: t.cacheWrite) ?? 0)
+        }
+        XCTAssertEqual(db.apiValue(from: now - 3600, to: now), expected, accuracy: 0.0001)
+
+        let claudeOnly = turns.filter { $0.tool == .claude }.reduce(0.0) { partial, t in
+            partial + (Pricing.estimate(model: t.model, input: t.inputTokens,
+                                        output: t.outputTokens, cacheRead: t.cacheRead,
+                                        cacheWrite: t.cacheWrite) ?? 0)
+        }
+        XCTAssertEqual(db.apiValue(from: now - 3600, to: now, tool: "claude"), claudeOnly, accuracy: 0.0001)
     }
 
     // P0-3: 重放去重（同一事件重复导入只保留一条）——当前行为正确。

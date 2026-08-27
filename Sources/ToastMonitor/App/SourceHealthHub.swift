@@ -16,7 +16,7 @@ struct SourceHealth: Identifiable, Equatable {
     /// User-facing name used when an aggregate status needs to identify one
     /// failing source instead of reporting only a count.
     var displayName: String {
-        if tool == "remote-feed" { return "远程 Feed" }
+        if tool == "remote-feed" { return "Remote Feed" }
         return ToolKind(rawValue: tool)?.displayName ?? tool
     }
     var isStale: Bool {

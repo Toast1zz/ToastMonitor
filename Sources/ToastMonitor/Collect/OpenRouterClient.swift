@@ -41,6 +41,7 @@ final class OpenRouterClient: ObservableObject {
         var keyCount: Int = 0
         var keys: [KeyInfo] = []
         var lastOK: Int64 = 0
+        var authInvalid = false
         var error: String?
         var isLoading = false
     }
@@ -231,9 +232,11 @@ final class OpenRouterClient: ObservableObject {
            saveKeys([normalized], allowPrompt: true) {
             cachedKeys = [normalized]
             hasKey = true
+            state.authInvalid = false
+            Database.shared.setSetting("or_auth_invalid", nil)
         } else if key != nil {
             state.error = KeychainStore.lastWasInteractionNotAllowed
-                ? "钥匙串被锁定/需要解锁，API key 未保存"
+                ? "Keychain is locked; API key was not saved"
                 : "Keychain write failed — API key not saved"
             return false
         } else {
@@ -264,12 +267,14 @@ final class OpenRouterClient: ObservableObject {
         keys.append(normalized)
         guard saveKeys(keys, allowPrompt: true) else {
             state.error = KeychainStore.lastWasInteractionNotAllowed
-                ? "钥匙串被锁定/需要解锁，API key 未保存"
+                ? "Keychain is locked; API key was not saved"
                 : "Keychain write failed — API key not saved"
             return false
         }
         cachedKeys = normalizedKeys(keys)
         hasKey = true
+        state.authInvalid = false
+        Database.shared.setSetting("or_auth_invalid", nil)
         refresh()
         return true
     }
@@ -285,6 +290,7 @@ final class OpenRouterClient: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        state.authInvalid = Database.shared.setting("or_auth_invalid") == "1"
         observeForeground()
         refresh() // one initial snapshot
         updateForeground()
@@ -373,7 +379,7 @@ final class OpenRouterClient: ObservableObject {
             // unconfigured. checked right after storedKeys() so the status is
             // from the load just completed.
             cleared.error = KeychainStore.lastWasInteractionNotAllowed
-                ? "钥匙串被锁定/需要解锁"
+                ? "Keychain is locked"
                 : "API key not configured"
             state = cleared
             return
@@ -478,10 +484,16 @@ final class OpenRouterClient: ObservableObject {
         // batch; partial success resets so transient single-key errors don't
         // stall the account view.
         let rateLimited = failures.contains { $0.contains("429") || $0.contains("HTTP 5") }
+        let authInvalid = results.isEmpty && !failures.isEmpty
+            && failures.allSatisfy { $0.contains("(401)") || $0.contains("(403)") }
+        state.authInvalid = authInvalid
+        Database.shared.setSetting("or_auth_invalid", authInvalid ? "1" : nil)
         if results.isEmpty || rateLimited {
             applyBackoff()
         } else {
             backoffBase = 0
+            state.authInvalid = false
+            Database.shared.setSetting("or_auth_invalid", nil)
         }
         state.isLoading = false
         if results.isEmpty {

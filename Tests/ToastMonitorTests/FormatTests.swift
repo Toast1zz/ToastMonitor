@@ -69,12 +69,12 @@ final class FormatTests: XCTestCase {
     // MARK: - countdown
 
     func testCountdown() {
-        XCTAssertEqual(Format.countdown(0), "即将重置")
-        XCTAssertEqual(Format.countdown(-5), "即将重置")
-        XCTAssertEqual(Format.countdown(45), "0分后", "sub-minute rounds to 0分")
-        XCTAssertEqual(Format.countdown(90), "1分后")
-        XCTAssertEqual(Format.countdown(3_661), "1小时1分")
-        XCTAssertEqual(Format.countdown(86_400), "1天0小时")
-        XCTAssertEqual(Format.countdown(90_061), "1天1小时")
+        XCTAssertEqual(Format.countdown(0), "resetting soon")
+        XCTAssertEqual(Format.countdown(-5), "resetting soon")
+        XCTAssertEqual(Format.countdown(45), "in 0m", "sub-minute values round down")
+        XCTAssertEqual(Format.countdown(90), "in 1m")
+        XCTAssertEqual(Format.countdown(3_661), "1h 1m")
+        XCTAssertEqual(Format.countdown(86_400), "1d 0h")
+        XCTAssertEqual(Format.countdown(90_061), "1d 1h")
     }
 }

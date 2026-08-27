@@ -62,6 +62,7 @@ final class LaunchAtLoginSettings: ObservableObject {
 struct PopoverSettingsView: View {
     @ObservedObject private var launch = LaunchAtLoginSettings.shared
     @ObservedObject private var updates = UpdateManager.shared
+    @ObservedObject private var alerts = QuotaAlertManager.shared
     /// Optimistic local mirrors of the persisted settings so a toggle flips
     /// instantly; the database write happens off the main thread (the shared
     /// DB lock can be held by background scans, which made synchronous writes
@@ -73,7 +74,7 @@ struct PopoverSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            fixedSlice(kind: "header") {
+            fixedSlice(.header) {
                 VStack(spacing: 0) {
                     header
                     Divider().opacity(0.7)
@@ -92,15 +93,15 @@ struct PopoverSettingsView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
             .fixedSize(horizontal: false, vertical: true)
-            .reportPopoverHeight(kind: "body", page: "settings")
-            fixedSlice(kind: "footer") {
+            .reportPopoverHeight(.body, page: .settings)
+            fixedSlice(.footer) {
                 VStack(spacing: 0) {
                     Divider().opacity(0.7)
                     footerNote
                 }
             }
         }
-        .frame(width: 400)
+        .frame(width: TMLayout.popoverWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .environment(\.controlSize, .small)
         .onAppear {
@@ -114,11 +115,11 @@ struct PopoverSettingsView: View {
         }
     }
 
-    private func fixedSlice<Content: View>(kind: String,
+    private func fixedSlice<Content: View>(_ slice: PopoverHeightSlice,
                                            @ViewBuilder content: () -> Content) -> some View {
         content()
             .fixedSize(horizontal: false, vertical: true)
-            .reportPopoverHeight(kind: kind, page: "settings")
+            .reportPopoverHeight(slice, page: .settings)
     }
 
     // MARK: - Header（Tusi 风格：返回按钮 + 标题 + 版本）
@@ -166,7 +167,7 @@ struct PopoverSettingsView: View {
                 }
             }
         ))
-        .toggleStyle(TMSwitchStyle())
+        .toggleStyle(.switch)
         .font(TMType.medium(TMType.body))
     }
 
@@ -180,12 +181,20 @@ struct PopoverSettingsView: View {
                 get: { launch.enabled },
                 set: { launch.setEnabled($0) }
             ))
-            .toggleStyle(TMSwitchStyle())
+            .toggleStyle(.switch)
             .font(TMType.medium(TMType.body))
             .accessibilityHint("Open ToastMonitor in the menu bar when you sign in")
 
+            Toggle("Quota and renewal notifications", isOn: Binding(
+                get: { alerts.enabled },
+                set: { alerts.setEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .font(TMType.medium(TMType.body))
+            .accessibilityHint("Notify when quota falls below 20%, resets, or a subscription renews tomorrow")
+
             Toggle("Close when clicking elsewhere", isOn: $closeOnResign)
-                .toggleStyle(TMSwitchStyle())
+                .toggleStyle(.switch)
                 .font(TMType.medium(TMType.body))
                 .accessibilityHint("Keep the panel open when you click other windows or apps")
                 .onChange(of: closeOnResign) { _, newValue in
@@ -198,7 +207,7 @@ struct PopoverSettingsView: View {
                 }
 
             Toggle("Show icon in Dock when the dashboard is open", isOn: $dockIconOn)
-                .toggleStyle(TMSwitchStyle())
+                .toggleStyle(.switch)
                 .font(TMType.medium(TMType.body))
                 .accessibilityHint("Appear as a Dock application while the dashboard window is open")
                 .onChange(of: dockIconOn) { _, newValue in
@@ -239,7 +248,7 @@ struct PopoverSettingsView: View {
                 .foregroundStyle(TMDesign.quiet)
 
             Toggle("Automatically check for updates", isOn: $autoCheckOn)
-                .toggleStyle(TMSwitchStyle())
+                .toggleStyle(.switch)
                 .font(TMType.medium(TMType.body))
                 .accessibilityHint("Check for new versions in the background at launch")
                 .onChange(of: autoCheckOn) { _, newValue in

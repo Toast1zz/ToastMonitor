@@ -2,6 +2,8 @@ import SwiftUI
 
 struct UsagePeriodSettingsSection: View {
     @ObservedObject private var settings = UsagePeriodSettings.shared
+    var reservesWeekStartSpace = true
+    private let labelWidth: CGFloat = 150
 
     private var modeBinding: Binding<UsagePeriodMode> {
         Binding(
@@ -20,44 +22,53 @@ struct UsagePeriodSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionTitle("Date Range")
+            Divider()
 
-            Picker("Period style", selection: modeBinding) {
-                ForEach(UsagePeriodMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Period style")
-
-            Text(settings.mode.detail)
-                .font(TMType.regular(TMType.micro))
-                .foregroundStyle(TMDesign.quiet)
-
-            // Always reserve the calendar-only row. Removing and reinserting
-            // it changes the NSHostingView's intrinsic height, which makes the
-            // AppKit panel resize in a second layout pass. Keeping one stable
-            // layout means the native segmented control can switch modes
-            // without moving the window at all.
-            HStack {
-                Text("Week starts on")
-                Spacer()
-                Picker("Week starts on", selection: weekStartBinding) {
-                    ForEach(UsageWeekStart.allCases) { day in
-                        Text(day.title).tag(day)
+            HStack(spacing: 10) {
+                Text("Period style")
+                    .frame(width: labelWidth, alignment: .leading)
+                Picker("Period style", selection: modeBinding) {
+                    ForEach(UsagePeriodMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
                     }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .fixedSize()
-                .accessibilityLabel("Week starts on")
+                .controlSize(.small)
+                Spacer(minLength: 0)
             }
-            .opacity(settings.mode == .calendar ? 1 : 0)
-            // The row owns permanent layout space, so this animation changes
-            // only its visibility and cannot trigger a panel resize.
-            .animation(.easeOut(duration: 0.16), value: settings.mode)
-            .allowsHitTesting(settings.mode == .calendar)
-            .accessibilityHidden(settings.mode != .calendar)
+            .accessibilityLabel("Period style")
+
+            Text(settings.mode.detail)
+                .font(TMType.regular(TMType.micro))
+                .foregroundStyle(TMDesign.quiet)
+                .padding(.leading, labelWidth + 10)
+
+            if settings.mode == .calendar || reservesWeekStartSpace {
+                HStack(spacing: 10) {
+                    Text("Week starts on")
+                        .frame(width: labelWidth, alignment: .leading)
+                    Picker("Week starts on", selection: weekStartBinding) {
+                        ForEach(UsageWeekStart.allCases) { day in
+                            Text(day.title).tag(day)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .controlSize(.small)
+                    .accessibilityLabel("Week starts on")
+                    Spacer(minLength: 0)
+                }
+                .opacity(settings.mode == .calendar ? 1 : 0)
+                // Popover keeps this row mounted so switching period modes
+                // cannot change the floating panel's intrinsic height.
+                .animation(.easeOut(duration: 0.16), value: settings.mode)
+                .allowsHitTesting(settings.mode == .calendar)
+                .accessibilityHidden(settings.mode != .calendar)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: 520, alignment: .leading)
     }
 }

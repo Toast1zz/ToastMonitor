@@ -16,7 +16,7 @@ enum OmpParser {
     /// Returns (turns, sessions) parsed from all changed files.
     /// Depth 3 covers both top-level transcripts (<cwd>/<session>.jsonl)
     /// and subagent transcripts (<cwd>/<session>/<agent>.jsonl).
-    static func scan(knownPaths: [String], database: Database = .shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(knownPaths: [String], database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.omp.sourceIsRemote else { return ([], []) } // local-only source
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []

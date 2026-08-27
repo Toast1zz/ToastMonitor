@@ -143,14 +143,19 @@ enum Format {
         return "\(s)s"
     }
 
+    /// File size, human units ("128 KB", "3.4 MB") — for backup listings.
+    static func bytes(_ n: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
+    }
+
     /// 重置倒计时: "3天2小时" / "45分后"（配额窗口重置）。
     static func countdown(_ secs: Int64) -> String {
-        if secs <= 0 { return "即将重置" }
+        if secs <= 0 { return "resetting soon" }
         let d = secs / 86400
         let h = (secs % 86400) / 3600
         let m = (secs % 3600) / 60
-        if d > 0 { return "\(d)天\(h)小时" }
-        if h > 0 { return "\(h)小时\(m)分" }
-        return "\(m)分后"
+        if d > 0 { return "\(d)d \(h)h" }
+        if h > 0 { return "\(h)h \(m)m" }
+        return "in \(m)m"
     }
 }

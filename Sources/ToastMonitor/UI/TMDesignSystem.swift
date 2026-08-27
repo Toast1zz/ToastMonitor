@@ -1,6 +1,14 @@
 import SwiftUI
 import AppKit
 
+enum TMLayout {
+    static let popoverWidth: CGFloat = 400
+    static let popoverHorizontalPadding: CGFloat = 20
+    static let popoverContentWidth = popoverWidth - 2 * popoverHorizontalPadding
+    static let quotaPrimaryLineHeight: CGFloat = 16
+    static let quotaSecondaryLineHeight: CGFloat = 13
+}
+
 /// Cross-surface notification names (foreground state, tab selection).
 /// Defined at top level so non-main-actor code can reference them.
 enum TMNotifications {
@@ -102,15 +110,25 @@ enum TMDesign {
     /// (same approach as OpenRouter's usage page). One model always maps to
     /// the same color across chart, legend and table.
     static let modelPalette: [Color] = [
-        Color(red: 0.93, green: 0.55, blue: 0.30),   // orange
-        Color(red: 0.88, green: 0.73, blue: 0.28),   // yellow
-        Color(red: 0.32, green: 0.72, blue: 0.50),   // green
-        Color(red: 0.25, green: 0.66, blue: 0.63),   // teal
-        Color(red: 0.35, green: 0.55, blue: 0.88),   // blue
-        Color(red: 0.63, green: 0.47, blue: 0.86),   // violet
-        Color(red: 0.88, green: 0.45, blue: 0.60),   // pink
-        Color(red: 0.60, green: 0.63, blue: 0.68),   // gray
+        adaptiveModelColor(light: (0.78, 0.36, 0.12), dark: (0.98, 0.62, 0.34)),
+        adaptiveModelColor(light: (0.66, 0.50, 0.08), dark: (0.94, 0.78, 0.32)),
+        adaptiveModelColor(light: (0.16, 0.56, 0.32), dark: (0.38, 0.78, 0.54)),
+        adaptiveModelColor(light: (0.10, 0.52, 0.50), dark: (0.30, 0.73, 0.70)),
+        adaptiveModelColor(light: (0.18, 0.42, 0.76), dark: (0.42, 0.64, 0.96)),
+        adaptiveModelColor(light: (0.49, 0.30, 0.72), dark: (0.70, 0.55, 0.94)),
+        adaptiveModelColor(light: (0.70, 0.25, 0.45), dark: (0.94, 0.50, 0.67)),
+        adaptiveModelColor(light: (0.40, 0.43, 0.48), dark: (0.68, 0.71, 0.76)),
     ]
+
+    private static func adaptiveModelColor(
+        light: (CGFloat, CGFloat, CGFloat),
+        dark: (CGFloat, CGFloat, CGFloat)
+    ) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(calibratedRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+        })
+    }
 
     /// Accent lightness layers for distinguishing sources/models without
     /// adding hues: 0 = pure accent, 1 = strongly lightened.
@@ -317,36 +335,6 @@ struct TMMiniMetric: View {
     }
 }
 
-/// 胶囊开关（System Settings 风格）：开启 = 品牌暖橙，关闭 = 中性灰。
-/// 复选框在玻璃面上观感偏「网页」，设置类开/关控件统一用它。
-/// 标签字体/颜色由调用方通过 Toggle 修饰符控制，本样式只管几何。
-struct TMSwitchStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        let isOn = configuration.isOn
-        Button {
-            configuration.isOn.toggle()
-        } label: {
-            HStack(spacing: 8) {
-                configuration.label
-                Spacer(minLength: 12)
-                Capsule()
-                    .fill(isOn ? TMDesign.accent : Color.primary.opacity(0.15))
-                    .frame(width: 36, height: 20)
-                    .overlay(alignment: isOn ? .trailing : .leading) {
-                        Circle()
-                            .fill(.white)
-                            .padding(2.5)
-                            .shadow(color: .black.opacity(0.28), radius: 1.5, y: 0.5)
-                    }
-            }
-        }
-        .buttonStyle(.plain)
-        .animation(.snappy(duration: 0.2), value: isOn)
-        .accessibilityValue(isOn ? "On" : "Off")
-        .accessibilityAddTraits(isOn ? .isSelected : [])
-    }
-}
-
 struct TMStatusPill: View {
     let text: String
     let color: Color
@@ -372,12 +360,7 @@ struct TMPanel<Content: View>: View {
 
     var body: some View {
         content
-            .padding(16)
-            .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(TMDesign.divider, lineWidth: 1)
-            }
+            .tmPanelSurface()
     }
 }
 
@@ -419,13 +402,30 @@ struct TMStatusLabel: View {
     }
 }
 
+struct TMStatusCapsule: View {
+    let text: String
+    var compact = false
+
+    var body: some View {
+        Label(text, systemImage: "exclamationmark")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: compact ? TMType.micro : TMType.caption,
+                          weight: .medium, design: .monospaced))
+            .foregroundStyle(TMDesign.danger)
+            .padding(.horizontal, compact ? 6 : 8)
+            .padding(.vertical, compact ? 2 : 4)
+            .background(TMDesign.dangerFill, in: Capsule(style: .continuous))
+            .accessibilityLabel("Critical: \(text)")
+    }
+}
+
 extension View {
     /// A restrained elevated section for settings and service summaries.
     /// Use one surface per task group; avoid nesting these inside each other.
     /// 与 TMPanel 同规格（16pt padding、12 圆角、hairline 描边）。
-    func tmPanelSurface(cornerRadius: CGFloat = 12) -> some View {
+    func tmPanelSurface(cornerRadius: CGFloat = 12, padding: CGFloat = 16) -> some View {
         self
-            .padding(16)
+            .padding(padding)
             .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

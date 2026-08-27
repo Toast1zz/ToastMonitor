@@ -64,7 +64,7 @@ enum CodexParser {
         return out
     }
 
-    static func scan() -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.codex.sourceIsRemote else { return ([], []) } // source = VPS feed
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
@@ -79,7 +79,7 @@ enum CodexParser {
         let files = FileScanner.listFiles(sessionsRoot, maxDepth: 4)
         for file in files {
             guard let st = FileScanner.fileStat(file) else { continue }
-            let prev = Database.shared.scanState(file)
+            let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
             // Truncation can preserve an inode; a shorter file is still a
             // new byte stream and must be replayed from offset zero.
@@ -102,9 +102,9 @@ enum CodexParser {
             }
             if objs.isEmpty {
                 let pending = st.size < prev.size || pendingRewrite
-                Database.shared.setScanState(file, size: newOffset, mtime: st.mtime,
-                                             identity: st.identity,
-                                             context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
+                database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                      identity: st.identity,
+                                      context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
                 continue
             }
 
@@ -221,7 +221,8 @@ enum CodexParser {
                 ctx["_full_rescan"] = true
             }
             let ctxJSON = (try? JSONSerialization.data(withJSONObject: ctx)).flatMap { String(data: $0, encoding: .utf8) }
-            Database.shared.setScanState(file, size: newOffset, mtime: st.mtime, identity: st.identity, context: ctxJSON)
+            database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                  identity: st.identity, context: ctxJSON)
         }
 
         // Sessions from threads table that have no rollout data yet.

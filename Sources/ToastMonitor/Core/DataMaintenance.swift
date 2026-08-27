@@ -104,6 +104,26 @@ enum DataMaintenance {
         return Database.shared.restore(from: path)
     }
 
+    /// Self-throttled weekly snapshot, independent of collector activity: an
+    /// idle week (no new turns/sessions, but settings or subscriptions may
+    /// still have changed) must still get backed up, so callers invoke this
+    /// unconditionally on every scan tick — the throttle keeps the actual
+    /// backup+prune work to once per 7 days. This is the only automatic
+    /// backup in the app; `repair()`/`clearAllData()` each also create their
+    /// own mandatory pre-operation backup, sharing the same rotation pool
+    /// (newest 7 kept, any label).
+    static func maybeCreateRoutineBackupIfDue() {
+        let now = Int64(Date().timeIntervalSince1970)
+        let key = "routine_backup_last"
+        if let last = Int64(Database.shared.setting(key) ?? "0"), now - last < 7 * 86400 { return }
+        // Stamped unconditionally after attempting — same pattern as
+        // Database.optimizeIfDue/pruneSnapshotsIfDue — so a persistent
+        // failure (disk full, directory unwritable) waits for next week's
+        // tick instead of retrying the backup on every subsequent scan.
+        _ = Database.shared.setSetting(key, "\(now)")
+        _ = createBackup(label: "weekly")
+    }
+
     static func availableBackups() -> [URL] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory,
@@ -165,10 +185,10 @@ enum DataMaintenance {
 
         var errorDescription: String? {
             switch self {
-            case .noLocalSources: return "Claude 与 Codex 当前均使用远程来源"
-            case .backupFailed: return "无法创建维护前备份"
-            case .resetFailed(let backup): return "重建事务失败；原数据保留，备份位于 \(backup)"
-            case .clearFailed(let backup): return "清除事务失败；原数据保留，备份位于 \(backup)"
+            case .noLocalSources: return "Claude and Codex are both using remote sources"
+            case .backupFailed: return "Could not create the pre-maintenance backup"
+            case .resetFailed(let backup): return "Rebuild failed; original data retained. Backup: \(backup)"
+            case .clearFailed(let backup): return "Clear failed; original data retained. Backup: \(backup)"
             }
         }
     }

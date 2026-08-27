@@ -23,7 +23,7 @@ enum HermesParser {
         let output: Int64
     }
 
-    static func scan(database: Database = .shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
+    static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.hermes.sourceIsRemote else { return ([], []) } // source = VPS feed
         guard FileManager.default.fileExists(atPath: dbPath) else { return ([], []) }
 
@@ -146,6 +146,7 @@ enum HermesParser {
                 database.setSessionTotals(key, tool: "hermes",
                                          input: max(prev?.input ?? 0, agg.input),
                                          output: max(prev?.output ?? 0, agg.output),
+                                         reasoning: 0,
                                          cacheRead: 0, cacheWrite: 0, cost: 0, updated: agg.lastTs)
             }
         }

@@ -49,15 +49,15 @@ enum UpdateChecker {
 
         var errorDescription: String? {
             switch self {
-            case .invalidEndpoint: return "更新地址必须是 HTTPS"
-            case .invalidResponse: return "更新服务返回了无效响应"
-            case .responseTooLarge: return "更新元数据过大"
-            case .malformedManifest: return "更新元数据格式无效"
-            case .invalidSignature: return "更新签名校验失败"
-            case .invalidVersion: return "更新版本号无效"
-            case .invalidDownloadURL: return "更新下载地址必须是 HTTPS"
-            case .artifactTooLarge: return "更新文件超过大小限制"
-            case .network(let message): return "更新检查失败：\(message)"
+            case .invalidEndpoint: return "The update endpoint must use HTTPS"
+            case .invalidResponse: return "The update service returned an invalid response"
+            case .responseTooLarge: return "The update metadata is too large"
+            case .malformedManifest: return "The update metadata is malformed"
+            case .invalidSignature: return "The update signature is invalid"
+            case .invalidVersion: return "The update version is invalid"
+            case .invalidDownloadURL: return "The update download must use HTTPS"
+            case .artifactTooLarge: return "The update artifact exceeds the size limit"
+            case .network(let message): return "Update check failed: \(message)"
             }
         }
     }

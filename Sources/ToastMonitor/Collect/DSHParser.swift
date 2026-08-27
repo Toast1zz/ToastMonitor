@@ -129,7 +129,7 @@ enum DSHParser {
 
     /// Parses changed session logs. `decompress` is injectable so tests can
     /// pass an identity function over plain-JSONL fixtures.
-    static func scanLogs(knownPaths: [String], database: Database = .shared,
+    static func scanLogs(knownPaths: [String], database: any ParserStateStore = Database.shared,
                          decompress: (Data) -> Data? = { Zstd.decompress($0) })
         -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.dsh.sourceIsRemote else { return ([], []) } // local-only source
@@ -428,7 +428,7 @@ enum DSHParser {
     /// Hermes-style delta over `session_projcache.json`: each session's
     /// cumulative `tokenUsage.totals` is diffed against the local
     /// `session_totals` baseline and the positive delta becomes one turn.
-    static func scanProjCache(database: Database = .shared)
+    static func scanProjCache(database: any ParserStateStore = Database.shared)
         -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.dsh.sourceIsRemote else { return ([], []) } // local-only source
         guard FileManager.default.fileExists(atPath: projCachePath),
@@ -482,6 +482,7 @@ enum DSHParser {
             database.setSessionTotals(key, tool: "dsh",
                                      input: max(prev?.input ?? 0, input),
                                      output: max(prev?.output ?? 0, output),
+                                     reasoning: 0,
                                      cacheRead: max(prev?.cacheRead ?? 0, cacheRead),
                                      cacheWrite: max(prev?.cacheWrite ?? 0, cacheWrite),
                                      cost: 0, updated: ts)

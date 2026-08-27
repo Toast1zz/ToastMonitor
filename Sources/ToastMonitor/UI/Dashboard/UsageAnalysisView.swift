@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// 用量分析 (spec §3.2): 集中控制条（日期范围 / 按工具·按模型 / 图型）+
@@ -131,9 +132,45 @@ struct UsageAnalysisView: View {
             SectionTitle("Analysis")
             Spacer(minLength: 8)
             controls
+            Divider()
+                .frame(height: 18)
+            Button(action: exportCSV) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .buttonStyle(.borderless)
+            .disabled(analysis == nil)
+            .help("Export current analysis as CSV")
+            .accessibilityLabel("Export current analysis as CSV")
         }
         .padding(.top, 18)
         .padding(.bottom, 12)
+    }
+
+    private func exportCSV() {
+        guard let analysis else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "ToastMonitor-\(analysis.range.rawValue.replacingOccurrences(of: " ", with: "-"))-\(analysis.grouping.rawValue.replacingOccurrences(of: " ", with: "-" )).csv"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var lines = ["range,grouping,name,tokens,calls,estimated_cost,share"]
+        for row in analysis.aggregates {
+            lines.append([
+                analysis.range.rawValue,
+                analysis.grouping.rawValue,
+                row.name,
+                String(row.tokens),
+                String(row.calls),
+                String(format: "%.6f", row.cost),
+                String(format: "%.6f", row.ratio),
+            ].map(Self.csvField).joined(separator: ","))
+        }
+        try? (lines.joined(separator: "\n") + "\n")
+            .write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private static func csvField(_ value: String) -> String {
+        guard value.contains(",") || value.contains("\"") || value.contains("\n") else { return value }
+        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 
     /// 设计系统 hairline（TMDesign.divider, primary 0.13），页头与表内统一。
@@ -161,11 +198,7 @@ struct UsageAnalysisView: View {
         .padding(.vertical, 11)
         // 与 Overview hero 部分重叠的指标：保留（这里是所选区间口径），
         // 面板降为中性 surface，不再抢 hero 的 accent 视觉。
-        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(TMDesign.divider, lineWidth: 1)
-        }
+        .tmPanelSurface(padding: 0)
     }
 
     private func load() {
@@ -320,31 +353,26 @@ struct UsageAnalysisView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Picker("Metric", selection: $metric) {
                 ForEach(Metric.allCases) { metric in Text(metric.rawValue).tag(metric) }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityLabel("Metric")
-            .frame(width: 130)
+            .pickerStyle(.menu)
+            .fixedSize()
 
             Picker("Range", selection: $range) {
                 ForEach(Range.allCases) { r in Text(r.rawValue).tag(r) }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityLabel("Range")
-            .frame(width: 188)
+            .pickerStyle(.menu)
+            .fixedSize()
 
             Picker("Grouping", selection: $grouping) {
                 ForEach(Grouping.allCases) { g in Text(g.rawValue).tag(g) }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityLabel("Grouping")
-            .frame(width: 168)
+            .pickerStyle(.menu)
+            .fixedSize()
         }
+        .controlSize(.small)
     }
 
     // MARK: - Token 堆叠图（按天，按工具/模型分色叠加）

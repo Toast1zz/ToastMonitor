@@ -6,14 +6,12 @@ import Foundation
 final class UsageQueryService: @unchecked Sendable {
     static let shared = UsageQueryService()
 
-    private let queue = DispatchQueue(label: "toastmonitor.queries", qos: .userInitiated)
+    private let database: Database
+    private let queue: DispatchQueue
 
     struct CostQuality: Sendable {
         var estimated: Double
         var actual: Double
-        var knownCount: Int
-        var totalCount: Int
-        var coverage: Double { totalCount > 0 ? Double(knownCount) / Double(totalCount) : 0 }
     }
 
     /// Fields needed by the status bar and popover. Dashboard-only model and
@@ -64,8 +62,29 @@ final class UsageQueryService: @unchecked Sendable {
     /// 日聚合/热力图缓存（M8）：与快照同键策略。popover 可见期间每分钟
     /// 的 minuteTicker 不再反复跑 371 天 strftime+GROUP BY 全量聚合。
     private var cachedDailyAggs: (key: String, aggs: [Database.DayAgg])?
+    private var lightComputations = 0
+    private var fullComputations = 0
+    private var dailyComputations = 0
 
-    private init() {}
+    init(database: Database = .shared,
+         queue: DispatchQueue = DispatchQueue(label: "toastmonitor.queries", qos: .userInitiated)) {
+        self.database = database
+        self.queue = queue
+    }
+
+    struct CacheDiagnostics: Equatable {
+        let lightComputations: Int
+        let fullComputations: Int
+        let dailyComputations: Int
+    }
+
+    func cacheDiagnostics() -> CacheDiagnostics {
+        queue.sync {
+            CacheDiagnostics(lightComputations: lightComputations,
+                             fullComputations: fullComputations,
+                             dailyComputations: dailyComputations)
+        }
+    }
 
     func loadSnapshot(configuration: UsagePeriodConfiguration = UsagePeriodConfiguration(),
                       completion: @escaping @MainActor @Sendable (Snapshot) -> Void) {
@@ -102,13 +121,13 @@ final class UsageQueryService: @unchecked Sendable {
 
     func loadDailyAggs(days: Int, completion: @escaping @MainActor @Sendable ([Database.DayAgg]) -> Void) {
         queue.async {
-            let now = Date()
-            let key = "\(Database.shared.dataVersionKey())|days=\(days)"
+            let key = "\(self.database.dataVersionKey())|days=\(days)"
             if let c = self.cachedDailyAggs, c.key == key {
                 DispatchQueue.main.async { completion(c.aggs) }
                 return
             }
-            let aggs = Database.shared.dailyAggregates(days: days)
+            let aggs = self.database.dailyAggregates(days: days)
+            self.dailyComputations += 1
             self.cachedDailyAggs = (key, aggs)
             DispatchQueue.main.async { completion(aggs) }
         }
@@ -126,21 +145,29 @@ final class UsageQueryService: @unchecked Sendable {
     func loadTurns(sessionTool: String, sessionID: String,
                    completion: @escaping @MainActor @Sendable ([(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)]) -> Void) {
         queue.async {
-            let turns = Database.shared.turns(sessionTool: sessionTool, sessionID: sessionID)
+            let turns = self.database.turns(sessionTool: sessionTool, sessionID: sessionID)
             DispatchQueue.main.async { completion(turns) }
+        }
+    }
+
+    func loadSessions(tool: ToolKind?, limit: Int = 500,
+                      completion: @escaping @MainActor @Sendable ([Database.SessionRow]) -> Void) {
+        queue.async {
+            let sessions = self.database.sessions(tool: tool, limit: limit)
+            DispatchQueue.main.async { completion(sessions) }
         }
     }
 
     func loadORSnapshots(limit: Int = 500, completion: @escaping @MainActor @Sendable ([Database.ORSnapshot]) -> Void) {
         queue.async {
-            let snapshots = Database.shared.orSnapshots(limit: limit)
+            let snapshots = self.database.orSnapshots(limit: limit)
             DispatchQueue.main.async { completion(snapshots) }
         }
     }
 
     func loadDailyAggsByModel(days: Int, completion: @escaping @MainActor @Sendable ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> Void) {
         queue.async {
-            let aggs = Database.shared.dailyAggregatesByModel(days: days)
+            let aggs = self.database.dailyAggregatesByModel(days: days)
             DispatchQueue.main.async { completion(aggs) }
         }
     }
@@ -148,24 +175,25 @@ final class UsageQueryService: @unchecked Sendable {
     /// the complete history rather than a polling-frequency-dependent row limit.
     func loadOGSnapshotsByDay(completion: @escaping @MainActor @Sendable ([Database.OGSnapshot]) -> Void) {
         queue.async {
-            let snapshots = Database.shared.ogSnapshotsByDay()
+            let snapshots = self.database.ogSnapshotsByDay()
             DispatchQueue.main.async { completion(snapshots) }
         }
     }
 
     func loadORSnapshotsByDay(completion: @escaping @MainActor @Sendable ([Database.ORSnapshot]) -> Void) {
         queue.async {
-            let snapshots = Database.shared.orSnapshotsByDay()
+            let snapshots = self.database.orSnapshotsByDay()
             DispatchQueue.main.async { completion(snapshots) }
         }
     }
 
     private func cacheKey(configuration: UsagePeriodConfiguration, now: Date) -> String {
-        "\(Database.shared.dataVersionKey())|\(configuration.cacheKey(now: now))"
+        "\(database.dataVersionKey())|\(configuration.cacheKey(now: now))"
     }
 
     private func computeLight(configuration: UsagePeriodConfiguration,
                               now: Date) -> LightSnapshot {
+        lightComputations += 1
         let nowTs = Int64(now.timeIntervalSince1970)
         let todayRange = configuration.range(for: .today, now: now)
         let weekRange = configuration.range(for: .week, now: now)
@@ -173,17 +201,16 @@ final class UsageQueryService: @unchecked Sendable {
         let allRange = configuration.range(for: .all, now: now)
 
         func costQuality(from: Int64, to: Int64) -> CostQuality {
-            let b = Database.shared.costBreakdown(from: from, to: to)
-            return CostQuality(estimated: b.estimated, actual: b.actual,
-                               knownCount: b.knownCount, totalCount: b.totalCount)
+            let b = database.costBreakdown(from: from, to: to)
+            return CostQuality(estimated: b.estimated, actual: b.actual)
         }
 
         // The grouped rows already contain every total; deriving the four
         // period totals avoids four additional aggregate scans.
-        let byToolToday = Database.shared.totalsByTool(from: todayRange.start, to: todayRange.end)
-        let byToolWeek = Database.shared.totalsByTool(from: weekRange.start, to: weekRange.end)
-        let byToolMonth = Database.shared.totalsByTool(from: monthRange.start, to: monthRange.end)
-        let byToolAll = Database.shared.totalsByTool(from: allRange.start, to: allRange.end)
+        let byToolToday = database.totalsByTool(from: todayRange.start, to: todayRange.end)
+        let byToolWeek = database.totalsByTool(from: weekRange.start, to: weekRange.end)
+        let byToolMonth = database.totalsByTool(from: monthRange.start, to: monthRange.end)
+        let byToolAll = database.totalsByTool(from: allRange.start, to: allRange.end)
         return LightSnapshot(
             today: Self.aggregate(byToolToday),
             week: Self.aggregate(byToolWeek),
@@ -201,28 +228,29 @@ final class UsageQueryService: @unchecked Sendable {
             costWeek: costQuality(from: weekRange.start, to: weekRange.end),
             costMonth: costQuality(from: monthRange.start, to: monthRange.end),
             costAll: costQuality(from: allRange.start, to: allRange.end),
-            apiValueToday: Database.shared.apiValue(from: todayRange.start, to: todayRange.end),
-            apiValueWeek: Database.shared.apiValue(from: weekRange.start, to: weekRange.end),
-            apiValueMonth: Database.shared.apiValue(from: monthRange.start, to: monthRange.end),
-            apiValueAll: Database.shared.apiValue(from: allRange.start, to: allRange.end),
-            subscriptions: Database.shared.subscriptions(),
-            lastScan: Database.shared.lastScanTime(),
+            apiValueToday: database.apiValue(from: todayRange.start, to: todayRange.end),
+            apiValueWeek: database.apiValue(from: weekRange.start, to: weekRange.end),
+            apiValueMonth: database.apiValue(from: monthRange.start, to: monthRange.end),
+            apiValueAll: database.apiValue(from: allRange.start, to: allRange.end),
+            subscriptions: database.subscriptions(),
+            lastScan: database.lastScanTime(),
             fetchedAt: nowTs)
     }
 
     private func compute(configuration: UsagePeriodConfiguration, now: Date) -> Snapshot {
+        fullComputations += 1
         let light = computeLight(configuration: configuration, now: now)
         let todayRange = configuration.range(for: .today, now: now)
         let weekRange = configuration.range(for: .week, now: now)
         let monthRange = configuration.range(for: .month, now: now)
         let allRange = configuration.range(for: .all, now: now)
-        let annualAggs = Database.shared.dailyAggregates(days: 371)
+        let annualAggs = database.dailyAggregates(days: 371)
         return Snapshot(
             light: light,
-            modelAggs: Database.shared.modelAggregates(from: weekRange.start, to: weekRange.end),
-            modelAggsToday: Database.shared.modelAggregates(from: todayRange.start, to: todayRange.end),
-            modelAggsMonth: Database.shared.modelAggregates(from: monthRange.start, to: monthRange.end),
-            modelAggsAll: Database.shared.modelAggregates(from: allRange.start, to: allRange.end),
+            modelAggs: database.modelAggregates(from: weekRange.start, to: weekRange.end),
+            modelAggsToday: database.modelAggregates(from: todayRange.start, to: todayRange.end),
+            modelAggsMonth: database.modelAggregates(from: monthRange.start, to: monthRange.end),
+            modelAggsAll: database.modelAggregates(from: allRange.start, to: allRange.end),
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),
             heatmapCost: Self.buildCostHeatmap(aggs: annualAggs))

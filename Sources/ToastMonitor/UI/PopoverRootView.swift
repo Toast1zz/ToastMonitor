@@ -24,11 +24,11 @@ struct PopoverRootView: View {
                 ))
             } else {
                 VStack(spacing: 0) {
-                    fixedSlice(kind: "header") {
+                    fixedSlice(.header) {
                         header
                     }
                     PopoverHomeView()
-                    fixedSlice(kind: "footer") {
+                    fixedSlice(.footer) {
                         VStack(spacing: 0) {
                             Divider().opacity(0.25)
                             footer
@@ -41,12 +41,17 @@ struct PopoverRootView: View {
                 ))
             }
         }
-        .frame(width: 400)
+        .frame(width: TMLayout.popoverWidth)
         // NSHostingView otherwise centers an intrinsic-height root while the
         // AppKit panel is resizing. Fill the host and keep the entire page
         // pinned to the menu-bar edge so extra height is revealed downward.
         .frame(maxHeight: .infinity, alignment: .top)
         .environment(\.controlSize, .small)
+        .onPreferenceChange(PopoverHeightPreferenceKey.self) { pages in
+            let page: PopoverPage = showSettings ? .settings : .home
+            guard let naturalHeight = pages[page]?.naturalHeight(for: page) else { return }
+            onNaturalHeightChange(naturalHeight)
+        }
         .onChange(of: showSettings) { _, open in
             NotificationCenter.default.post(
                 name: PanelController.settingsVisibilityNotification,
@@ -56,11 +61,13 @@ struct PopoverRootView: View {
         }
     }
 
-    private func fixedSlice<Content: View>(kind: String,
+    @Environment(\.popoverNaturalHeightChange) private var onNaturalHeightChange
+
+    private func fixedSlice<Content: View>(_ slice: PopoverHeightSlice,
                                            @ViewBuilder content: () -> Content) -> some View {
         content()
             .fixedSize(horizontal: false, vertical: true)
-            .reportPopoverHeight(kind: kind, page: "home")
+            .reportPopoverHeight(slice, page: .home)
     }
 
     private var header: some View {
@@ -150,38 +157,80 @@ struct PopoverRootView: View {
     }
 }
 
-/// Reports a view's natural vertical size without introducing another
-/// material or background layer. A preference is ideal inside SwiftUI; the
-/// final notification is emitted once, at the root of this modifier.
+enum PopoverPage: Hashable, Sendable {
+    case home
+    case settings
+}
+
+enum PopoverHeightSlice: Hashable, Sendable {
+    case header
+    case pinned
+    case body
+    case footer
+}
+
+struct PopoverHeightMeasurements: Equatable, Sendable {
+    var values: [PopoverHeightSlice: CGFloat] = [:]
+
+    func naturalHeight(for page: PopoverPage) -> CGFloat? {
+        guard let header = values[.header], header > 0,
+              let body = values[.body], body > 0,
+              let footer = values[.footer], footer > 0 else { return nil }
+        if page == .settings { return header + body + footer }
+        guard let pinned = values[.pinned], pinned > 0 else { return nil }
+        return header + pinned + body + footer
+    }
+}
+
+struct PopoverHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: [PopoverPage: PopoverHeightMeasurements] = [:]
+
+    static func reduce(value: inout [PopoverPage: PopoverHeightMeasurements],
+                       nextValue: () -> [PopoverPage: PopoverHeightMeasurements]) {
+        for (page, incoming) in nextValue() {
+            var measurements = value[page] ?? .init()
+            for (slice, height) in incoming.values {
+                measurements.values[slice] = max(measurements.values[slice] ?? 0, height)
+            }
+            value[page] = measurements
+        }
+    }
+}
+
+private struct PopoverNaturalHeightChangeKey: EnvironmentKey {
+    static let defaultValue: @MainActor @Sendable (CGFloat) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var popoverNaturalHeightChange: @MainActor @Sendable (CGFloat) -> Void {
+        get { self[PopoverNaturalHeightChangeKey.self] }
+        set { self[PopoverNaturalHeightChangeKey.self] = newValue }
+    }
+}
+
+/// Each slice contributes typed data to one PreferenceKey. SwiftUI completes
+/// preference reduction for the whole tree before PopoverRootView emits the
+/// page's single natural-height callback.
 private struct PopoverHeightReporter: ViewModifier {
-    let kind: String
-    let page: String
+    let slice: PopoverHeightSlice
+    let page: PopoverPage
 
     func body(content: Content) -> some View {
         content.background(
             GeometryReader { proxy in
                 Color.clear
-                    .onAppear { post(proxy.size.height) }
-                    .onChange(of: proxy.size.height) { _, height in post(height) }
+                    .preference(
+                        key: PopoverHeightPreferenceKey.self,
+                        value: [page: .init(values: [slice: proxy.size.height])]
+                    )
             }
         )
-    }
-
-    private func post(_ height: CGFloat) {
-        guard height > 0 else { return }
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(
-                name: PanelController.contentHeightNotification,
-                object: nil,
-                userInfo: ["kind": kind, "page": page, "height": height]
-            )
-        }
     }
 }
 
 extension View {
-    func reportPopoverHeight(kind: String, page: String) -> some View {
-        modifier(PopoverHeightReporter(kind: kind, page: page))
+    func reportPopoverHeight(_ slice: PopoverHeightSlice, page: PopoverPage) -> some View {
+        modifier(PopoverHeightReporter(slice: slice, page: page))
     }
 }
 

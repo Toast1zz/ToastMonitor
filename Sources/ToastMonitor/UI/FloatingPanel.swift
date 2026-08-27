@@ -76,12 +76,11 @@ private final class PanelSurfaceView: NSView {
 
 @MainActor
 final class PanelController: NSObject, NSWindowDelegate {
-    private static let panelWidth: CGFloat = 400
+    private static let panelWidth = TMLayout.popoverWidth
     private static let cornerRadius: CGFloat = 20
 
     private let panel: FloatingPanel
     private weak var statusItem: NSStatusItem?
-    private var contentHeightObserver: NSObjectProtocol?
     private var hideObserver: NSObjectProtocol?
     private var settingsOpenObserver: NSObjectProtocol?
     private var resignObserver: NSObjectProtocol?
@@ -100,10 +99,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         livePanel?.isVisible ?? false
     }
 
-    /// SwiftUI reports the natural heights of its fixed chrome and document.
-    /// AppKit clamps the resulting window to the current screen; only the
-    /// middle SwiftUI scroll view can shrink.
-    static let contentHeightNotification = Notification.Name("tmPopoverContentHeight")
     static let settingsVisibilityNotification = Notification.Name("tmPopoverSettingsVisibility")
     static let settingsBackNotification = Notification.Name("tmPopoverSettingsBack")
     static let hideNotification = Notification.Name("tmPopoverHide")
@@ -120,11 +115,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     static var dismissOnResign: Bool {
         Database.shared.setting(dismissOnResignKey) == "1"
     }
-
-    private var headerSliceHeight: CGFloat = 0
-    private var pinnedSliceHeight: CGFloat = 0
-    private var bodySliceHeight: CGFloat = 0
-    private var footerSliceHeight: CGFloat = 0
 
     init<Content: View>(statusItem: NSStatusItem, content: Content, size: NSSize) {
         self.statusItem = statusItem
@@ -162,7 +152,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         surface.frame = panel.contentRect(forFrameRect: panel.frame)
         surface.autoresizingMask = [.width, .height]
 
-        let hosting = NSHostingView(rootView: content)
+        let measuredContent = content.environment(\.popoverNaturalHeightChange) {
+            [weak self] height in
+            Task { @MainActor [weak self] in
+                self?.applyMeasuredContentSize(naturalHeight: height)
+            }
+        }
+        let hosting = NSHostingView(rootView: measuredContent)
         hosting.frame = surface.bounds
         hosting.autoresizingMask = [.width, .height]
         surface.addSubview(hosting)
@@ -170,35 +166,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         // outer rectangular shadow host participates in WindowServer's
         // compositing and brings square corners back at the window edge.
         panel.contentView = surface
-
-        contentHeightObserver = NotificationCenter.default.addObserver(
-            forName: Self.contentHeightNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let kind = note.userInfo?["kind"] as? String,
-                  let page = note.userInfo?["page"] as? String,
-                  let height = note.userInfo?["height"] as? CGFloat else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let expectedPage = self.settingsOpen ? "settings" : "home"
-                guard page == expectedPage else { return }
-                switch kind {
-                case "header": self.headerSliceHeight = height
-                case "pinned": self.pinnedSliceHeight = height
-                case "footer": self.footerSliceHeight = height
-                default: self.bodySliceHeight = height
-                }
-                NSObject.cancelPreviousPerformRequests(
-                    withTarget: self,
-                    selector: #selector(self.applyMeasuredContentSize),
-                    object: nil
-                )
-                self.perform(#selector(self.applyMeasuredContentSize),
-                             with: nil,
-                             afterDelay: 0.05)
-            }
-        }
 
         settingsOpenObserver = NotificationCenter.default.addObserver(
             forName: Self.settingsVisibilityNotification,
@@ -209,10 +176,6 @@ final class PanelController: NSObject, NSWindowDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.settingsOpen = open
-                self.headerSliceHeight = 0
-                self.bodySliceHeight = 0
-                self.pinnedSliceHeight = 0
-                self.footerSliceHeight = 0
             }
         }
 
@@ -270,7 +233,6 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func show() {
         guard !panel.isVisible else { return }
-        applyMeasuredContentSize()
         position()
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
@@ -314,15 +276,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         )
     }
 
-    @objc private func applyMeasuredContentSize() {
-        guard let naturalHeight = Self.mergedHeight(
-            header: headerSliceHeight,
-            pinned: settingsOpen ? 0 : pinnedSliceHeight,
-            body: bodySliceHeight,
-            footer: footerSliceHeight,
-            allowsZeroPinned: settingsOpen
-        ) else { return }
-
+    private func applyMeasuredContentSize(naturalHeight: CGFloat) {
         let screen = statusItem?.button?.window?.screen ?? panel.screen ?? NSScreen.main
         let available = (screen?.visibleFrame.height ?? 800) - 12
         let target = Self.clampedHeight(natural: naturalHeight, available: available)
@@ -341,16 +295,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Wait for a complete measurement before resizing. This prevents an
-    /// intermediate partial sum from moving fixed navigation out of view.
-    nonisolated static func mergedHeight(header: CGFloat, pinned: CGFloat,
-                                         body: CGFloat, footer: CGFloat,
-                                         allowsZeroPinned: Bool) -> CGFloat? {
-        guard header > 0, body > 0, footer > 0,
-              pinned > 0 || allowsZeroPinned else { return nil }
-        return header + pinned + body + footer
-    }
-
     /// Short pages keep their natural height; only over-tall pages are
     /// constrained to the visible screen.
     nonisolated static func clampedHeight(natural: CGFloat,
@@ -359,8 +303,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     deinit {
-        for observer in [contentHeightObserver, hideObserver,
-                         settingsOpenObserver, resignObserver].compactMap({ $0 }) {
+        for observer in [hideObserver, settingsOpenObserver,
+                         resignObserver].compactMap({ $0 }) {
             NotificationCenter.default.removeObserver(observer)
         }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
