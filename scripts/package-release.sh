@@ -20,7 +20,17 @@ cd "$ROOT"
 # commits package as 1.0 rather than impersonating the last release.
 TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
 VERSION="${TAG_VERSION#v}"
-if [[ -z "$VERSION" ]]; then VERSION="1.0"; fi
+if [[ -z "$VERSION" ]]; then
+    VERSION="1.0"
+    # Zips built here are what sign-update-manifest.sh points released users
+    # at, so an untagged package is almost never what was intended.
+    NEAREST_TAG="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
+    if [[ -n "$NEAREST_TAG" ]]; then
+        echo "warning: HEAD is not tagged — packaging as $VERSION, not ${NEAREST_TAG#v}." >&2
+        echo "         Signing a manifest from these zips would hand ${NEAREST_TAG}'s users a 1.0 build." >&2
+        echo "         Build the tag instead: git checkout $NEAREST_TAG && ./scripts/package-release.sh" >&2
+    fi
+fi
 echo "== packaging ToastMonitor v$VERSION =="
 rm -rf dist/release
 mkdir -p dist/release
