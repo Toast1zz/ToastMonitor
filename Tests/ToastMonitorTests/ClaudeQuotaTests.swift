@@ -154,4 +154,82 @@ final class ClaudeQuotaTests: XCTestCase {
             XCTAssertLessThanOrEqual(delay, 300)
         }
     }
+
+    // MARK: - Credential read (never interactive)
+
+    /// The guard that replaced kSecUseAuthenticationUIFail is process-wide,
+    /// so the thing that matters is that it always hands the switch back —
+    /// otherwise the `--provision-*` CLI paths, which are supposed to be able
+    /// to prompt, would go silently deaf after the first background refresh.
+    func testWithoutUserInteractionRestoresTheProcessWideSwitch() {
+        var before: DarwinBoolean = false
+        XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&before), errSecSuccess)
+
+        let observed: DarwinBoolean = KeychainStore.withoutUserInteraction {
+            var inside: DarwinBoolean = true
+            XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&inside), errSecSuccess)
+            return inside
+        }
+        XCTAssertFalse(observed.boolValue, "interaction must be off inside the body")
+
+        var after: DarwinBoolean = false
+        XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&after), errSecSuccess)
+        XCTAssertEqual(after.boolValue, before.boolValue, "previous value must be restored")
+    }
+
+    func testWithoutUserInteractionNestsWithoutDeadlockingOrLeakingTheSwitch() {
+        var before: DarwinBoolean = false
+        XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&before), errSecSuccess)
+        // Nested use must not leave the switch off after the outer call.
+        KeychainStore.withoutUserInteraction {
+            KeychainStore.withoutUserInteraction { }
+        }
+        var after: DarwinBoolean = true
+        XCTAssertEqual(SecKeychainGetUserInteractionAllowed(&after), errSecSuccess)
+        XCTAssertEqual(after.boolValue, before.boolValue)
+    }
+
+    // MARK: - runCapturing (the /usr/bin/security fallback's plumbing)
+
+    func testRunCapturingReturnsStdout() {
+        let result = ClaudeQuotaClient.runCapturing(path: "/bin/echo", arguments: ["hello"],
+                                                    timeout: 5, maxBytes: 1024)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.data.map { String(decoding: $0, as: UTF8.self) }, "hello\n")
+    }
+
+    /// A `security` child that outlives the timeout is one parked on a
+    /// password sheet. It must be killed, and killed promptly — the whole
+    /// point is that the sheet never becomes typeable.
+    func testRunCapturingKillsAChildThatOutlivesTheTimeout() {
+        let started = Date()
+        let result = ClaudeQuotaClient.runCapturing(path: "/bin/sleep", arguments: ["30"],
+                                                    timeout: 0.5, maxBytes: 1024)
+        XCTAssertTrue(result.timedOut)
+        XCTAssertNil(result.data)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "must not wait out the child")
+    }
+
+    func testRunCapturingRefusesOversizedOutputRatherThanTruncating() {
+        let result = ClaudeQuotaClient.runCapturing(path: "/bin/echo",
+                                                    arguments: [String(repeating: "x", count: 200)],
+                                                    timeout: 5, maxBytes: 16)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertNil(result.data)
+    }
+
+    func testRunCapturingReportsFailureForNonZeroExitAndMissingBinary() {
+        XCTAssertNil(ClaudeQuotaClient.runCapturing(path: "/usr/bin/false", arguments: [],
+                                                    timeout: 5, maxBytes: 1024).data)
+        XCTAssertNil(ClaudeQuotaClient.runCapturing(path: "/nope/not-a-binary", arguments: [],
+                                                    timeout: 5, maxBytes: 1024).data)
+    }
+
+    /// The blob `security -w` prints carries a trailing newline that SecItem
+    /// never returns; the parser has to cope with both spellings.
+    func testParsesCredentialBlobWithTrailingNewline() {
+        let blob = "{\"claudeAiOauth\":{\"accessToken\":\"sk-ant-oat01-x\",\"expiresAt\":1900000000000}}\n"
+        XCTAssertEqual(ClaudeQuotaClient.parseCredentials(Data(blob.utf8))?.accessToken,
+                       "sk-ant-oat01-x")
+    }
 }

@@ -224,8 +224,14 @@ final class ClaudeQuotaClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
                     self.inFlight = false
-                    self.state.configured = false
-                    self.state.error = "Claude login not found (run claude /login to restore)"
+                    // A denied read means the login is there and neither this
+                    // app nor /usr/bin/security may decrypt it — telling the
+                    // user to log in again would send them down the wrong path.
+                    let denied = Self.lastReadWasDenied
+                    self.state.configured = denied
+                    self.state.error = denied
+                        ? "Claude login unreadable (Keychain denied access)"
+                        : "Claude login not found (run claude /login to restore)"
                     return
                 }
                 self.state.configured = true
@@ -280,21 +286,143 @@ final class ClaudeQuotaClient: ObservableObject {
         }
     }
 
+    /// Service name of the login-keychain item Claude Code stores its OAuth
+    /// blob in. Not ours: we only ever read it.
+    nonisolated static let claudeKeychainService = "Claude Code-credentials"
+    nonisolated static let maxCredentialBytes = 1_000_000
+
+    /// Set when the credential item exists but nothing was allowed to read
+    /// it without asking the user, so `refresh` can say "re-authorize"
+    /// instead of the misleading "login not found".
+    nonisolated private static let denialLock = NSLock()
+    nonisolated(unsafe) private static var _lastReadWasDenied = false
+    nonisolated static var lastReadWasDenied: Bool {
+        denialLock.lock(); defer { denialLock.unlock() }; return _lastReadWasDenied
+    }
+    private nonisolated static func recordDenial(_ denied: Bool) {
+        denialLock.lock(); _lastReadWasDenied = denied; denialLock.unlock()
+    }
+
     /// Read the raw Claude Code credential blob from the login Keychain.
-    /// Non-interactive: a locked keychain or a denied ACL returns nil rather
-    /// than blocking the refresh behind a system prompt.
+    ///
+    /// Never interactive. The item belongs to Claude Code; ToastMonitor is in
+    /// its ACL only while an earlier "Always Allow" still stands, and in
+    /// practice that authorization does not stay put — a one-time "Allow"
+    /// never persists at all, and Claude Code rewrites the item several times
+    /// a day as it refreshes the token. Whatever the cause, the consequence
+    /// used to be a modal SecurityAgent sheet asking for the login keychain
+    /// password, raised from a background poll the user never initiated.
+    /// An unauthorized read now fails instead, and `securityToolCredentials`
+    /// recovers from it without involving the user.
     private nonisolated static func keychainCredentials() -> Data? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
+            kSecAttrService as String: claudeKeychainService,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data, data.count <= 1_000_000 else { return nil }
-        return data
+        let (status, item) = KeychainStore.withoutUserInteraction { () -> (OSStatus, CFTypeRef?) in
+            var out: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &out)
+            return (status, out)
+        }
+        if status == errSecSuccess, let data = item as? Data, data.count <= maxCredentialBytes {
+            recordDenial(false)
+            return data
+        }
+        guard KeychainStore.authorizationFailures.contains(status) else {
+            recordDenial(false)
+            return nil
+        }
+        guard let borrowed = securityToolCredentials() else {
+            recordDenial(true)
+            return nil
+        }
+        recordDenial(false)
+        return borrowed
+    }
+
+    /// Fall back to `/usr/bin/security`, which is permanently trusted for
+    /// that item: Claude Code both creates and updates it by shelling out to
+    /// exactly this binary, so the tool re-earns its ACL entry on every token
+    /// refresh — the entry that keeps falling off is ours, not its. Reading
+    /// through it therefore stays silent without asking the user to
+    /// re-authorize ToastMonitor after every refresh, and without touching
+    /// the item's ACL (rewriting Claude Code's own access to fix our access
+    /// would be the wrong trade).
+    ///
+    /// The secret comes back on stdout; nothing secret is ever in argv.
+    private nonisolated static func securityToolCredentials() -> Data? {
+        guard !securityToolBlocked else { return nil }
+        let result = runCapturing(path: securityToolPath,
+                                  arguments: ["find-generic-password", "-s", claudeKeychainService, "-w"],
+                                  timeout: securityToolTimeout,
+                                  maxBytes: maxCredentialBytes)
+        if result.timedOut {
+            // The only reason `security` outlives the timeout is that it is
+            // sitting on a password sheet of its own — the very thing we are
+            // here to avoid. Kill the route for the rest of this launch.
+            markSecurityToolBlocked()
+            return nil
+        }
+        // `security -w` terminates the value with a newline; SecItem does not.
+        guard var data = result.data else { return nil }
+        while let last = data.last, last == 0x0A || last == 0x0D { data.removeLast() }
+        return data.isEmpty ? nil : data
+    }
+
+    nonisolated static let securityToolPath = "/usr/bin/security"
+    /// Generous next to a ~10ms keychain hit, short enough that a sheet we
+    /// failed to predict is gone before it can be typed into.
+    nonisolated static let securityToolTimeout: TimeInterval = 3
+
+    nonisolated private static let securityToolLock = NSLock()
+    nonisolated(unsafe) private static var _securityToolBlocked = false
+    private nonisolated static var securityToolBlocked: Bool {
+        securityToolLock.lock(); defer { securityToolLock.unlock() }; return _securityToolBlocked
+    }
+    private nonisolated static func markSecurityToolBlocked() {
+        securityToolLock.lock(); _securityToolBlocked = true; securityToolLock.unlock()
+    }
+
+    /// Runs `path` and returns its stdout, or `timedOut` if it is still alive
+    /// after `timeout` — in which case it is killed rather than waited on.
+    /// Output past `maxBytes` is refused rather than truncated: a partial
+    /// credential blob would parse as garbage, not as an error.
+    nonisolated static func runCapturing(path: String, arguments: [String],
+                                         timeout: TimeInterval,
+                                         maxBytes: Int) -> (data: Data?, timedOut: Bool) {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return (nil, false) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return (nil, false) }
+
+        // Draining on another queue: a child parked on a sheet would
+        // otherwise wedge this thread inside read(2), past any timeout.
+        var output = Data()
+        let outputLock = NSLock()
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+            outputLock.lock(); output = data; outputLock.unlock()
+            drained.signal()
+        }
+        if drained.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            _ = drained.wait(timeout: .now() + 1)
+            return (nil, true)
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return (nil, false) }
+        outputLock.lock(); let data = output; outputLock.unlock()
+        guard !data.isEmpty, data.count <= maxBytes else { return (nil, false) }
+        return (data, false)
     }
 
     nonisolated static func parseCredentials(_ data: Data) -> Credentials? {
