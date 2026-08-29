@@ -236,7 +236,7 @@ final class OpenRouterClient: ObservableObject {
             Database.shared.setSetting("or_auth_invalid", nil)
         } else if key != nil {
             state.error = KeychainStore.lastWasInteractionNotAllowed
-                ? "Keychain is locked; API key was not saved"
+                ? "Keychain locked or access denied; API key was not saved"
                 : "Keychain write failed — API key not saved"
             return false
         } else {
@@ -267,7 +267,7 @@ final class OpenRouterClient: ObservableObject {
         keys.append(normalized)
         guard saveKeys(keys, allowPrompt: true) else {
             state.error = KeychainStore.lastWasInteractionNotAllowed
-                ? "Keychain is locked; API key was not saved"
+                ? "Keychain locked or access denied; API key was not saved"
                 : "Keychain write failed — API key not saved"
             return false
         }
@@ -379,7 +379,7 @@ final class OpenRouterClient: ObservableObject {
             // unconfigured. checked right after storedKeys() so the status is
             // from the load just completed.
             cleared.error = KeychainStore.lastWasInteractionNotAllowed
-                ? "Keychain is locked"
+                ? "Keychain locked or access denied"
                 : "API key not configured"
             state = cleared
             return

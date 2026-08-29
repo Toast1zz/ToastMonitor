@@ -20,6 +20,7 @@ Builds in this repo are normally run with `swift build --disable-sandbox` on the
 - **No third-party dependencies.** Everything ships with the system frameworks (AppKit, SwiftUI, sqlite3, Security). If you're adding a library, reconsider — almost everything here is a small amount of system-API code.
 - **Local-only privacy default.** User data stays on the Mac unless the user explicitly enables a remote feed or quota service. Never add analytics, telemetry or implicit network calls.
 - **Credentials never in plaintext.** API keys and cookies belong in the macOS Keychain (see `KeychainStore`). Never log, print or store secrets in SQLite/plists.
+- **Background Keychain reads never prompt.** `kSecUseAuthenticationUI` and `LAContext.interactionNotAllowed` are honoured only by the data-protection keychain; login-keychain items ignore both and open a SecurityAgent password sheet on an ACL miss. Route every unattended read through `KeychainStore.withoutUserInteraction`, and keep the interactive path behind an explicit `allowPrompt: true` the user asked for.
 
 ## What to touch
 

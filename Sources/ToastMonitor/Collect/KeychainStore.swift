@@ -10,26 +10,80 @@ import Security
 /// standard API: reads are non-interactive by default, while explicit
 /// provisioning calls may opt into the one-time authorization prompt. The
 /// old vault file's values are migrated once on launch.
+///
+/// "Non-interactive" here means `withoutUserInteraction`, not the SecItem
+/// query flags: see that helper for why the flags alone are not enough on a
+/// file-based login keychain.
 enum KeychainStore {
     static let service = "ToastMonitor"
 
     // Most recent SecItem result, thread-safe, so clients can tell "not
-    // configured" (errSecItemNotFound) apart from "keychain locked"
-    // (errSecInteractionNotAllowed) and surface an actionable message.
+    // configured" (errSecItemNotFound) apart from "there but unreadable
+    // without asking the user" (see authorizationFailures) and surface an
+    // actionable message.
     private static let statusLock = NSLock()
     private static var _lastSecStatus: OSStatus = errSecSuccess
     static private(set) var lastSecStatus: OSStatus {
         get { statusLock.lock(); defer { statusLock.unlock() }; return _lastSecStatus }
         set { statusLock.lock(); defer { statusLock.unlock() }; _lastSecStatus = newValue }
     }
+    /// True when the last call failed because it was not allowed to ask the
+    /// user, rather than because the item is missing. With user interaction
+    /// suppressed, a locked keychain reports errSecInteractionNotAllowed and
+    /// an ACL that no longer trusts this build reports errSecAuthFailed;
+    /// both mean "configured, but unreadable right now".
     static var lastWasInteractionNotAllowed: Bool {
-        lastSecStatus == errSecInteractionNotAllowed
+        Self.authorizationFailures.contains(lastSecStatus)
     }
+
+    /// Statuses that mean the item exists but this process was not allowed
+    /// to decrypt it without asking the user.
+    static let authorizationFailures: Set<OSStatus> = [
+        errSecInteractionNotAllowed, errSecInteractionRequired,
+        errSecAuthFailed, errSecUserCanceled,
+    ]
 
     private static func recordStatus(_ status: OSStatus) {
         statusLock.lock()
         _lastSecStatus = status
         statusLock.unlock()
+    }
+
+    // MARK: - Suppressing the authorization sheet
+
+    /// Serializes SecItem work so the process-wide switch in
+    /// `withoutUserInteraction` cannot leak into a concurrent call that
+    /// legitimately wants to prompt (the `--provision-*` CLI paths).
+    /// Recursive: a non-interactive read reached from inside another one
+    /// should nest, not deadlock.
+    private static let interactionLock = NSRecursiveLock()
+
+    /// Runs `body` with the process-wide legacy-Keychain UI switch off.
+    ///
+    /// `kSecUseAuthenticationUI` and `LAContext.interactionNotAllowed` are
+    /// only honoured by the data-protection keychain. Items in the
+    /// file-based login keychain — ToastMonitor's own, and Claude Code's —
+    /// go down the old ACL path, where both are ignored: a query flagged
+    /// "non-interactive" still blocks the calling thread behind a
+    /// SecurityAgent sheet asking for the login keychain password. Verified
+    /// on macOS 27: the same query returns errSecAuthFailed in 11ms with
+    /// this switch off, and hangs on a password sheet with it on.
+    ///
+    /// `SecKeychainSetUserInteractionAllowed` is deprecated and process-wide
+    /// — hence the lock and the restore — but it is the only thing that
+    /// actually covers that path.
+    static func withoutUserInteraction<T>(_ body: () -> T) -> T {
+        interactionLock.lock()
+        var previous: DarwinBoolean = true
+        let readPrevious = SecKeychainGetUserInteractionAllowed(&previous)
+        SecKeychainSetUserInteractionAllowed(false)
+        defer {
+            // Restoring to `true` on a failed read is the safe direction:
+            // it can only ever re-enable a prompt the user asked for.
+            SecKeychainSetUserInteractionAllowed(readPrevious == errSecSuccess ? previous.boolValue : true)
+            interactionLock.unlock()
+        }
+        return body()
     }
 
     private static func query(account: String, allowPrompt: Bool) -> [String: Any] {
@@ -39,10 +93,12 @@ enum KeychainStore {
             kSecAttrAccount as String: account,
         ]
         if !allowPrompt {
-            // Do not attach an LAContext to legacy login-keychain items. On
-            // macOS 26/27 that route can still enter the old ACL decryption
-            // path and block while SecurityAgent asks for the login password.
-            // UIFail makes every unattended read/write/delete return instead.
+            // Kept for the data-protection keychain (and for any item that
+            // migrates there later), where this flag is the documented way
+            // to decline interaction. It does nothing for the login-keychain
+            // items we actually store today — withoutUserInteraction is what
+            // keeps those silent. Deliberately no LAContext: attaching one
+            // re-enters the old ACL decryption path.
             query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         }
         return query
@@ -50,6 +106,13 @@ enum KeychainStore {
 
     static func set(_ value: String, account: String, allowPrompt: Bool = false) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
+        guard allowPrompt else {
+            return withoutUserInteraction { setLocked(data, account: account, allowPrompt: false) }
+        }
+        return setLocked(data, account: account, allowPrompt: true)
+    }
+
+    private static func setLocked(_ data: Data, account: String, allowPrompt: Bool) -> Bool {
         let query = query(account: account, allowPrompt: allowPrompt)
         let update: [String: Any] = [kSecValueData as String: data]
 
@@ -81,8 +144,12 @@ enum KeychainStore {
         var query = query(account: account, allowPrompt: allowPrompt)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let read = { () -> (OSStatus, AnyObject?) in
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            return (status, result)
+        }
+        let (status, result) = allowPrompt ? read() : withoutUserInteraction(read)
         recordStatus(status)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
@@ -90,7 +157,8 @@ enum KeychainStore {
 
     static func delete(account: String, allowPrompt: Bool = false) {
         let query = query(account: account, allowPrompt: allowPrompt)
-        let status = SecItemDelete(query as CFDictionary)
+        let remove = { SecItemDelete(query as CFDictionary) }
+        let status = allowPrompt ? remove() : withoutUserInteraction(remove)
         recordStatus(status)
     }
 

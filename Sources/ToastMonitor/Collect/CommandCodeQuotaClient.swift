@@ -152,7 +152,7 @@ final class CommandCodeQuotaClient: ObservableObject {
         }
         keychainLocked = KeychainStore.lastWasInteractionNotAllowed
         state.error = keychainLocked
-            ? "Keychain locked — cookie not saved"
+            ? "Keychain locked or access denied — cookie not saved"
             : "Keychain write failed — cookie not saved"
         return false
     }
@@ -196,7 +196,7 @@ final class CommandCodeQuotaClient: ObservableObject {
                 guard let cookie else {
                     self.inFlight = false
                     self.state.error = self.keychainLocked
-                        ? "Keychain locked — unlock to refresh"
+                        ? "Keychain locked or access denied — reauthorize to refresh"
                         : "Not configured"
                     self.state.isLoading = false
                     return
