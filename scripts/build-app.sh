@@ -42,6 +42,33 @@ if [[ -z "$BUILD_VERSION" || ! "$BUILD_VERSION" =~ ^[0-9]+$ || "$BUILD_VERSION" 
 fi
 VERSION_SOURCE="${TM_VERSION_SOURCE:-${TAG_VERSION:-development}}"
 
+# The 1.0 fallback above is deliberate, but it is a trap immediately after a
+# release: the tag sits on the release commit while HEAD is the "Publish
+# update manifest" commit that follows it, so a plain build on main quietly
+# installs 1.0 over a 1.9.x install. The in-app updater then sees the
+# published release as newer and offers it — one click from replacing the
+# build you just made. Never change the version to compensate; just say so.
+# Silent in CI, where nothing is installed and the version is irrelevant.
+if [[ -z "$TAG_VERSION" && -z "${TM_VERSION:-}" && "${CI:-}" != "true" ]]; then
+    NEAREST_TAG="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
+    if [[ -n "$NEAREST_TAG" ]]; then
+        AHEAD="$(git rev-list --count "$NEAREST_TAG..HEAD" 2>/dev/null || echo '?')"
+        # Anything changed since the tag other than the published manifest.
+        NON_MANIFEST="$(git diff --name-only "$NEAREST_TAG..HEAD" 2>/dev/null \
+            | grep -v '^\(docs/\)\?appcast\.json$' || true)"
+        echo "warning: HEAD is $AHEAD commit(s) past $NEAREST_TAG — development build $VERSION" >&2
+        if [[ -z "$NON_MANIFEST" ]]; then
+            echo "         (HEAD only publishes ${NEAREST_TAG}'s update manifest; the code is ${NEAREST_TAG}'s)" >&2
+        fi
+        if [[ "$SKIP_INSTALL" != "1" ]]; then
+            echo "         Installing this reports $VERSION, below the published ${NEAREST_TAG#v}, so the" >&2
+            echo "         in-app updater will offer that release and one click reverts this build." >&2
+        fi
+        echo "         For a real version: git checkout $NEAREST_TAG && ./scripts/build-app.sh" >&2
+        echo "         (or tag this commit, or set TM_VERSION explicitly)" >&2
+    fi
+fi
+
 echo "== building (if needed) =="
 "${SWIFT_BUILD[@]}" -c release
 
