@@ -4,12 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Xcode 27's default SwiftPM build engine currently writes the deployment
-# target into LC_BUILD_VERSION's SDK field. AppKit interprets that as a legacy
-# SDK link and deliberately serves compatibility controls. The native engine
-# preserves the macOS 14 deployment target while correctly recording the
-# Xcode 27 SDK, which enables system Liquid Glass on macOS 26/27.
-SWIFT_BUILD=(swift build --build-system native)
+# TM_DEPLOY_MIN controls the installability floor in Info.plist
+# (LSMinimumSystemVersion). The source and SwiftPM minimum are already macOS
+# 13.0, so the default build is a Ventura-compatible artifact; setting
+# TM_DEPLOY_MIN=14.0 raises only the install gate for a future 14+-only
+# release, leaving the binary (and its 13.0 minos) unchanged.
+
 # TM_ARCHS ("arm64", "arm64 x86_64", ...) overrides the host architecture so
 # releases can ship a universal binary. Defaults to the build machine.
 if [[ -n "${TM_ARCHS:-}" ]]; then
@@ -104,7 +104,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><true/>
@@ -121,8 +121,12 @@ PLIST
 
 # Replace only the numeric bundle fields after validating the source above.
 echo "version: $VERSION (build $BUILD_VERSION; source $VERSION_SOURCE)"
-plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
-plutil -replace CFBundleVersion -string "$BUILD_VERSION" "$APP/Contents/Info.plist"
+DEPLOY_MIN="${TM_DEPLOY_MIN:-13.0}"
+if [[ ! "$DEPLOY_MIN" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo "error: TM_DEPLOY_MIN must be X.Y (e.g. 13.0), got: $DEPLOY_MIN" >&2
+    exit 1
+fi
+plutil -replace LSMinimumSystemVersion -string "$DEPLOY_MIN" "$APP/Contents/Info.plist"
 
 cp "$BIN" "$APP/Contents/MacOS/ToastMonitor"
 

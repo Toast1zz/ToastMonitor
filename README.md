@@ -1,6 +1,6 @@
 # ToastMonitor
 
-[![macOS](https://img.shields.io/badge/macOS-14.0+-blue)](https://github.com/Toast1zz/ToastMonitor)
+[![macOS](https://img.shields.io/badge/macOS-13.0+-blue)](https://github.com/Toast1zz/ToastMonitor)
 [![Swift](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
 [![License: MIT](https://img.shields.io/github/license/Toast1zz/ToastMonitor)](LICENSE)
 

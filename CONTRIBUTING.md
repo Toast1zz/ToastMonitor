@@ -4,7 +4,7 @@ Thanks for considering a contribution. This project is a native macOS menu-bar a
 
 ## Development setup
 
-- macOS 14+ with Xcode (SwiftPM toolchain 5.10+)
+- macOS 13+ with Xcode (SwiftPM toolchain 5.10+)
 - `zstd` CLI is optional (Homebrew: `brew install zstd`) — without it the DSH collector falls back to cache mode and the zstd tests are skipped
 
 ```bash

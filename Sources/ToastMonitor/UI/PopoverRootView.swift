@@ -16,7 +16,13 @@ struct PopoverRootView: View {
         ZStack(alignment: .top) {
             if showSettings {
                 PopoverSettingsView {
-                    withAnimation(.snappy(duration: 0.25)) { showSettings = false }
+                    // 14+ keeps the original spring; 13 falls back to the
+                    // eased curve used by the hero number transitions.
+                    if #available(macOS 14.0, *) {
+                        withAnimation(.snappy(duration: 0.25)) { showSettings = false }
+                    } else {
+                        withAnimation(.easeOut(duration: 0.35)) { showSettings = false }
+                    }
                 }
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
@@ -52,7 +58,7 @@ struct PopoverRootView: View {
             guard let naturalHeight = pages[page]?.naturalHeight(for: page) else { return }
             onNaturalHeightChange(naturalHeight)
         }
-        .onChange(of: showSettings) { _, open in
+        .onChange(of: showSettings) { open in
             NotificationCenter.default.post(
                 name: PanelController.settingsVisibilityNotification,
                 object: nil,
@@ -122,7 +128,11 @@ struct PopoverRootView: View {
             }
 
             FooterIconButton(systemName: "gearshape", help: "Popover Settings") {
-                withAnimation(.snappy(duration: 0.25)) { showSettings = true }
+                if #available(macOS 14.0, *) {
+                    withAnimation(.snappy(duration: 0.25)) { showSettings = true }
+                } else {
+                    withAnimation(.easeOut(duration: 0.35)) { showSettings = true }
+                }
             }
 
             Spacer()
