@@ -19,6 +19,11 @@ if [[ -n "${TM_ARCHS:-}" ]]; then
 fi
 BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 APP="$ROOT/dist/ToastMonitor.app"
+if [[ -z "$ROOT" || "$APP" != "$ROOT"/* ]]; then
+    echo "error: refusing to assemble outside the repo: $APP" >&2
+    exit 1
+fi
+
 INSTALL_APP="${TM_INSTALL_PATH:-/Applications/ToastMonitor.app}"
 SKIP_INSTALL="${TM_SKIP_INSTALL:-0}"
 
