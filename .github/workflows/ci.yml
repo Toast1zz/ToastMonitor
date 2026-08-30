@@ -101,11 +101,14 @@ jobs:
             exit 1
           }
 
-      - name: Assemble app
+      - name: Assemble app (universal)
         if: ${{ env.TM_SIGNING_IDENTITY != '' || env.TM_SKIP_SIGNING == '1' }}
         env:
           TM_VERSION: ${{ github.ref_name }}
           TM_BUILD_NUMBER: ${{ github.run_number }}
+          # Intel Macs need the x86_64 slice; the hosted runner is arm64-only,
+          # so build both architectures and ship a universal binary.
+          TM_ARCHS: arm64 x86_64
         run: ./scripts/build-app.sh
 
       - name: Upload app bundle
