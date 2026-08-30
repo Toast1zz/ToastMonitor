@@ -9,9 +9,11 @@ cd "$ROOT"
 # 13.0, so the default build is a Ventura-compatible artifact; setting
 # TM_DEPLOY_MIN=14.0 raises only the install gate for a future 14+-only
 # release, leaving the binary (and its 13.0 minos) unchanged.
+SWIFT_BUILD=(swift build --build-system native)
 
 # TM_ARCHS ("arm64", "arm64 x86_64", ...) overrides the host architecture so
 # releases can ship a universal binary. Defaults to the build machine.
+
 if [[ -n "${TM_ARCHS:-}" ]]; then
     for arch in $TM_ARCHS; do SWIFT_BUILD+=(--arch "$arch"); done
 fi
