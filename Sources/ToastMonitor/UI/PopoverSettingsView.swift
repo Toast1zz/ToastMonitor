@@ -197,7 +197,7 @@ struct PopoverSettingsView: View {
                 .toggleStyle(.switch)
                 .font(TMType.medium(TMType.body))
                 .accessibilityHint("Keep the panel open when you click other windows or apps")
-                .onChange(of: closeOnResign) { _, newValue in
+                .onChange(of: closeOnResign) { newValue in
                     // Persisted off the main thread; the panel reads the
                     // setting per event, so it applies immediately after.
                     let v = newValue ? "1" : "0"
@@ -210,7 +210,7 @@ struct PopoverSettingsView: View {
                 .toggleStyle(.switch)
                 .font(TMType.medium(TMType.body))
                 .accessibilityHint("Appear as a Dock application while the dashboard window is open")
-                .onChange(of: dockIconOn) { _, newValue in
+                .onChange(of: dockIconOn) { newValue in
                     let v = newValue ? "1" : "0"
                     DispatchQueue.global(qos: .userInitiated).async {
                         _ = Database.shared.setSetting(WindowManager.dockIconSetting, v)
@@ -251,7 +251,7 @@ struct PopoverSettingsView: View {
                 .toggleStyle(.switch)
                 .font(TMType.medium(TMType.body))
                 .accessibilityHint("Check for new versions in the background at launch")
-                .onChange(of: autoCheckOn) { _, newValue in
+                .onChange(of: autoCheckOn) { newValue in
                     let v = newValue ? "1" : "0"
                     DispatchQueue.global(qos: .userInitiated).async {
                         _ = Database.shared.setSetting(UpdateManager.autoCheckSetting, v)
