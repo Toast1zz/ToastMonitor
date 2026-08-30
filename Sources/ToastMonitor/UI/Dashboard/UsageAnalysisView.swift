@@ -123,8 +123,8 @@ struct UsageAnalysisView: View {
         }
         .padding(.horizontal, 24)
         .onAppear { load() }
-        .onChange(of: range) { load() }
-        .onChange(of: grouping) { load() }
+        .onChange(of: range) { _ in load() }
+        .onChange(of: grouping) { _ in load() }
     }
 
     private var pageHeader: some View {
@@ -415,7 +415,7 @@ struct UsageAnalysisView: View {
                                 let v = Double(maxV) * Double(3 - step) / 3
                                 let labelY = step == 0 ? CGFloat(1) : (step == 3 ? y - 1 : y)
                                 let anchor: UnitPoint = step == 0 ? .topLeading : (step == 3 ? .bottomLeading : .leading)
-                                ctx.draw(Text(Format.compact(Int64(v))).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(.secondary),
+                                ctx.draw(Text(Format.compact(Int64(v))).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(Color.secondary),
                                          at: CGPoint(x: 2, y: labelY), anchor: anchor)
                             }
                             for (di, day) in days.enumerated() {
@@ -429,7 +429,7 @@ struct UsageAnalysisView: View {
                             }
                             for (idx, label) in analysis?.tokenTicks ?? [] {
                                 let x = yAxisW + CGFloat(idx) * (barW + 2) + barW / 2
-                                ctx.draw(Text(label).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(.secondary),
+                                ctx.draw(Text(label).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(Color.secondary),
                                          at: CGPoint(x: x, y: chartH + 7))
                             }
                         }
@@ -532,7 +532,7 @@ struct UsageAnalysisView: View {
                             let v = maxV * Double(3 - step) / 3
                             let labelY = step == 0 ? CGFloat(1) : (step == 3 ? y - 1 : y)
                             let anchor: UnitPoint = step == 0 ? .topLeading : (step == 3 ? .bottomLeading : .leading)
-                            ctx.draw(Text(Format.moneyShort(v)).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(.secondary),
+                            ctx.draw(Text(Format.moneyShort(v)).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(Color.secondary),
                                      at: CGPoint(x: 2, y: labelY), anchor: anchor)
                         }
                         if keys.count == 1 {
@@ -561,7 +561,7 @@ struct UsageAnalysisView: View {
                             let x = keys.count > 1
                                 ? yAxisW + CGFloat(idx) / CGFloat(keys.count - 1) * (size.width - yAxisW)
                                 : yAxisW + (size.width - yAxisW) / 2
-                            ctx.draw(Text(label).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(.secondary),
+                            ctx.draw(Text(label).font(TMType.regular(TMType.micro).monospacedDigit()).foregroundStyle(Color.secondary),
                                      at: CGPoint(x: x, y: chartH + 7))
                         }
                     }
