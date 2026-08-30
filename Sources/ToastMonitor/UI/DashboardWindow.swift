@@ -159,7 +159,11 @@ final class WindowManager {
         // floating Liquid Glass geometry and current control height.
         window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 1120, height: 720))
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // .fullSizeContentView extends content under the transparent titlebar
+        // so the toolbar/titlebar region shows the window's own surface
+        // instead of an opaque title bar (Ventura's titlebarAppearsTransparent
+        // alone leaves a solid strip otherwise).
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 900, height: 580)
         window.center()
