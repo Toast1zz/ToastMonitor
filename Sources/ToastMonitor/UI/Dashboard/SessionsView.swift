@@ -50,7 +50,7 @@ struct SessionsView: View {
         }
         .padding(.horizontal, 24)
         .onAppear(perform: load)
-        .onChange(of: selectedTool) { load() }
+        .onChange(of: selectedTool) { _ in load() }
         .sheet(item: $selectedSession) { SessionDetailView(session: $0) }
     }
 
