@@ -146,53 +146,57 @@ fi
 cp "$ICON_SOURCE" "$APP/Contents/Resources/AppIcon.icns"
 echo "icon: $ICON_SOURCE"
 echo "== code signing =="
-# A locked login keychain would block codesign on an invisible password
-# sheet. Fail fast with guidance instead; the one-time authorization also
-# unlocks the keychain, so after `scripts/authorize-local-keychain.sh` has
-# been run once, rebuilds stay silent.
-KEYCHAIN="${TM_KEYCHAIN_PATH:-$HOME/Library/Keychains/login.keychain-db}"
-if [[ ! -f "$KEYCHAIN" ]]; then
-    echo "error: keychain not found: $KEYCHAIN" >&2
-    exit 1
-fi
-if ! security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1; then
-    echo "error: keychain is locked: $KEYCHAIN" >&2
-    echo "       run ./scripts/authorize-local-keychain.sh once to unlock and authorize rebuilds" >&2
-    exit 1
-fi
-# Unlocking a keychain with a password on the command line leaks that secret
-# to process observers. Release tooling must unlock/select the keychain before
-# invoking this script.
-SIGNING_IDENTITY="${TM_SIGNING_IDENTITY:-}"
-if [[ -z "$SIGNING_IDENTITY" ]]; then
-    AVAILABLE_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-    # Prefer a stable Apple Development Team identity. ToastMonitor's three
-    # login-keychain items authorize this Team ID, so rebuilt binaries remain
-    # trusted even though their CDHash changes. A self-signed identity has no
-    # Team ID and falls back to a per-build CDHash, causing one password sheet
-    # per credential after every install.
-    while IFS= read -r identity_line; do
-        if [[ "$identity_line" == *'"Apple Development:'* ]]; then
-            SIGNING_IDENTITY="${identity_line#*\"}"
-            SIGNING_IDENTITY="${SIGNING_IDENTITY%%\"*}"
-            break
-        fi
-    done <<< "$AVAILABLE_IDENTITIES"
-    if [[ -z "$SIGNING_IDENTITY" && "$AVAILABLE_IDENTITIES" == *'"Spotoast Local Dev"'* ]]; then
-        SIGNING_IDENTITY="Spotoast Local Dev"
+if [[ "${TM_SKIP_SIGNING:-0}" == "1" ]]; then
+    echo "skipping code signing (TM_SKIP_SIGNING=1) — artifact will not pass Gatekeeper"
+else
+    # A locked login keychain would block codesign on an invisible password
+    # sheet. Fail fast with guidance instead; the one-time authorization also
+    # unlocks the keychain, so after `scripts/authorize-local-keychain.sh` has
+    # been run once, rebuilds stay silent.
+    KEYCHAIN="${TM_KEYCHAIN_PATH:-$HOME/Library/Keychains/login.keychain-db}"
+    if [[ ! -f "$KEYCHAIN" ]]; then
+        echo "error: keychain not found: $KEYCHAIN" >&2
+        exit 1
     fi
+    if ! security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1; then
+        echo "error: keychain is locked: $KEYCHAIN" >&2
+        echo "       run ./scripts/authorize-local-keychain.sh once to unlock and authorize rebuilds" >&2
+        exit 1
+    fi
+    # Unlocking a keychain with a password on the command line leaks that secret
+    # to process observers. Release tooling must unlock/select the keychain before
+    # invoking this script.
+    SIGNING_IDENTITY="${TM_SIGNING_IDENTITY:-}"
+    if [[ -z "$SIGNING_IDENTITY" ]]; then
+        AVAILABLE_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+        # Prefer a stable Apple Development Team identity. ToastMonitor's three
+        # login-keychain items authorize this Team ID, so rebuilt binaries remain
+        # trusted even though their CDHash changes. A self-signed identity has no
+        # Team ID and falls back to a per-build CDHash, causing one password sheet
+        # per credential after every install.
+        while IFS= read -r identity_line; do
+            if [[ "$identity_line" == *'"Apple Development:'* ]]; then
+                SIGNING_IDENTITY="${identity_line#*\"}"
+                SIGNING_IDENTITY="${SIGNING_IDENTITY%%\"*}"
+                break
+            fi
+        done <<< "$AVAILABLE_IDENTITIES"
+        if [[ -z "$SIGNING_IDENTITY" && "$AVAILABLE_IDENTITIES" == *'"Spotoast Local Dev"'* ]]; then
+            SIGNING_IDENTITY="Spotoast Local Dev"
+        fi
+    fi
+    if [[ -z "$SIGNING_IDENTITY" ]]; then
+        echo "error: no stable signing identity found; refusing ad-hoc signing" >&2
+        echo "       set TM_SIGNING_IDENTITY to a Developer ID identity" >&2
+        exit 1
+    fi
+    echo "signing identity: $SIGNING_IDENTITY"
+    TIMESTAMP_FLAG=(--timestamp)
+    if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
+        TIMESTAMP_FLAG=(--timestamp=none)
+    fi
+    codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
 fi
-if [[ -z "$SIGNING_IDENTITY" ]]; then
-    echo "error: no stable signing identity found; refusing ad-hoc signing" >&2
-    echo "       set TM_SIGNING_IDENTITY to a Developer ID identity" >&2
-    exit 1
-fi
-echo "signing identity: $SIGNING_IDENTITY"
-TIMESTAMP_FLAG=(--timestamp)
-if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
-    TIMESTAMP_FLAG=(--timestamp=none)
-fi
-codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
 
 echo "== installing locally =="
 if [[ "${CI:-}" == "true" ]]; then
