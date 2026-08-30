@@ -123,6 +123,8 @@ PLIST
 
 # Replace only the numeric bundle fields after validating the source above.
 echo "version: $VERSION (build $BUILD_VERSION; source $VERSION_SOURCE)"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$BUILD_VERSION" "$APP/Contents/Info.plist"
 DEPLOY_MIN="${TM_DEPLOY_MIN:-13.0}"
 if [[ ! "$DEPLOY_MIN" =~ ^[0-9]+\.[0-9]+$ ]]; then
     echo "error: TM_DEPLOY_MIN must be X.Y (e.g. 13.0), got: $DEPLOY_MIN" >&2
