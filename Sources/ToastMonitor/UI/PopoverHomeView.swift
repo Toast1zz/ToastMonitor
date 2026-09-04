@@ -205,7 +205,7 @@ struct PopoverHomeView: View {
                     .tmMonospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-                    .contentTransition(.numericText(value: Double(tokens)))
+                    .contentTransition(.numericText())
                     // Both the token count and the display format drive the
                     // transition, so toggling 缩写/完整 animates the same way
                     // as a live token update.

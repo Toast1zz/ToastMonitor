@@ -1,4 +1,4 @@
-// swift-tools-version:5.10
+// swift-tools-version:5.9
 import PackageDescription
 
 // SwiftPM has no application marketing-version field. Release versions are
@@ -6,7 +6,7 @@ import PackageDescription
 // builds use the explicit development version 1.0.
 let package = Package(
     name: "ToastMonitor",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
             name: "ToastMonitor",

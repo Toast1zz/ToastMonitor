@@ -100,7 +100,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .onChange(of: codexBilling) { _, newValue in
+                    .onChange(of: codexBilling) { newValue in
                         let value = newValue
                         DispatchQueue.global(qos: .userInitiated).async {
                             _ = Database.shared.setSetting("codex_billing_mode", value)
@@ -202,7 +202,7 @@ struct SettingsView: View {
             }
             codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
         }
-        .onChange(of: feedURL) { _, _ in
+        .onChange(of: feedURL) { _ in
             saved = false
             feedError = nil
             feedDisabled = false
@@ -393,7 +393,7 @@ struct SubscriptionSettingsSection: View {
 
         }
         .tmPanelSurface()
-        .onChange(of: showForm) { _, open in
+        .onChange(of: showForm) { open in
             // Draft validation must not survive closing and later reopening
             // the form; especially dateError used to appear on a fresh edit.
             priceError = false
