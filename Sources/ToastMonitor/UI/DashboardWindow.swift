@@ -250,6 +250,10 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
     private var selectionGeneration = 0
     private let selectionHandler: (DashboardView.Tab) -> Void
 
+    /// The centered group is the macOS 14+ identity (Liquid Glass on 26/27).
+    /// macOS 13 crashes inside `NSToolbarView _centeredItemViewers` when a
+    /// grouped item is centered (NSCalendarDate decode during layout), so
+    /// Ventura gets a plain item hosting an NSSegmentedControl instead.
     private(set) lazy var tabsGroup: NSToolbarItemGroup = {
         let titles = DashboardView.Tab.allCases.map(\.rawValue)
         let group = NSToolbarItemGroup(
@@ -271,13 +275,33 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
         return group
     }()
 
+    /// macOS 13 fallback: an ungrouped item whose view is an
+    /// NSSegmentedControl. The 14+ path keeps `tabsGroup`; this exists only
+    /// on Ventura where centered groups crash.
+    private(set) lazy var tabsItem: NSToolbarItem = {
+        let item = NSToolbarItem(itemIdentifier: Self.tabsIdentifier)
+        let control = NSSegmentedControl(
+            labels: DashboardView.Tab.allCases.map(\.rawValue),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(legacySelectionChanged(_:))
+        )
+        control.selectedSegment = initialTabIndex
+        item.view = control
+        item.label = "Dashboard Page"
+        item.paletteLabel = "Dashboard Page"
+        return item
+    }()
+
     private(set) lazy var toolbar: NSToolbar = {
         let toolbar = NSToolbar(identifier: "ToastMonitor.DashboardToolbar")
         toolbar.delegate = self
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
         toolbar.displayMode = .iconOnly
-        toolbar.centeredItemIdentifiers = [Self.tabsIdentifier]
+        if #available(macOS 14.0, *) {
+            toolbar.centeredItemIdentifiers = [Self.tabsIdentifier]
+        }
         return toolbar
     }()
 
@@ -306,7 +330,11 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
         case Self.tabsIdentifier:
-            return tabsGroup
+            if #available(macOS 14.0, *) {
+                return tabsGroup
+            } else {
+                return tabsItem
+            }
         case Self.refreshIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Refresh"
@@ -336,6 +364,12 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
             guard let self, self.selectionGeneration == generation else { return }
             self.selectionHandler(selected)
         }
+    }
+
+    @objc private func legacySelectionChanged(_ sender: NSSegmentedControl) {
+        let tabs = DashboardView.Tab.allCases
+        guard tabs.indices.contains(sender.selectedSegment) else { return }
+        selectionHandler(tabs[sender.selectedSegment])
     }
 
     @objc private func refreshData(_ sender: Any?) {

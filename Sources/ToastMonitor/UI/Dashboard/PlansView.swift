@@ -72,7 +72,7 @@ struct PlansView: View {
                 loadORSnapshots()
             }
         }
-        .onChange(of: showGoForm) { _, open in
+        .onChange(of: showGoForm) { open in
             if open {
                 goFormMessage = nil
             } else {
@@ -80,7 +80,7 @@ struct PlansView: View {
                 goCookie = ""
             }
         }
-        .onChange(of: showORForm) { _, open in
+        .onChange(of: showORForm) { open in
             if open {
                 orFormMessage = nil
             } else {
@@ -88,7 +88,7 @@ struct PlansView: View {
                 orAppend = false
             }
         }
-        .onChange(of: showCCForm) { _, open in
+        .onChange(of: showCCForm) { open in
             if open {
                 ccFormMessage = nil
             } else {
