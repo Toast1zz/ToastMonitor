@@ -322,8 +322,11 @@ struct PopoverHomeView: View {
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
+        // 从未配置过 source（全部时间都没有任何数据）才是"未开始"，光是
+        // 当前周期没有数据不代表没配置——否则每天开局都会误判成 Get Started。
+        let neverConfigured = rows.isEmpty && app.byToolAll.isEmpty
         return VStack(alignment: .leading, spacing: 8) {
-            if rows.isEmpty {
+            if neverConfigured {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Get Started")
                         .font(TMType.semibold(TMType.body))
@@ -340,6 +343,10 @@ struct PopoverHomeView: View {
                     }
                     .controlSize(.small)
                 }
+            } else if rows.isEmpty {
+                Text("No usage yet this period")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
             } else {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
