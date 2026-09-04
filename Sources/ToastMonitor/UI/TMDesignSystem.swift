@@ -282,6 +282,18 @@ extension View {
     /// Tabular numerals for dynamic figures. Not a font choice — the font
     /// stays whatever SF Pro weight the context already uses.
     func tmMonospacedDigit() -> some View { modifier(TMMonospacedDigit()) }
+
+    /// Counting transition for a hero figure. macOS 14+ takes the value so the
+    /// digits roll in the direction the number actually moved; Ventura only has
+    /// the value-less form, which still animates but without that direction.
+    @ViewBuilder
+    func tmNumericTextTransition(value: Double) -> some View {
+        if #available(macOS 14.0, *) {
+            contentTransition(.numericText(value: value))
+        } else {
+            contentTransition(.numericText())
+        }
+    }
 }
 
 /// 板块标题（含可选右侧操作）。与 SectionTitle 同风格：全大写小号灰。

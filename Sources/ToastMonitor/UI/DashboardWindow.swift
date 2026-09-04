@@ -382,10 +382,20 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
         ClaudeQuotaClient.shared.refresh(force: true)
     }
 
+    /// Menu items and Cmd+1…4 change the page without going through the
+    /// toolbar action, so the highlight has to follow. It must move on the
+    /// control that is actually in the toolbar: touching `tabsGroup` on
+    /// Ventura would only instantiate the unused 14+ item.
     func select(_ tab: DashboardView.Tab) {
-        guard let index = DashboardView.Tab.allCases.firstIndex(of: tab),
-              tabsGroup.selectedIndex != index else { return }
-        tabsGroup.selectedIndex = index
+        guard let index = DashboardView.Tab.allCases.firstIndex(of: tab) else { return }
+        if #available(macOS 14.0, *) {
+            guard tabsGroup.selectedIndex != index else { return }
+            tabsGroup.selectedIndex = index
+        } else {
+            guard let control = tabsItem.view as? NSSegmentedControl,
+                  control.selectedSegment != index else { return }
+            control.selectedSegment = index
+        }
     }
 }
 

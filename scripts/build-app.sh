@@ -4,26 +4,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# TM_DEPLOY_MIN controls the installability floor in Info.plist
-# (LSMinimumSystemVersion). The source and SwiftPM minimum are already macOS
-# 13.0, so the default build is a Ventura-compatible artifact; setting
-# TM_DEPLOY_MIN=14.0 raises only the install gate for a future 14+-only
-# release, leaving the binary (and its 13.0 minos) unchanged.
+# Xcode 27's default SwiftPM build engine currently writes the deployment
+# target into LC_BUILD_VERSION's SDK field. AppKit interprets that as a legacy
+# SDK link and deliberately serves compatibility controls. The native engine
+# preserves the SwiftPM deployment target (macOS 13 since Ventura support)
+# while correctly recording the Xcode 27 SDK, which enables system Liquid
+# Glass on macOS 26/27. Lowering the deployment target does not change that:
+# glass adoption follows the recorded SDK, not the minimum OS.
 SWIFT_BUILD=(swift build --build-system native)
-
 # TM_ARCHS ("arm64", "arm64 x86_64", ...) overrides the host architecture so
 # releases can ship a universal binary. Defaults to the build machine.
-
 if [[ -n "${TM_ARCHS:-}" ]]; then
     for arch in $TM_ARCHS; do SWIFT_BUILD+=(--arch "$arch"); done
 fi
 BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 APP="$ROOT/dist/ToastMonitor.app"
-if [[ -z "$ROOT" || "$APP" != "$ROOT"/* ]]; then
-    echo "error: refusing to assemble outside the repo: $APP" >&2
-    exit 1
-fi
-
 INSTALL_APP="${TM_INSTALL_PATH:-/Applications/ToastMonitor.app}"
 SKIP_INSTALL="${TM_SKIP_INSTALL:-0}"
 
@@ -130,12 +125,6 @@ PLIST
 echo "version: $VERSION (build $BUILD_VERSION; source $VERSION_SOURCE)"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_VERSION" "$APP/Contents/Info.plist"
-DEPLOY_MIN="${TM_DEPLOY_MIN:-13.0}"
-if [[ ! "$DEPLOY_MIN" =~ ^[0-9]+\.[0-9]+$ ]]; then
-    echo "error: TM_DEPLOY_MIN must be X.Y (e.g. 13.0), got: $DEPLOY_MIN" >&2
-    exit 1
-fi
-plutil -replace LSMinimumSystemVersion -string "$DEPLOY_MIN" "$APP/Contents/Info.plist"
 
 cp "$BIN" "$APP/Contents/MacOS/ToastMonitor"
 
@@ -155,57 +144,53 @@ fi
 cp "$ICON_SOURCE" "$APP/Contents/Resources/AppIcon.icns"
 echo "icon: $ICON_SOURCE"
 echo "== code signing =="
-if [[ "${TM_SKIP_SIGNING:-0}" == "1" ]]; then
-    echo "skipping code signing (TM_SKIP_SIGNING=1) — artifact will not pass Gatekeeper"
-else
-    # A locked login keychain would block codesign on an invisible password
-    # sheet. Fail fast with guidance instead; the one-time authorization also
-    # unlocks the keychain, so after `scripts/authorize-local-keychain.sh` has
-    # been run once, rebuilds stay silent.
-    KEYCHAIN="${TM_KEYCHAIN_PATH:-$HOME/Library/Keychains/login.keychain-db}"
-    if [[ ! -f "$KEYCHAIN" ]]; then
-        echo "error: keychain not found: $KEYCHAIN" >&2
-        exit 1
-    fi
-    if ! security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1; then
-        echo "error: keychain is locked: $KEYCHAIN" >&2
-        echo "       run ./scripts/authorize-local-keychain.sh once to unlock and authorize rebuilds" >&2
-        exit 1
-    fi
-    # Unlocking a keychain with a password on the command line leaks that secret
-    # to process observers. Release tooling must unlock/select the keychain before
-    # invoking this script.
-    SIGNING_IDENTITY="${TM_SIGNING_IDENTITY:-}"
-    if [[ -z "$SIGNING_IDENTITY" ]]; then
-        AVAILABLE_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-        # Prefer a stable Apple Development Team identity. ToastMonitor's three
-        # login-keychain items authorize this Team ID, so rebuilt binaries remain
-        # trusted even though their CDHash changes. A self-signed identity has no
-        # Team ID and falls back to a per-build CDHash, causing one password sheet
-        # per credential after every install.
-        while IFS= read -r identity_line; do
-            if [[ "$identity_line" == *'"Apple Development:'* ]]; then
-                SIGNING_IDENTITY="${identity_line#*\"}"
-                SIGNING_IDENTITY="${SIGNING_IDENTITY%%\"*}"
-                break
-            fi
-        done <<< "$AVAILABLE_IDENTITIES"
-        if [[ -z "$SIGNING_IDENTITY" && "$AVAILABLE_IDENTITIES" == *'"Spotoast Local Dev"'* ]]; then
-            SIGNING_IDENTITY="Spotoast Local Dev"
-        fi
-    fi
-    if [[ -z "$SIGNING_IDENTITY" ]]; then
-        echo "error: no stable signing identity found; refusing ad-hoc signing" >&2
-        echo "       set TM_SIGNING_IDENTITY to a Developer ID identity" >&2
-        exit 1
-    fi
-    echo "signing identity: $SIGNING_IDENTITY"
-    TIMESTAMP_FLAG=(--timestamp)
-    if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
-        TIMESTAMP_FLAG=(--timestamp=none)
-    fi
-    codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
+# A locked login keychain would block codesign on an invisible password
+# sheet. Fail fast with guidance instead; the one-time authorization also
+# unlocks the keychain, so after `scripts/authorize-local-keychain.sh` has
+# been run once, rebuilds stay silent.
+KEYCHAIN="${TM_KEYCHAIN_PATH:-$HOME/Library/Keychains/login.keychain-db}"
+if [[ ! -f "$KEYCHAIN" ]]; then
+    echo "error: keychain not found: $KEYCHAIN" >&2
+    exit 1
 fi
+if ! security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1; then
+    echo "error: keychain is locked: $KEYCHAIN" >&2
+    echo "       run ./scripts/authorize-local-keychain.sh once to unlock and authorize rebuilds" >&2
+    exit 1
+fi
+# Unlocking a keychain with a password on the command line leaks that secret
+# to process observers. Release tooling must unlock/select the keychain before
+# invoking this script.
+SIGNING_IDENTITY="${TM_SIGNING_IDENTITY:-}"
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    AVAILABLE_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+    # Prefer a stable Apple Development Team identity. ToastMonitor's three
+    # login-keychain items authorize this Team ID, so rebuilt binaries remain
+    # trusted even though their CDHash changes. A self-signed identity has no
+    # Team ID and falls back to a per-build CDHash, causing one password sheet
+    # per credential after every install.
+    while IFS= read -r identity_line; do
+        if [[ "$identity_line" == *'"Apple Development:'* ]]; then
+            SIGNING_IDENTITY="${identity_line#*\"}"
+            SIGNING_IDENTITY="${SIGNING_IDENTITY%%\"*}"
+            break
+        fi
+    done <<< "$AVAILABLE_IDENTITIES"
+    if [[ -z "$SIGNING_IDENTITY" && "$AVAILABLE_IDENTITIES" == *'"Spotoast Local Dev"'* ]]; then
+        SIGNING_IDENTITY="Spotoast Local Dev"
+    fi
+fi
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "error: no stable signing identity found; refusing ad-hoc signing" >&2
+    echo "       set TM_SIGNING_IDENTITY to a Developer ID identity" >&2
+    exit 1
+fi
+echo "signing identity: $SIGNING_IDENTITY"
+TIMESTAMP_FLAG=(--timestamp)
+if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
+    TIMESTAMP_FLAG=(--timestamp=none)
+fi
+codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
 
 echo "== installing locally =="
 if [[ "${CI:-}" == "true" ]]; then

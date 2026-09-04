@@ -20,8 +20,11 @@ build-script branching, a separate git branch, runtime OS detection with API fal
     `.snappy(duration: 0.25)` exactly as before; only macOS 13 falls back to
     `.easeOut(duration: 0.35)` (`snappy` does not exist in the 13.3 interface).
   - Deployment target lowered: `Package.swift` `.v13`, `LSMinimumSystemVersion` 13.0.
-- `contentTransition`, `onContinuousHover`, `numericText` were verified `macOS 13.0+` in the same
-  interface and left untouched.
+- `contentTransition`, `onContinuousHover` and the value-less `numericText()` were verified
+  `macOS 13.0+` in the same interface. `numericText(value:)` is 14+, so the two hero counters route
+  through `tmNumericTextTransition(value:)`, which keeps the value-driven form on 14+.
+- `Text.foregroundStyle` (returning `Text`, used inside `Canvas` `ctx.draw`) is 14+; the four chart
+  label call sites use `.foregroundColor` instead, which renders identically.
 
 ## 3. Candidate isolation paths
 
@@ -58,17 +61,30 @@ build-script branching, a separate git branch, runtime OS detection with API fal
 |---|---|---|
 | 10 onChange two-param → single-param | none | `initial:` defaults `false`; same trigger semantics (13.3 SDK interface line 2966) |
 | 2 `.snappy(0.25)` → `#available` guard | none — macOS 14+ keeps the original `.snappy(0.25)`; the easeOut fallback runs only on macOS 13 | snappy exists only in the 14+ SDK; 13.3 interface has no `snappy` |
-| `Package.swift` `.v13` | none | lower minos is a subset; minos decides loadability, not runtime behavior |
-| `LSMinimumSystemVersion` 13.0 | none | same subset argument; no extra work triggered on 14+ |
-| Comments, README, CONTRIBUTING | none | documentation only |
+| `numericText(value:)` → `tmNumericTextTransition(value:)` | none — the 14+ branch passes the same value | `#available` helper in `TMDesignSystem.swift` |
+| 4 chart labels `foregroundStyle` → `foregroundColor` | none visually | both resolve to the same secondary label color |
+| Toolbar: centered `NSToolbarItemGroup` gated on 14+ | none — 14+ keeps the group, the `.tabs` role and the centered identity | `#available(macOS 14.0, *)` in `DashboardToolbarController` |
+| `Package.swift` `.v13`, `LSMinimumSystemVersion` 13.0 | expected none, **verified by the visual-regression gate** rather than assumed | see below |
 
-No 14+ behavioral code path was modified. The compatibility implementation is transparent to the
-target systems.
+The one claim that cannot be settled by reading the SDK is the deployment target. AppKit gates a
+number of behaviors on "linked on or after", and this app's Liquid Glass appearance on macOS 26/27
+is exactly the kind of thing that could ride on it — `scripts/build-app.sh` carries a comment about
+the recorded SDK field for that reason. Glass adoption follows the recorded SDK, not the minimum OS,
+and the visual-regression gate (four dashboard tabs + both popover pages, light and dark) is what
+holds that: if lowering the floor changed the rendered appearance on 26/27, that gate fails.
 
 ## 5. Verdict
 
-- The compatibility implementation **does not need isolation** — it is already zero-impact.
+- The compatibility implementation **does not need isolation** — 14+ behavior is preserved on every
+  changed path, either identically or behind `#available`.
 - If formal isolation is ever wanted, the only sensible mechanism is 3.1 (one environment variable
   in `build-app.sh`); 3.2 and 3.3 are rejected.
-- Releasing for Ventura needs no special machinery: the existing tag + `build-app.sh` pipeline
-  produces an artifact that is natively 13.0+.
+
+## 6. Not addressed here
+
+- **Release artifacts.** `package-release.sh` still ships arm64 + universal zips and
+  `sign-update-manifest.sh` still signs them; nothing about Ventura changes that flow.
+- **Update channel has no OS floor.** `UpdateChecker` selects artifacts by architecture only
+  (`artifacts[architecture.rawValue]`, no OS field in `CodingKeys`), so a future 14+-only release
+  would still be offered to a Ventura user. That needs an OS field in the manifest before any
+  release raises the floor again.
