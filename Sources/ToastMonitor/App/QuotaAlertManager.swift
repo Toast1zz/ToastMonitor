@@ -3,6 +3,33 @@ import Foundation
 import UserNotifications
 
 enum QuotaAlertPolicy {
+    struct BadgeState: Codable, Equatable {
+        var resetAt: Int64?
+        var triggered = false
+        var unread = false
+
+        mutating func update(remaining: Double, threshold: Double, resetAt nextReset: Int64?,
+                             viewed: Bool = false) {
+            guard remaining.isFinite else { return }
+            // Relative reset countdowns can drift slightly between fetches.
+            if let old = resetAt, let nextReset, Double(nextReset) - Double(old) > 300 {
+                triggered = false
+                unread = false
+                resetAt = nextReset
+            } else if resetAt == nil {
+                resetAt = nextReset
+            }
+            if remaining > threshold {
+                unread = false
+                if resetAt == nil { triggered = false }
+            } else if !triggered {
+                triggered = true
+                unread = true
+            }
+            if viewed { unread = false }
+        }
+    }
+
     enum Event: Equatable {
         case low
         case recovered
@@ -23,6 +50,7 @@ final class QuotaAlertManager: ObservableObject {
         let id: String
         let name: String
         let remaining: Double
+        var resetAt: Int64? = nil
     }
 
     static let shared = QuotaAlertManager()
@@ -30,10 +58,14 @@ final class QuotaAlertManager: ObservableObject {
     static let thresholdKey = "quota_alerts_threshold"
 
     @Published private(set) var enabled: Bool
-    @Published private(set) var criticalCount = 0
+    @Published private(set) var unreadCount = 0
     let threshold: Double
 
     private var started = false
+    private var panelVisible = false
+    private let readingProvider: (() -> [Reading])?
+    private var badgeStates: [String: QuotaAlertPolicy.BadgeState] = [:]
+    private static let badgeStateKey = "quota_alert_badge_states"
     private var cancellables: Set<AnyCancellable> = []
     /// Direct SwiftPM/headless render binaries have no application bundle
     /// proxy, and UserNotifications throws an Objective-C exception if its
@@ -41,14 +73,25 @@ final class QuotaAlertManager: ObservableObject {
     /// explicit settings action actually needs notification delivery.
     private lazy var center = UNUserNotificationCenter.current()
 
-    private init() {
+    init(readingProvider: (() -> [Reading])? = nil) {
+        self.readingProvider = readingProvider
         enabled = Database.shared.setting(Self.enabledKey) == "1"
         threshold = Double(Database.shared.setting(Self.thresholdKey) ?? "20") ?? 20
+        if let raw = Database.shared.setting(Self.badgeStateKey), let data = raw.data(using: .utf8),
+           let saved = try? JSONDecoder().decode([String: QuotaAlertPolicy.BadgeState].self, from: data) {
+            badgeStates = saved
+        }
     }
 
     func start() {
         guard !started else { return }
         started = true
+        NotificationCenter.default.publisher(for: PanelController.visibilityNotification)
+            .sink { [weak self] notification in
+                guard let self, let visible = notification.object as? Bool else { return }
+                self.panelVisible = visible
+                if visible { self.evaluate() }
+            }.store(in: &cancellables)
         let publishers: [AnyPublisher<Void, Never>] = [
             ClaudeQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
             CodexQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
@@ -93,7 +136,23 @@ final class QuotaAlertManager: ObservableObject {
 
     func evaluate() {
         let readings = currentReadings()
-        criticalCount = readings.filter { $0.remaining <= threshold }.count
+        let previousBadges = badgeStates
+        if panelVisible {
+            for id in Array(badgeStates.keys) { badgeStates[id]?.unread = false }
+        }
+        for reading in readings {
+            var state = badgeStates[reading.id] ?? QuotaAlertPolicy.BadgeState()
+            state.update(remaining: reading.remaining, threshold: threshold,
+                         resetAt: reading.resetAt, viewed: panelVisible)
+            badgeStates[reading.id] = state
+        }
+        let count = readings.filter { badgeStates[$0.id]?.unread == true }.count
+        if unreadCount != count { unreadCount = count }
+        if badgeStates != previousBadges,
+           let data = try? JSONEncoder().encode(badgeStates),
+           let raw = String(data: data, encoding: .utf8) {
+            _ = Database.shared.setSetting(Self.badgeStateKey, raw)
+        }
         guard enabled else { return }
         for reading in readings {
             let key = "quota_alert_state_\(reading.id)"
@@ -123,22 +182,30 @@ final class QuotaAlertManager: ObservableObject {
     }
 
     private func currentReadings() -> [Reading] {
+        if let readingProvider { return readingProvider() }
         var readings: [Reading] = []
         if let used = ClaudeQuotaClient.shared.state.sevenDay?.usedPercent {
             readings.append(.init(id: "claude-weekly", name: "Claude weekly",
-                                  remaining: Double(100 - used)))
+                                  remaining: Double(100 - used),
+                                  resetAt: ClaudeQuotaClient.shared.state.sevenDay?.resetAt))
         }
         if let used = CodexQuotaClient.shared.state.primaryPct {
             readings.append(.init(id: "codex", name: "Codex",
-                                  remaining: Double(100 - used)))
+                                  remaining: Double(100 - used), resetAt: CodexQuotaClient.shared.state.resetAt))
         }
         if let used = OpenCodeGoClient.shared.state.monthlyPct {
             readings.append(.init(id: "opencode-go", name: "OpenCode Go",
-                                  remaining: 100 - used))
+                                  remaining: 100 - used,
+                                  resetAt: OpenCodeGoClient.shared.state.monthlyReset.map {
+                                      OpenCodeGoClient.shared.state.lastSync + $0
+                                  }))
         }
         if let used = CommandCodeQuotaClient.shared.state.monthlyUsedPercent {
             readings.append(.init(id: "command-code", name: "Command Code",
-                                  remaining: 100 - used))
+                                  remaining: 100 - used,
+                                  resetAt: CommandCodeQuotaClient.shared.state.billingPeriodEnd.map {
+                                      Int64($0.timeIntervalSince1970)
+                                  }))
         }
         let router = OpenRouterClient.shared.state
         if let limit = router.limit, limit > 0, let remaining = router.limitRemaining {

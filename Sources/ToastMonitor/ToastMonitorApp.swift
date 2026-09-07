@@ -26,6 +26,7 @@ UI verification:
   --show-dashboard [--capture-dashboard PATH]
   --show-dashboard --benchmark-dashboard-switches
   --verify-status-toggle
+  --verify-quota-badge
 """
 
 /// Pure AppKit entry point. No SwiftUI Scene at all: a WindowGroup or
@@ -60,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private var panelController: PanelController?
     @MainActor private var appStateObserver: Any?
     @MainActor private var quotaAlertObserver: Any?
+    private lazy var quotaAlerts = QuotaAlertManager.shared
     private var debugBackdrop: NSWindow?
     /// Read secrets from stdin so they never appear in argv/`ps` output or
     /// shell history. Callers may pipe one line or an EOF-terminated value.
@@ -351,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isDashboardVerification = args.contains("--show-dashboard")
         let isPanelVerification = args.contains("--show-panel")
             || args.contains("--verify-status-toggle")
+            || args.contains("--verify-quota-badge")
         NSApp.setActivationPolicy(.accessory)
         Database.shared.open() // synchronous — needed before any DB reads
 
@@ -362,6 +365,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppState.shared.start()
             NSApp.finishLaunching()
             if isPanelVerification {
+                if args.contains("--verify-quota-badge") {
+                    guard ProcessInfo.processInfo.environment["TM_DATABASE_PATH"] != nil else {
+                        print("quota badge verification requires an isolated TM_DATABASE_PATH")
+                        exit(1)
+                    }
+                    _ = Database.shared.setSetting(QuotaAlertManager.enabledKey, nil)
+                    quotaAlerts = QuotaAlertManager(readingProvider: {
+                        [.init(id: "verification", name: "Verification", remaining: 0, resetAt: 4_000_000_000)]
+                    })
+                    quotaAlerts.start()
+                }
                 setupMenuBar()
                 return
             }
@@ -491,7 +505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.updateStatusLabel(button)
                 }
             }
-            quotaAlertObserver = QuotaAlertManager.shared.objectWillChange.sink { [weak self] _ in
+            quotaAlertObserver = quotaAlerts.objectWillChange.sink { [weak self] _ in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, let button = self.statusItem?.button else { return }
                     self.updateStatusLabel(button)
@@ -517,6 +531,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // --capture <path> 让 app 自己把窗口保存成 PNG（窗口真实显示，
         // 玻璃采样到背后窗口；screencapture 受会话隔离不可靠）。
         let args = CommandLine.arguments
+        if args.contains("--verify-quota-badge") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, let button = self.statusItem?.button, let panel = self.panelController else { exit(1) }
+                let hadBadge = self.quotaAlerts.unreadCount == 1 && button.attributedTitle.string.contains("●")
+                button.performClick(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    let cleared = panel.isVisible && self.quotaAlerts.unreadCount == 0
+                        && !button.attributedTitle.string.contains("●")
+                    button.performClick(nil)
+                    self.quotaAlerts.evaluate()
+                    let stayedRead = !panel.isVisible && self.quotaAlerts.unreadCount == 0
+                    let restored = QuotaAlertManager(readingProvider: {
+                        [.init(id: "verification", name: "Verification", remaining: 0, resetAt: 4_000_000_000)]
+                    })
+                    restored.evaluate()
+                    let persisted = restored.unreadCount == 0
+                    print("quota badge verification: appeared=\(hadBadge) cleared=\(cleared) stayedRead=\(stayedRead) persisted=\(persisted)")
+                    exit(hadBadge && cleared && stayedRead && persisted ? 0 : 1)
+                }
+            }
+        }
         if args.contains("--verify-status-toggle") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self, let button = self.statusItem?.button,
@@ -598,7 +633,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .font: font,
             .foregroundColor: NSColor.labelColor,
         ]))
-        if QuotaAlertManager.shared.criticalCount > 0 {
+        if quotaAlerts.unreadCount > 0 {
             attr.append(NSAttributedString(string: " ●", attributes: [
                 .font: NSFont.systemFont(ofSize: 8, weight: .bold),
                 .foregroundColor: NSColor.systemRed,
