@@ -35,44 +35,21 @@ final class MenuBarFontPanel: NSObject, NSFontChanging {
 }
 
 /// "Appearance" section, shown on the popover settings page and the dashboard
-/// Settings tab. The two surfaces frame sections differently, so the framing
-/// is passed in rather than implied: the popover keeps the separator above a
-/// sentence-case title and lets the row span the panel, as "General" and
-/// "Quota rows" do, while the dashboard shows an uppercase `SectionTitle`
-/// above the divider and aligns the control in a fixed-width label column, as
-/// "Data Sources" does.
+/// Settings tab.
 struct AppearanceSettingsSection: View {
-    enum Framing {
-        case popover
-        case dashboard
-    }
-
     @ObservedObject private var settings = MenuBarFontSettings.shared
-    var framing: Framing = .popover
+    var surface: SettingsSectionSurface = .popover
     private let labelWidth: CGFloat = 150
 
-    private var isPopover: Bool { framing == .popover }
+    private var isPopover: Bool { surface == .popover }
 
     var body: some View {
         VStack(alignment: .leading, spacing: isPopover ? 10 : 12) {
-            header
+            SettingsSectionHeading(title: "Appearance", surface: surface)
             row
             detail
         }
         .frame(maxWidth: 520, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private var header: some View {
-        if isPopover {
-            Divider().opacity(0.5)
-            Text("Appearance")
-                .font(.system(size: TMType.caption, weight: .semibold))
-                .foregroundStyle(TMDesign.quiet)
-        } else {
-            SectionTitle("Appearance")
-            Divider()
-        }
     }
 
     private var row: some View {

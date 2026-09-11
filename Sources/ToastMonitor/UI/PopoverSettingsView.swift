@@ -174,9 +174,7 @@ struct PopoverSettingsView: View {
 
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("General")
-                .font(.system(size: TMType.caption, weight: .semibold))
-                .foregroundStyle(TMDesign.quiet)
+            SettingsSectionHeading(title: "General", surface: .popover, showsSeparator: false)
 
             Toggle("Launch at login", isOn: Binding(
                 get: { launch.enabled },
@@ -222,10 +220,7 @@ struct PopoverSettingsView: View {
                 }
 
             // Quota rows hidden in the Quota section can be restored here.
-            Divider().opacity(0.5)
-            Text("Quota rows")
-                .font(.system(size: TMType.caption, weight: .semibold))
-                .foregroundStyle(TMDesign.quiet)
+            SettingsSectionHeading(title: "Quota rows", surface: .popover)
             quotaRowToggle("claude", title: "Claude")
             quotaRowToggle("go", title: "OpenCode Go")
             quotaRowToggle("codex", title: "Codex Plus")
@@ -244,9 +239,7 @@ struct PopoverSettingsView: View {
 
     private var updatesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Updates")
-                .font(.system(size: TMType.caption, weight: .semibold))
-                .foregroundStyle(TMDesign.quiet)
+            SettingsSectionHeading(title: "Updates", surface: .popover)
 
             Toggle("Automatically check for updates", isOn: $autoCheckOn)
                 .toggleStyle(.switch)
