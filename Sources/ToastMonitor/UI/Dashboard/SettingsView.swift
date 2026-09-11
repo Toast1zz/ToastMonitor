@@ -32,6 +32,8 @@ struct SettingsView: View {
                 SectionTitle("Settings")
                     .padding(.top, 18)
                     .padding(.bottom, 12)
+                AppearanceSettingsSection()
+                Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     SectionTitle("Data Sources")
                     Divider()

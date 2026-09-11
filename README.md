@@ -11,6 +11,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the full panel
+- **Custom menu-bar font** — Settings → Appearance opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
 - **Full panel (5 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions / Settings
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
 - **Built-in quotas** — OpenCode Go plan bars with reset countdown, OpenRouter balance snapshots (no opencode-quota dependency)

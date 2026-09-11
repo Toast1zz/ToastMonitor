@@ -82,6 +82,7 @@ struct PopoverSettingsView: View {
             }
             VStack(alignment: .leading, spacing: 22) {
                 generalSection
+                AppearanceSettingsSection()
                 UsagePeriodSettingsSection()
                 updatesSection
             }
