@@ -32,7 +32,7 @@ struct SettingsView: View {
                 SectionTitle("Settings")
                     .padding(.top, 18)
                     .padding(.bottom, 12)
-                AppearanceSettingsSection()
+                AppearanceSettingsSection(framing: .dashboard)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     SectionTitle("Data Sources")
