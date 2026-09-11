@@ -32,7 +32,7 @@ struct SettingsView: View {
                 SectionTitle("Settings")
                     .padding(.top, 18)
                     .padding(.bottom, 12)
-                AppearanceSettingsSection(framing: .dashboard)
+                AppearanceSettingsSection(surface: .dashboard)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     SectionTitle("Data Sources")
@@ -113,7 +113,7 @@ struct SettingsView: View {
                 .frame(maxWidth: 520, alignment: .leading)
 
                 Divider()
-                UsagePeriodSettingsSection(reservesWeekStartSpace: false)
+                UsagePeriodSettingsSection(reservesWeekStartSpace: false, surface: .dashboard)
                 Divider()
 
                 // Operational status stays on this page, but uses one
