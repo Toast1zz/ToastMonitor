@@ -30,7 +30,7 @@ let scenarios: [Scenario] = ["light", "dark"].flatMap { appearance in
                  arguments: ["--render-popover", "OUTPUT", "820"],
                  settingsPage: false),
         Scenario(name: "popover-settings-\(appearance)",
-                 arguments: ["--render-popover", "OUTPUT", "520"],
+                 arguments: ["--render-popover", "OUTPUT", "640"],
                  settingsPage: true),
     ]
 }
