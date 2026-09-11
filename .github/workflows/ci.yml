@@ -16,6 +16,10 @@ name: CI
 # Note: `swift test` no longer needs the release signing key (UpdateChecker
 # tests use a self-contained key pair), so a clean runner can run the full
 # suite as-is.
+#
+# Actions are pinned to major tags that ship on the Node.js 24 runtime
+# (checkout >= v5, cache >= v5, upload-artifact >= v6); the Node.js 20
+# releases are deprecated and get force-upgraded by the runner.
 permissions:
   contents: read
 
@@ -27,13 +31,13 @@ jobs:
     runs-on: xcode-27
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # SwiftPM builds are expensive (~minutes); cache the build dir keyed on
       # the manifest and source hashes so the repeated gate steps reuse the
       # compiled product.
       - name: Cache SwiftPM build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .build
           key: swift-${{ runner.os }}-${{ hashFiles('Package.swift') }}-${{ hashFiles('Sources/**/*.swift', 'Tests/**/*.swift') }}
@@ -82,7 +86,7 @@ jobs:
       TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -103,7 +107,7 @@ jobs:
 
       - name: Upload app bundle
         if: ${{ env.TM_SIGNING_IDENTITY != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ToastMonitor-${{ github.ref_name }}
           path: dist/ToastMonitor.app
