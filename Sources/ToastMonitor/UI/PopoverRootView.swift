@@ -157,6 +157,7 @@ struct PopoverRootView: View {
     }
 
     private func refresh() {
+        DeepSeekBillingClient.shared.refresh(force: true)
         app.refresh(manual: true)
         CollectorEngine.shared.scheduleScan()
         OpenRouterClient.shared.refresh()

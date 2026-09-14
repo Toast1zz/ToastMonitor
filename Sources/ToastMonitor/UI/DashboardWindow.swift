@@ -373,6 +373,7 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
     }
 
     @objc private func refreshData(_ sender: Any?) {
+        DeepSeekBillingClient.shared.refresh(force: true)
         AppState.shared.refresh(manual: true)
         CollectorEngine.shared.scheduleScan()
         OpenRouterClient.shared.refresh()

@@ -1720,23 +1720,25 @@ final class Database: @unchecked Sendable {
     /// Cost breakdown by quality (spec §5.2): estimated vs actual variable
     /// spend. Hermes is excluded because its traffic is billed inside
     /// OCG/OpenRouter/Codex plans.
-    func costBreakdown(from: Int64, to: Int64) -> (estimated: Double, actual: Double) {
+    func costBreakdown(from: Int64, to: Int64) -> (estimated: Double, actual: Double, deepseekActual: Double) {
         lock.lock(); defer { lock.unlock() }
-        guard let db else { return (0, 0) }
+        guard let db else { return (0, 0, 0) }
         var stmt: OpaquePointer?
         let sql = """
         SELECT
           COALESCE(SUM(CASE WHEN cost_quality='estimated' THEN cost ELSE 0 END), 0),
-          COALESCE(SUM(CASE WHEN cost_quality='actual' THEN cost ELSE 0 END), 0)
+          COALESCE(SUM(CASE WHEN cost_quality='actual' THEN cost ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN cost_quality='actual' AND lower(trim(provider))='deepseek' THEN cost ELSE 0 END), 0)
         FROM turns WHERE tool != 'hermes' AND ts BETWEEN ? AND ?;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0) }
         sqlite3_bind_int64(stmt, 1, from)
         sqlite3_bind_int64(stmt, 2, to)
-        var out = (0.0, 0.0)
+        var out = (0.0, 0.0, 0.0)
         if sqlite3_step(stmt) == SQLITE_ROW {
             out.0 = sqlite3_column_double(stmt, 0)
             out.1 = sqlite3_column_double(stmt, 1)
+            out.2 = sqlite3_column_double(stmt, 2)
         }
         sqlite3_finalize(stmt)
         return out
