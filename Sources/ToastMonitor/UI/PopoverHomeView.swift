@@ -62,6 +62,8 @@ struct PopoverHomeView: View {
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
+    @ObservedObject private var deepseek: DeepSeekBillingClient
+    @AppStorage(DeepSeekBilling.exchangeRateKey) private var cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
     @ObservedObject private var periodSettings = UsagePeriodSettings.shared
     @State private var period: Period = {
         let args = CommandLine.arguments
@@ -87,6 +89,10 @@ struct PopoverHomeView: View {
     /// tick 与热力图重载都必须停，否则每 60s 跑一次 371 天聚合（UI-1）。
     @State private var panelVisible = false
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    @MainActor init(deepseek: DeepSeekBillingClient? = nil) {
+        _deepseek = ObservedObject(wrappedValue: deepseek ?? .shared)
+    }
 
     private var totals: Database.ToolTotals {
         switch period {
@@ -163,15 +169,23 @@ struct PopoverHomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            deepseek.select(period.slot, configuration: periodSettings.configuration)
             loadQuotaRowHidden()
             loadDetectedTools()
             reloadHeatmap()
+        }
+        .onChange(of: period) { selected in
+            deepseek.select(selected.slot, configuration: periodSettings.configuration)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.usagePeriodSettingsChanged)) { _ in
+            deepseek.select(period.slot, configuration: periodSettings.configuration)
         }
         .onReceive(minuteTicker) { tick in
             // UI-1: 面板隐藏时跳过整轮 tick——不推进 now、不重载热力图。
             // 显示时再由可见性通知补一次加载，所以数据不会等下一个 60s。
             guard Self.minuteTickAllowed(panelVisible: panelVisible) else { return }
             now = tick
+            deepseek.select(period.slot, configuration: periodSettings.configuration, now: tick)
             reloadHeatmap()
         }
         .onReceive(NotificationCenter.default.publisher(for: TMNotifications.popoverVisibility)) { note in
@@ -182,6 +196,7 @@ struct PopoverHomeView: View {
             panelVisible = transition.visible
             if transition.reload {
                 now = Date()
+                deepseek.select(period.slot, configuration: periodSettings.configuration, now: now)
                 reloadHeatmap()
             }
         }
@@ -190,6 +205,7 @@ struct PopoverHomeView: View {
             switch raw {
             case "week": period = .week
             case "month": period = .month
+            case "all": period = .all
             default: period = .today
             }
         }
@@ -231,14 +247,21 @@ struct PopoverHomeView: View {
                     Text("Spent")
                         .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
-                    Text(actualShown > 0 ? Format.money(actualShown) : "—")
+                    Text(combinedSpentText)
                         .font(TMType.monoRegular(12))
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if deepseek.state.kind == .platform && (includedDeepSeekSpend == nil || deepseek.stale(deepseek.state.spendUpdated, error: deepseek.state.spendError, now: now)) {
+                        Image(systemName: "clock.badge.exclamationmark")
+                            .font(TMType.monoRegular(12))
+                            .foregroundStyle(TMDesign.danger)
+                            .help("DeepSeek: \(deepseek.spendText). \(deepseek.state.spendError ?? "")")
+                    }
                 }
                 .help(spentHelp)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Spent")
-                .accessibilityValue(Text(actualShown > 0 ? Format.money(actualShown) : "—"))
+                .accessibilityValue(Text(combinedSpentText))
                 HStack(spacing: 6) {
                     Text("Value")
                         .font(TMType.monoRegular(12))
@@ -256,10 +279,22 @@ struct PopoverHomeView: View {
     }
 
     private var spentHelp: String {
-        let base = "Billed turn costs, OpenRouter usage, and subscription amortization."
+        let rate = DeepSeekBilling.validExchangeRate(cnyPerUSD) ? cnyPerUSD : DeepSeekBilling.defaultCNYPerUSD
+        let base = "Billed turn costs, OpenRouter usage, subscription amortization, and available DeepSeek account-wide billing. Matching direct DeepSeek local costs are replaced by account billing. CNY converted at the configured accounting rate: 1 USD = \(rate) CNY."
         return period == .all
             ? base + " OpenRouter only exposes its recent monthly window, not full account history."
             : base
+    }
+
+    private var includedDeepSeekSpend: DeepSeekBilling.Spend? {
+        guard !deepseek.state.expired, let spend = deepseek.state.spend,
+              spend.window == deepseek.window else { return nil }
+        return spend
+    }
+
+    private var combinedSpentText: String {
+        DeepSeekBilling.combinedSpend(localUSD: actualShown, coveredLocalUSD: cost.deepseekActual,
+                                      spend: includedDeepSeekSpend, cnyPerUSD: cnyPerUSD)
     }
 
     @ViewBuilder
@@ -435,6 +470,7 @@ struct PopoverHomeView: View {
             if !(quotaRowHidden["codex"] ?? false) { codexStatusRow }
             if !(quotaRowHidden["cc"] ?? false) { commandCodeStatusRow }
             if !(quotaRowHidden["router"] ?? false) { routerStatusRow }
+            if !(quotaRowHidden["deepseek"] ?? false) { deepseekStatusRow }
         }
     }
 
@@ -448,7 +484,7 @@ struct PopoverHomeView: View {
     }
 
     private func loadQuotaRowHidden() {
-        for key in ["claude", "go", "codex", "cc", "router"] {
+        for key in ["claude", "go", "codex", "cc", "router", "deepseek"] {
             quotaRowHidden[key] = Database.shared.setting(Self.quotaRowHiddenKey(key)) == "1"
         }
     }
@@ -809,6 +845,20 @@ struct PopoverHomeView: View {
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet,
                          staleBadge: staleBadge,
                          hideKey: "router")
+    }
+
+    private var deepseekStatusRow: some View {
+        let state = deepseek.state
+        let stale = deepseek.stale(state.balanceUpdated, error: state.balanceError, now: now)
+        let wallets = state.expired ? [] : state.balance?.wallets ?? []
+        let secondary = wallets.count > 1 ? wallets.dropFirst().map { $0.total.formatted }.joined(separator: " / ") : nil
+        return statusRow(name: "DeepSeek", status: wallets.first?.total.formatted ?? deepseek.balanceText,
+                         statusColor: state.kind == nil ? TMDesign.quiet : .primary,
+                         critical: state.balance?.available == false,
+                         subtitle: secondary ?? (state.balance?.available == false ? "Unavailable for API calls" : nil),
+                         staleBadge: stale ? "Stale" : nil,
+                         hideKey: "deepseek")
+            .help("Account balance: \(deepseek.balanceText). \(state.balanceError ?? "")")
     }
 
     private func statusRow(name: String, status: String, statusColor: Color,

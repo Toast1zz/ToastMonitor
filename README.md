@@ -14,6 +14,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 - **Full panel (5 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions / Settings
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
 - **Built-in quotas** — OpenCode Go plan bars with reset countdown, OpenRouter balance snapshots (no opencode-quota dependency)
+- **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
 - **Cost estimation** — built-in model price table; unknown models count tokens without a price
 - **Privacy-first** — data stays on this Mac, credentials live only in the macOS Keychain, no analytics or ad SDKs
 
@@ -28,6 +29,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 | Oh My Pi | `~/.omp/agent/sessions/**/*.jsonl` | — (local only) |
 | DeepSeek Harness | `$DSH_HOME` (default `~/.dsh`) session logs + projection cache | — (local only) |
 | OpenRouter | Cloud API (key + credits snapshots) | — |
+| DeepSeek account | Platform balance + account-wide billed usage; API-key balance-only mode | — |
 
 ### Remote feeds
 

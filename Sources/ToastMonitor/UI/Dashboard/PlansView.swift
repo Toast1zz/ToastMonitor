@@ -49,6 +49,9 @@ struct PlansView: View {
                 claudeCard
                 goCard
                 orCard
+                serviceCard(title: "DeepSeek", icon: "d.circle.fill", color: TMDesign.accent) {
+                    DeepSeekBillingSettingsView()
+                }
                 ccCard
                 subsCard
             }

@@ -230,6 +230,7 @@ struct PopoverSettingsView: View {
             quotaRowToggle("codex", title: "Codex Plus")
             quotaRowToggle("cc", title: "Command Code GOAT")
             quotaRowToggle("router", title: "OpenRouter")
+            quotaRowToggle("deepseek", title: "DeepSeek")
 
             if let msg = launch.message {
                 Text(msg)

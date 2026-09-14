@@ -110,6 +110,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>When you click Connect from Browser, ToastMonitor reads only the active DeepSeek Platform tab's session to query your account balance and billed usage.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <!-- Local networking is permitted for explicitly configured private
@@ -190,7 +192,7 @@ TIMESTAMP_FLAG=(--timestamp)
 if [[ "${TM_CODESIGN_TIMESTAMP:-}" == "none" ]]; then
     TIMESTAMP_FLAG=(--timestamp=none)
 fi
-codesign --force --options runtime "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
+codesign --force --options runtime --entitlements "$ROOT/scripts/ToastMonitor.entitlements" "${TIMESTAMP_FLAG[@]}" --sign "$SIGNING_IDENTITY" "$APP"
 
 echo "== installing locally =="
 if [[ "${CI:-}" == "true" ]]; then
