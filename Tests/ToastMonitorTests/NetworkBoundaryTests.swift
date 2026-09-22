@@ -35,6 +35,17 @@ final class NetworkBoundaryTests: XCTestCase {
             "management")
     }
 
+    func testOpenRouterServerErrorMessageIsBoundedAndSanitized() {
+        let deleted = Data(#"{"error":{"message":"User not found.","code":401}}"#.utf8)
+        XCTAssertEqual(OpenRouterClient.serverErrorMessage(deleted), "User not found.")
+        XCTAssertNil(OpenRouterClient.serverErrorMessage(Data("not json".utf8)))
+        XCTAssertNil(OpenRouterClient.serverErrorMessage(
+            Data(#"{"error":{"message":"line\nbreak"}}"#.utf8)))
+        let long = String(repeating: "x", count: 201)
+        XCTAssertNil(OpenRouterClient.serverErrorMessage(
+            Data("{\"error\":{\"message\":\"\(long)\"}}".utf8)))
+    }
+
     func testBoundedDelegateRejectsChunkedBodyOverCap() {
         ChunkedPayloadURLProtocol.payload = Data(repeating: 0x61, count: 16)
         let configuration = URLSessionConfiguration.ephemeral
