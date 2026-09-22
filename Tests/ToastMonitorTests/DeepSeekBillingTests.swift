@@ -3,6 +3,12 @@ import SwiftUI
 @testable import ToastMonitor
 
 final class DeepSeekBillingTests: XCTestCase {
+    func testMoneySymbolFormattingForPopover() {
+        XCTAssertEqual(DeepSeekBilling.Money(currency: "CNY", amount: 7.67).symbolFormatted, "¥7.67")
+        XCTAssertEqual(DeepSeekBilling.Money(currency: "USD", amount: 0).symbolFormatted, "$0.00")
+        XCTAssertEqual(DeepSeekBilling.Money(currency: "EUR", amount: 1).symbolFormatted, "EUR 1.00")
+    }
+
     func testTwoDecimalDisplayKeepsUnderlyingPrecision() {
         let money = DeepSeekBilling.Money(currency: "CNY", amount: Decimal(string: "10.5268714")!)
         XCTAssertEqual(money.formatted, "CNY 10.53")

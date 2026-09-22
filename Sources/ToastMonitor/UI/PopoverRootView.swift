@@ -11,6 +11,8 @@ struct PopoverRootView: View {
     /// Popover 内嵌设置页（Tusi 式第二页：同一面板切换，无新窗口）。
     /// 渲染快照钩子：环境变量 TM_POPOVER_SETTINGS=1 时直接落在设置页。
     @State private var showSettings = ProcessInfo.processInfo.environment["TM_POPOVER_SETTINGS"] == "1"
+    /// Cards hidden with a card's eye button (written by PopoverHomeView).
+    @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -96,7 +98,8 @@ struct PopoverRootView: View {
             .help("Refresh data")
             .accessibilityLabel("Refresh data")
         }
-        .padding(.horizontal, 20)
+        // Title shares the card edge with the hero figure below it.
+        .padding(.horizontal, TMLayout.popoverCardInset + 2)
         .padding(.top, 10)
         .padding(.bottom, 6)
     }
@@ -135,6 +138,14 @@ struct PopoverRootView: View {
                 }
             }
 
+            // Only exists while a card is hidden: one click brings them back.
+            if !hiddenSectionsRaw.isEmpty {
+                FooterIconButton(systemName: "eye", help: "Show hidden sections") {
+                    withAnimation(.easeOut(duration: 0.2)) { hiddenSectionsRaw = "" }
+                }
+                .transition(.opacity)
+            }
+
             Spacer()
 
             Button {
@@ -143,7 +154,7 @@ struct PopoverRootView: View {
             } label: {
                 // Claude 风格：无图标、无边框，纯文字入口（参考 claude-statusbar
                 // 的 statusLine —— 只有文字与细符号，从不使用外链箭头）。
-                Text("Open Dashboard")
+                Text("Dashboard")
                     .font(.system(size: 12, weight: .medium))
                     .padding(.vertical, 4)
                     .padding(.horizontal, 6)
@@ -152,8 +163,8 @@ struct PopoverRootView: View {
             .help("Open the full dashboard")
             .accessibilityLabel("Open the full dashboard")
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.horizontal, TMLayout.popoverCardInset + 4)
+        .padding(.vertical, 8)
     }
 
     private func refresh() {

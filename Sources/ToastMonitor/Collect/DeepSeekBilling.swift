@@ -83,6 +83,18 @@ enum DeepSeekBilling {
             formatter.maximumFractionDigits = 2
             return "\(currency) \(formatter.string(from: NSDecimalNumber(decimal: amount)) ?? "-")"
         }
+
+        /// Symbol form for the popover ("$1.74", "¥7.67"), matching how every
+        /// other amount there is written. Unknown currencies keep the code.
+        var symbolFormatted: String {
+            let symbol: String
+            switch currency {
+            case "USD": symbol = "$"
+            case "CNY": symbol = "¥"
+            default: return formatted
+            }
+            return symbol + formatted.dropFirst(currency.count + 1)
+        }
     }
 
     static func combinedSpend(localUSD: Double, coveredLocalUSD: Double = 0, spend: Spend?,

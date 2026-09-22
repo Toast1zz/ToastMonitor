@@ -214,6 +214,13 @@ final class Database: @unchecked Sendable {
           k TEXT PRIMARY KEY,
           v TEXT
         );
+        CREATE TABLE IF NOT EXISTS claude_quota_samples (
+          ts INTEGER PRIMARY KEY,
+          weekly_pct INTEGER NOT NULL,
+          weekly_reset INTEGER,
+          five_hour_pct INTEGER,
+          five_hour_reset INTEGER
+        );
         """) else {
             NSLog("[ToastMonitor] base table bootstrap failed")
             return
@@ -1424,6 +1431,83 @@ final class Database: @unchecked Sendable {
         if sqlite3_exec(db, "ALTER TABLE \(table) ADD COLUMN \(name) \(decl);", nil, nil, nil) != SQLITE_OK {
             markTransactionWriteFailure()
         }
+    }
+
+    // MARK: - Claude quota samples (non-local usage estimate)
+
+    /// Samples older than this are never part of a current weekly window.
+    static let claudeQuotaSampleRetention: Int64 = 35 * 86400
+
+    @discardableResult
+    func insertClaudeQuotaSample(_ sample: ClaudeNonLocalEstimator.Sample) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return false }
+        var stmt: OpaquePointer?
+        let sql = """
+        INSERT OR REPLACE INTO claude_quota_samples
+        (ts, weekly_pct, weekly_reset, five_hour_pct, five_hour_reset) VALUES (?,?,?,?,?);
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        sqlite3_bind_int64(stmt, 1, sample.ts)
+        sqlite3_bind_int64(stmt, 2, Int64(sample.weeklyPct))
+        if let v = sample.weeklyReset { sqlite3_bind_int64(stmt, 3, v) } else { sqlite3_bind_null(stmt, 3) }
+        if let v = sample.fiveHourPct { sqlite3_bind_int64(stmt, 4, Int64(v)) } else { sqlite3_bind_null(stmt, 4) }
+        if let v = sample.fiveHourReset { sqlite3_bind_int64(stmt, 5, v) } else { sqlite3_bind_null(stmt, 5) }
+        let rc = sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+        guard rc == SQLITE_DONE else { return false }
+        var prune: OpaquePointer?
+        if sqlite3_prepare_v2(db, "DELETE FROM claude_quota_samples WHERE ts < ?;", -1, &prune, nil) == SQLITE_OK {
+            sqlite3_bind_int64(prune, 1, sample.ts - Self.claudeQuotaSampleRetention)
+            _ = sqlite3_step(prune)
+            sqlite3_finalize(prune)
+        }
+        return true
+    }
+
+    func claudeQuotaSamples(since: Int64) -> [ClaudeNonLocalEstimator.Sample] {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT ts, weekly_pct, weekly_reset, five_hour_pct, five_hour_reset
+        FROM claude_quota_samples WHERE ts >= ? ORDER BY ts;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, since)
+        func optional(_ i: Int32) -> Int64? {
+            sqlite3_column_type(stmt, i) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, i)
+        }
+        var out: [ClaudeNonLocalEstimator.Sample] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(.init(ts: sqlite3_column_int64(stmt, 0),
+                             weeklyPct: Int(sqlite3_column_int64(stmt, 1)),
+                             weeklyReset: optional(2),
+                             fiveHourPct: optional(3).map(Int.init),
+                             fiveHourReset: optional(4)))
+        }
+        return out
+    }
+
+    /// Every locally recorded Claude Code turn since `since` (this Mac and any
+    /// ingested remote feed), as fresh tokens — see ClaudeNonLocalEstimator.
+    func claudeLocalEvents(since: Int64) -> [ClaudeNonLocalEstimator.LocalEvent] {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT ts, input_tokens + output_tokens + cache_write FROM turns
+        WHERE tool = 'claude' AND ts >= ? ORDER BY ts;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, since)
+        var out: [ClaudeNonLocalEstimator.LocalEvent] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(.init(ts: sqlite3_column_int64(stmt, 0), tokens: sqlite3_column_int64(stmt, 1)))
+        }
+        return out
     }
 
     // MARK: - OpenCode Go quota snapshots

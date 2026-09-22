@@ -7,10 +7,10 @@
   "dashboard-plans-light" : "000000003ffe003e0ffe3ffe7ffc0ff83ffe5ffc1ffc3ffe1ffe1ffe1ffe1ffe",
   "dashboard-sessions-dark" : "c00ff7ef70070000000000000000000000000000000000000000000000000000",
   "dashboard-sessions-light" : "3ff80ff08ff8ffffffffffffffffffffffffffffffffffffffffffffffffffff",
-  "dashboard-settings-dark" : "000010001c001e003e001c00180036001600183c18381c081c181c083c180000",
-  "dashboard-settings-light" : "ffffefffe7ffe1ffc1ffe3ffe7ffc9ffe9ffe7c7e7e7e3f7e3e7c3e7c3e7ffff",
-  "popover-home-dark" : "70007ffe600070007c006800703e703e7c3e700e700460085fac3ffe601e001c",
-  "popover-home-light" : "8fffc8019fff8fff87ff9fbb8fc18fc181c18ff18ffb9fff8003c0039fe1ffe3",
-  "popover-settings-dark" : "3c007fc07fc07ffc72007f807f807fe07f807f00100020e021f0000000007fe0",
-  "popover-settings-light" : "c7ff807f807f80038dff807f807f801f80ff80ffefffcfffde0fffffffff803f"
+  "dashboard-settings-dark" : "000010001c001e003e001c00180016001600183c18381c001c181c083c180000",
+  "dashboard-settings-light" : "ffffefffe7ffe1ffc1ffe3ffe3ffc9ffe9ffe7c7e7e7e3f7e3e7c3e7c3e7ffff",
+  "popover-home-dark" : "70007e6e40007c007ffe7dfc7ffe7ffe7ffe7ffe7ffe7ffe0000000000000004",
+  "popover-home-light" : "8fffd911bfff83ff80018001800180018001800180018001fffffffffffffff3",
+  "popover-settings-dark" : "0000300060007e767fa67fc63f8030007ffe00007ffc7ffe3bdc703c603e0000",
+  "popover-settings-light" : "ffffcfff9fff81f580758039c07fcfff8001dfff80018001c0238fff9fc1ffff"
 }
