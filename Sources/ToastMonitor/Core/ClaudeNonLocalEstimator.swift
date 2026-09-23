@@ -1,17 +1,18 @@
 import Foundation
 
-/// Estimates how much of the Claude weekly quota was spent somewhere this
-/// Mac cannot see — Cowork sessions that run server-side, claude.ai chat,
-/// Claude Code on another machine. Those leave no local transcript, so their
-/// tokens can never be counted; only their effect on the shared quota shows.
+/// Estimates Claude tokens used somewhere this Mac cannot see — Cowork
+/// sessions that run server-side, claude.ai chat, Claude Code on another
+/// machine. Those leave no local transcript, so their tokens can never be
+/// counted; only their effect on the shared quota shows.
 ///
 /// Method: every successful quota fetch is stored as a sample (weekly %, 5h %,
-/// reset times). For each pair of consecutive samples in the current weekly
-/// window, the weekly percentage rise is attributed to non-local use only
-/// when this Mac recorded essentially no Claude Code tokens in that interval.
-/// An interval with both local and non-local use counts as local, so the
-/// result is a lower bound — and the quota is only sampled while the popover
-/// or dashboard is open, which makes intervals long and mixed more often.
+/// reset times). A quota rise between two samples is attributed to non-local
+/// use only when this Mac recorded essentially no Claude Code tokens in that
+/// interval, then converted to tokens at the rate local Claude Code activity
+/// consumes quota. An interval with both local and non-local use counts as
+/// local, so the result is a lower bound — and the quota is only sampled
+/// while the popover or dashboard is open, which makes intervals long and
+/// mixed more often.
 enum ClaudeNonLocalEstimator {
     struct Sample: Equatable {
         let ts: Int64
@@ -27,15 +28,9 @@ enum ClaudeNonLocalEstimator {
     struct LocalEvent: Equatable {
         let ts: Int64
         let tokens: Int64
-    }
-
-    struct Result: Equatable {
-        /// Percentage points of the weekly quota attributed to non-local use.
-        let nonLocalPoints: Int
-        /// Weekly quota used at the latest sample.
-        let weeklyUsed: Int
-        /// Sample intervals examined in the current weekly window.
-        let intervals: Int
+        /// Same turn in the app's headline metric (input + output + cache
+        /// reads) — what the calibration converts quota points back into.
+        var total: Int64 = 0
     }
 
     /// "Basically no local activity": below one or two ordinary turns.
@@ -49,55 +44,87 @@ enum ClaudeNonLocalEstimator {
     /// Two reset timestamps within this distance are the same window
     /// (the endpoint's reset time can jitter between responses).
     static let sameWindowTolerance: Int64 = 3600
-    /// Minimum evidence before showing anything.
-    static let minIntervals = 4
-    static let minSpanSeconds: Int64 = 6 * 3600
+    // MARK: - Token estimate
 
-    static func estimate(samples: [Sample], localEvents: [LocalEvent], now: Int64) -> Result? {
-        let sorted = samples.sorted { $0.ts < $1.ts }
-        guard let latest = sorted.last, let currentReset = latest.weeklyReset else { return nil }
-        let window = sorted.filter { sample in
-            guard let reset = sample.weeklyReset else { return false }
-            return abs(reset - currentReset) <= sameWindowTolerance
+    /// Tokens attributed to non-local use, placed at the middle of the idle
+    /// interval they were inferred from so period totals can bucket them.
+    struct TokenEvent: Equatable {
+        let ts: Int64
+        let tokens: Int64
+    }
+
+    struct TokenEstimate: Equatable {
+        /// Local tokens (headline metric) per quota point, from this Mac's
+        /// own Claude Code activity.
+        let tokensPerPoint: Double
+        let events: [TokenEvent]
+
+        func tokens(from start: Int64, to end: Int64) -> Int64 {
+            events.reduce(0) { $0 + ($1.ts >= start && $1.ts < end ? $1.tokens : 0) }
         }
-        guard window.count >= 2 else { return nil }
+    }
 
+    /// Label of the synthetic per-tool row carrying the estimate.
+    static let estimateToolLabel = "Cowork & web (est.)"
+    /// Quota points of local activity needed before a tokens-per-point rate
+    /// is trusted.
+    static let minCalibrationPoints = 5
+
+    /// Converts non-local quota rises into tokens. The 5h window is used
+    /// when available — its percentage moves ~20× finer than the weekly
+    /// one — and the weekly window otherwise.
+    ///
+    /// Calibration: over intervals with real local activity, local tokens /
+    /// quota points consumed. Intervals that also contained non-local use
+    /// make the rate a little low, so the estimate stays conservative.
+    static func tokenEstimate(samples: [Sample], localEvents: [LocalEvent], now: Int64) -> TokenEstimate? {
+        let sorted = samples.sorted { $0.ts < $1.ts }
         let events = localEvents.sorted { $0.ts < $1.ts }
-        var prefix: [Int64] = [0]
-        prefix.reserveCapacity(events.count + 1)
-        for event in events { prefix.append(prefix[prefix.count - 1] + max(event.tokens, 0)) }
-        func tokens(from start: Int64, through end: Int64) -> Int64 {
-            let lo = lowerBound(events, start)
-            let hi = lowerBound(events, end + 1)
+        let series: [(Sample) -> (pct: Int, reset: Int64)?] = [
+            { s in s.fiveHourPct.flatMap { p in s.fiveHourReset.map { (p, $0) } } },
+            { s in s.weeklyReset.map { (s.weeklyPct, $0) } },
+        ]
+        for extract in series {
+            if let estimate = tokenEstimate(sorted, events, now: now, series: extract) {
+                return estimate
+            }
+        }
+        return nil
+    }
+
+    private static func tokenEstimate(_ samples: [Sample], _ events: [LocalEvent], now: Int64,
+                                      series: (Sample) -> (pct: Int, reset: Int64)?) -> TokenEstimate? {
+        var freshPrefix: [Int64] = [0], totalPrefix: [Int64] = [0]
+        for e in events {
+            freshPrefix.append(freshPrefix[freshPrefix.count - 1] + max(e.tokens, 0))
+            totalPrefix.append(totalPrefix[totalPrefix.count - 1] + max(e.total, 0))
+        }
+        func sum(_ prefix: [Int64], _ start: Int64, _ end: Int64) -> Int64 {
+            let lo = lowerBound(events, start), hi = lowerBound(events, end + 1)
             return hi > lo ? prefix[hi] - prefix[lo] : 0
         }
 
-        var intervals = 0
-        var nonLocal = 0
-        for (a, b) in zip(window, window.dropFirst()) {
-            guard b.ts <= now - ingestMarginSeconds else { continue }
-            let delta = b.weeklyPct - a.weeklyPct
-            guard delta >= 0 else { continue } // a reset slipped through
-            intervals += 1
-            guard delta > 0 else { continue }
-            // Same 5h window and a flat 5h number means nothing was actually
-            // used — the weekly tick is rounding of earlier usage.
-            if let fa = a.fiveHourPct, let fb = b.fiveHourPct,
-               let ra = a.fiveHourReset, let rb = b.fiveHourReset,
-               abs(ra - rb) <= sameWindowTolerance, fb <= fa {
-                continue
-            }
-            if tokens(from: a.ts - serverLagSeconds, through: b.ts) < idleTokenThreshold {
-                nonLocal += delta
+        var calibrationTokens: Int64 = 0
+        var calibrationPoints = 0
+        var idle: [(mid: Int64, points: Int)] = []
+        for (a, b) in zip(samples, samples.dropFirst()) {
+            guard b.ts <= now - ingestMarginSeconds,
+                  let wa = series(a), let wb = series(b),
+                  abs(wa.reset - wb.reset) <= sameWindowTolerance else { continue }
+            let delta = wb.pct - wa.pct
+            guard delta >= 0 else { continue }
+            if sum(freshPrefix, a.ts - serverLagSeconds, b.ts) < idleTokenThreshold {
+                if delta > 0 { idle.append((a.ts + (b.ts - a.ts) / 2, delta)) }
+            } else {
+                calibrationTokens += sum(totalPrefix, a.ts + 1, b.ts)
+                calibrationPoints += delta
             }
         }
-
-        guard intervals >= minIntervals,
-              let first = window.first,
-              latest.ts - first.ts >= minSpanSeconds else { return nil }
-        return Result(nonLocalPoints: min(nonLocal, latest.weeklyPct),
-                      weeklyUsed: latest.weeklyPct,
-                      intervals: intervals)
+        guard calibrationPoints >= minCalibrationPoints, calibrationTokens > 0 else { return nil }
+        let rate = Double(calibrationTokens) / Double(calibrationPoints)
+        return TokenEstimate(
+            tokensPerPoint: rate,
+            events: idle.map { TokenEvent(ts: $0.mid, tokens: Int64((Double($0.points) * rate).rounded())) })
     }
 
     private static func lowerBound(_ events: [LocalEvent], _ ts: Int64) -> Int {
