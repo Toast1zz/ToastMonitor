@@ -32,7 +32,11 @@ struct SourcesView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    SectionTitle("Collector Status")
+                    // Embedded in the Settings form, the section header
+                    // carries the title.
+                    if !embedded {
+                        SectionTitle("Collector Status")
+                    }
                     Spacer()
                     Button {
                         testing = true
@@ -92,7 +96,7 @@ struct SourcesView: View {
                     .accessibilityLabel("Rescan now")
                     .accessibilityHint("Re-scans all local sources and refreshes remote quotas")
                 }
-                .controlSize(.small)
+                .controlSize(embedded ? .regular : .small)
                 if let tr = testResult {
                     Text(tr)
                         .accessibilityElement(children: .combine)

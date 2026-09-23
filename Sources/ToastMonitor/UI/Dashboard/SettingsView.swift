@@ -24,178 +24,30 @@ struct SettingsView: View {
     /// Codex billing draft: "subscription" (ChatGPT/Codex plan covers the
     /// usage) or "api" (per-token API spend). Persisted via Database setting.
     @State private var codexBilling: String = "api"
-    private let formLabelWidth: CGFloat = 150
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                SectionTitle("Settings")
-                    .padding(.top, 18)
-                    .padding(.bottom, 12)
-                VStack(alignment: .leading, spacing: 12) {
-                    SectionTitle("Data Sources")
-                    Divider()
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                        ForEach(tools) { tool in
-                            GridRow {
-                                HStack(spacing: 10) {
-                                    Image(systemName: tool.symbol)
-                                        .font(TMType.regular(12))
-                                        .foregroundStyle(tool.color)
-                                        .frame(width: 18)
-                                    Text(tool.displayName)
-                                        .font(TMType.regular(12.5))
-                                }
-                                .frame(width: formLabelWidth, alignment: .leading)
-                                if tool.supportsRemoteSource {
-                                    Picker("Source", selection: sourceBinding(for: tool)) {
-                                        Text("Local").tag(false)
-                                        Text("Remote").tag(true)
-                                    }
-                                    .pickerStyle(.menu)
-                                    .labelsHidden()
-                                    .fixedSize()
-                                    .controlSize(.small)
-                                    .accessibilityLabel("\(tool.displayName) source")
-                                } else {
-                                    Text("Local only")
-                                        .font(TMType.regular(TMType.caption))
-                                        .foregroundStyle(TMDesign.quiet)
-                                        .fixedSize()
-                                }
-                                ZStack {
-                                    if sourceSaved[tool] == true {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(TMDesign.accent)
-                                    } else if sourceFailed[tool] == true {
-                                        Image(systemName: "exclamationmark.triangle")
-                                            .foregroundStyle(TMDesign.danger)
-                                    } else {
-                                        Color.clear
-                                    }
-                                }
-                                .font(TMType.regular(TMType.micro))
-                                .frame(width: 16)
-                            }
+        // The system grouped form (the System Settings layout), so rows and
+        // controls follow the running macOS design.
+        Form {
+            dataSourcesSection
+            UsagePeriodSettingsSection()
+            AppearanceSettingsSection()
 
-                            if tool == .codex {
-                                GridRow {
-                                    Text("Billing")
-                                        .font(TMType.regular(TMType.caption))
-                                        .padding(.leading, 28)
-                                        .frame(width: formLabelWidth, alignment: .leading)
-                                    Picker("Codex billing", selection: $codexBilling) {
-                                        Text("Subscription").tag("subscription")
-                                        Text("API").tag("api")
-                                    }
-                                    .pickerStyle(.menu)
-                                    .labelsHidden()
-                                    .fixedSize()
-                                    .controlSize(.small)
-                                    .help(codexBilling == "subscription"
-                                          ? "Treat Codex costs as covered by a ChatGPT/Codex subscription"
-                                          : "Count Codex costs as per-token API spend")
-                                    Color.clear.frame(width: 16)
-                                }
-                            }
-                        }
-                    }
-                    .onChange(of: codexBilling) { newValue in
-                        let value = newValue
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            _ = Database.shared.setSetting("codex_billing_mode", value)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-                .frame(maxWidth: 520, alignment: .leading)
-
-                Divider()
-                UsagePeriodSettingsSection(reservesWeekStartSpace: false)
-                Divider()
-                AppearanceSettingsSection()
-                Divider()
-
-                // Operational status stays on this page, but uses one
-                // compact list instead of a second nested page or one card
-                // per collector.
+            // Operational status stays on this page, but uses one compact
+            // list instead of a second nested page or one card per collector.
+            Section("Collector Status") {
                 SourcesView(embedded: true, localSources: effectiveSources)
-                Divider()
+            }
 
-                // 远程 Feed
-                VStack(alignment: .leading, spacing: 10) {
-                    SectionTitle("Remote Feed")
-                    HStack {
-                        TextField("Feed URL (HTTPS or private range)", text: $feedURL)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: TMType.caption, design: .monospaced))
-                        Button("Save") {
-                            let raw = feedURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                            saved = false
-                            // Validate locally first so the failure reason can
-                            // be specific instead of a single generic message.
-                            if let problem = Self.feedURLProblem(raw) {
-                                feedError = problem
-                                return
-                            }
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                let ok = HermesRemoteClient.shared.provision(url: raw.isEmpty ? nil : raw)
-                                DispatchQueue.main.async {
-                                    saved = ok
-                                    feedError = ok ? nil : "Save failed (database unavailable)"
-                                    feedDisabled = ok && raw.isEmpty
-                                }
-                            }
-                        }
-                        .font(TMType.regular(12))
-                        Button {
-                            HermesRemoteClient.shared.maybePoll()
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .font(TMType.regular(12))
-                        .help("Pull now")
-                    }
-                    let st = remote.status
-                    HStack {
-                        if st.lastSync > 0 {
-                            Text(st.lastRows > 0
-                                 ? "Synced \(Format.dateTime(st.lastSync)) · \(st.lastRows) new"
-                                 : "Synced \(Format.dateTime(st.lastSync)) · up to date")
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.quiet)
-                        }
-                        if let err = st.error {
-                            Text(err)
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.danger)
-                        }
-                        if feedDisabled {
-                            Text("Remote feed disabled")
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.accent)
-                        } else if saved {
-                            Text("Saved")
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.accent)
-                        }
-                        if let err = feedError {
-                            Text(err)
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.danger)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-                Divider()
+            remoteFeedSection
 
+            Section("Data Maintenance") {
                 DataMaintenanceSection()
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
         }
+        .formStyle(.grouped)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
         .onAppear {
             feedURL = remote.feedURL
             for t in tools {
@@ -208,6 +60,124 @@ struct SettingsView: View {
             saved = false
             feedError = nil
             feedDisabled = false
+        }
+    }
+
+    private var dataSourcesSection: some View {
+        Section("Data Sources") {
+            ForEach(tools) { tool in
+                if tool.supportsRemoteSource {
+                    Picker(selection: sourceBinding(for: tool)) {
+                        Text("Local").tag(false)
+                        Text("Remote").tag(true)
+                    } label: {
+                        sourceLabel(tool)
+                    }
+                    .accessibilityLabel("\(tool.displayName) source")
+                } else {
+                    LabeledContent {
+                        Text("Local only")
+                    } label: {
+                        sourceLabel(tool)
+                    }
+                }
+                if tool == .codex {
+                    Picker("Codex billing", selection: $codexBilling) {
+                        Text("Subscription").tag("subscription")
+                        Text("API").tag("api")
+                    }
+                    .help(codexBilling == "subscription"
+                          ? "Treat Codex costs as covered by a ChatGPT/Codex subscription"
+                          : "Count Codex costs as per-token API spend")
+                }
+            }
+        }
+        .onChange(of: codexBilling) { newValue in
+            let value = newValue
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = Database.shared.setSetting("codex_billing_mode", value)
+            }
+        }
+    }
+
+    /// Tool icon and name, followed by the per-tool save feedback.
+    private func sourceLabel(_ tool: ToolKind) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: tool.symbol)
+                .foregroundStyle(tool.color)
+                .frame(width: 18)
+            Text(tool.displayName)
+            if sourceSaved[tool] == true {
+                Image(systemName: "checkmark")
+                    .foregroundStyle(TMDesign.accent)
+                    .accessibilityLabel("Saved")
+            } else if sourceFailed[tool] == true {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(TMDesign.danger)
+                    .accessibilityLabel("Save failed")
+            }
+        }
+    }
+
+    private var remoteFeedSection: some View {
+        Section {
+            HStack {
+                TextField("Feed URL", text: $feedURL, prompt: Text("HTTPS or private range"))
+                Button("Save") {
+                    let raw = feedURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    saved = false
+                    // Validate locally first so the failure reason can
+                    // be specific instead of a single generic message.
+                    if let problem = Self.feedURLProblem(raw) {
+                        feedError = problem
+                        return
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let ok = HermesRemoteClient.shared.provision(url: raw.isEmpty ? nil : raw)
+                        DispatchQueue.main.async {
+                            saved = ok
+                            feedError = ok ? nil : "Save failed (database unavailable)"
+                            feedDisabled = ok && raw.isEmpty
+                        }
+                    }
+                }
+                Button {
+                    HermesRemoteClient.shared.maybePoll()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Pull now")
+                .accessibilityLabel("Pull now")
+            }
+        } header: {
+            Text("Remote Feed")
+        } footer: {
+            remoteFeedStatus
+        }
+    }
+
+    @ViewBuilder
+    private var remoteFeedStatus: some View {
+        let st = remote.status
+        if st.lastSync > 0 || st.error != nil || feedDisabled || saved || feedError != nil {
+            HStack {
+                if st.lastSync > 0 {
+                    Text(st.lastRows > 0
+                         ? "Synced \(Format.dateTime(st.lastSync)) · \(st.lastRows) new"
+                         : "Synced \(Format.dateTime(st.lastSync)) · up to date")
+                }
+                if let err = st.error {
+                    Text(err).foregroundStyle(TMDesign.danger)
+                }
+                if feedDisabled {
+                    Text("Remote feed disabled").foregroundStyle(TMDesign.accent)
+                } else if saved {
+                    Text("Saved").foregroundStyle(TMDesign.accent)
+                }
+                if let err = feedError {
+                    Text(err).foregroundStyle(TMDesign.danger)
+                }
+            }
         }
     }
 
@@ -579,18 +549,15 @@ private struct DataMaintenanceSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                SectionTitle("Data Maintenance")
-                Spacer()
                 Button {
                     exportDatabase()
                 } label: {
                     Label("Export Database", systemImage: "externaldrive.badge.plus")
                 }
-                .font(TMType.regular(11))
                 .disabled(isWorking)
                 Button("Preview local rebuild") { loadPreview() }
-                    .font(TMType.regular(11))
                     .disabled(isWorking)
+                Spacer()
             }
             if let preview {
                 Text("\(preview.turns) records · \(preview.sessions) sessions · \(Format.count(preview.tokens)) tokens")
@@ -605,7 +572,6 @@ private struct DataMaintenanceSection: View {
                             .disabled(isWorking)
                     }
                 }
-                .font(TMType.regular(11))
             }
             if isWorking {
                 ProgressView().controlSize(.small)
@@ -692,7 +658,6 @@ private struct DataMaintenanceSection: View {
                         }
                         Spacer()
                         Button("Restore") { pendingRestoreBackup = url }
-                            .font(TMType.regular(11))
                             .disabled(isWorking)
                     }
                     .padding(.vertical, 2)

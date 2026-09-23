@@ -85,6 +85,10 @@ struct PopoverSettingsView: View {
         ("cc", "Command Code"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
     ]
 
+    /// Content height of the settings form. A `Form` scrolls itself and has
+    /// no intrinsic height, so the panel is sized from this instead.
+    @State private var formHeight: CGFloat = 0
+
     var body: some View {
         VStack(spacing: 0) {
             fixedSlice(.header) {
@@ -93,25 +97,26 @@ struct PopoverSettingsView: View {
                     Divider().opacity(0.7)
                 }
             }
-            // One visual system with the home page: title-case group labels,
-            // tonal cards, label left / control right, hairlines between rows.
-            // Scrolls (indicator hidden, like the home page) once the page is
-            // taller than the screen allows; the measured height still drives
-            // the panel size, so it only scrolls when it truly has to.
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 16) {
-                    generalGroup
-                    homeGroup
-                    accountsGroup
-                    dateRangeGroup
-                    appearanceGroup
-                    updatesGroup
-                }
-                .padding(.horizontal, TMLayout.popoverCardInset)
-                .padding(.vertical, 12)
-                .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(.body, page: .settings)
+            // The system grouped form, so rows, pickers, switches and buttons
+            // follow the running macOS design instead of a hand-drawn copy.
+            // Scrolls (indicator hidden) only once the page is taller than
+            // the screen allows; the content height drives the panel size.
+            Form {
+                generalSection
+                homeSection
+                accountsSection
+                dateRangeSection
+                AppearanceSettingsSection()
+                updatesSection
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            // PopoverRootView shrinks ordinary controls; settings rows use
+            // the system's regular form metrics.
+            .controlSize(.regular)
+            .modifier(FormContentHeight(height: $formHeight))
+            .reportPopoverHeight(.body, page: .settings, height: formHeight)
             .frame(minHeight: 0, maxHeight: .infinity)
             .layoutPriority(1)
             fixedSlice(.footer) {
@@ -123,7 +128,6 @@ struct PopoverSettingsView: View {
         }
         .frame(width: TMLayout.popoverWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-        .environment(\.controlSize, .small)
         .onAppear {
             launch.refresh()
             closeOnResign = PanelController.dismissOnResign
@@ -176,23 +180,21 @@ struct PopoverSettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0 (dev)"
     }
 
-    // MARK: - Groups
+    // MARK: - Sections
 
-    private var generalGroup: some View {
-        SettingsGroup("General", footnote: launch.message) {
-            SettingsToggleRow("Launch at login", isOn: Binding(
+    private var generalSection: some View {
+        Section {
+            Toggle("Launch at login", isOn: Binding(
                 get: { launch.enabled },
                 set: { launch.setEnabled($0) }
             ))
             .accessibilityHint("Open ToastMonitor in the menu bar when you sign in")
-            SettingsDivider()
-            SettingsToggleRow("Quota & renewal alerts", isOn: Binding(
+            Toggle("Quota & renewal alerts", isOn: Binding(
                 get: { alerts.enabled },
                 set: { alerts.setEnabled($0) }
             ))
             .accessibilityHint("Notify when quota falls below 20%, resets, or a subscription renews tomorrow")
-            SettingsDivider()
-            SettingsToggleRow("Close when clicking elsewhere", isOn: $closeOnResign)
+            Toggle("Close when clicking elsewhere", isOn: $closeOnResign)
                 .onChange(of: closeOnResign) { newValue in
                     // Persisted off the main thread; the panel reads the
                     // setting per event, so it applies immediately after.
@@ -201,8 +203,7 @@ struct PopoverSettingsView: View {
                         _ = Database.shared.setSetting(PanelController.dismissOnResignKey, v)
                     }
                 }
-            SettingsDivider()
-            SettingsToggleRow("Dock icon while Dashboard is open", isOn: $dockIconOn)
+            Toggle("Dock icon while Dashboard is open", isOn: $dockIconOn)
                 .onChange(of: dockIconOn) { newValue in
                     let v = newValue ? "1" : "0"
                     DispatchQueue.global(qos: .userInitiated).async {
@@ -212,13 +213,20 @@ struct PopoverSettingsView: View {
                     // immediately, using the optimistic value, not the DB.
                     WindowManager.shared.applyDockIconSetting(newValue)
                 }
+        } header: {
+            Text("General")
+        } footer: {
+            if let message = launch.message {
+                Text(message)
+            }
         }
+        .toggleStyle(.switch)
     }
 
     /// The home page's cards; the eye button on a card writes the same key.
     /// A multi-select, so chips rather than a column of switches.
-    private var homeGroup: some View {
-        SettingsGroup("Show on Home") {
+    private var homeSection: some View {
+        Section("Show on Home") {
             ChipGrid(columns: 4) {
                 ForEach([("sources", "Sources"), ("quota", "Quota"),
                          ("balance", "Balance"), ("activity", "Activity")], id: \.0) { key, title in
@@ -240,8 +248,8 @@ struct PopoverSettingsView: View {
     }
 
     /// Per-account rows inside Quota / Balance (setting `hide_quota_row_<key>`).
-    private var accountsGroup: some View {
-        SettingsGroup("Accounts") {
+    private var accountsSection: some View {
+        Section("Accounts") {
             ChipGrid(columns: 3) {
                 ForEach(Self.accountRows, id: \.key) { row in
                     ChipToggle(row.title, isOn: Binding(
@@ -262,52 +270,34 @@ struct PopoverSettingsView: View {
         }
     }
 
-    private var dateRangeGroup: some View {
-        SettingsGroup("Date range", footnote: periods.mode.detail) {
-            SettingsRow("Periods") {
-                Picker("Periods", selection: Binding(
-                    get: { periods.mode },
-                    set: { periods.setMode($0) }
-                )) {
-                    ForEach(UsagePeriodMode.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
+    private var dateRangeSection: some View {
+        Section {
+            Picker("Periods", selection: Binding(
+                get: { periods.mode },
+                set: { periods.setMode($0) }
+            )) {
+                ForEach(UsagePeriodMode.allCases) { Text($0.title).tag($0) }
             }
             // Kept mounted in every mode so switching modes cannot change the
-            // floating panel's intrinsic height.
-            VStack(spacing: 0) {
-                SettingsDivider()
-                SettingsRow("Week starts on") {
-                    Picker("Week starts on", selection: Binding(
-                        get: { periods.weekStart },
-                        set: { periods.setWeekStart($0) }
-                    )) {
-                        ForEach(UsageWeekStart.allCases) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .fixedSize()
-                }
+            // floating panel's height.
+            Picker("Week starts on", selection: Binding(
+                get: { periods.weekStart },
+                set: { periods.setWeekStart($0) }
+            )) {
+                ForEach(UsageWeekStart.allCases) { Text($0.title).tag($0) }
             }
-            .opacity(periods.mode == .calendar ? 1 : 0.35)
             .disabled(periods.mode != .calendar)
-            .animation(.easeOut(duration: 0.16), value: periods.mode)
+        } header: {
+            Text("Date range")
+        } footer: {
+            Text(periods.mode.detail)
         }
     }
 
-    private var appearanceGroup: some View {
-        SettingsGroup("Appearance", footnote: MenuBarFontControls.footnote) {
-            SettingsRow("Menu bar font") {
-                MenuBarFontControls()
-            }
-        }
-    }
-
-    private var updatesGroup: some View {
-        SettingsGroup("Updates") {
-            SettingsToggleRow("Check automatically", isOn: $autoCheckOn)
+    private var updatesSection: some View {
+        Section("Updates") {
+            Toggle("Check automatically", isOn: $autoCheckOn)
+                .toggleStyle(.switch)
                 .accessibilityHint("Check for new versions in the background at launch")
                 .onChange(of: autoCheckOn) { newValue in
                     let v = newValue ? "1" : "0"
@@ -320,8 +310,7 @@ struct PopoverSettingsView: View {
                         UpdateManager.shared.startAutoCheckIfEnabled()
                     }
                 }
-            SettingsDivider()
-            SettingsRow(updateStatusText, tone: updateStatusTone) {
+            LabeledContent {
                 if updates.installing || updates.checking {
                     ProgressView().controlSize(.small)
                 } else if updates.available != nil {
@@ -333,8 +322,12 @@ struct PopoverSettingsView: View {
                     Button("Check Now") {
                         Task { await UpdateManager.shared.check(force: true) }
                     }
-                    .buttonStyle(.bordered)
                 }
+            } label: {
+                Text(updateStatusText)
+                    .foregroundStyle(updateStatusStyle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
     }
@@ -348,10 +341,10 @@ struct PopoverSettingsView: View {
         return "Current version \(appVersion)"
     }
 
-    private var updateStatusTone: SettingsTone {
-        if updates.available != nil { return .accent }
-        if updates.lastError != nil { return .danger }
-        return .normal
+    private var updateStatusStyle: AnyShapeStyle {
+        if updates.available != nil { return AnyShapeStyle(TMDesign.accent) }
+        if updates.lastError != nil { return AnyShapeStyle(TMDesign.danger) }
+        return AnyShapeStyle(.primary)
     }
 
     private var footerNote: some View {
@@ -367,97 +360,24 @@ struct PopoverSettingsView: View {
 
 // MARK: - Settings building blocks
 
-/// Title-case label over a tonal card (same fill and radius as the home
-/// page cards), with an optional quiet footnote under the card.
-private struct SettingsGroup<Content: View>: View {
-    let title: String
-    let footnote: String?
-    @ViewBuilder let content: Content
+/// Reports a `Form`'s content height. Reading a scroll view's content size
+/// needs macOS 15; earlier systems get a fixed height and scroll inside it.
+private struct FormContentHeight: ViewModifier {
+    @Binding var height: CGFloat
+    static let fallbackHeight: CGFloat = 560
 
-    init(_ title: String, footnote: String? = nil, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.footnote = footnote
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(TMType.semibold(12))
-                .foregroundStyle(TMDesign.quiet)
-                .padding(.leading, TMLayout.popoverCardPadding)
-            VStack(spacing: 0) { content }
-                .padding(.horizontal, TMLayout.popoverCardPadding)
-                .background(Color.primary.opacity(0.055),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            if let footnote {
-                Text(footnote)
-                    .font(TMType.regular(TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
-                    .padding(.leading, TMLayout.popoverCardPadding)
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, new in
+                height = ceil(new)
             }
+        } else {
+            content.onAppear { height = Self.fallbackHeight }
         }
     }
 }
 
-/// Label on the left, control on the right edge — every row, every group.
-private enum SettingsTone { case normal, accent, danger }
-
-private struct SettingsRow<Control: View>: View {
-    let title: String
-    var tone: SettingsTone = .normal
-    @ViewBuilder let control: Control
-
-    init(_ title: String, tone: SettingsTone = .normal, @ViewBuilder control: () -> Control) {
-        self.title = title
-        self.tone = tone
-        self.control = control()
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(TMType.regular(TMType.body))
-                .foregroundStyle(tone == .accent ? AnyShapeStyle(TMDesign.accent)
-                                 : tone == .danger ? AnyShapeStyle(TMDesign.danger)
-                                 : AnyShapeStyle(.primary))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 8)
-            control
-        }
-        .frame(minHeight: 30)
-    }
-}
-
-private struct SettingsToggleRow: View {
-    let title: String
-    @Binding var isOn: Bool
-
-    init(_ title: String, isOn: Binding<Bool>) {
-        self.title = title
-        self._isOn = isOn
-    }
-
-    var body: some View {
-        SettingsRow(title) {
-            Toggle(title, isOn: $isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-        }
-    }
-}
-
-private struct SettingsDivider: View {
-    var body: some View {
-        // System hairline: always exactly one device pixel, never dropped
-        // by fractional-point rounding the way a 0.5pt Rectangle can be.
-        Divider().opacity(0.6)
-    }
-}
-
-/// Equal-width grid of chips inside a settings card.
+/// Equal-width grid of chips inside a settings section.
 private struct ChipGrid<Content: View>: View {
     let columns: Int
     @ViewBuilder let content: Content
@@ -467,7 +387,7 @@ private struct ChipGrid<Content: View>: View {
                   spacing: 6) {
             content
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 4)
     }
 }
 
