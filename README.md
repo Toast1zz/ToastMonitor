@@ -8,12 +8,20 @@ Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-part
 
 Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness** local logs, plus **OpenRouter** cloud quota — everything rolls up into one "today" total, always visible in the menu bar.
 
+<p align="center">
+  <img src="docs/images/popover.png" width="400" alt="ToastMonitor menu-bar popover: token total, sources, subscription quotas and balances">
+</p>
+
 ## Features
 
-- **Live menu-bar total** — today's tokens only; click for the full panel
+- **Live menu-bar total** — today's tokens only; click for the popover
+- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; the footer eye brings hidden cards back, and Settings → Show on Home picks which cards appear
+- **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn red past 80%
+- **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
+- **Claude usage outside this Mac** — an estimate of the weekly Claude quota consumed by Cowork, claude.ai chat or Claude Code on another machine, which leave no local transcript
 - **Full panel (5 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions / Settings
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
-- **Built-in quotas** — OpenCode Go plan bars with reset countdown, OpenRouter balance snapshots (no opencode-quota dependency)
+- **Built-in quotas** — no opencode-quota dependency; see [Quotas](#quotas-built-in-no-opencode-quota-dependency)
 - **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
 - **Cost estimation** — built-in model price table; unknown models count tokens without a price
 - **Privacy-first** — data stays on this Mac, credentials live only in the macOS Keychain, no analytics or ad SDKs
@@ -22,7 +30,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 
 | Tool | Local (Mac) source | Remote |
 |---|---|---|
-| Claude Code | `~/.claude/projects/*/*.jsonl` | VPS feed |
+| Claude Code | `~/.claude/projects/*/*.jsonl`, plus Claude Desktop Cowork sessions that ran in local agent mode | VPS feed |
 | Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | VPS feed |
 | OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed |
 | Hermes | `~/.hermes/state.db` (column introspection) | VPS feed |
@@ -60,6 +68,7 @@ macOS ships no zstd support (Compression.framework covers LZ4/ZLIB/LZMA/LZFSE/BR
 - **OpenCode Go plan** (a separate entry from the OpenCode tool) — reads `opencode.ai/workspace/<id>/go` SolidJS SSR/data-slot data: 5h=$12 / week=$30 / month=$60 bars, reset countdown and history. Credentials: paste in Plans & Balance, or `--provision-go <workspaceId>` reading the cookie from stdin (opencode-quota's opencode-go.json works)
 - **OpenRouter** — `/api/v1/key` + `/api/v1/credits` snapshotted every 60s while the UI is visible and every 5 minutes in background. Key: paste in the panel or `--provision-or-key` from stdin; the secret lives only in the macOS Keychain
 - **Claude subscription** (opt-in, off by default) — 5h / weekly / weekly-Opus rate-limit windows from `api.anthropic.com/api/oauth/usage`, using the login Claude Code already stored on this Mac. No credential to paste: the OAuth blob is read from `~/.claude/.credentials.json` and the `Claude Code-credentials` login-keychain item, newer expiry wins. **The read never prompts.** ToastMonitor's entry in that item's ACL is not durable (Claude Code rewrites the item several times a day as it refreshes the token); instead of surfacing a login-keychain password sheet from a background poll, an unauthorized read fails and is retried through `/usr/bin/security`, which Claude Code itself creates and updates the item through and which is therefore always trusted for it. ToastMonitor never modifies that item or its ACL
+- **Claude usage outside this Mac** — Cowork sessions that run server-side, claude.ai chat and Claude Code on other machines never write a local transcript, so their tokens cannot be counted. Instead, every successful Claude quota fetch is stored as a sample (5h and weekly percentages plus reset times). Within the current weekly window, a rise in weekly usage between two samples counts as non-local when this Mac recorded essentially no Claude Code activity in that interval (under 5,000 fresh tokens, with a 10-minute look-back for server aggregation lag). The popover shows `≈X% of weekly used outside this Mac` once the week has at least 4 intervals spanning 6 hours; hover it for details. It is a lower bound: the quota is only sampled while the popover or dashboard is open, and an interval with any local activity counts as local
 
 ## Install & build
 
@@ -112,6 +121,8 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 
 - `TM_DEBUG=1`: per-file scan decision logging
 - `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions / settings`
+- `--render-popover <path> [height]`: headless popover PNG render; `TM_POPOVER_SETTINGS=1` renders the settings page
+- `--show-panel`: open the popover on screen for inspection (does not start the OpenRouter / Go clients, so no Keychain prompts)
 - `--show-dashboard`: launch with the panel open
 - `--verify-status-toggle`: automated status-button toggle self-check (CI)
 
@@ -130,6 +141,7 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 ## Known limitations
 
 - The menu bar shows only today's tokens (user preference); cost and fixed subscriptions live in the tooltip/panel
+- Claude usage that leaves no local transcript (server-side Cowork, claude.ai chat, other machines) is estimated from the shared quota, never counted in tokens
 - The price table is approximate (official list prices); OpenCode's own cost field is used verbatim when present
 - DSH log mode depends on the `zstd` CLI (see lookup logic above); cache mode has no model, so cost is 0
 - Universal builds link both slices against the 14.0 compatibility layer (a SwiftPM multi-arch limitation), so macOS 26+ UI falls back to compatibility controls in the universal artifact — functionality is unaffected; the arm64 artifact keeps the native look
