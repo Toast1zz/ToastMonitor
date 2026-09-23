@@ -28,6 +28,20 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(ToolKind.codex.totalTokens(input: 100, output: 20, cacheRead: 1_000), 120)
     }
 
+    func testDeepSeekCoveredActualOnlyMatchesDirectProviderAndPeriod() {
+        let providers = ["deepseek", "openrouter", "custom", "deepseek"]
+        let turns = providers.enumerated().map { index, provider in
+            TurnRecord(tool: .opencode, sessionID: "ds-\(index)", project: nil,
+                       model: "deepseek-chat", ts: index == 3 ? 500 : 100,
+                       inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0,
+                       cost: 2, provider: provider, costQuality: "actual")
+        }
+        XCTAssertTrue(db.insertTurns(turns))
+        let result = db.costBreakdown(from: 0, to: 200)
+        XCTAssertEqual(result.actual, 6)
+        XCTAssertEqual(result.deepseekActual, 2)
+    }
+
     func testScanStateTableCacheInvalidatesAfterWrite() {
         XCTAssertTrue(db.setScanState("cached-source", size: 10, mtime: 20,
                                       identity: 30, context: "first"))

@@ -63,6 +63,7 @@ struct PopoverSettingsView: View {
     @ObservedObject private var launch = LaunchAtLoginSettings.shared
     @ObservedObject private var updates = UpdateManager.shared
     @ObservedObject private var alerts = QuotaAlertManager.shared
+    @ObservedObject private var periods = UsagePeriodSettings.shared
     /// Optimistic local mirrors of the persisted settings so a toggle flips
     /// instantly; the database write happens off the main thread (the shared
     /// DB lock can be held by background scans, which made synchronous writes
@@ -70,7 +71,19 @@ struct PopoverSettingsView: View {
     @State private var closeOnResign: Bool = PanelController.dismissOnResign
     @State private var dockIconOn: Bool = WindowManager.dockIconEnabled
     @State private var autoCheckOn: Bool = UpdateManager.autoCheckEnabled
+    @State private var rowVisible: [String: Bool] = [:]
+    /// Same key the home page's eye buttons write (comma-separated keys).
+    @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
     let onBack: () -> Void
+
+    /// Posted when a quota row is shown/hidden here so the resident home
+    /// page picks it up without waiting for its next appearance.
+    static let quotaRowsChanged = Notification.Name("tmQuotaRowsChanged")
+
+    private static let accountRows: [(key: String, title: String)] = [
+        ("claude", "Claude"), ("go", "OpenCode Go"), ("codex", "Codex Plus"),
+        ("cc", "Command Code"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
+    ]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -80,21 +93,27 @@ struct PopoverSettingsView: View {
                     Divider().opacity(0.7)
                 }
             }
-            VStack(alignment: .leading, spacing: 22) {
-                generalSection
-                AppearanceSettingsSection()
-                UsagePeriodSettingsSection()
-                updatesSection
+            // One visual system with the home page: title-case group labels,
+            // tonal cards, label left / control right, hairlines between rows.
+            // Scrolls (indicator hidden, like the home page) once the page is
+            // taller than the screen allows; the measured height still drives
+            // the panel size, so it only scrolls when it truly has to.
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    generalGroup
+                    homeGroup
+                    accountsGroup
+                    dateRangeGroup
+                    updatesGroup
+                    AppearanceSettingsSection()
+                }
+                .padding(.horizontal, TMLayout.popoverCardInset)
+                .padding(.vertical, 12)
+                .fixedSize(horizontal: false, vertical: true)
+                .reportPopoverHeight(.body, page: .settings)
             }
-            // This page is intentionally an intrinsic-height settings sheet,
-            // not a scrolling document. A ScrollView would enter its
-            // overflow state for one layout pass when Calendar periods adds
-            // the week-start row, showing a scrollbar before the panel can
-            // apply the new measured height.
-            .padding(.horizontal, 20)
-            .padding(.vertical, 18)
-            .fixedSize(horizontal: false, vertical: true)
-            .reportPopoverHeight(.body, page: .settings)
+            .frame(minHeight: 0, maxHeight: .infinity)
+            .layoutPriority(1)
             fixedSlice(.footer) {
                 VStack(spacing: 0) {
                     Divider().opacity(0.7)
@@ -110,6 +129,9 @@ struct PopoverSettingsView: View {
             closeOnResign = PanelController.dismissOnResign
             dockIconOn = WindowManager.dockIconEnabled
             autoCheckOn = UpdateManager.autoCheckEnabled
+            for row in Self.accountRows {
+                rowVisible[row.key] = Database.shared.setting("hide_quota_row_\(row.key)") != "1"
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: PanelController.settingsBackNotification)) { _ in
             onBack()
@@ -146,56 +168,31 @@ struct PopoverSettingsView: View {
                 .font(TMType.regular(TMType.micro))
                 .foregroundStyle(.quaternary)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, TMLayout.popoverCardInset + 4)
+        .padding(.vertical, 10)
     }
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0 (dev)"
     }
 
-    // MARK: - 通用
+    // MARK: - Groups
 
-    /// Restore toggle for a Quota row hidden from the popover's Quota section
-    /// (setting key `hide_quota_row_<key>`; on = row visible).
-    private func quotaRowToggle(_ key: String, title: String) -> some View {
-        Toggle("Show \(title) quota", isOn: Binding(
-            get: { Database.shared.setting("hide_quota_row_\(key)") != "1" },
-            set: { visible in
-                let v = visible ? nil : "1"
-                DispatchQueue.global(qos: .userInitiated).async {
-                    _ = Database.shared.setSetting("hide_quota_row_\(key)", v)
-                }
-            }
-        ))
-        .toggleStyle(.switch)
-        .font(TMType.medium(TMType.body))
-    }
-
-    private var generalSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SettingsSectionHeading(title: "General", surface: .popover, showsSeparator: false)
-
-            Toggle("Launch at login", isOn: Binding(
+    private var generalGroup: some View {
+        SettingsGroup("General", footnote: launch.message) {
+            SettingsToggleRow("Launch at login", isOn: Binding(
                 get: { launch.enabled },
                 set: { launch.setEnabled($0) }
             ))
-            .toggleStyle(.switch)
-            .font(TMType.medium(TMType.body))
             .accessibilityHint("Open ToastMonitor in the menu bar when you sign in")
-
-            Toggle("Quota and renewal notifications", isOn: Binding(
+            SettingsDivider()
+            SettingsToggleRow("Quota & renewal alerts", isOn: Binding(
                 get: { alerts.enabled },
                 set: { alerts.setEnabled($0) }
             ))
-            .toggleStyle(.switch)
-            .font(TMType.medium(TMType.body))
             .accessibilityHint("Notify when quota falls below 20%, resets, or a subscription renews tomorrow")
-
-            Toggle("Close when clicking elsewhere", isOn: $closeOnResign)
-                .toggleStyle(.switch)
-                .font(TMType.medium(TMType.body))
-                .accessibilityHint("Keep the panel open when you click other windows or apps")
+            SettingsDivider()
+            SettingsToggleRow("Close when clicking elsewhere", isOn: $closeOnResign)
                 .onChange(of: closeOnResign) { newValue in
                     // Persisted off the main thread; the panel reads the
                     // setting per event, so it applies immediately after.
@@ -204,11 +201,8 @@ struct PopoverSettingsView: View {
                         _ = Database.shared.setSetting(PanelController.dismissOnResignKey, v)
                     }
                 }
-
-            Toggle("Show icon in Dock when the dashboard is open", isOn: $dockIconOn)
-                .toggleStyle(.switch)
-                .font(TMType.medium(TMType.body))
-                .accessibilityHint("Appear as a Dock application while the dashboard window is open")
+            SettingsDivider()
+            SettingsToggleRow("Dock icon while Dashboard is open", isOn: $dockIconOn)
                 .onChange(of: dockIconOn) { newValue in
                     let v = newValue ? "1" : "0"
                     DispatchQueue.global(qos: .userInitiated).async {
@@ -218,32 +212,94 @@ struct PopoverSettingsView: View {
                     // immediately, using the optimistic value, not the DB.
                     WindowManager.shared.applyDockIconSetting(newValue)
                 }
+        }
+    }
 
-            // Quota rows hidden in the Quota section can be restored here.
-            SettingsSectionHeading(title: "Quota rows", surface: .popover)
-            quotaRowToggle("claude", title: "Claude")
-            quotaRowToggle("go", title: "OpenCode Go")
-            quotaRowToggle("codex", title: "Codex Plus")
-            quotaRowToggle("cc", title: "Command Code GOAT")
-            quotaRowToggle("router", title: "OpenRouter")
-
-            if let msg = launch.message {
-                Text(msg)
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.danger)
+    /// The home page's cards; the eye button on a card writes the same key.
+    /// A multi-select, so chips rather than a column of switches.
+    private var homeGroup: some View {
+        SettingsGroup("Show on Home") {
+            ChipGrid(columns: 4) {
+                ForEach([("sources", "Sources"), ("quota", "Quota"),
+                         ("balance", "Balance"), ("activity", "Activity")], id: \.0) { key, title in
+                    ChipToggle(title, isOn: sectionBinding(key))
+                }
             }
         }
     }
 
-    // MARK: - 更新
+    private func sectionBinding(_ key: String) -> Binding<Bool> {
+        Binding(
+            get: { !hiddenSectionsRaw.split(separator: ",").contains(Substring(key)) },
+            set: { visible in
+                var keys = hiddenSectionsRaw.split(separator: ",").map(String.init).filter { $0 != key }
+                if !visible { keys.append(key) }
+                hiddenSectionsRaw = keys.joined(separator: ",")
+            }
+        )
+    }
 
-    private var updatesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SettingsSectionHeading(title: "Updates", surface: .popover)
+    /// Per-account rows inside Quota / Balance (setting `hide_quota_row_<key>`).
+    private var accountsGroup: some View {
+        SettingsGroup("Accounts") {
+            ChipGrid(columns: 3) {
+                ForEach(Self.accountRows, id: \.key) { row in
+                    ChipToggle(row.title, isOn: Binding(
+                        get: { rowVisible[row.key] ?? true },
+                        set: { visible in
+                            rowVisible[row.key] = visible
+                            let v = visible ? nil : "1"
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                _ = Database.shared.setSetting("hide_quota_row_\(row.key)", v)
+                                DispatchQueue.main.async {
+                                    NotificationCenter.default.post(name: Self.quotaRowsChanged, object: nil)
+                                }
+                            }
+                        }
+                    ))
+                }
+            }
+        }
+    }
 
-            Toggle("Automatically check for updates", isOn: $autoCheckOn)
-                .toggleStyle(.switch)
-                .font(TMType.medium(TMType.body))
+    private var dateRangeGroup: some View {
+        SettingsGroup("Date range", footnote: periods.mode.detail) {
+            SettingsRow("Periods") {
+                Picker("Periods", selection: Binding(
+                    get: { periods.mode },
+                    set: { periods.setMode($0) }
+                )) {
+                    ForEach(UsagePeriodMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+            }
+            // Kept mounted in every mode so switching modes cannot change the
+            // floating panel's intrinsic height.
+            VStack(spacing: 0) {
+                SettingsDivider()
+                SettingsRow("Week starts on") {
+                    Picker("Week starts on", selection: Binding(
+                        get: { periods.weekStart },
+                        set: { periods.setWeekStart($0) }
+                    )) {
+                        ForEach(UsageWeekStart.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
+            .opacity(periods.mode == .calendar ? 1 : 0.35)
+            .disabled(periods.mode != .calendar)
+            .animation(.easeOut(duration: 0.16), value: periods.mode)
+        }
+    }
+
+    private var updatesGroup: some View {
+        SettingsGroup("Updates") {
+            SettingsToggleRow("Check automatically", isOn: $autoCheckOn)
                 .accessibilityHint("Check for new versions in the background at launch")
                 .onChange(of: autoCheckOn) { newValue in
                     let v = newValue ? "1" : "0"
@@ -256,54 +312,38 @@ struct PopoverSettingsView: View {
                         UpdateManager.shared.startAutoCheckIfEnabled()
                     }
                 }
-
-            HStack(spacing: 10) {
-                if updates.checking {
-                    Button("Checking…") {}
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(true)
-                } else if let update = updates.available {
-                    Text("ToastMonitor \(update.version) is available")
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.accent)
-                    Button("Download & Install") {
+            SettingsDivider()
+            SettingsRow(updateStatusText, tone: updateStatusTone) {
+                if updates.installing || updates.checking {
+                    ProgressView().controlSize(.small)
+                } else if updates.available != nil {
+                    Button("Install") {
                         Task { await UpdateManager.shared.installAndRelaunch() }
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
                 } else {
-                    // A real button (bordered + icon), not bare text, so it
-                    // reads as the manual trigger; it stays visible after a
-                    // check so a re-check is always one click away.
-                    Button {
+                    Button("Check Now") {
                         Task { await UpdateManager.shared.check(force: true) }
-                    } label: {
-                        Label("Check for Updates", systemImage: "arrow.clockwise")
-                            .font(TMType.regular(TMType.caption))
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    if let error = updates.lastError {
-                        Text(error)
-                            .font(TMType.regular(TMType.caption))
-                            .foregroundStyle(TMDesign.danger)
-                            .lineLimit(2)
-                    } else if updates.lastCheckAt != nil {
-                        Text("You're up to date")
-                            .font(TMType.regular(TMType.caption))
-                            .foregroundStyle(TMDesign.quiet)
-                    }
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
-
-            if updates.installing {
-                Text("Downloading, verifying and installing…")
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(.secondary)
-            }
         }
+    }
+
+    private var updateStatusText: String {
+        if updates.installing { return "Installing…" }
+        if updates.checking { return "Checking…" }
+        if let update = updates.available { return "Version \(update.version) available" }
+        if let error = updates.lastError { return error }
+        if updates.lastCheckAt != nil { return "Up to date" }
+        return "Current version \(appVersion)"
+    }
+
+    private var updateStatusTone: SettingsTone {
+        if updates.available != nil { return .accent }
+        if updates.lastError != nil { return .danger }
+        return .normal
     }
 
     private var footerNote: some View {
@@ -315,5 +355,150 @@ struct PopoverSettingsView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
     }
+}
 
+// MARK: - Settings building blocks
+
+/// Title-case label over a tonal card (same fill and radius as the home
+/// page cards), with an optional quiet footnote under the card.
+struct SettingsGroup<Content: View>: View {
+    let title: String
+    let footnote: String?
+    @ViewBuilder let content: Content
+
+    init(_ title: String, footnote: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.footnote = footnote
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(TMType.semibold(12))
+                .foregroundStyle(TMDesign.quiet)
+                .padding(.leading, TMLayout.popoverCardPadding)
+            VStack(spacing: 0) { content }
+                .padding(.horizontal, TMLayout.popoverCardPadding)
+                .background(Color.primary.opacity(0.055),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            if let footnote {
+                Text(footnote)
+                    .font(TMType.regular(TMType.micro))
+                    .foregroundStyle(TMDesign.faint)
+                    .padding(.leading, TMLayout.popoverCardPadding)
+            }
+        }
+    }
+}
+
+/// Label on the left, control on the right edge — every row, every group.
+private enum SettingsTone { case normal, accent, danger }
+
+private struct SettingsRow<Control: View>: View {
+    let title: String
+    var tone: SettingsTone = .normal
+    @ViewBuilder let control: Control
+
+    init(_ title: String, tone: SettingsTone = .normal, @ViewBuilder control: () -> Control) {
+        self.title = title
+        self.tone = tone
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(TMType.regular(TMType.body))
+                .foregroundStyle(tone == .accent ? AnyShapeStyle(TMDesign.accent)
+                                 : tone == .danger ? AnyShapeStyle(TMDesign.danger)
+                                 : AnyShapeStyle(.primary))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+            control
+        }
+        .frame(minHeight: 30)
+    }
+}
+
+private struct SettingsToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    init(_ title: String, isOn: Binding<Bool>) {
+        self.title = title
+        self._isOn = isOn
+    }
+
+    var body: some View {
+        SettingsRow(title) {
+            Toggle(title, isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+        }
+    }
+}
+
+private struct SettingsDivider: View {
+    var body: some View {
+        // System hairline: always exactly one device pixel, never dropped
+        // by fractional-point rounding the way a 0.5pt Rectangle can be.
+        Divider().opacity(0.6)
+    }
+}
+
+/// Equal-width grid of chips inside a settings card.
+private struct ChipGrid<Content: View>: View {
+    let columns: Int
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
+                  spacing: 6) {
+            content
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+/// A multi-select option: tinted when on, quiet when off. One click flips it.
+private struct ChipToggle: View {
+    let title: String
+    @Binding var isOn: Bool
+    @State private var hovering = false
+
+    init(_ title: String, isOn: Binding<Bool>) {
+        self.title = title
+        self._isOn = isOn
+    }
+
+    var body: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { isOn.toggle() }
+        } label: {
+            Text(title)
+                .font(TMType.medium(TMType.caption))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                // On must read as the stronger state: filled tint + accent
+                // ink. Off recedes to faint ink on an almost-bare capsule.
+                .foregroundStyle(isOn ? AnyShapeStyle(TMDesign.accent)
+                                      : AnyShapeStyle(TMDesign.faint))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(isOn ? TMDesign.accent.opacity(0.24)
+                                   : Color.primary.opacity(hovering ? 0.06 : 0.03))
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "Shown" : "Hidden")
+    }
 }

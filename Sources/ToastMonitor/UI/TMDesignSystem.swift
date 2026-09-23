@@ -5,6 +5,10 @@ enum TMLayout {
     static let popoverWidth: CGFloat = 400
     static let popoverHorizontalPadding: CGFloat = 20
     static let popoverContentWidth = popoverWidth - 2 * popoverHorizontalPadding
+    /// Popover section cards: outer inset from the panel edge, inner padding.
+    static let popoverCardInset: CGFloat = 12
+    static let popoverCardPadding: CGFloat = 12
+    static let popoverCardContentWidth = popoverWidth - 2 * (popoverCardInset + popoverCardPadding)
     static let quotaPrimaryLineHeight: CGFloat = 16
     static let quotaSecondaryLineHeight: CGFloat = 13
 }
@@ -253,6 +257,11 @@ enum TMType {
     static func bold(_ size: CGFloat) -> Font { .system(size: size, weight: .bold) }
     /// SF Mono Regular — fine-print suffixes (e.g. "resets in …").
     static func monoRegular(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
+    /// SF Pro with tabular digits — numbers that should not jitter in width
+    /// but also should not switch typeface mid-sentence (Popover copy).
+    static func number(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight).monospacedDigit()
+    }
 }
 
 /// 板块标题（Quota / Activity / Overview 等）：全大写 + 小号 + 字距 + 灰，
