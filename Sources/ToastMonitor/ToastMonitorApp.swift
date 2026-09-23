@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private var panelController: PanelController?
     @MainActor private var appStateObserver: Any?
     @MainActor private var quotaAlertObserver: Any?
+    @MainActor private var menuBarFontObserver: Any?
     private lazy var quotaAlerts = QuotaAlertManager.shared
     private var debugBackdrop: NSWindow?
     /// Read secrets from stdin so they never appear in argv/`ps` output or
@@ -512,6 +513,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.updateStatusLabel(button)
                 }
             }
+            // The async hop reads `selection` after @Published's willSet
+            // commits, so the label repaints with the newly picked font.
+            menuBarFontObserver = MenuBarFontSettings.shared.objectWillChange.sink { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let button = self.statusItem?.button else { return }
+                    self.updateStatusLabel(button)
+                }
+            }
         }
         panelController = PanelController(
             statusItem: item,
@@ -615,7 +624,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // in the popover and tooltip.
         let text = Format.compact(app.todayTokens)
 
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        // Defaults to the system UI font (SF Pro, tabular digits); a
+        // user-picked font comes from the Appearance settings section.
+        let font = MenuBarFontSettings.shared.selection.resolvedFont
         let attr = NSMutableAttributedString()
         if let img = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil) {
             let attach = NSTextAttachment()

@@ -113,6 +113,8 @@ struct SettingsView: View {
                 Divider()
                 UsagePeriodSettingsSection(reservesWeekStartSpace: false)
                 Divider()
+                AppearanceSettingsSection()
+                Divider()
 
                 // Operational status stays on this page, but uses one
                 // compact list instead of a second nested page or one card

@@ -104,6 +104,7 @@ struct PopoverSettingsView: View {
                     homeGroup
                     accountsGroup
                     dateRangeGroup
+                    appearanceGroup
                     updatesGroup
                 }
                 .padding(.horizontal, TMLayout.popoverCardInset)
@@ -293,6 +294,14 @@ struct PopoverSettingsView: View {
             .opacity(periods.mode == .calendar ? 1 : 0.35)
             .disabled(periods.mode != .calendar)
             .animation(.easeOut(duration: 0.16), value: periods.mode)
+        }
+    }
+
+    private var appearanceGroup: some View {
+        SettingsGroup("Appearance", footnote: MenuBarFontControls.footnote) {
+            SettingsRow("Menu bar font") {
+                MenuBarFontControls()
+            }
         }
     }
 
