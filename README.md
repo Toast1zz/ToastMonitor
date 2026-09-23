@@ -144,7 +144,6 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 - Claude usage that leaves no local transcript (server-side Cowork, claude.ai chat, other machines) is estimated from the shared quota, never counted in tokens
 - The price table is approximate (official list prices); OpenCode's own cost field is used verbatim when present
 - DSH log mode depends on the `zstd` CLI (see lookup logic above); cache mode has no model, so cost is 0
-- Universal builds link both slices against the 14.0 compatibility layer (a SwiftPM multi-arch limitation), so macOS 26+ UI falls back to compatibility controls in the universal artifact — functionality is unaffected; the arm64 artifact keeps the native look
 
 ## Contributing
 

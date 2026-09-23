@@ -2,9 +2,9 @@
 # Build release artifacts for GitHub Releases.
 #
 # Default: both arm64 and universal apps. The architecture-aware appcast
-# selects arm64 for Apple Silicon and universal for Intel. The universal
-# (x86_64) slice is linked against the macOS 14 SDK, so macOS 26/27 serves
-# compatibility UI controls for that artifact; arm64 keeps the native look.
+# selects arm64 for Apple Silicon and universal for Intel. build-app.sh
+# builds each universal slice separately and merges them with lipo, so both
+# artifacts record the current SDK and get the native macOS 26/27 look.
 #
 # Set TM_ARM64_ONLY=1 for a local/internal arm64-only package. The old
 # TM_ALSO_UNIVERSAL=1 flag remains harmless for callers that used it before.

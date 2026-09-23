@@ -14,10 +14,16 @@ cd "$ROOT"
 SWIFT_BUILD=(swift build --build-system native)
 # TM_ARCHS ("arm64", "arm64 x86_64", ...) overrides the host architecture so
 # releases can ship a universal binary. Defaults to the build machine.
-if [[ -n "${TM_ARCHS:-}" ]]; then
-    for arch in $TM_ARCHS; do SWIFT_BUILD+=(--arch "$arch"); done
+# A single multi-arch `swift build` records the deployment target as every
+# slice's SDK (the same legacy-link trap as above), so each architecture is
+# built on its own and the slices are merged with lipo afterwards.
+read -r -a ARCHS <<< "${TM_ARCHS:-}"
+if (( ${#ARCHS[@]} > 1 )); then
+    BIN="$ROOT/.build/universal-release/ToastMonitor"
+else
+    if (( ${#ARCHS[@]} == 1 )); then SWIFT_BUILD+=(--arch "${ARCHS[0]}"); fi
+    BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 fi
-BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 APP="$ROOT/dist/ToastMonitor.app"
 INSTALL_APP="${TM_INSTALL_PATH:-/Applications/ToastMonitor.app}"
 SKIP_INSTALL="${TM_SKIP_INSTALL:-0}"
@@ -72,20 +78,25 @@ if [[ -z "$TAG_VERSION" && -z "${TM_VERSION:-}" && "${CI:-}" != "true" ]]; then
 fi
 
 echo "== building (if needed) =="
-"${SWIFT_BUILD[@]}" -c release
+if (( ${#ARCHS[@]} > 1 )); then
+    SLICES=()
+    for arch in "${ARCHS[@]}"; do
+        "${SWIFT_BUILD[@]}" --arch "$arch" -c release
+        SLICES+=("$("${SWIFT_BUILD[@]}" --arch "$arch" -c release --show-bin-path)/ToastMonitor")
+    done
+    mkdir -p "$(dirname "$BIN")"
+    lipo -create -output "$BIN" "${SLICES[@]}"
+else
+    "${SWIFT_BUILD[@]}" -c release
+fi
 
-# Multi-arch builds take the highest SDK across slices; SwiftPM links both
-# slices of an arm64+x86_64 build against the 14.0 compatibility layer, so
-# the strict SDK 26 check applies to single-arch (arm64) artifacts only.
-SDK_VERSION="$(vtool -show-build "$BIN" | awk '/^[[:space:]]*sdk / { print $2 }' | sort -n | tail -1)"
+# AppKit serves compatibility (pre-Liquid Glass) controls to any slice linked
+# below SDK 26, so check the lowest SDK across slices, not the highest.
+SDK_VERSION="$(vtool -show-build "$BIN" | awk '/^[[:space:]]*sdk / { print $2 }' | sort -n | head -1)"
 SDK_MAJOR="${SDK_VERSION%%.*}"
 if [[ -z "$SDK_VERSION" || ! "$SDK_MAJOR" =~ ^[0-9]+$ || "$SDK_MAJOR" -lt 26 ]]; then
-    if [[ "$TM_ARCHS" == *"x86_64"* ]]; then
-        echo "warning: universal build links as SDK $SDK_VERSION (SwiftPM multi-arch limitation); macOS 26+ UI falls back to compatibility controls, functionality unaffected" >&2
-    else
-        echo "error: release binary is linked as SDK ${SDK_VERSION:-unknown}; macOS 26+ UI requires SDK 26 or newer" >&2
-        exit 1
-    fi
+    echo "error: release binary is linked as SDK ${SDK_VERSION:-unknown}; macOS 26+ UI requires SDK 26 or newer" >&2
+    exit 1
 fi
 echo "linked SDK: $SDK_VERSION"
 
