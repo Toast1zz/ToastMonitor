@@ -244,11 +244,6 @@ struct PopoverHomeView: View {
                     .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                     .help(Format.full(tokens))
-                    .contextMenu {
-                        Button(fullTokens ? "Show Compact Number" : "Show Full Number") {
-                            fullTokens.toggle()
-                        }
-                    }
                 Text("tokens")
                     .font(TMType.regular(13))
                     .foregroundStyle(.tertiary)
@@ -1281,9 +1276,6 @@ private struct StatusRow: View {
                 Text(staleBadge)
                     .font(TMType.number(TMType.micro))
                     .foregroundStyle(TMDesign.quiet)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(TMDesign.quiet.opacity(0.14), in: Capsule(style: .continuous))
             }
             hideButton
         }
@@ -1338,9 +1330,6 @@ private struct StatusRow: View {
                         Text(staleBadge)
                             .font(TMType.number(TMType.micro))
                             .foregroundStyle(TMDesign.quiet)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(TMDesign.quiet.opacity(0.14), in: Capsule(style: .continuous))
                     }
                     if critical {
                         TMStatusCapsule(text: status, compact: true)

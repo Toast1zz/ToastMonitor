@@ -88,44 +88,20 @@ struct PopoverRootView: View {
         }
     }
 
+    /// Menu-item rows, as in the system's own menu bar extras (Wi-Fi,
+    /// Sound, Battery): full-width text rows with a hover highlight and the
+    /// key equivalent on the trailing edge, instead of buttons on the glass.
     private var footer: some View {
-        HStack(spacing: 12) {
-            // App commands live in one native menu, as in the system's own
-            // menu bar extras; the footer keeps a single visible action.
-            Menu {
-                Button("Settings…") { openSettings() }
-                    .keyboardShortcut(",")
-                Button("Check for Updates…") {
-                    openSettings(.updates)
-                    Task { await UpdateManager.shared.check(force: true) }
-                }
-                Button("About ToastMonitor") {
-                    hidePanel()
-                    NSApp.activate(ignoringOtherApps: true)
-                    NSApp.orderFrontStandardAboutPanel(nil)
-                }
-                Divider()
-                Button("Quit ToastMonitor") { NSApp.terminate(nil) }
-                    .keyboardShortcut("q")
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More")
-            .accessibilityLabel("More")
-
-            Spacer()
-
-            // A standard push button: plain text did not read as clickable.
-            Button("Open Dashboard") {
+        VStack(spacing: 0) {
+            PopoverMenuRow("Open Dashboard") {
                 WindowManager.shared.show()
                 hidePanel()
             }
+            PopoverMenuRow("Settings…", shortcut: "⌘,") { openSettings() }
+            PopoverMenuRow("Quit ToastMonitor", shortcut: "⌘Q") { NSApp.terminate(nil) }
         }
-        .padding(.horizontal, TMLayout.popoverCardInset + 4)
-        .padding(.vertical, 8)
+        .padding(.horizontal, TMLayout.popoverCardInset)
+        .padding(.vertical, 6)
     }
 
     private func openSettings(_ pane: SettingsPane? = nil) {
@@ -216,4 +192,39 @@ extension View {
     }
 }
 
+/// One menu-item row of the popover footer.
+private struct PopoverMenuRow: View {
+    let title: String
+    let shortcut: String?
+    let action: () -> Void
+    @State private var hovering = false
 
+    init(_ title: String, shortcut: String? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.shortcut = shortcut
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer(minLength: 12)
+                if let shortcut {
+                    Text(shortcut)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.system(size: TMType.body))
+            .padding(.horizontal, TMLayout.popoverCardPadding)
+            .frame(height: 26)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering ? Color.primary.opacity(0.1) : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}

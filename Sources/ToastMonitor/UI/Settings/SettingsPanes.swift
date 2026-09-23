@@ -132,9 +132,17 @@ struct PopoverSettingsPane: View {
 
     /// Same key the home page's eye buttons write (comma-separated keys).
     @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
+    @AppStorage("popoverFullTokens") private var fullTokens = false
     @State private var rowVisible: [String: Bool] = [:]
 
     var body: some View {
+        Section {
+            Picker("Token count", selection: $fullTokens) {
+                Text("3.7M").tag(false)
+                Text("3,712,456").tag(true)
+            }
+        }
+
         Section {
             ForEach(Self.cards, id: \.key) { card in
                 Toggle(card.title, isOn: cardBinding(card.key))
