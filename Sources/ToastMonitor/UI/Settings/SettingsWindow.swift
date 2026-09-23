@@ -149,7 +149,7 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         guard pane != current else { return }
         let outgoing = current.flatMap { panes[$0] }
         current = pane
-        incoming.install(in: root)
+        incoming.install(in: root, below: window)
         let frame = frame(for: incoming, in: window)
         guard animated else {
             outgoing?.view.removeFromSuperview()
@@ -193,12 +193,16 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     }
 
     /// The window frame that fits `host`, keeping the top edge in place.
+    /// The content view runs under the toolbar on macOS 26+, so the window
+    /// is the pane plus whatever the title bar and toolbar cover, measured
+    /// from the window's content layout rect rather than assumed.
     private func frame(for host: SettingsPaneHost, in window: NSWindow) -> NSRect {
-        let content = window.frameRect(forContentRect: NSRect(
-            x: 0, y: 0, width: SettingsPaneView.width, height: host.height))
+        let chrome = window.frame.height - window.contentLayoutRect.height
+        let height = host.height + chrome
         var frame = window.frame
-        frame.origin.y += frame.height - content.height
-        frame.size = content.size
+        frame.origin.y += frame.height - height
+        frame.size = NSSize(width: window.frameRect(forContentRect: NSRect(
+            x: 0, y: 0, width: SettingsPaneView.width, height: 1)).width, height: height)
         return frame
     }
 
@@ -287,14 +291,17 @@ private final class SettingsPaneHost {
         }
     }
 
-    func install(in root: NSView) {
+    /// Pinned to the top of the window's visible content area (below the
+    /// toolbar), not of the content view, which extends under the toolbar.
+    func install(in root: NSView, below window: NSWindow) {
         guard view.superview !== root else { return }
         view.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(view)
         let height = view.heightAnchor.constraint(equalToConstant: height)
         heightConstraint = height
+        let top = (window.contentLayoutGuide as? NSLayoutGuide)?.topAnchor ?? root.topAnchor
         NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: root.topAnchor),
+            view.topAnchor.constraint(equalTo: top),
             view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             view.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             height,
