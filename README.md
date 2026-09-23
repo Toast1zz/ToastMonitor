@@ -9,17 +9,17 @@ Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-part
 Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness** local logs, plus **OpenRouter** cloud quota — everything rolls up into one "today" total, always visible in the menu bar.
 
 <p align="center">
-  <img src="docs/images/popover.png" width="400" alt="ToastMonitor menu-bar popover: token total, sources, subscription quotas and balances">
+  <img src="docs/images/popover.png" width="800" alt="ToastMonitor menu-bar popover in light and dark appearance: token total, sources, subscription quota and activity">
 </p>
 
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the popover
-- **Custom menu-bar font** — Settings → General → Token count font opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
-- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; the footer eye brings hidden cards back, and Settings → Popover picks which cards and accounts appear
+- **Custom menu-bar font** — Settings → General → Menu bar font opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
+- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; Settings → Popover picks which cards and accounts appear and whether the total is compact or full
 - **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn orange past 80%
 - **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
-- **Claude usage outside this Mac** — an estimate of the weekly Claude quota consumed by Cowork, claude.ai chat or Claude Code on another machine, which leave no local transcript
+- **Claude usage outside this Mac** — Cowork, claude.ai chat and Claude Code on other machines leave no local transcript; their usage is estimated from the shared quota and shown as its own Sources row
 - **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions
 - **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Popover, Sources, Data and Updates panes
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
@@ -27,6 +27,10 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 - **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
 - **Cost estimation** — built-in model price table; unknown models count tokens without a price
 - **Privacy-first** — data stays on this Mac, credentials live only in the macOS Keychain, no analytics or ad SDKs
+
+<p align="center">
+  <img src="docs/images/settings.png" width="800" alt="ToastMonitor settings window in light and dark appearance">
+</p>
 
 ## Data sources
 
@@ -125,7 +129,7 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 - `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions`
 - `--render-popover <path> [height]`: headless popover PNG render
 - `--render-settings <path> [general|popover|sources|data|updates] [height]`: headless render of one settings pane
-- `--show-settings [pane] [--capture-settings <path>]`: opens the real settings window (no collectors, no keychain)
+- `--show-settings [pane] [--appearance light|dark] [--capture-settings <path>]`: opens the real settings window (no collectors, no keychain)
 - `--show-panel`: open the popover on screen for inspection (does not start the OpenRouter / Go clients, so no Keychain prompts)
 - `--show-dashboard`: launch with the panel open
 - `--verify-status-toggle`: automated status-button toggle self-check (CI)
