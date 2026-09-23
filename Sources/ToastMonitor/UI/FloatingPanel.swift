@@ -8,70 +8,43 @@ private final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// The physical panel surface follows AppKit's popover material model: one
-/// system visual-effect view clipped at the window boundary. The system owns
-/// the light/dark surface treatment instead of a hand-tuned color wash.
-private final class PanelSurfaceView: NSView {
-    private let cornerRadius: CGFloat
-    private let effect = NSVisualEffectView()
-
+/// The physical panel surface, built the way Tusi's `PanelContainerView` is:
+/// the popover-material visual-effect view IS the window's root content
+/// view, and its silhouette comes from a `maskImage`, not a layer border.
+///
+/// No outline is drawn. The previous 0.5pt `separatorColor` border resolved
+/// to a light gray in dark mode and read as a bright rim around the whole
+/// panel; the system shadow already separates the panel from what is behind
+/// it. The mask also shapes the material itself (a parent layer mask only
+/// clips ordinary drawing), so AppKit derives the window shadow from the
+/// same rounded silhouette.
+private final class PanelSurfaceView: NSVisualEffectView {
     init(cornerRadius: CGFloat) {
-        self.cornerRadius = cornerRadius
         super.init(frame: .zero)
+        material = .popover
+        blendingMode = .behindWindow
+        state = .active
+
+        // Clip SwiftUI content (and hover fills) to the same corner.
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .continuous
+        layer?.cornerCurve = .circular
         layer?.masksToBounds = true
-        clipsToBounds = true
-        // Keep the boundary at AppKit's hairline scale; the system shadow
-        // provides separation, so a full-pixel outline is unnecessarily heavy.
-        layer?.borderWidth = 0.5
 
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = cornerRadius
-        effect.layer?.cornerCurve = .continuous
-        effect.layer?.masksToBounds = true
-        effect.frame = bounds
-        effect.autoresizingMask = [.width, .height]
-        addSubview(effect)
-
-        applyAppearanceColors()
+        let diameter = cornerRadius * 2 + 1
+        let mask = NSImage(size: NSSize(width: diameter, height: diameter), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        mask.capInsets = NSEdgeInsets(top: cornerRadius, left: cornerRadius,
+                                      bottom: cornerRadius, right: cornerRadius)
+        mask.resizingMode = .stretch
+        maskImage = mask
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is unused") }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyAppearanceColors()
-    }
-
-    override func layout() {
-        super.layout()
-        // Keep every drawing surface on the same continuous shape. In
-        // particular, NSVisualEffectView can otherwise composite its
-        // behind-window material to its rectangular bounds before the parent
-        // layer's corner radius is applied.
-        layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = true
-        effect.layer?.cornerRadius = cornerRadius
-        effect.layer?.cornerCurve = .continuous
-        effect.layer?.masksToBounds = true
-    }
-
-    private func applyAppearanceColors() {
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            // Apple's semantic separator adapts to light/dark appearance and
-            // gives a white-on-white popover a quiet boundary without a
-            // custom shadow or hand-picked gray.
-            layer?.borderColor = NSColor.separatorColor
-                .withAlphaComponent(0.42).cgColor
-        }
-    }
 }
 
 @MainActor

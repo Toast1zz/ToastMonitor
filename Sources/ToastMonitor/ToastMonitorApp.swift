@@ -418,6 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CodexQuotaClient.shared.start()
         ClaudeQuotaClient.shared.start()
         CommandCodeQuotaClient.shared.start()
+        DeepSeekBillingClient.shared.start()
         HermesRemoteClient.shared.start()
         QuotaAlertManager.shared.start()
         setupMenuBar()
@@ -730,6 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// DashboardToolbarController.refreshData(_:)) — every source's
     /// independent poller, triggered together.
     @objc private func menuRefreshNow() {
+        DeepSeekBillingClient.shared.refresh(force: true)
         AppState.shared.refresh(manual: true)
         CollectorEngine.shared.scheduleScan()
         OpenRouterClient.shared.refresh()

@@ -567,6 +567,18 @@ final class OpenRouterClient: ObservableObject {
         }
     }
 
+    /// `{"error":{"message":"..."}}` from an error response, bounded and
+    /// stripped of control characters so it is safe to show in a tooltip.
+    static func serverErrorMessage(_ data: Data?) -> String? {
+        guard let data, data.count <= 4_096,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = (obj["error"] as? [String: Any])?["message"] as? String else { return nil }
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 200,
+              trimmed.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        return trimmed
+    }
+
     private func fetch(_ path: String, key: String,
                        completion: @escaping ([String: Any]?, String?) -> Void) {
         guard let url = URL(string: "https://openrouter.ai\(path)") else {
@@ -591,7 +603,10 @@ final class OpenRouterClient: ObservableObject {
                 return
             }
             if http.statusCode == 401 {
-                DispatchQueue.main.async { completion(nil, "Invalid or unauthorized key (401)") }
+                // OpenRouter explains *why* (e.g. "User not found." once the
+                // key or its account is deleted); keep that for the tooltip.
+                let reason = Self.serverErrorMessage(data).map { " — \($0)" } ?? ""
+                DispatchQueue.main.async { completion(nil, "Invalid or unauthorized key (401)\(reason)") }
                 return
             }
             if http.statusCode == 403 {

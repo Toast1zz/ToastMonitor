@@ -44,21 +44,26 @@ struct AppearanceSettingsSection: View {
     private var isPopover: Bool { surface == .popover }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: isPopover ? 10 : 12) {
-            SettingsSectionHeading(title: "Appearance", surface: surface)
-            row
-            detail
+        if isPopover {
+            SettingsGroup("Appearance", footnote: "Used for the token count in the menu bar. Defaults to System UI (SF Pro).") {
+                row
+                    .frame(minHeight: 30)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                SettingsSectionHeading(title: "Appearance", surface: surface)
+                row
+                detail
+            }
+            .frame(maxWidth: 520, alignment: .leading)
         }
-        .frame(maxWidth: 520, alignment: .leading)
     }
 
     private var row: some View {
         HStack(spacing: 10) {
             Text("Menu Bar Text Font")
-                // The dashboard's label column inherits the default body font,
-                // matching its other form rows; the popover's rows are
-                // medium-weight like the toggles above this section.
-                .font(isPopover ? TMType.medium(TMType.body) : nil)
+                // Match each surface's existing form-row typography.
+                .font(isPopover ? TMType.regular(TMType.body) : nil)
                 .frame(width: isPopover ? nil : labelWidth, alignment: .leading)
             if isPopover { Spacer(minLength: 8) }
             Button(settings.selection.displayName) {

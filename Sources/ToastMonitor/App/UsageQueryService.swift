@@ -12,6 +12,7 @@ final class UsageQueryService: @unchecked Sendable {
     struct CostQuality: Sendable {
         var estimated: Double
         var actual: Double
+        var deepseekActual: Double = 0
     }
 
     /// Fields needed by the status bar and popover. Dashboard-only model and
@@ -202,7 +203,7 @@ final class UsageQueryService: @unchecked Sendable {
 
         func costQuality(from: Int64, to: Int64) -> CostQuality {
             let b = database.costBreakdown(from: from, to: to)
-            return CostQuality(estimated: b.estimated, actual: b.actual)
+            return CostQuality(estimated: b.estimated, actual: b.actual, deepseekActual: b.deepseekActual)
         }
 
         // The grouped rows already contain every total; deriving the four
