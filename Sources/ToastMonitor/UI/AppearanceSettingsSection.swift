@@ -34,59 +34,55 @@ final class MenuBarFontPanel: NSObject, NSFontChanging {
     }
 }
 
-/// "Appearance" section, shown on the popover settings page and the dashboard
-/// Settings tab.
-struct AppearanceSettingsSection: View {
-    @ObservedObject private var settings = MenuBarFontSettings.shared
-    var surface: SettingsSectionSurface = .popover
-    private let labelWidth: CGFloat = 150
+/// Font picker button plus a Reset button once a custom font is chosen.
+/// Hosted by the popover's Appearance group and the dashboard section.
+struct MenuBarFontControls: View {
+    static let footnote = "Used for the token count in the menu bar. Defaults to System UI (SF Pro)."
 
-    private var isPopover: Bool { surface == .popover }
+    @ObservedObject private var settings = MenuBarFontSettings.shared
 
     var body: some View {
-        if isPopover {
-            SettingsGroup("Appearance", footnote: "Used for the token count in the menu bar. Defaults to System UI (SF Pro).") {
-                row
-                    .frame(minHeight: 30)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                SettingsSectionHeading(title: "Appearance", surface: surface)
-                row
-                detail
-            }
-            .frame(maxWidth: 520, alignment: .leading)
-        }
-    }
-
-    private var row: some View {
-        HStack(spacing: 10) {
-            Text("Menu Bar Text Font")
-                // Match each surface's existing form-row typography.
-                .font(isPopover ? TMType.regular(TMType.body) : nil)
-                .frame(width: isPopover ? nil : labelWidth, alignment: .leading)
-            if isPopover { Spacer(minLength: 8) }
+        HStack(spacing: 6) {
             Button(settings.selection.displayName) {
                 MenuBarFontPanel.shared.present(current: settings.selection.resolvedFont) { font in
                     settings.set(.from(font))
                 }
             }
-            .controlSize(.small)
             .help("Choose the font used for the menu bar token count")
+            .accessibilityLabel("Menu bar font")
+            .accessibilityValue(settings.selection.displayName)
             if !settings.selection.isSystemDefault {
                 Button("Reset") { settings.resetToDefault() }
-                    .controlSize(.small)
                     .help("Use the system UI font (SF Pro)")
+                    .accessibilityLabel("Reset menu bar font")
             }
-            if !isPopover { Spacer(minLength: 0) }
         }
-        .accessibilityLabel("Menu Bar Text Font")
+        .controlSize(.small)
     }
+}
 
-    private var detail: some View {
-        Text("Used for the token count in the menu bar. Defaults to System UI (SF Pro).")
-            .font(TMType.regular(TMType.micro))
-            .foregroundStyle(TMDesign.quiet)
-            .padding(.leading, isPopover ? 0 : labelWidth + 10)
+/// "Appearance" section on the dashboard Settings tab, laid out like its
+/// neighbouring Date Range section.
+struct AppearanceSettingsSection: View {
+    private let labelWidth: CGFloat = 150
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionTitle("Appearance")
+            Divider()
+
+            HStack(spacing: 10) {
+                Text("Menu bar font")
+                    .frame(width: labelWidth, alignment: .leading)
+                MenuBarFontControls()
+                Spacer(minLength: 0)
+            }
+
+            Text(MenuBarFontControls.footnote)
+                .font(TMType.regular(TMType.micro))
+                .foregroundStyle(TMDesign.quiet)
+                .padding(.leading, labelWidth + 10)
+        }
+        .frame(maxWidth: 520, alignment: .leading)
     }
 }

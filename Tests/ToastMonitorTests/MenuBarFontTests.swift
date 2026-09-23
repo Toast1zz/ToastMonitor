@@ -41,4 +41,12 @@ final class MenuBarFontTests: XCTestCase {
         let named = MenuBarTextFont(name: "Menlo-Regular", family: "Menlo", size: 14)
         XCTAssertEqual(named.resolvedFont.fontName, "Menlo-Regular")
     }
+
+    /// The font panel offers sizes far beyond what the status bar can hold.
+    func testPickedAndStoredSizesAreClampedToTheMenuBar() {
+        XCTAssertEqual(MenuBarTextFont.from(NSFont(name: "Menlo-Regular", size: 72)!).size, 16)
+        XCTAssertEqual(MenuBarTextFont.from(NSFont.systemFont(ofSize: 4)).size, 10)
+        let stored = MenuBarTextFont(name: "Menlo-Regular", family: "Menlo", size: 48)
+        XCTAssertEqual(stored.resolvedFont.pointSize, 16)
+    }
 }
