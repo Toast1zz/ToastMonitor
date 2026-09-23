@@ -37,8 +37,12 @@ func run(_ executable: String, _ arguments: [String], environment: [String: Stri
     process.standardOutput = pipe
     process.standardError = pipe
     try process.run()
+    // Drain before waiting: a child that writes more than the pipe buffer
+    // (a cold `swift build`'s warnings) blocks until read, so waiting first
+    // deadlocked CI.
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
-    let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let output = String(data: data, encoding: .utf8) ?? ""
     guard process.terminationStatus == 0 else {
         throw NSError(domain: "VisualRegression", code: Int(process.terminationStatus),
                       userInfo: [NSLocalizedDescriptionKey: output])
