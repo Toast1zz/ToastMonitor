@@ -23,9 +23,9 @@ UI verification:
   --render-popover PATH [HEIGHT] [--period today|week|month|all]
   --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions]
   --render-settings PATH [general|popover|sources|data|updates] [HEIGHT]
-  --show-panel [--backdrop white|dark] [--capture PATH]
+  --show-panel [--backdrop white|dark] [--appearance light|dark] [--capture PATH]
   --show-dashboard [--capture-dashboard PATH]
-  --show-settings [PANE] [--capture-settings PATH]
+  --show-settings [PANE] [--appearance light|dark] [--capture-settings PATH]
   --show-dashboard --benchmark-dashboard-switches
   --verify-status-toggle
   --verify-quota-badge
@@ -375,6 +375,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isSettingsVerification {
             // Hermetic like --show-dashboard: no collectors, no Keychain.
             NSApp.setActivationPolicy(.accessory)
+            if let ai = args.firstIndex(of: "--appearance"), ai + 1 < args.count {
+                NSApp.appearance = NSAppearance(named: args[ai + 1] == "dark" ? .darkAqua : .aqua)
+            }
             Database.shared.open()
             WindowManager.shared.ensureMainMenu()
             NSApp.finishLaunching()
@@ -627,6 +630,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--show-panel") {
             debugBackdrop = nil
+            // --appearance light|dark renders the panel in that appearance
+            // regardless of the system setting (README screenshots).
+            if let ai = args.firstIndex(of: "--appearance"), ai + 1 < args.count {
+                NSApp.appearance = NSAppearance(named: args[ai + 1] == "dark" ? .darkAqua : .aqua)
+            }
             if let bi = args.firstIndex(of: "--backdrop"), bi + 1 < args.count {
                 let bg = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 960),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
