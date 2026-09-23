@@ -8,14 +8,6 @@ name: CI
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      # Manual dispatch only. Tag pushes cannot set this, so a tag push can
-      # never silently publish an unsigned build; it still requires a real
-      # signing identity.
-      unsigned:
-        description: "Publish this ref as an unsigned (ad-hoc signed) prerelease"
-        type: boolean
-        default: false
 
 # NOTE: the source uses macOS 27 SDK APIs (NSSegmentedControl.role etc.),
 # so this workflow needs an Xcode 27 toolchain. macOS 27 has shipped, but
@@ -26,7 +18,7 @@ name: CI
 # suite as-is.
 #
 # Actions are pinned to major tags that ship on the Node.js 24 runtime
-# (checkout >= v5, cache >= v5); the Node.js 20
+# (checkout >= v5, cache >= v5, upload-artifact >= v6); the Node.js 20
 # releases are deprecated and get force-upgraded by the runner.
 permissions:
   contents: read
@@ -87,17 +79,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-test
     runs-on: xcode-27
-    # Publishes the release, so it needs more than the workflow-wide read.
-    permissions:
-      contents: write
     # Secrets cannot be referenced inside `if:` expressions (workflow fails
     # to parse), so surface the identity into env and gate the steps below
     # on env.TM_SIGNING_IDENTITY instead.
     env:
       TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
-      # Empty unless a manual dispatch asked for it, which is what keeps the
-      # signing bypass out of the tag-push path.
-      TM_ALLOW_UNSIGNED: ${{ inputs.unsigned && '1' || '' }}
     steps:
       - name: Checkout tag
         uses: actions/checkout@v7
@@ -112,23 +98,16 @@ jobs:
             exit 1
           }
 
-      - name: Assemble app zips
-        if: ${{ env.TM_SIGNING_IDENTITY != '' || env.TM_ALLOW_UNSIGNED == '1' }}
+      - name: Assemble signed app
+        if: ${{ env.TM_SIGNING_IDENTITY != '' }}
         env:
           TM_VERSION: ${{ github.ref_name }}
           TM_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./scripts/package-release.sh
+        run: ./scripts/build-app.sh
 
-      - name: Publish release
-        if: ${{ env.TM_SIGNING_IDENTITY != '' || env.TM_ALLOW_UNSIGNED == '1' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          flags=(--generate-notes)
-          if [[ "$TM_ALLOW_UNSIGNED" == "1" ]]; then
-            # An unsigned, unnotarized build must not be advertised as the
-            # stable latest, so the opt-in path is always a prerelease.
-            flags+=(--prerelease)
-          fi
-          gh release create "$GITHUB_REF_NAME" dist/release/*.zip \
-            --title "ToastMonitor $GITHUB_REF_NAME" "${flags[@]}"
+      - name: Upload app bundle
+        if: ${{ env.TM_SIGNING_IDENTITY != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ToastMonitor-${{ github.ref_name }}
+          path: dist/ToastMonitor.app
