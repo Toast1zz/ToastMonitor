@@ -15,12 +15,13 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the popover
-- **Custom menu-bar font** — Settings → Appearance opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
-- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; the footer eye brings hidden cards back, and Settings → Show on Home picks which cards appear
+- **Custom menu-bar font** — Settings → General → Token count font opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
+- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; the footer eye brings hidden cards back, and Settings → Popover picks which cards and accounts appear
 - **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn red past 80%
 - **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
 - **Claude usage outside this Mac** — an estimate of the weekly Claude quota consumed by Cowork, claude.ai chat or Claude Code on another machine, which leave no local transcript
-- **Full panel (5 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions / Settings
+- **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions
+- **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Popover, Sources, Data and Updates panes
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
 - **Built-in quotas** — no opencode-quota dependency; see [Quotas](#quotas-built-in-no-opencode-quota-dependency)
 - **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
@@ -87,7 +88,7 @@ cd ~/Projects/ToastMonitor
 
 Every release ships the arm64 and universal zips plus a signed,
 architecture-aware update manifest (`appcast.json`) that powers in-app updates
-(Settings → Updates in the menu-bar popover). Apple Silicon selects arm64;
+(Settings → Updates). Apple Silicon selects arm64;
 Intel selects the universal artifact. The legacy top-level fields remain a
 universal bootstrap for older clients. The manifest is Ed25519-signed with a
 key pair whose private half never leaves the maintainer's machine
@@ -121,8 +122,10 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 ```
 
 - `TM_DEBUG=1`: per-file scan decision logging
-- `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions / settings`
-- `--render-popover <path> [height]`: headless popover PNG render; `TM_POPOVER_SETTINGS=1` renders the settings page
+- `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions`
+- `--render-popover <path> [height]`: headless popover PNG render
+- `--render-settings <path> [general|popover|sources|data|updates] [height]`: headless render of one settings pane
+- `--show-settings [pane] [--capture-settings <path>]`: opens the real settings window (no collectors, no keychain)
 - `--show-panel`: open the popover on screen for inspection (does not start the OpenRouter / Go clients, so no Keychain prompts)
 - `--show-dashboard`: launch with the panel open
 - `--verify-status-toggle`: automated status-button toggle self-check (CI)

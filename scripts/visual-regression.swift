@@ -6,32 +6,25 @@ import Foundation
 struct Scenario {
     let name: String
     let arguments: [String]
-    let settingsPage: Bool
 }
 
+// The Data settings pane is left out: it lists this machine's real backups.
 let scenarios: [Scenario] = ["light", "dark"].flatMap { appearance in
     [
         Scenario(name: "dashboard-overview-\(appearance)",
-                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "overview"],
-                 settingsPage: false),
+                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "overview"]),
         Scenario(name: "dashboard-analysis-\(appearance)",
-                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "analysis"],
-                 settingsPage: false),
+                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "analysis"]),
         Scenario(name: "dashboard-plans-\(appearance)",
-                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "plans"],
-                 settingsPage: false),
+                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "plans"]),
         Scenario(name: "dashboard-sessions-\(appearance)",
-                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "sessions"],
-                 settingsPage: false),
-        Scenario(name: "dashboard-settings-\(appearance)",
-                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "settings"],
-                 settingsPage: false),
+                 arguments: ["--render-dashboard", "OUTPUT", "720", "1120", "sessions"]),
         Scenario(name: "popover-home-\(appearance)",
-                 arguments: ["--render-popover", "OUTPUT", "820"],
-                 settingsPage: false),
-        Scenario(name: "popover-settings-\(appearance)",
-                 arguments: ["--render-popover", "OUTPUT", "640"],
-                 settingsPage: true),
+                 arguments: ["--render-popover", "OUTPUT", "820"]),
+        Scenario(name: "settings-general-\(appearance)",
+                 arguments: ["--render-settings", "OUTPUT", "general"]),
+        Scenario(name: "settings-sources-\(appearance)",
+                 arguments: ["--render-settings", "OUTPUT", "sources"]),
     ]
 }
 
@@ -134,7 +127,6 @@ for scenario in scenarios {
     let database = tempRoot.appendingPathComponent("\(scenario.name).sqlite").path
     var environment = ProcessInfo.processInfo.environment
     environment["TM_DATABASE_PATH"] = database
-    environment["TM_POPOVER_SETTINGS"] = scenario.settingsPage ? "1" : "0"
     environment["TZ"] = "UTC"
     environment["LANG"] = "en_US.UTF-8"
     if scenario.name.contains("dashboard-sessions") {

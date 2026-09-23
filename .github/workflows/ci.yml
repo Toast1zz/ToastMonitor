@@ -69,7 +69,7 @@ jobs:
       - name: Strict concurrency gate
         run: swift build -Xswiftc -strict-concurrency=complete
 
-      # Four dashboard tabs and both popover pages in light/dark appearance.
+      # Four dashboard pages, the popover, and two settings panes in light/dark.
       # Average-hash comparison tolerates minor antialiasing changes while
       # still catching blank renders and structural layout regressions.
       - name: Visual regression gate

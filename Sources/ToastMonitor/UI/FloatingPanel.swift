@@ -55,10 +55,8 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let panel: FloatingPanel
     private weak var statusItem: NSStatusItem?
     private var hideObserver: NSObjectProtocol?
-    private var settingsOpenObserver: NSObjectProtocol?
     private var resignObserver: NSObjectProtocol?
     private var keyMonitor: Any?
-    private var settingsOpen = false
     private var desiredHeight: CGFloat
 
     /// 最近创建的 PanelController 实例（App 只创建一个；弱引用避免静态持有）。
@@ -72,8 +70,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         livePanel?.isVisible ?? false
     }
 
-    static let settingsVisibilityNotification = Notification.Name("tmPopoverSettingsVisibility")
-    static let settingsBackNotification = Notification.Name("tmPopoverSettingsBack")
     static let hideNotification = Notification.Name("tmPopoverHide")
     static let visibilityNotification = TMNotifications.popoverVisibility
 
@@ -101,8 +97,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         )
         super.init()
         Self.livePanel = self
-
-        settingsOpen = ProcessInfo.processInfo.environment["TM_POPOVER_SETTINGS"] == "1"
 
         panel.delegate = self
         panel.isFloatingPanel = true
@@ -140,18 +134,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         // compositing and brings square corners back at the window edge.
         panel.contentView = surface
 
-        settingsOpenObserver = NotificationCenter.default.addObserver(
-            forName: Self.settingsVisibilityNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            let open = (note.userInfo?["open"] as? Bool) ?? false
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.settingsOpen = open
-            }
-        }
-
         hideObserver = NotificationCenter.default.addObserver(
             forName: Self.hideNotification,
             object: nil,
@@ -186,11 +168,6 @@ final class PanelController: NSObject, NSWindowDelegate {
             guard event.keyCode == 53, let self, self.panel.isKeyWindow else {
                 return event
             }
-            if self.settingsOpen {
-                self.settingsOpen = false
-                NotificationCenter.default.post(name: Self.settingsBackNotification, object: nil)
-                return nil
-            }
             self.dismiss()
             return nil
         }
@@ -218,10 +195,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard panel.isVisible else { return }
         panel.orderOut(nil)
         NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
-        if settingsOpen {
-            settingsOpen = false
-            NotificationCenter.default.post(name: Self.settingsBackNotification, object: nil)
-        }
     }
 
     private func position() {
@@ -276,8 +249,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     deinit {
-        for observer in [hideObserver, settingsOpenObserver,
-                         resignObserver].compactMap({ $0 }) {
+        for observer in [hideObserver, resignObserver].compactMap({ $0 }) {
             NotificationCenter.default.removeObserver(observer)
         }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }

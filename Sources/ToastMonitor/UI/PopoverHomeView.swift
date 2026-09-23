@@ -144,7 +144,7 @@ struct PopoverHomeView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 12)
                 .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(.pinned, page: .home)
+                .reportPopoverHeight(.pinned)
 
             ScrollView(.vertical, showsIndicators: false) {
                 // 板块节奏统一：每块之间一条等宽分割线（撑满内容区），
@@ -173,7 +173,7 @@ struct PopoverHomeView: View {
                 .padding(.horizontal, TMLayout.popoverCardInset)
                 .padding(.bottom, 12)
                 .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(.body, page: .home)
+                .reportPopoverHeight(.body)
             }
             .id(period)
             .frame(minHeight: 0, maxHeight: .infinity)
@@ -212,7 +212,7 @@ struct PopoverHomeView: View {
                 reloadHeatmap()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: PopoverSettingsView.quotaRowsChanged)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: PopoverSettingsPane.quotaRowsChanged)) { _ in
             loadQuotaRowHidden()
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
@@ -243,21 +243,17 @@ struct PopoverHomeView: View {
                     .animation(.easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
                     .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
+                    .help(Format.full(tokens))
+                    .contextMenu {
+                        Button(fullTokens ? "Show Compact Number" : "Show Full Number") {
+                            fullTokens.toggle()
+                        }
+                    }
                 Text("tokens")
                     .font(TMType.regular(13))
                     .foregroundStyle(.tertiary)
-                Button {
-                    fullTokens.toggle()
-                } label: {
-                    Image(systemName: fullTokens ? "number.circle.fill" : "number.circle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(TMDesign.faint)
-                }
-                .buttonStyle(.borderless)
-                .help(fullTokens ? "Showing full number; click for compact (1.2M)" : "Showing compact number; click for full")
-                .accessibilityLabel("Toggle number format")
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 16) {
                 HeroChip(label: "Spent", value: combinedSpentText,
                          warning: deepseekSpendPending
                              ? "DeepSeek: \(deepseek.spendText). \(deepseek.state.spendError ?? "")"
@@ -371,8 +367,8 @@ struct PopoverHomeView: View {
                         .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.quiet)
                         .lineLimit(2)
-                    Button("Configure Sources") {
-                        WindowManager.shared.show(tab: .settings)
+                    Button("Configure Sources…") {
+                        SettingsWindowController.shared.show(pane: .sources)
                         NotificationCenter.default.post(name: PanelController.hideNotification,
                                                         object: nil)
                     }
@@ -503,7 +499,9 @@ struct PopoverHomeView: View {
                     if !unconnected.isEmpty {
                         if !visible.isEmpty { rowDivider }
                         UnconnectedSourcesRow(names: unconnected.map(\.name)) {
-                            WindowManager.shared.show(tab: .settings)
+                            // Quota and balance accounts are connected on the
+                            // dashboard's Plans page.
+                            WindowManager.shared.show(tab: .plans)
                             NotificationCenter.default.post(name: PanelController.hideNotification,
                                                             object: nil)
                         }
@@ -615,7 +613,7 @@ struct PopoverHomeView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .controlSize(.mini)
+        .controlSize(.small)
         .fixedSize()
     }
 
@@ -1083,7 +1081,7 @@ private struct TrendChartView: View {
                 AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
                     AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
-                        .font(.system(size: 9))
+                        .font(.system(size: 10))
                         .foregroundStyle(TMDesign.quiet)
                 }
             }
@@ -1504,8 +1502,9 @@ private struct UsageBar: View {
     }
 }
 
-/// Spent / Value under the hero figure: quiet label + tabular value on a
-/// faint capsule, so the two read as a pair of metadata, not two sentences.
+/// Spent / Value under the hero figure: a secondary label and its value as
+/// plain text. No capsule: a filled capsule reads as a button on macOS, and
+/// these are not clickable.
 private struct HeroChip: View {
     let label: String
     let value: String
@@ -1527,9 +1526,6 @@ private struct HeroChip: View {
                     .help(warning)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Color.primary.opacity(0.055), in: Capsule(style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(label)
         .accessibilityValue(Text(value))
@@ -1555,10 +1551,8 @@ private struct UnconnectedSourcesRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
-            Button("Set up", action: setUp)
-                .buttonStyle(.borderless)
-                .font(TMType.medium(TMType.caption))
-                .foregroundStyle(TMDesign.accent)
+            Button("Set Up…", action: setUp)
+                .controlSize(.small)
         }
         .padding(.top, 2)
         .accessibilityElement(children: .combine)

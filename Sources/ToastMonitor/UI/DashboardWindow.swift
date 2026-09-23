@@ -84,6 +84,11 @@ final class WindowManager {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
+        let settingsItem = appMenu.addItem(withTitle: "Settings…",
+                                           action: #selector(SettingsWindowController.showSettings(_:)),
+                                           keyEquivalent: ",")
+        settingsItem.target = SettingsWindowController.shared
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide ToastMonitor",
                         action: #selector(NSApplication.hide(_:)),
                         keyEquivalent: "h")
@@ -527,8 +532,6 @@ final class DashboardPageController: NSViewController {
             page = AnyView(PlansView().environmentObject(AppState.shared))
         case .sessions:
             page = AnyView(SessionsView())
-        case .settings:
-            page = AnyView(SettingsView().environmentObject(AppState.shared))
         }
         let host = NSHostingController(rootView: page)
         hosts[tab] = host
@@ -569,7 +572,6 @@ enum DashboardView {
         case analysis = "Analysis"
         case plans = "Plans"
         case sessions = "Sessions"
-        case settings = "Settings"
 
         var id: String { rawValue }
     }

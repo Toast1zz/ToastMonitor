@@ -35,10 +35,8 @@ final class MenuBarFontPanel: NSObject, NSFontChanging {
 }
 
 /// Font picker button plus a Reset button once a custom font is chosen.
-/// Hosted by the popover's Appearance group and the dashboard section.
+/// Hosted by Settings › General.
 struct MenuBarFontControls: View {
-    static let footnote = "Used for the token count in the menu bar. Defaults to System UI (SF Pro)."
-
     @ObservedObject private var settings = MenuBarFontSettings.shared
 
     var body: some View {
@@ -56,21 +54,6 @@ struct MenuBarFontControls: View {
                     .help("Use the system UI font (SF Pro)")
                     .accessibilityLabel("Reset menu bar font")
             }
-        }
-    }
-}
-
-/// "Appearance" section of the dashboard Settings form.
-struct AppearanceSettingsSection: View {
-    var body: some View {
-        Section {
-            LabeledContent("Menu bar font") {
-                MenuBarFontControls()
-            }
-        } header: {
-            Text("Appearance")
-        } footer: {
-            Text(MenuBarFontControls.footnote)
         }
     }
 }

@@ -8,45 +8,17 @@ struct PopoverRootView: View {
     @ObservedObject private var app = AppState.shared
     @ObservedObject private var health = SourceHealthHub.shared
 
-    /// Popover 内嵌设置页（Tusi 式第二页：同一面板切换，无新窗口）。
-    /// 渲染快照钩子：环境变量 TM_POPOVER_SETTINGS=1 时直接落在设置页。
-    @State private var showSettings = ProcessInfo.processInfo.environment["TM_POPOVER_SETTINGS"] == "1"
-    /// Cards hidden with a card's eye button (written by PopoverHomeView).
-    @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
-
     var body: some View {
-        ZStack(alignment: .top) {
-            if showSettings {
-                PopoverSettingsView {
-                    // 14+ keeps the original spring; 13 falls back to the
-                    // eased curve used by the hero number transitions.
-                    if #available(macOS 14.0, *) {
-                        withAnimation(.snappy(duration: 0.25)) { showSettings = false }
-                    } else {
-                        withAnimation(.easeOut(duration: 0.35)) { showSettings = false }
-                    }
-                }
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .trailing).combined(with: .opacity)
-                ))
-            } else {
+        VStack(spacing: 0) {
+            fixedSlice(.header) {
+                header
+            }
+            PopoverHomeView()
+            fixedSlice(.footer) {
                 VStack(spacing: 0) {
-                    fixedSlice(.header) {
-                        header
-                    }
-                    PopoverHomeView()
-                    fixedSlice(.footer) {
-                        VStack(spacing: 0) {
-                            Divider().opacity(0.25)
-                            footer
-                        }
-                    }
+                    Divider().opacity(0.25)
+                    footer
                 }
-                .transition(.asymmetric(
-                    insertion: .move(edge: .leading).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
             }
         }
         .frame(width: TMLayout.popoverWidth)
@@ -55,17 +27,9 @@ struct PopoverRootView: View {
         // pinned to the menu-bar edge so extra height is revealed downward.
         .frame(maxHeight: .infinity, alignment: .top)
         .environment(\.controlSize, .small)
-        .onPreferenceChange(PopoverHeightPreferenceKey.self) { pages in
-            let page: PopoverPage = showSettings ? .settings : .home
-            guard let naturalHeight = pages[page]?.naturalHeight(for: page) else { return }
+        .onPreferenceChange(PopoverHeightPreferenceKey.self) { measurements in
+            guard let naturalHeight = measurements.naturalHeight else { return }
             onNaturalHeightChange(naturalHeight)
-        }
-        .onChange(of: showSettings) { open in
-            NotificationCenter.default.post(
-                name: PanelController.settingsVisibilityNotification,
-                object: nil,
-                userInfo: ["open": open]
-            )
         }
     }
 
@@ -75,7 +39,7 @@ struct PopoverRootView: View {
                                            @ViewBuilder content: () -> Content) -> some View {
         content()
             .fixedSize(horizontal: false, vertical: true)
-            .reportPopoverHeight(slice, page: .home)
+            .reportPopoverHeight(slice)
     }
 
     private var header: some View {
@@ -126,45 +90,51 @@ struct PopoverRootView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            FooterIconButton(systemName: "power", help: "Quit ToastMonitor") {
-                NSApp.terminate(nil)
-            }
-
-            FooterIconButton(systemName: "gearshape", help: "Popover Settings") {
-                if #available(macOS 14.0, *) {
-                    withAnimation(.snappy(duration: 0.25)) { showSettings = true }
-                } else {
-                    withAnimation(.easeOut(duration: 0.35)) { showSettings = true }
+            // App commands live in one native menu, as in the system's own
+            // menu bar extras; the footer keeps a single visible action.
+            Menu {
+                Button("Settings…") { openSettings() }
+                    .keyboardShortcut(",")
+                Button("Check for Updates…") {
+                    openSettings(.updates)
+                    Task { await UpdateManager.shared.check(force: true) }
                 }
-            }
-
-            // Only exists while a card is hidden: one click brings them back.
-            if !hiddenSectionsRaw.isEmpty {
-                FooterIconButton(systemName: "eye", help: "Show hidden sections") {
-                    withAnimation(.easeOut(duration: 0.2)) { hiddenSectionsRaw = "" }
+                Button("About ToastMonitor") {
+                    hidePanel()
+                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.orderFrontStandardAboutPanel(nil)
                 }
-                .transition(.opacity)
+                Divider()
+                Button("Quit ToastMonitor") { NSApp.terminate(nil) }
+                    .keyboardShortcut("q")
+            } label: {
+                Image(systemName: "ellipsis.circle")
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+            .accessibilityLabel("More")
 
             Spacer()
 
-            Button {
+            // A standard push button: plain text did not read as clickable.
+            Button("Open Dashboard") {
                 WindowManager.shared.show()
-                NotificationCenter.default.post(name: PanelController.hideNotification, object: nil)
-            } label: {
-                // Claude 风格：无图标、无边框，纯文字入口（参考 claude-statusbar
-                // 的 statusLine —— 只有文字与细符号，从不使用外链箭头）。
-                Text("Dashboard")
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 6)
+                hidePanel()
             }
-            .buttonStyle(.plain)
-            .help("Open the full dashboard")
-            .accessibilityLabel("Open the full dashboard")
         }
         .padding(.horizontal, TMLayout.popoverCardInset + 4)
         .padding(.vertical, 8)
+    }
+
+    private func openSettings(_ pane: SettingsPane? = nil) {
+        SettingsWindowController.shared.show(pane: pane)
+        hidePanel()
+    }
+
+    private func hidePanel() {
+        NotificationCenter.default.post(name: PanelController.hideNotification, object: nil)
     }
 
     private func refresh() {
@@ -179,10 +149,6 @@ struct PopoverRootView: View {
     }
 }
 
-enum PopoverPage: Hashable, Sendable {
-    case home
-    case settings
-}
 
 enum PopoverHeightSlice: Hashable, Sendable {
     case header
@@ -194,27 +160,22 @@ enum PopoverHeightSlice: Hashable, Sendable {
 struct PopoverHeightMeasurements: Equatable, Sendable {
     var values: [PopoverHeightSlice: CGFloat] = [:]
 
-    func naturalHeight(for page: PopoverPage) -> CGFloat? {
+    var naturalHeight: CGFloat? {
         guard let header = values[.header], header > 0,
               let body = values[.body], body > 0,
-              let footer = values[.footer], footer > 0 else { return nil }
-        if page == .settings { return header + body + footer }
-        guard let pinned = values[.pinned], pinned > 0 else { return nil }
+              let footer = values[.footer], footer > 0,
+              let pinned = values[.pinned], pinned > 0 else { return nil }
         return header + pinned + body + footer
     }
 }
 
 struct PopoverHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: [PopoverPage: PopoverHeightMeasurements] = [:]
+    static let defaultValue = PopoverHeightMeasurements()
 
-    static func reduce(value: inout [PopoverPage: PopoverHeightMeasurements],
-                       nextValue: () -> [PopoverPage: PopoverHeightMeasurements]) {
-        for (page, incoming) in nextValue() {
-            var measurements = value[page] ?? .init()
-            for (slice, height) in incoming.values {
-                measurements.values[slice] = max(measurements.values[slice] ?? 0, height)
-            }
-            value[page] = measurements
+    static func reduce(value: inout PopoverHeightMeasurements,
+                       nextValue: () -> PopoverHeightMeasurements) {
+        for (slice, height) in nextValue().values {
+            value.values[slice] = max(value.values[slice] ?? 0, height)
         }
     }
 }
@@ -232,10 +193,9 @@ extension EnvironmentValues {
 
 /// Each slice contributes typed data to one PreferenceKey. SwiftUI completes
 /// preference reduction for the whole tree before PopoverRootView emits the
-/// page's single natural-height callback.
+/// single natural-height callback.
 private struct PopoverHeightReporter: ViewModifier {
     let slice: PopoverHeightSlice
-    let page: PopoverPage
 
     func body(content: Content) -> some View {
         content.background(
@@ -243,7 +203,7 @@ private struct PopoverHeightReporter: ViewModifier {
                 Color.clear
                     .preference(
                         key: PopoverHeightPreferenceKey.self,
-                        value: [page: .init(values: [slice: proxy.size.height])]
+                        value: .init(values: [slice: proxy.size.height])
                     )
             }
         )
@@ -251,51 +211,9 @@ private struct PopoverHeightReporter: ViewModifier {
 }
 
 extension View {
-    func reportPopoverHeight(_ slice: PopoverHeightSlice, page: PopoverPage) -> some View {
-        modifier(PopoverHeightReporter(slice: slice, page: page))
-    }
-
-    /// For content with no intrinsic height (a `Form` scrolls itself), the
-    /// caller supplies the measured height instead of the view's frame.
-    func reportPopoverHeight(_ slice: PopoverHeightSlice, page: PopoverPage,
-                             height: CGFloat) -> some View {
-        background(
-            Color.clear.preference(
-                key: PopoverHeightPreferenceKey.self,
-                value: height > 0 ? [page: .init(values: [slice: height])] : [:]
-            )
-        )
+    func reportPopoverHeight(_ slice: PopoverHeightSlice) -> some View {
+        modifier(PopoverHeightReporter(slice: slice))
     }
 }
 
 
-/// 底部工具栏图标按钮：静止无装饰，hover 轻填充。
-private struct FooterIconButton: View {
-    let systemName: String
-    let help: String
-    let action: () -> Void
-    @State private var hovering = false
-    @State private var pressed = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .frame(width: 28, height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(hovering ? Color.primary.opacity(0.07) : .clear)
-                )
-                .contentShape(Rectangle())
-                .scaleEffect(pressed ? 0.96 : 1)
-                .animation(.easeOut(duration: 0.1), value: pressed)
-                .onHover { hovering = $0 }
-        }
-        .buttonStyle(.borderless)
-        .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity,
-                            pressing: { pressing in pressed = pressing },
-                            perform: {})
-        .help(help)
-        .accessibilityLabel(help)
-    }
-}

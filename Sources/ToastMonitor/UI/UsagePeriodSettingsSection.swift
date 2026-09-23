@@ -20,9 +20,9 @@ struct UsagePeriodSettingsSection: View {
 
     var body: some View {
         Section {
-            Picker("Period style", selection: modeBinding) {
+            Picker("Periods", selection: modeBinding) {
                 ForEach(UsagePeriodMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+                    Text(Self.optionTitle(mode)).tag(mode)
                 }
             }
             if settings.mode == .calendar {
@@ -34,8 +34,14 @@ struct UsagePeriodSettingsSection: View {
             }
         } header: {
             Text("Date Range")
-        } footer: {
-            Text(settings.mode.detail)
+        }
+    }
+
+    /// Names the periods themselves, so the choice needs no footnote.
+    private static func optionTitle(_ mode: UsagePeriodMode) -> String {
+        switch mode {
+        case .recent: return "Last 7 and 30 Days"
+        case .calendar: return "This Week and Month"
         }
     }
 }
