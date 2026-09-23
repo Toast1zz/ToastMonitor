@@ -88,20 +88,35 @@ struct PopoverRootView: View {
         }
     }
 
-    /// Menu-item rows, as in the system's own menu bar extras (Wi-Fi,
-    /// Sound, Battery): full-width text rows with a hover highlight and the
-    /// key equivalent on the trailing edge, instead of buttons on the glass.
+    /// Liquid Glass buttons: familiar icons for Settings and Quit, and the
+    /// primary action as a text capsule.
     private var footer: some View {
-        VStack(spacing: 0) {
-            PopoverMenuRow("Open Dashboard") {
+        HStack(spacing: 8) {
+            Button { openSettings() } label: {
+                Image(systemName: "gearshape")
+            }
+            .footerButtonStyle(circle: true)
+            .help("Settings… (⌘,)")
+            .accessibilityLabel("Settings")
+
+            Button { NSApp.terminate(nil) } label: {
+                Image(systemName: "power")
+            }
+            .footerButtonStyle(circle: true)
+            .help("Quit ToastMonitor (⌘Q)")
+            .accessibilityLabel("Quit ToastMonitor")
+
+            Spacer()
+
+            Button("Open Dashboard") {
                 WindowManager.shared.show()
                 hidePanel()
             }
-            PopoverMenuRow("Settings…", shortcut: "⌘,") { openSettings() }
-            PopoverMenuRow("Quit ToastMonitor", shortcut: "⌘Q") { NSApp.terminate(nil) }
+            .footerButtonStyle(circle: false)
         }
+        .controlSize(.large)
         .padding(.horizontal, TMLayout.popoverCardInset)
-        .padding(.vertical, 6)
+        .padding(.vertical, 10)
     }
 
     private func openSettings(_ pane: SettingsPane? = nil) {
@@ -192,39 +207,18 @@ extension View {
     }
 }
 
-/// One menu-item row of the popover footer.
-private struct PopoverMenuRow: View {
-    let title: String
-    let shortcut: String?
-    let action: () -> Void
-    @State private var hovering = false
-
-    init(_ title: String, shortcut: String? = nil, action: @escaping () -> Void) {
-        self.title = title
-        self.shortcut = shortcut
-        self.action = action
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(title)
-                Spacer(minLength: 12)
-                if let shortcut {
-                    Text(shortcut)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.system(size: TMType.body))
-            .padding(.horizontal, TMLayout.popoverCardPadding)
-            .frame(height: 26)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(hovering ? Color.primary.opacity(0.1) : .clear)
-            )
+private extension View {
+    /// Glass on macOS 26+, the same shapes as bordered buttons on 14–15.
+    @ViewBuilder
+    func footerButtonStyle(circle: Bool) -> some View {
+        if #available(macOS 26.0, *) {
+            buttonStyle(.glass)
+                .buttonBorderShape(circle ? .circle : .capsule)
+        } else if #available(macOS 14.0, *) {
+            buttonStyle(.bordered)
+                .buttonBorderShape(circle ? .circle : .capsule)
+        } else {
+            buttonStyle(.bordered)
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }
