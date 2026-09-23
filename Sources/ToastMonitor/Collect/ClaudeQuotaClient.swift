@@ -41,9 +41,6 @@ final class ClaudeQuotaClient: ObservableObject {
         var sevenDayOpus: Window?
         var lastSync: Int64 = 0
         var error: String?
-        /// Weekly quota spent outside this Mac (Cowork, claude.ai, other
-        /// machines). nil until there are enough samples.
-        var nonLocal: ClaudeNonLocalEstimator.Result?
 
         /// The window(s) besides the weekly one that are close enough to
         /// exhaustion to be worth flagging (5h and, rarely, a weekly-Opus
@@ -167,7 +164,6 @@ final class ClaudeQuotaClient: ObservableObject {
     func start() {
         guard enabled, !started else { return }
         started = true
-        updateNonLocalEstimate(recording: nil)
         refresh()
         updateForeground()
     }
@@ -529,7 +525,7 @@ final class ClaudeQuotaClient: ObservableObject {
                 self.state.error = nil
                 self.clearBackoff()
                 self.persistCache()
-                self.updateNonLocalEstimate(recording: parsed.sevenDay.map { weekly in
+                self.recordQuotaSample(parsed.sevenDay.map { weekly in
                     ClaudeNonLocalEstimator.Sample(
                         ts: self.state.lastSync, weeklyPct: weekly.usedPercent,
                         weeklyReset: weekly.resetAt,
@@ -660,21 +656,13 @@ final class ClaudeQuotaClient: ObservableObject {
 
     // MARK: - Non-local usage estimate
 
-    /// Records `sample` (if any) and recomputes the non-local estimate off
-    /// the main actor — both touch SQLite, which the collector may be holding.
-    private func updateNonLocalEstimate(recording sample: ClaudeNonLocalEstimator.Sample?) {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let db = Database.shared
-            if let sample { db.insertClaudeQuotaSample(sample) }
-            let now = Int64(Date().timeIntervalSince1970)
-            // A weekly window spans 7 days; the extra day covers reset jitter
-            // and the server-lag look-back before the first interval.
-            let since = now - 8 * 86400
-            let estimate = ClaudeNonLocalEstimator.estimate(
-                samples: db.claudeQuotaSamples(since: since),
-                localEvents: db.claudeLocalEvents(since: since - ClaudeNonLocalEstimator.serverLagSeconds),
-                now: now)
-            Task { @MainActor [weak self] in self?.state.nonLocal = estimate }
+    /// Stores the sample the non-local token estimate is derived from
+    /// (UsageQueryService turns samples into tokens). Off the main actor:
+    /// SQLite may be held by the collector.
+    private func recordQuotaSample(_ sample: ClaudeNonLocalEstimator.Sample?) {
+        guard let sample else { return }
+        DispatchQueue.global(qos: .utility).async {
+            Database.shared.insertClaudeQuotaSample(sample)
         }
     }
 

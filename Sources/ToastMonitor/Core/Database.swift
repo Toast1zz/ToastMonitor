@@ -1435,8 +1435,10 @@ final class Database: @unchecked Sendable {
 
     // MARK: - Claude quota samples (non-local usage estimate)
 
-    /// Samples older than this are never part of a current weekly window.
-    static let claudeQuotaSampleRetention: Int64 = 35 * 86400
+    /// Same retention as the other quota snapshots: the samples also back
+    /// the estimated non-local tokens in period totals, so dropping them
+    /// early would make month/all-time totals shrink.
+    static let claudeQuotaSampleRetention: Int64 = 400 * 86400
 
     @discardableResult
     func insertClaudeQuotaSample(_ sample: ClaudeNonLocalEstimator.Sample) -> Bool {
@@ -1463,6 +1465,18 @@ final class Database: @unchecked Sendable {
             sqlite3_finalize(prune)
         }
         return true
+    }
+
+    /// Cheap change marker for the samples table (count + newest ts).
+    func claudeQuotaSampleMarker() -> String {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return "" }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*), COALESCE(MAX(ts),0) FROM claude_quota_samples;",
+                                 -1, &stmt, nil) == SQLITE_OK else { return "" }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return "" }
+        return "\(sqlite3_column_int64(stmt, 0)):\(sqlite3_column_int64(stmt, 1))"
     }
 
     func claudeQuotaSamples(since: Int64) -> [ClaudeNonLocalEstimator.Sample] {
@@ -1497,7 +1511,8 @@ final class Database: @unchecked Sendable {
         guard let db else { return [] }
         var stmt: OpaquePointer?
         let sql = """
-        SELECT ts, input_tokens + output_tokens + cache_write FROM turns
+        SELECT ts, input_tokens + output_tokens + cache_write,
+               input_tokens + output_tokens + cache_read FROM turns
         WHERE tool = 'claude' AND ts >= ? ORDER BY ts;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -1505,7 +1520,8 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_int64(stmt, 1, since)
         var out: [ClaudeNonLocalEstimator.LocalEvent] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            out.append(.init(ts: sqlite3_column_int64(stmt, 0), tokens: sqlite3_column_int64(stmt, 1)))
+            out.append(.init(ts: sqlite3_column_int64(stmt, 0), tokens: sqlite3_column_int64(stmt, 1),
+                             total: sqlite3_column_int64(stmt, 2)))
         }
         return out
     }
@@ -2209,6 +2225,7 @@ final class Database: @unchecked Sendable {
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM opencodego_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM openrouter_snapshots)
             || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(id),0) FROM subscriptions)
+            || '|' || (SELECT COUNT(*) || ':' || COALESCE(MAX(ts),0) FROM claude_quota_samples)
             || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='last_scan_heartbeat')
             || '|' || (SELECT COALESCE(MAX(CAST(v AS INTEGER)),0) FROM settings WHERE k='data_version')
             || '|' || (SELECT strftime('%Y%m%d', 'now', 'localtime'));

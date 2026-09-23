@@ -392,7 +392,7 @@ struct PopoverHomeView: View {
                                 let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
                                 let ratio = total > 0 ? CGFloat(value) / CGFloat(total) : 0
                                 Rectangle()
-                                    .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+                                    .fill(Self.sourceColor(row.tool))
                                     .frame(width: geo.size.width * ratio)
                             }
                         }
@@ -405,7 +405,7 @@ struct PopoverHomeView: View {
                 ForEach(rows, id: \.tool) { row in
                     HStack(spacing: 7) {
                         Circle()
-                            .fill(ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+                            .fill(Self.sourceColor(row.tool))
                             .frame(width: 7, height: 7)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
                             .font(TMType.medium(TMType.body))
@@ -418,6 +418,7 @@ struct PopoverHomeView: View {
                             .font(TMType.number(TMType.body))
                             .foregroundStyle(.secondary)
                     }
+                    .help(row.tool == ClaudeNonLocalEstimator.estimateToolLabel ? Self.elsewhereHelp : "")
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
                     .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens, \(percentText(row, total: total)) of total"))
@@ -425,6 +426,21 @@ struct PopoverHomeView: View {
             }
         }
     }
+
+    /// The estimated row reuses Claude's hue, faded, so it reads as "more
+    /// Claude, but not measured".
+    private static func sourceColor(_ tool: String) -> Color {
+        if tool == ClaudeNonLocalEstimator.estimateToolLabel { return ToolKind.claude.color.opacity(0.45) }
+        return ToolKind(rawValue: tool)?.color ?? TMDesign.accent
+    }
+
+    private static let elsewhereHelp = """
+    Estimate. Claude usage that leaves no transcript on this Mac — Cowork, claude.ai chat, \
+    Claude Code on another machine — can't be counted, only seen in the shared quota. Quota \
+    that rose while this Mac recorded no Claude Code activity is converted to tokens at the \
+    rate your local Claude Code usage consumes quota. Quota is sampled only while this panel \
+    or the dashboard is open, so the real figure is likely higher.
+    """
 
     private func loadDetectedTools() {
         DispatchQueue.global(qos: .utility).async {
@@ -816,7 +832,6 @@ struct PopoverHomeView: View {
                          subtitleCritical: claudeQuota.enabled && state.hasCriticalSecondaryWindow,
                          staleBadge: staleBadge,
                          windows: claudeQuota.enabled ? claudeWindows(state) : [],
-                         note: claudeQuota.enabled ? claudeNonLocalNote(state) : nil,
                          hideKey: "claude")
     }
 
@@ -824,23 +839,6 @@ struct PopoverHomeView: View {
     /// caption under the name — "84% 5h left", joined with " · " if both are
     /// present. Shown whenever cached data exists, even mid-error or while
     /// stale — same "prefer the cached number" reasoning as the row above.
-    /// Quiet estimate under the Claude bars: weekly quota that rose while
-    /// this Mac recorded no Claude Code activity. Hidden until the estimator
-    /// has enough samples, and when it rounds to nothing.
-    private func claudeNonLocalNote(_ state: ClaudeQuotaClient.State) -> (text: String, help: String)? {
-        guard let estimate = state.nonLocal, estimate.nonLocalPoints >= 1 else { return nil }
-        let text = "≈\(estimate.nonLocalPoints)% of weekly used outside this Mac"
-        let help = """
-        Estimate, not a measurement. Of the \(estimate.weeklyUsed)% weekly quota used, about \
-        \(estimate.nonLocalPoints)% rose while this Mac recorded no Claude Code activity — \
-        Cowork, claude.ai chat, or Claude Code on another machine. Those leave no local \
-        transcript, so their tokens cannot be counted. Quota is only sampled while this \
-        panel or the dashboard is open, and an interval with any local activity counts as \
-        local, so the real share is likely higher. Based on \(estimate.intervals) sample intervals.
-        """
-        return (text, help)
-    }
-
     /// Claude bills against 5h and weekly windows at once (plus, on some
     /// plans, a weekly Opus one) — each gets its own usage bar.
     private func claudeWindows(_ state: ClaudeQuotaClient.State) -> [QuotaWindow] {
@@ -1032,13 +1030,11 @@ struct PopoverHomeView: View {
                            subtitle: String? = nil, subtitleCritical: Bool = false,
                            staleBadge: String? = nil,
                            windows: [QuotaWindow] = [],
-                           note: (text: String, help: String)? = nil,
                            hideKey: String? = nil) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
                   critical: critical, resetSuffix: resetSuffix, subtitle: subtitle,
                   subtitleCritical: subtitleCritical, staleBadge: staleBadge,
                   windows: windows,
-                  note: note,
                   hideAction: hideKey.map { key in { self.hideQuotaRow(key) } })
     }
 
@@ -1249,8 +1245,6 @@ private struct StatusRow: View {
     /// "name + one bar per window"; the plain status text is only for
     /// states without numbers (Loading / Error / Off / Subscribed).
     var windows: [QuotaWindow] = []
-    /// A quiet footnote under the bars (e.g. Claude's non-local estimate).
-    var note: (text: String, help: String)?
     var hideAction: (() -> Void)?
 
     @State private var hovering = false
@@ -1264,13 +1258,6 @@ private struct StatusRow: View {
                     header
                     ForEach(windows, id: \.label) { window in
                         QuotaWindowLine(window: window)
-                    }
-                    if let note {
-                        Text(note.text)
-                            .font(TMType.regular(TMType.micro))
-                            .foregroundStyle(TMDesign.faint)
-                            .lineLimit(1)
-                            .help(note.help)
                     }
                 }
             }

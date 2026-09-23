@@ -63,6 +63,10 @@ final class UsageQueryService: @unchecked Sendable {
     /// 日聚合/热力图缓存（M8）：与快照同键策略。popover 可见期间每分钟
     /// 的 minuteTicker 不再反复跑 371 天 strftime+GROUP BY 全量聚合。
     private var cachedDailyAggs: (key: String, aggs: [Database.DayAgg])?
+    /// Estimated Claude tokens used outside this Mac. Recomputed only when a
+    /// new quota sample lands or every 5 minutes — not on every new turn,
+    /// since it scans all local Claude turns since the first sample.
+    private var cachedElsewhere: (key: String, estimate: ClaudeNonLocalEstimator.TokenEstimate?)?
     private var lightComputations = 0
     private var fullComputations = 0
     private var dailyComputations = 0
@@ -208,15 +212,30 @@ final class UsageQueryService: @unchecked Sendable {
 
         // The grouped rows already contain every total; deriving the four
         // period totals avoids four additional aggregate scans.
-        let byToolToday = database.totalsByTool(from: todayRange.start, to: todayRange.end)
-        let byToolWeek = database.totalsByTool(from: weekRange.start, to: weekRange.end)
-        let byToolMonth = database.totalsByTool(from: monthRange.start, to: monthRange.end)
-        let byToolAll = database.totalsByTool(from: allRange.start, to: allRange.end)
+        let localToday = database.totalsByTool(from: todayRange.start, to: todayRange.end)
+        let localWeek = database.totalsByTool(from: weekRange.start, to: weekRange.end)
+        let localMonth = database.totalsByTool(from: monthRange.start, to: monthRange.end)
+        let localAll = database.totalsByTool(from: allRange.start, to: allRange.end)
+        // Claude usage that left no local transcript (Cowork, claude.ai,
+        // other machines), estimated from the shared quota, joins the token
+        // totals and the per-source rows as its own labelled row. The
+        // aggregates below (calls, input/output split, cost) stay local-only.
+        let elsewhere = claudeElsewhereEstimate(now: nowTs)
+        func withElsewhere(_ rows: [Database.ToolTotals], _ range: UsagePeriodRange) -> [Database.ToolTotals] {
+            guard let tokens = elsewhere?.tokens(from: range.start, to: range.end), tokens > 0 else { return rows }
+            return rows + [Database.ToolTotals(tool: ClaudeNonLocalEstimator.estimateToolLabel,
+                                               input: tokens, output: 0, cacheRead: 0,
+                                               cacheWrite: 0, cost: 0, count: 0)]
+        }
+        let byToolToday = withElsewhere(localToday, todayRange)
+        let byToolWeek = withElsewhere(localWeek, weekRange)
+        let byToolMonth = withElsewhere(localMonth, monthRange)
+        let byToolAll = withElsewhere(localAll, allRange)
         return LightSnapshot(
-            today: Self.aggregate(byToolToday),
-            week: Self.aggregate(byToolWeek),
-            month: Self.aggregate(byToolMonth),
-            all: Self.aggregate(byToolAll),
+            today: Self.aggregate(localToday),
+            week: Self.aggregate(localWeek),
+            month: Self.aggregate(localMonth),
+            all: Self.aggregate(localAll),
             todayTokens: Self.totalTokens(byToolToday),
             weekTokens: Self.totalTokens(byToolWeek),
             monthTokens: Self.totalTokens(byToolMonth),
@@ -255,6 +274,22 @@ final class UsageQueryService: @unchecked Sendable {
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),
             heatmapCost: Self.buildCostHeatmap(aggs: annualAggs))
+    }
+
+    /// Caller runs on `queue`.
+    private func claudeElsewhereEstimate(now: Int64) -> ClaudeNonLocalEstimator.TokenEstimate? {
+        let key = "\(database.claudeQuotaSampleMarker())|\(now / 300)"
+        if let cached = cachedElsewhere, cached.key == key { return cached.estimate }
+        let samples = database.claudeQuotaSamples(since: now - Database.claudeQuotaSampleRetention)
+        var estimate: ClaudeNonLocalEstimator.TokenEstimate?
+        if let first = samples.first {
+            estimate = ClaudeNonLocalEstimator.tokenEstimate(
+                samples: samples,
+                localEvents: database.claudeLocalEvents(since: first.ts - ClaudeNonLocalEstimator.serverLagSeconds),
+                now: now)
+        }
+        cachedElsewhere = (key, estimate)
+        return estimate
     }
 
     private static func aggregate(_ rows: [Database.ToolTotals]) -> Database.ToolTotals {
