@@ -57,32 +57,20 @@ struct MenuBarFontControls: View {
                     .accessibilityLabel("Reset menu bar font")
             }
         }
-        .controlSize(.small)
     }
 }
 
-/// "Appearance" section on the dashboard Settings tab, laid out like its
-/// neighbouring Date Range section.
+/// "Appearance" section of the dashboard Settings form.
 struct AppearanceSettingsSection: View {
-    private let labelWidth: CGFloat = 150
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionTitle("Appearance")
-            Divider()
-
-            HStack(spacing: 10) {
-                Text("Menu bar font")
-                    .frame(width: labelWidth, alignment: .leading)
+        Section {
+            LabeledContent("Menu bar font") {
                 MenuBarFontControls()
-                Spacer(minLength: 0)
             }
-
+        } header: {
+            Text("Appearance")
+        } footer: {
             Text(MenuBarFontControls.footnote)
-                .font(TMType.regular(TMType.micro))
-                .foregroundStyle(TMDesign.quiet)
-                .padding(.leading, labelWidth + 10)
         }
-        .frame(maxWidth: 520, alignment: .leading)
     }
 }

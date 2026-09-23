@@ -254,6 +254,18 @@ extension View {
     func reportPopoverHeight(_ slice: PopoverHeightSlice, page: PopoverPage) -> some View {
         modifier(PopoverHeightReporter(slice: slice, page: page))
     }
+
+    /// For content with no intrinsic height (a `Form` scrolls itself), the
+    /// caller supplies the measured height instead of the view's frame.
+    func reportPopoverHeight(_ slice: PopoverHeightSlice, page: PopoverPage,
+                             height: CGFloat) -> some View {
+        background(
+            Color.clear.preference(
+                key: PopoverHeightPreferenceKey.self,
+                value: height > 0 ? [page: .init(values: [slice: height])] : [:]
+            )
+        )
+    }
 }
 
 

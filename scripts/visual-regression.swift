@@ -117,8 +117,16 @@ let tempRoot = fileManager.temporaryDirectory
 try fileManager.createDirectory(at: tempRoot, withIntermediateDirectories: true)
 defer { try? fileManager.removeItem(at: tempRoot) }
 
-let binPath = try run("/usr/bin/env", ["swift", "build", "--show-bin-path"])
-    .trimmingCharacters(in: .whitespacesAndNewlines)
+// Render with the native build system, as build-app.sh does. The default
+// engine records the deployment target as the SDK, so AppKit would draw the
+// pre-Liquid Glass compatibility controls users never see.
+let buildCommand = ["swift", "build", "--build-system", "native"]
+_ = try run("/usr/bin/env", buildCommand)
+// The path is the last line; `run` merges stderr, where SwiftPM prints a
+// deprecation warning for the native build system.
+let binPath = try run("/usr/bin/env", buildCommand + ["--show-bin-path"])
+    .split(separator: "\n").last.map(String.init)?
+    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 let executable = URL(fileURLWithPath: binPath).appendingPathComponent("ToastMonitor").path
 var actual: [String: String] = [:]
 for scenario in scenarios {
