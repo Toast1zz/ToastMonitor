@@ -7,10 +7,10 @@
   "dashboard-plans-light" : "000000003ffe003e0ffe3ffe7ffc0ff83ffe5ffc1ffc3ffe1ffe1ffe1ffe1ffe",
   "dashboard-sessions-dark" : "c00ff7ef70070000000000000000000000000000000000000000000000000000",
   "dashboard-sessions-light" : "3ff80ff08ff8ffffffffffffffffffffffffffffffffffffffffffffffffffff",
-  "dashboard-settings-dark" : "000010001c001e003e001c00180016001600183c18381c001c181c083c180000",
-  "dashboard-settings-light" : "ffffefffe7ffe1ffc1ffe3ffe3ffc9ffe9ffe7c7e7e7e3f7e3e7c3e7c3e7ffff",
+  "dashboard-settings-dark" : "000010001c001e003e001c0018001600160010003fc007c0183c1c181c081c08",
+  "dashboard-settings-light" : "ffffefffe7ffe1ffc1ffe3ffe3ffc9ffe9ffefffc03ff83fe7c7e3e7e3e7e3e7",
   "popover-home-dark" : "70007e6e40007c007ffe7dfc7ffe7ffe7ffe7ffe7ffe7ffe0000000000000004",
   "popover-home-light" : "8fffd911bfff83ff80018001800180018001800180018001fffffffffffffff3",
-  "popover-settings-dark" : "0000300060007e767fa67fc63f8030007ffe00007ffc7ffe3bdc703c603e0000",
-  "popover-settings-light" : "ffffcfff9fff81f580758039c07fcfff8001dfff80018001c0238fff9fc1ffff"
+  "popover-settings-dark" : "0000300078067fb67fc638007e6c77ec7bdc7ffe3000703e38003000783e0000",
+  "popover-settings-light" : "efffcfff87ff80058009c7ff8013800184238001cfff8fc187ff8fff87efffff"
 }

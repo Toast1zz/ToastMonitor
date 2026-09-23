@@ -11,6 +11,7 @@ backups/
 *.sqlite
 *.sqlite3
 *.keychain
+*.env
 
 # macOS
 .DS_Store
