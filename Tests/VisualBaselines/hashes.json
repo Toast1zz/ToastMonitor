@@ -1,16 +1,16 @@
 {
   "dashboard-analysis-dark" : "001440fefffefffefffee0006000000000000000000000000000000000000000",
   "dashboard-analysis-light" : "3f010800322f00011fff1fff1fffffffffffffffffffffffffffffffffffffff",
-  "dashboard-overview-dark" : "000000007ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe000000000000",
+  "dashboard-overview-dark" : "000000027ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe000000000000",
   "dashboard-overview-light" : "fffdbffd9ffd3fffb9cfbf7fbf7fbfffffff8001800180019fffffffffffffff",
-  "dashboard-plans-dark" : "000000007ffe7ffe70007ffc7ffe70067ffc7ffe40067ffe7ffe7ffe60007ffe",
+  "dashboard-plans-dark" : "000000007ffe7ffe70007ffc7ffe70067ffc7ffe40027ffe7ffe7ffe60007ffe",
   "dashboard-plans-light" : "ffffbfffbfff80018fff9fff8ff88ff99fff8ff8bff9bfff87ff8fff9fff9fff",
   "dashboard-sessions-dark" : "c00ef7ef70070000000000000000000000000000000000000000000000000000",
   "dashboard-sessions-light" : "3ff10ff00ff8ffffffffffffffffffffffffffffffffffffffffffffffffffff",
-  "dashboard-settings-dark" : "00001bd81ff81ff81ff81ff81ff818001ff81c0018381fb818001ff81ff81ff8",
-  "dashboard-settings-light" : "ffffe7e7e007e007e007e007e007e7ffe007e3ffe7c7e047e7ffe007e007e007",
-  "popover-home-dark" : "70007ffe40007c007ffe7ffc7ffe7ffe7ffe7ffe7ffe7ffe0000000000000004",
-  "popover-home-light" : "8fff8001bfff87ff80018003800180198001815180018001fffffffffffffffb",
-  "popover-settings-dark" : "0000300030047e0c7f8c7fce7ffe383838003ffc3ffc7ffe38003000303c0000",
-  "popover-settings-light" : "efffcfffcfff81fb807f80338003efc7c7ffc003c0038001c6678fffdfc3ffff"
+  "popover-home-dark" : "30007ffe400078007ffe7ff07ffe7fee7ffe7eae7ffe7ffe000000000000001c",
+  "popover-home-light" : "8fff8001bfff87ff800180ef800180118001815180018001ffffffffffffffe3",
+  "settings-general-dark" : "00007ffe7ffe7ffe7fc6779c701e60007ffe0000000000000000000000000000",
+  "settings-general-light" : "ffff800180018001803f886188019fff8001ffffffffffffffffffffffffffff",
+  "settings-sources-dark" : "000070007ffe780e700e700e7ffe7806600060fe200070ec79fe7f1e7f1e701e",
+  "settings-sources-light" : "ffff8fff8ff18ff98ff98ff18ff987f99fff9f01dfff8f13860181f181f19ff1"
 }

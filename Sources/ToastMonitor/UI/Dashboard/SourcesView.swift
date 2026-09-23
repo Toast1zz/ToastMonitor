@@ -34,7 +34,9 @@ struct SourcesView: View {
                 HStack {
                     // Embedded in the Settings form, the section header
                     // carries the title.
-                    if !embedded {
+                    if embedded {
+                        Text("Scan every source now")
+                    } else {
                         SectionTitle("Collector Status")
                     }
                     Spacer()

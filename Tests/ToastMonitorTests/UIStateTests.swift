@@ -45,19 +45,13 @@ final class UIStateTests: XCTestCase {
     func testPopoverHeightWaitsForEveryMeasuredSlice() {
         XCTAssertNil(PopoverHeightMeasurements(values: [
             .header: 48, .body: 620, .footer: 46,
-        ]).naturalHeight(for: .home))
+        ]).naturalHeight)
         XCTAssertNil(PopoverHeightMeasurements(values: [
             .pinned: 48, .body: 620, .footer: 46,
-        ]).naturalHeight(for: .home))
+        ]).naturalHeight)
         XCTAssertEqual(PopoverHeightMeasurements(values: [
             .header: 48, .pinned: 48, .body: 620, .footer: 46,
-        ]).naturalHeight(for: .home), 762)
-    }
-
-    func testPopoverSettingsHeightAllowsNoPinnedSelector() {
-        XCTAssertEqual(PopoverHeightMeasurements(values: [
-            .header: 48, .body: 260, .footer: 42,
-        ]).naturalHeight(for: .settings), 350)
+        ]).naturalHeight, 762)
     }
 
     func testPopoverShortPageKeepsItsNaturalHeight() {

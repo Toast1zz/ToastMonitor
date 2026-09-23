@@ -21,9 +21,11 @@ Credentials (secret values are read from stdin):
 
 UI verification:
   --render-popover PATH [HEIGHT] [--period today|week|month|all]
-  --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions|settings]
+  --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions]
+  --render-settings PATH [general|popover|sources|data|updates] [HEIGHT]
   --show-panel [--backdrop white|dark] [--capture PATH]
   --show-dashboard [--capture-dashboard PATH]
+  --show-settings [PANE] [--capture-settings PATH]
   --show-dashboard --benchmark-dashboard-switches
   --verify-status-toggle
   --verify-quota-badge
@@ -336,7 +338,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "analysis": return .analysis
                 case "plans": return .plans
                 case "sessions": return .sessions
-                case "sources", "settings": return .settings
                 default: return .overview
                 }
             }()
@@ -349,6 +350,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             RunLoop.main.run(until: Date().addingTimeInterval(0.5))
             renderDashboard(to: outPath, height: height, width: width, tab: tab)
             exit(0)
+        }
+
+        // Headless UI verification: render one settings pane to a PNG.
+        // Usage: ToastMonitor --render-settings /tmp/general.png general
+        if let flag = args.firstIndex(of: "--render-settings") {
+            guard flag + 1 < args.count else { print("--render-settings requires an output path"); exit(1) }
+            let outPath = args[flag + 1]
+            let pane = (flag + 2 < args.count ? SettingsPane(rawValue: args[flag + 2]) : nil) ?? .general
+            let height = boundedRenderDimension(args, index: flag + 3,
+                                                defaultValue: SettingsPaneView.maxHeight,
+                                                range: 120...4_000,
+                                                label: "--render-settings height")
+            Database.shared.open()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            renderSnapshot(SettingsPaneView(pane: pane)
+                            .frame(height: height, alignment: .top)
+                            .background(Color(nsColor: .windowBackgroundColor)),
+                           to: outPath, height: height, width: SettingsPaneView.width)
+            exit(0)
+        }
+
+        let isSettingsVerification = args.contains("--show-settings")
+        if isSettingsVerification {
+            // Hermetic like --show-dashboard: no collectors, no Keychain.
+            NSApp.setActivationPolicy(.accessory)
+            Database.shared.open()
+            WindowManager.shared.ensureMainMenu()
+            NSApp.finishLaunching()
+            let flag = args.firstIndex(of: "--show-settings")!
+            let pane = flag + 1 < args.count ? SettingsPane(rawValue: args[flag + 1]) : nil
+            DispatchQueue.main.async {
+                SettingsWindowController.shared.show(pane: pane)
+                if let captureFlag = args.firstIndex(of: "--capture-settings"),
+                   captureFlag + 1 < args.count {
+                    let output = args[captureFlag + 1]
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        let ok = SettingsWindowController.shared.captureWindow(pane: pane ?? .general, to: output)
+                        print(ok ? "captured settings \(output)" : "settings capture failed")
+                        exit(ok ? 0 : 1)
+                    }
+                }
+            }
+            return
         }
 
         let isDashboardVerification = args.contains("--show-dashboard")

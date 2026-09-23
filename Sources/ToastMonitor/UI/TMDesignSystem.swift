@@ -80,8 +80,10 @@ enum TMDesign {
         return NSColor.controlBackgroundColor
     })
     static let divider = Color.primary.opacity(0.13)
-    static let quiet = Color.primary.opacity(0.58)
-    static let faint = Color.primary.opacity(0.36)
+    // System label colors, not fixed opacities: they follow Increase
+    // Contrast and the vibrancy of the popover's material.
+    static let quiet = Color(nsColor: .secondaryLabelColor)
+    static let faint = Color(nsColor: .tertiaryLabelColor)
     static let radius: CGFloat = 12
 
     /// The one semantic color: anomalies/danger. Dark mode uses a bright
