@@ -104,17 +104,14 @@ struct PopoverSettingsView: View {
             Form {
                 generalSection
                 homeSection
-                accountsSection
                 dateRangeSection
-                AppearanceSettingsSection()
                 updatesSection
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
             .scrollIndicators(.hidden)
-            // PopoverRootView shrinks ordinary controls; settings rows use
-            // the system's regular form metrics.
-            .controlSize(.regular)
+            // The compact form metrics keep the page within one screen.
+            .controlSize(.small)
             .modifier(FormContentHeight(height: $formHeight))
             .reportPopoverHeight(.body, page: .settings, height: formHeight)
             .frame(minHeight: 0, maxHeight: .infinity)
@@ -213,6 +210,10 @@ struct PopoverSettingsView: View {
                     // immediately, using the optimistic value, not the DB.
                     WindowManager.shared.applyDockIconSetting(newValue)
                 }
+            LabeledContent("Menu bar font") {
+                MenuBarFontControls()
+            }
+            .help(MenuBarFontControls.footnote)
         } header: {
             Text("General")
         } footer: {
@@ -223,8 +224,10 @@ struct PopoverSettingsView: View {
         .toggleStyle(.switch)
     }
 
-    /// The home page's cards; the eye button on a card writes the same key.
-    /// A multi-select, so chips rather than a column of switches.
+    /// What the home page shows: its cards (the eye button on a card writes
+    /// the same key) and the per-account rows inside Quota / Balance
+    /// (setting `hide_quota_row_<key>`). Multi-selects, so chips rather than
+    /// a column of switches.
     private var homeSection: some View {
         Section("Show on Home") {
             ChipGrid(columns: 4) {
@@ -233,6 +236,12 @@ struct PopoverSettingsView: View {
                     ChipToggle(title, isOn: sectionBinding(key))
                 }
             }
+            ChipGrid(columns: 3) {
+                ForEach(Self.accountRows, id: \.key) { row in
+                    ChipToggle(row.title, isOn: accountBinding(row.key))
+                }
+            }
+            .help("Accounts listed in the Quota and Balance cards")
         }
     }
 
@@ -247,27 +256,20 @@ struct PopoverSettingsView: View {
         )
     }
 
-    /// Per-account rows inside Quota / Balance (setting `hide_quota_row_<key>`).
-    private var accountsSection: some View {
-        Section("Accounts") {
-            ChipGrid(columns: 3) {
-                ForEach(Self.accountRows, id: \.key) { row in
-                    ChipToggle(row.title, isOn: Binding(
-                        get: { rowVisible[row.key] ?? true },
-                        set: { visible in
-                            rowVisible[row.key] = visible
-                            let v = visible ? nil : "1"
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                _ = Database.shared.setSetting("hide_quota_row_\(row.key)", v)
-                                DispatchQueue.main.async {
-                                    NotificationCenter.default.post(name: Self.quotaRowsChanged, object: nil)
-                                }
-                            }
-                        }
-                    ))
+    private func accountBinding(_ key: String) -> Binding<Bool> {
+        Binding(
+            get: { rowVisible[key] ?? true },
+            set: { visible in
+                rowVisible[key] = visible
+                let v = visible ? nil : "1"
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = Database.shared.setSetting("hide_quota_row_\(key)", v)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: Self.quotaRowsChanged, object: nil)
+                    }
                 }
             }
-        }
+        )
     }
 
     private var dateRangeSection: some View {
@@ -278,6 +280,7 @@ struct PopoverSettingsView: View {
             )) {
                 ForEach(UsagePeriodMode.allCases) { Text($0.title).tag($0) }
             }
+            .help(periods.mode.detail)
             // Kept mounted in every mode so switching modes cannot change the
             // floating panel's height.
             Picker("Week starts on", selection: Binding(
@@ -289,8 +292,6 @@ struct PopoverSettingsView: View {
             .disabled(periods.mode != .calendar)
         } header: {
             Text("Date range")
-        } footer: {
-            Text(periods.mode.detail)
         }
     }
 
