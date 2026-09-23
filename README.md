@@ -17,7 +17,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 - **Live menu-bar total** — today's tokens only; click for the popover
 - **Custom menu-bar font** — Settings → General → Token count font opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
 - **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; the footer eye brings hidden cards back, and Settings → Popover picks which cards and accounts appear
-- **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn red past 80%
+- **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn orange past 80%
 - **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
 - **Claude usage outside this Mac** — an estimate of the weekly Claude quota consumed by Cowork, claude.ai chat or Claude Code on another machine, which leave no local transcript
 - **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions

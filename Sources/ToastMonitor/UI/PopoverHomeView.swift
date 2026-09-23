@@ -1461,7 +1461,7 @@ private struct QuotaWindowLine: View {
                 Spacer(minLength: 8)
                 Text("\(Int(window.usedPercent.rounded()))%")
                     .font(TMType.number(TMType.caption, weight: .medium))
-                    .foregroundStyle(window.critical ? TMDesign.danger : .primary)
+                    .foregroundStyle(.primary)
             }
             UsageBar(used: window.usedPercent / 100, critical: window.critical)
         }
@@ -1471,7 +1471,7 @@ private struct QuotaWindowLine: View {
 }
 
 /// Usage bar: empty = untouched, fills rightward as the window is used.
-/// Accent fill, danger once the window is critical.
+/// Neutral fill, the warning color once the window is critical.
 private struct UsageBar: View {
     let used: Double
     let critical: Bool
@@ -1481,7 +1481,7 @@ private struct UsageBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.08))
                 Capsule()
-                    .fill(critical ? TMDesign.danger : TMDesign.accent)
+                    .fill(critical ? TMDesign.warning : TMDesign.meter)
                     .frame(width: used > 0 ? max(geo.size.width * min(used, 1), 4) : 0)
                     .animation(.easeOut(duration: 0.35), value: used)
             }

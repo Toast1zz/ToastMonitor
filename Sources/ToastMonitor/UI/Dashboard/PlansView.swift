@@ -893,13 +893,13 @@ struct PlansView: View {
                 Text("\(Int(p))%")
                     .font(TMType.semibold(TMType.caption))
                     .tmMonospacedDigit()
-                    .foregroundStyle(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : TMDesign.quiet))
+                    .foregroundStyle(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.warning : TMDesign.quiet))
             }
             GeometryReader { geo in
                 let w = geo.size.width
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.07))
-                    Capsule().fill(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.accent : color))
+                    Capsule().fill(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.warning : color))
                         // p == 0 renders a truly empty bar; the 3pt floor
                         // only protects tiny-but-nonzero usage from vanishing.
                         .frame(width: p > 0 ? max(3, w * CGFloat(p / 100)) : 0)
@@ -934,7 +934,7 @@ struct PlansView: View {
                 Text("\(Int(pct))%")
                     .font(TMType.semibold(TMType.caption))
                     .tmMonospacedDigit()
-                    .foregroundStyle(pct > 95 ? TMDesign.danger : (pct > 80 ? TMDesign.accent : TMDesign.quiet))
+                    .foregroundStyle(pct > 95 ? TMDesign.danger : (pct > 80 ? TMDesign.warning : TMDesign.quiet))
             } else {
                 Text("—")
                     .font(TMType.regular(TMType.caption))

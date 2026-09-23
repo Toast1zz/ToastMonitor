@@ -86,25 +86,18 @@ enum TMDesign {
     static let faint = Color(nsColor: .tertiaryLabelColor)
     static let radius: CGFloat = 12
 
-    /// The one semantic color: anomalies/danger. Dark mode uses a bright
-    /// coral-red (WCAG: lightened reds read on dark/glass backgrounds; pure
-    /// saturated red fails even when it looks bright). Critical status text
-    /// also gets a filled capsule behind it (see TMStatusCapsule) so it
-    /// stays legible over any backdrop, e.g. a black terminal behind the
-    /// popover.
-    static let danger = Color(nsColor: NSColor(name: nil) { appearance in
-        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-            return NSColor(calibratedRed: 1.00, green: 0.55, blue: 0.58, alpha: 1)
-        }
-        return NSColor(calibratedRed: 0.78, green: 0.24, blue: 0.27, alpha: 1)
-    })
-    /// Filled background for critical status text (readable on any backdrop).
-    static let dangerFill = Color(nsColor: NSColor(name: nil) { appearance in
-        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-            return NSColor(calibratedRed: 0.42, green: 0.10, blue: 0.12, alpha: 1)
-        }
-        return NSColor(calibratedRed: 0.94, green: 0.86, blue: 0.86, alpha: 1)
-    })
+    /// The one semantic color: anomalies/danger (quota past 80%, errors).
+    /// The system red, which Apple tunes for light, dark and Increase
+    /// Contrast; the earlier custom coral read as pink in dark mode rather
+    /// than as a warning.
+    static let danger = Color(nsColor: .systemRed)
+    static let dangerFill = Color(nsColor: .systemRed).opacity(0.16)
+    /// A usage window close to its limit. Orange is the system's warning
+    /// color; red stays for errors and windows that are nearly exhausted.
+    static let warning = Color(nsColor: .systemOrange)
+    /// Usage bar fill below the warning threshold: neutral, so the switch
+    /// to the warning color is the thing that stands out.
+    static let meter = Color.primary.opacity(0.7)
 
     /// Brand hues share one saturation/brightness family so multi-product
     /// pages stay harmonious in both appearances.
