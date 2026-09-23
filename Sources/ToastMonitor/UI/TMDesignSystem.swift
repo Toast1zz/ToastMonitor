@@ -281,42 +281,6 @@ struct SectionTitle: View {
     }
 }
 
-/// Which surface a settings section is embedded in. Every section appears on
-/// both the popover page and the dashboard Settings tab, and the two frame
-/// sections differently, so a shared section must not hard-code either.
-enum SettingsSectionSurface {
-    /// Hairline above a sentence-case title, rows spanning the panel —
-    /// the "General" / "Quota rows" idiom.
-    case popover
-    /// Uppercase `SectionTitle` above the divider, rows aligned in a
-    /// fixed-width label column — the "Data Sources" idiom.
-    case dashboard
-}
-
-/// Section heading rendered in the embedding surface's idiom. Sections that
-/// appear on both surfaces use this so a new one cannot drift into the wrong
-/// style, which is what happened when this was hand-rolled per section.
-struct SettingsSectionHeading: View {
-    let title: String
-    let surface: SettingsSectionSurface
-    /// The popover's first section already sits under the header's divider.
-    var showsSeparator = true
-
-    var body: some View {
-        if surface == .popover {
-            if showsSeparator {
-                Divider().opacity(0.5)
-            }
-            Text(title)
-                .font(.system(size: TMType.caption, weight: .semibold))
-                .foregroundStyle(TMDesign.quiet)
-        } else {
-            SectionTitle(title)
-            Divider()
-        }
-    }
-}
-
 /// Applies .monospacedDigit() — every dynamic number (tokens, money, percents,
 /// countdowns) must use it so refreshing values never shift the layout.
 struct TMMonospacedDigit: ViewModifier {

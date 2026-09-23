@@ -26,7 +26,7 @@ name: CI
 # suite as-is.
 #
 # Actions are pinned to major tags that ship on the Node.js 24 runtime
-# (checkout >= v5, cache >= v5, upload-artifact >= v6); the Node.js 20
+# (checkout >= v5, cache >= v5); the Node.js 20
 # releases are deprecated and get force-upgraded by the runner.
 permissions:
   contents: read

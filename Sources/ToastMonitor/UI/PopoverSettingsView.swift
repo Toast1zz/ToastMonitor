@@ -104,8 +104,8 @@ struct PopoverSettingsView: View {
                     homeGroup
                     accountsGroup
                     dateRangeGroup
+                    appearanceGroup
                     updatesGroup
-                    AppearanceSettingsSection()
                 }
                 .padding(.horizontal, TMLayout.popoverCardInset)
                 .padding(.vertical, 12)
@@ -297,6 +297,14 @@ struct PopoverSettingsView: View {
         }
     }
 
+    private var appearanceGroup: some View {
+        SettingsGroup("Appearance", footnote: MenuBarFontControls.footnote) {
+            SettingsRow("Menu bar font") {
+                MenuBarFontControls()
+            }
+        }
+    }
+
     private var updatesGroup: some View {
         SettingsGroup("Updates") {
             SettingsToggleRow("Check automatically", isOn: $autoCheckOn)
@@ -361,7 +369,7 @@ struct PopoverSettingsView: View {
 
 /// Title-case label over a tonal card (same fill and radius as the home
 /// page cards), with an optional quiet footnote under the card.
-struct SettingsGroup<Content: View>: View {
+private struct SettingsGroup<Content: View>: View {
     let title: String
     let footnote: String?
     @ViewBuilder let content: Content

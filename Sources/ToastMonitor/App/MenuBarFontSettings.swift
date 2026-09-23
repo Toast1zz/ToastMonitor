@@ -9,6 +9,9 @@ import Foundation
 /// stable width as it changes.
 struct MenuBarTextFont: Equatable, Codable {
     static let defaultSize: CGFloat = 13
+    /// The status bar is 22–24 pt tall; the font panel offers sizes up to
+    /// 288 pt, which would clip the title, so picks are clamped to this.
+    static let sizeRange: ClosedRange<CGFloat> = 10...16
     static let systemDefault = MenuBarTextFont(name: "", family: "", size: defaultSize)
 
     var name: String
@@ -25,12 +28,24 @@ struct MenuBarTextFont: Equatable, Codable {
 
     /// Resolves the stored choice to an AppKit font. An unavailable family
     /// (font uninstalled since it was chosen) falls back to the system UI
-    /// font so the status item is never left blank.
+    /// font so the status item is never left blank. Custom fonts also get
+    /// tabular digits where the font supports them, like the default.
     var resolvedFont: NSFont {
+        let size = Self.clamped(size)
         if !isSystemDefault, let font = NSFont(name: name, size: size) {
-            return font
+            let tabular = font.fontDescriptor.addingAttributes([
+                .featureSettings: [[
+                    NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+                    NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector,
+                ]],
+            ])
+            return NSFont(descriptor: tabular, size: size) ?? font
         }
         return NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular)
+    }
+
+    static func clamped(_ size: CGFloat) -> CGFloat {
+        min(max(size, sizeRange.lowerBound), sizeRange.upperBound)
     }
 
     /// Normalizes a font picked in the macOS font panel. The panel's system
@@ -39,11 +54,12 @@ struct MenuBarTextFont: Equatable, Codable {
     /// system default rather than being stored as an unresolvable name.
     static func from(_ font: NSFont) -> MenuBarTextFont {
         let family = font.familyName ?? ""
+        let size = clamped(font.pointSize)
         let systemFamily = NSFont.systemFont(ofSize: font.pointSize).familyName ?? ""
         if font.fontName.hasPrefix(".") || (!systemFamily.isEmpty && family == systemFamily) {
-            return MenuBarTextFont(name: "", family: "", size: font.pointSize)
+            return MenuBarTextFont(name: "", family: "", size: size)
         }
-        return MenuBarTextFont(name: font.fontName, family: family, size: font.pointSize)
+        return MenuBarTextFont(name: font.fontName, family: family, size: size)
     }
 
     static func decode(_ raw: String?) -> MenuBarTextFont {
