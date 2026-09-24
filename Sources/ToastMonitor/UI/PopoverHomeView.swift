@@ -826,6 +826,17 @@ struct PopoverHomeView: View {
                          staleBadge: staleBadge,
                          windows: claudeQuota.enabled ? claudeWindows(state) : [],
                          hideKey: "claude")
+            .help(claudeErrorHelp(state))
+    }
+
+    /// What the ⚠ after the name means: the last error, and when the next
+    /// attempt is allowed.
+    private func claudeErrorHelp(_ state: ClaudeQuotaClient.State) -> String {
+        guard let error = state.error else { return "" }
+        let wait = Int64(state.retryAt - now.timeIntervalSince1970)
+        guard wait > 0 else { return error }
+        let sentence = error.hasSuffix(".") ? String(error.dropLast()) : error
+        return "\(sentence). Retrying in \(Format.remaining(wait))."
     }
 
     /// The 5h window (and, rarely, a weekly-Opus one) rendered as a compact
