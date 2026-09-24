@@ -35,14 +35,35 @@ enum Format {
     private static func dateString(_ date: Date, format: String) -> String {
         dateFormatterCache.string(date, format: format)
     }
-    /// 1234 -> "1.2k", 1.2M, 4.15B, 1.02T（B/T 用两位小数保留精度）。
+    /// Exactly three significant digits with the unit: 1.23k, 12.3M, 190M,
+    /// 4.15B. Trailing zeros stay (1.00M, 20.0M) so the width barely moves
+    /// as the count grows — the menu bar item is sized by this string.
+    /// Rounding that reaches 1000 moves to the next unit (999.6M → 1.00B).
+    /// Below 1,000 the raw count is shown.
     static func compact(_ n: Int64) -> String {
-        let d = Double(n)
-        if d >= 1_000_000_000_000 { return String(format: "%.2fT", d / 1_000_000_000_000) }
-        if d >= 1_000_000_000 { return String(format: "%.2fB", d / 1_000_000_000) }
-        if d >= 1_000_000 { return String(format: "%.1fM", d / 1_000_000) }
-        if d >= 1_000 { return String(format: "%.1fk", d / 1_000) }
-        return "\(n)"
+        guard n.magnitude >= 1_000 else { return "\(n)" }
+        let units: [(suffix: String, scale: Double)] = [
+            ("k", 1e3), ("M", 1e6), ("B", 1e9), ("T", 1e12),
+        ]
+        let magnitude = Double(n.magnitude)
+        var index = units.lastIndex { magnitude >= $0.scale } ?? 0
+        let sign = n < 0 ? "-" : ""
+        while true {
+            let value = magnitude / units[index].scale
+            for decimals in [2, 1, 0] {
+                let factor = pow(10, Double(decimals))
+                let rounded = (value * factor).rounded() / factor
+                // Three digits: below 10 with two decimals, below 100 with
+                // one, below 1000 with none.
+                if rounded < pow(10, Double(3 - decimals)) {
+                    return sign + String(format: "%.\(decimals)f", rounded) + units[index].suffix
+                }
+            }
+            guard index + 1 < units.count else {
+                return sign + String(format: "%.0f", value.rounded()) + units[index].suffix
+            }
+            index += 1
+        }
     }
 
     /// 完整数字（千分位分组）：1,234,567。流式刷新时看数字增长用。
