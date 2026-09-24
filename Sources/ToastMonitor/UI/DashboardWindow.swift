@@ -139,6 +139,9 @@ final class WindowManager {
         }
     }
 
+    private static let defaultContentHeight: CGFloat = 830
+    private static let titlebarAllowance: CGFloat = 32
+
     func show(tab: DashboardView.Tab? = nil) {
         setDockPresence(true)
         if let window {
@@ -163,12 +166,17 @@ final class WindowManager {
         // The regular unified toolbar lets macOS 26/27 supply its native
         // floating Liquid Glass geometry and current control height.
         window.toolbarStyle = .unified
-        window.setContentSize(NSSize(width: 1120, height: 720))
+        // Tall enough for the Overview's usage card and the whole activity
+        // grid without scrolling, but never taller than the screen.
+        let visibleHeight = (NSScreen.main?.visibleFrame.height ?? 900) - Self.titlebarAllowance
+        window.setContentSize(NSSize(width: 1120, height: min(Self.defaultContentHeight, visibleHeight)))
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 900, height: 580)
         window.center()
-        window.setFrameAutosaveName("ToastMonitorDashboard")
+        // v2: frames saved under the old 720pt default clipped the activity
+        // grid, so the size memory starts over once at the new default.
+        window.setFrameAutosaveName("ToastMonitorDashboard.v2")
         // Build and lay out all four pages before the window appears. This
         // moves each SwiftUI page's one-time construction cost out of toolbar
         // clicks, so the native tab island never shares a frame with Charts,
@@ -534,6 +542,8 @@ final class DashboardPageController: NSViewController {
             page = AnyView(SessionsView())
         }
         let host = NSHostingController(rootView: page)
+        // The window owns its size; a page's ideal size must not resize it.
+        host.sizingOptions = []
         hosts[tab] = host
         return host
     }

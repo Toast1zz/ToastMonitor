@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 订阅管理: list + add/edit form (固定成本侧信息).
+/// Settings › Sources › Subscriptions: list + add/edit form (fixed costs).
 struct SubscriptionSettingsSection: View {
     @ObservedObject private var app = AppState.shared
     @State private var showForm = false
@@ -21,117 +21,53 @@ struct SubscriptionSettingsSection: View {
     @State private var pendingDelete: Database.Subscription?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                SectionTitle("Subscriptions")
-                Spacer()
-                Button {
-                    editing = nil
-                    editID = 0
-                    name = ""
-                    plan = ""
-                    startDate = Date()
-                    hasEndDate = false
-                    endDate = Date()
-                    cycle = "monthly"
-                    price = ""
-                    showForm = true
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                .font(TMType.regular(12))
-                .disabled(showForm)
-                Button {
-                    editing = nil
-                    editID = 0
-                    name = "OpenCode Go"
-                    plan = "go"
-                    startDate = Date()
-                    hasEndDate = false
-                    endDate = Date()
-                    cycle = "monthly"
-                    price = "10"
-                    showForm = true
-                } label: {
-                    Text("Go template")
-                }
-                .font(TMType.regular(12))
-                .disabled(showForm)
-                .help("Fill OpenCode Go $10/mo template")
-            }
-
-            if app.subscriptions.isEmpty {
-                Text("No subscriptions")
-                    .font(TMType.regular(TMType.micro))
-                    .foregroundStyle(TMDesign.quiet)
-            } else {
-                ForEach(app.subscriptions) { sub in
+        Section {
+            ForEach(app.subscriptions) { sub in
+                LabeledContent {
                     HStack {
-                        Image(systemName: planIcon(sub.plan))
-                            .foregroundStyle(planColor(sub.plan))
-                            .frame(width: 18)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(sub.name)
-                                .font(TMType.medium(12))
-                            Text("From \(Format.day(sub.startDate)) · \(sub.cycle == "yearly" ? "Yearly" : "Monthly") · \(Format.money(sub.price))/period"
-                                 + (sub.endDate > 0 ? " · to \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))" : ""))
-                                .font(TMType.regular(TMType.micro))
-                                .foregroundStyle(TMDesign.quiet)
-                            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
-                                HStack(spacing: 6) {
-                                    Text("Day \(info.dayOfCycle)/\(info.totalDays) · renews \(SubscriptionMath.dateStr(info.end)) · avg \(Format.money(sub.price / Double(info.totalDays)))/day")
-                                        .font(TMType.regular(TMType.micro))
-                                        .tmMonospacedDigit()
-                                        .foregroundStyle(TMDesign.quiet)
-                                    if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                        let line = ForecastText.line(for: fc, plan: sub.plan)
-                                        Text(line.text)
-                                            .font(TMType.semibold(TMType.micro))
-                                            .tmMonospacedDigit()
-                                            .foregroundStyle(ForecastText.color(line.status))
-                                    }
-                                }
-                            }
-                        }
-                        Spacer()
-                        Button("Edit") {
-                            editing = sub
-                            editID = sub.id
-                            name = sub.name
-                            plan = sub.plan
-                            startDate = Date(timeIntervalSince1970: TimeInterval(sub.startDate))
-                            hasEndDate = sub.endDate > 0
-                            endDate = sub.endDate > 0 ? Date(timeIntervalSince1970: TimeInterval(sub.endDate)) : Date()
-                            cycle = sub.cycle
-                            price = "\(sub.price)"
-                            showForm = true
-                        }
-                        .font(TMType.regular(11))
                         Button {
                             pendingDelete = sub
                         } label: {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
-                        .font(TMType.regular(11))
-                        .foregroundStyle(TMDesign.danger)
-                        .help("Delete subscription")
+                        .help("Delete \(sub.name)")
+                        .accessibilityLabel("Delete \(sub.name)")
+                        Button("Edit…") { beginEdit(sub) }
                     }
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.04)))
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: Self.planIcon(sub.plan))
+                            .foregroundStyle(Self.planColor(sub.plan))
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sub.name)
+                            Text(summary(sub))
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .tmMonospacedDigit()
+                        }
+                    }
                 }
             }
-
-            // Persistence feedback lives outside the form so a delete failure
-            // (form closed) is still visible, not silently dropped.
+            HStack {
+                Button("Add Subscription…") { beginAdd() }
+                Button("Add OpenCode Go…") {
+                    beginAdd()
+                    name = "OpenCode Go"
+                    plan = "go"
+                    price = "10"
+                }
+                Spacer()
+            }
+            .disabled(showForm)
             if let databaseError {
                 Text(databaseError)
-                    .font(TMType.regular(TMType.micro))
                     .foregroundStyle(TMDesign.danger)
             }
-
+        } header: {
+            Text("Subscriptions")
         }
-        .tmPanelSurface()
         .onChange(of: showForm) { open in
             // Draft validation must not survive closing and later reopening
             // the form; especially dateError used to appear on a fresh edit.
@@ -152,12 +88,9 @@ struct SubscriptionSettingsSection: View {
                         DispatchQueue.global(qos: .userInitiated).async {
                             let ok = Database.shared.deleteSubscription(id: sub.id)
                             DispatchQueue.main.async {
-                                if ok {
-                                    // subscriptionsDidChange 通知驱动 AppState 刷新。
-                                    databaseError = nil
-                                } else {
-                                    databaseError = "Failed to delete subscription (disk space or database permissions)"
-                                }
+                                // subscriptionsDidChange 通知驱动 AppState 刷新。
+                                databaseError = ok ? nil
+                                    : "Failed to delete subscription (disk space or database permissions)"
                             }
                         }
                     }
@@ -169,6 +102,41 @@ struct SubscriptionSettingsSection: View {
         .sheet(isPresented: $showForm) {
             subscriptionForm
         }
+    }
+
+    private func summary(_ sub: Database.Subscription) -> String {
+        var parts = ["\(Format.money(sub.price))/\(sub.cycle == "yearly" ? "yr" : "mo")",
+                     "from \(Format.day(sub.startDate))"]
+        if sub.endDate > 0 {
+            parts.append("to \(SubscriptionMath.dateStr(Date(timeIntervalSince1970: TimeInterval(sub.endDate))))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func beginAdd() {
+        editing = nil
+        editID = 0
+        name = ""
+        plan = ""
+        startDate = Date()
+        hasEndDate = false
+        endDate = Date()
+        cycle = "monthly"
+        price = ""
+        showForm = true
+    }
+
+    private func beginEdit(_ sub: Database.Subscription) {
+        editing = sub
+        editID = sub.id
+        name = sub.name
+        plan = sub.plan
+        startDate = Date(timeIntervalSince1970: TimeInterval(sub.startDate))
+        hasEndDate = sub.endDate > 0
+        endDate = sub.endDate > 0 ? Date(timeIntervalSince1970: TimeInterval(sub.endDate)) : Date()
+        cycle = sub.cycle
+        price = "\(sub.price)"
+        showForm = true
     }
 
     private var subscriptionForm: some View {
@@ -277,7 +245,7 @@ struct SubscriptionSettingsSection: View {
         return Database.shared.upsertSubscription(s)
     }
 
-    private func planIcon(_ p: String) -> String {
+    static func planIcon(_ p: String) -> String {
         switch p {
         case "go": return "g.circle.fill"
         case "openrouter": return ToolKind.openrouter.symbol
@@ -287,7 +255,7 @@ struct SubscriptionSettingsSection: View {
         }
     }
 
-    private func planColor(_ p: String) -> Color {
+    static func planColor(_ p: String) -> Color {
         switch p {
         case "go": return TMDesign.accent
         case "openrouter": return ToolKind.openrouter.color

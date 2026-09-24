@@ -234,3 +234,52 @@ final class CodexQuotaClient: ObservableObject {
         backoffBase *= 2
     }
 }
+
+/// Display name for the Codex quota row. A user-set name wins; otherwise the
+/// plan the usage API reports, then the plan implied by the subscription's
+/// price, then plain "Codex".
+enum CodexPlanName {
+    static let customNameKey = "codexDisplayName"
+
+    static func resolve(custom: String?, apiPlan: String?,
+                        subscription: Database.Subscription?) -> String {
+        if let custom = custom?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+            return custom
+        }
+        if let tier = tier(apiPlan: apiPlan) ?? subscription.flatMap(tier(subscription:)) {
+            return "Codex \(tier)"
+        }
+        return "Codex"
+    }
+
+    /// ChatGPT `plan_type` values; unknown ones are title-cased as-is.
+    static func tier(apiPlan: String?) -> String? {
+        guard let raw = apiPlan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !raw.isEmpty else { return nil }
+        switch raw {
+        case "free": return "Free"
+        case "go": return "Go"
+        case "plus": return "Plus"
+        case "pro": return "Pro"
+        // OpenAI renamed Team to Business; the API still says "team".
+        case "team", "business": return "Business"
+        case "enterprise": return "Enterprise"
+        case "edu", "education": return "Edu"
+        default:
+            return raw.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == " " })
+                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                .joined(separator: " ")
+        }
+    }
+
+    /// Monthly price bands: Go is under $14, Plus around $20 (with local tax
+    /// up to ~$25), Pro $200. Business is per-seat and overlaps Plus, so it
+    /// is left to the API or a custom name.
+    static func tier(subscription: Database.Subscription) -> String? {
+        let monthly = subscription.cycle == "yearly" ? subscription.price / 12 : subscription.price
+        guard monthly.isFinite, monthly > 0 else { return nil }
+        if monthly < 14 { return "Go" }
+        if monthly < 100 { return "Plus" }
+        return "Pro"
+    }
+}
