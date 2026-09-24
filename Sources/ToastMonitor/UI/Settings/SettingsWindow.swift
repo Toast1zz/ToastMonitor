@@ -278,7 +278,10 @@ private final class SettingsPaneHost {
     let pane: SettingsPane
     let view: NSView
     private(set) var height = SettingsPaneView.fallbackHeight
-    private var heightConstraint: NSLayoutConstraint?
+    /// Created once: it lives on the view itself, so it survives the view
+    /// leaving the window, and a new one per install would pile up stale
+    /// heights that fight the current one.
+    private let heightConstraint: NSLayoutConstraint
     var onHeightChange: ((SettingsPaneHost) -> Void)?
 
     init(pane: SettingsPane) {
@@ -286,6 +289,9 @@ private final class SettingsPaneHost {
         let hosting = NSHostingView(rootView: SettingsPaneView(pane: pane))
         hosting.sizingOptions = []
         view = hosting
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        heightConstraint = hosting.heightAnchor.constraint(equalToConstant: height)
+        heightConstraint.isActive = true
         hosting.rootView = SettingsPaneView(pane: pane) { [weak self] height in
             self?.adopt(height)
         }
@@ -295,23 +301,19 @@ private final class SettingsPaneHost {
     /// toolbar), not of the content view, which extends under the toolbar.
     func install(in root: NSView, below window: NSWindow) {
         guard view.superview !== root else { return }
-        view.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(view)
-        let height = view.heightAnchor.constraint(equalToConstant: height)
-        heightConstraint = height
         let top = (window.contentLayoutGuide as? NSLayoutGuide)?.topAnchor ?? root.topAnchor
         NSLayoutConstraint.activate([
             view.topAnchor.constraint(equalTo: top),
             view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             view.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            height,
         ])
     }
 
     private func adopt(_ height: CGFloat) {
         guard height > 0, height != self.height else { return }
         self.height = height
-        heightConstraint?.constant = height
+        heightConstraint.constant = height
         onHeightChange?(self)
     }
 }
