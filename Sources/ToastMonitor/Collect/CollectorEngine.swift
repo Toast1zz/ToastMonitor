@@ -130,8 +130,10 @@ final class CollectorEngine: @unchecked Sendable {
         timer?.cancel()
         timer = nil
         let interval: DispatchTimeInterval = foreground ? .seconds(1) : .seconds(5)
+        // ~10% leeway lets the system coalesce this wakeup with others.
+        let leeway: DispatchTimeInterval = foreground ? .milliseconds(100) : .milliseconds(500)
         let source = DispatchSource.makeTimerSource(queue: queue)
-        source.schedule(deadline: .now() + interval, repeating: interval)
+        source.schedule(deadline: .now() + interval, repeating: interval, leeway: leeway)
         source.setEventHandler { [weak self] in self?.runScan() }
         source.resume()
         timer = source
@@ -175,7 +177,7 @@ final class CollectorEngine: @unchecked Sendable {
         func ingest(_ source: String, preflight: () -> Bool,
                     sourcePaths: [String],
                     scan: (any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo]),
-                    signaturePath: String? = nil) {
+                    signaturePath: String? = nil, signaturePaths: [String] = []) {
             let sourceStart = CFAbsoluteTimeGetCurrent()
             guard preflight() else {
                 let duration = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
@@ -199,7 +201,7 @@ final class CollectorEngine: @unchecked Sendable {
                 }
                 return
             }
-            if let signaturePath { rememberSource(signaturePath) }
+            for path in [signaturePath].compactMap({ $0 }) + signaturePaths { rememberSource(path) }
             if out.turns.isEmpty && out.sessions.isEmpty {
                 Task { @MainActor in
                     SourceHealthHub.shared.recordIdle(tool: source, durationMs: duration)
@@ -237,9 +239,11 @@ final class CollectorEngine: @unchecked Sendable {
                sourcePaths: [OpenCodeParser.dbPath, OpenCodeParser.dbPath + "-wal"],
                scan: { OpenCodeParser.scan(database: $0) }, signaturePath: OpenCodeParser.dbPath)
 
-        ingest("hermes", preflight: { self.sourceChanged(HermesParser.dbPath) },
-               sourcePaths: [HermesParser.dbPath, HermesParser.dbPath + "-wal"],
-               scan: { HermesParser.scan(database: $0) }, signaturePath: HermesParser.dbPath)
+        // One store per Hermes profile; new profiles appear within a minute.
+        let hermesDBs = cachedFileList("hermes") { HermesParser.dbPaths }
+        ingest("hermes", preflight: { hermesDBs.contains { self.sourceChanged($0) } },
+               sourcePaths: hermesDBs.flatMap { [$0, $0 + "-wal"] },
+               scan: { HermesParser.scan(database: $0) }, signaturePaths: hermesDBs)
         let ompFiles = cachedFileList("omp") {
             FileScanner.listFiles(OmpParser.root, maxDepth: 3)
                 .filter { $0.hasSuffix(".jsonl") }

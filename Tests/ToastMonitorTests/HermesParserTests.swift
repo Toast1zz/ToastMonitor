@@ -78,4 +78,100 @@ final class HermesParserTests: XCTestCase {
         XCTAssertEqual(third[0].inputTokens, 200, "1200 - max(1000, 400) = 200, not 800")
         XCTAssertEqual(third[0].outputTokens, 200, "700 - max(500, 200) = 200, not 500")
     }
+
+    // MARK: - Profiles and session_model_usage (current Hermes schema)
+
+    /// Writes one cumulative usage row into a profile's store ("" = default).
+    private func writeUsage(profile: String = "", session: String, input: Int64, output: Int64,
+                            cacheRead: Int64 = 0, firstSeen: Double = 1_790_000_000,
+                            lastSeen: Double = 1_790_000_600) {
+        let dir = profile.isEmpty ? homeDir : "\(homeDir)/profiles/\(profile)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2("\(dir)/state.db", &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        let schema = """
+        CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT, started_at REAL);
+        CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, session_id TEXT, token_count INTEGER, timestamp REAL);
+        CREATE TABLE IF NOT EXISTS session_model_usage (
+          session_id TEXT, model TEXT, billing_provider TEXT, billing_base_url TEXT,
+          input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+          cache_write_tokens INTEGER, reasoning_tokens INTEGER,
+          first_seen REAL, last_seen REAL, PRIMARY KEY (session_id, model));
+        """
+        XCTAssertEqual(sqlite3_exec(raw, schema, nil, nil, nil), SQLITE_OK)
+        let sql = """
+        INSERT OR REPLACE INTO session_model_usage VALUES
+          ('\(session)', 'deepseek/deepseek-v4.1-flash', 'custom', 'https://api.example.com/v1/',
+           \(input), \(output), \(cacheRead), 0, 0, \(firstSeen), \(lastSeen));
+        """
+        XCTAssertEqual(sqlite3_exec(raw, sql, nil, nil, nil), SQLITE_OK)
+    }
+
+    private func key(_ session: String) -> String {
+        HermesUsageBaseline.key(session: session, model: "deepseek/deepseek-v4.1-flash",
+                                provider: "custom", baseURL: "https://api.example.com/v1/")
+    }
+
+    func testEveryProfileIsScanned() {
+        writeUsage(session: "default-s", input: 100, output: 10)
+        writeUsage(profile: "hermesrp", session: "rp-s", input: 700, output: 70)
+        try? FileManager.default.createDirectory(atPath: "\(homeDir)/profiles/empty",
+                                                 withIntermediateDirectories: true)
+        XCTAssertEqual(HermesParser.dbPaths.count, 2)
+
+        let (turns, _) = HermesParser.scan(database: db)
+        XCTAssertEqual(Set(turns.map(\.sessionID)), ["default-s", "rp-s"])
+        XCTAssertEqual(turns.reduce(0) { $0 + $1.inputTokens }, 800)
+    }
+
+    func testUsageRowsYieldDeltasAgainstBaseline() {
+        writeUsage(profile: "hermesrp", session: "s", input: 1_000, output: 100, cacheRead: 5_000)
+        let (first, _) = HermesParser.scan(database: db)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first[0].ts, 1_790_000_000, "first sighting is dated to the session start")
+        XCTAssertEqual(first[0].cacheRead, 5_000)
+
+        XCTAssertTrue(HermesParser.scan(database: db).turns.isEmpty, "unchanged counters emit nothing")
+
+        writeUsage(profile: "hermesrp", session: "s", input: 1_300, output: 150, cacheRead: 9_000,
+                   lastSeen: 1_790_001_000)
+        let (grown, _) = HermesParser.scan(database: db)
+        XCTAssertEqual(grown.count, 1)
+        XCTAssertEqual(grown[0].inputTokens, 300)
+        XCTAssertEqual(grown[0].outputTokens, 50)
+        XCTAssertEqual(grown[0].cacheRead, 4_000)
+        XCTAssertEqual(grown[0].ts, 1_790_001_000)
+    }
+
+    /// Switching remote -> local continues from the feed's baseline.
+    func testLocalScanContinuesFromRemoteBaseline() {
+        XCTAssertTrue(db.setSetting(key("s"), "1000,100,0,5000,0,0"))
+        writeUsage(session: "s", input: 1_200, output: 130, cacheRead: 5_500)
+        let (turns, _) = HermesParser.scan(database: db)
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns[0].inputTokens, 200)
+        XCTAssertEqual(turns[0].outputTokens, 30)
+        XCTAssertEqual(turns[0].cacheRead, 500)
+    }
+
+    /// Switching local -> remote continues from the local baseline.
+    func testRemoteFeedContinuesFromLocalBaseline() {
+        writeUsage(session: "s", input: 1_000, output: 100)
+        XCTAssertEqual(HermesParser.scan(database: db).turns.count, 1)
+
+        XCTAssertTrue(db.setSetting("src_hermes", "remote"))
+        let row: [String: Any] = [
+            "tool": "hermes", "session_id": "s", "model": "deepseek/deepseek-v4.1-flash",
+            "billing_provider": "custom", "billing_base_url": "https://api.example.com/v1",
+            "input_tokens": NSNumber(value: 1_250), "output_tokens": NSNumber(value: 140),
+            "first_seen": NSNumber(value: 1_790_000_000), "last_seen": NSNumber(value: 1_790_002_000),
+            "event_id": "hermes:s:deepseek/deepseek-v4.1-flash:1790002000"
+        ]
+        HermesRemoteClient.shared.importFeed(["rows": [row]], database: db)
+        let remote = db.turns(sessionTool: "hermes", sessionID: "s").filter { $0.ts == 1_790_002_000 }
+        XCTAssertEqual(remote.count, 1)
+        XCTAssertEqual(remote.first?.input, 250)
+        XCTAssertEqual(remote.first?.output, 40)
+    }
 }
