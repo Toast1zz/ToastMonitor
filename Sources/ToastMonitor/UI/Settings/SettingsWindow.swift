@@ -71,9 +71,11 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     }
 
     func show(pane: SettingsPane? = nil) {
+        // Decided before makeWindow(): measuring the panes there leaves
+        // `current` on the last pane, which is not the one to restore.
+        let target = pane ?? current ?? Self.savedPane
         let window = self.window ?? makeWindow()
         let wasVisible = window.isVisible
-        let target = pane ?? current ?? Self.savedPane
         select(target, animated: wasVisible)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -123,7 +125,7 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         window.alphaValue = 0
         window.orderFront(nil)
         for pane in SettingsPane.allCases {
-            select(pane, animated: false)
+            select(pane, animated: false, remember: false)
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
         window.orderOut(nil)
@@ -140,11 +142,13 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         return host
     }
 
-    private func select(_ pane: SettingsPane, animated: Bool) {
+    private func select(_ pane: SettingsPane, animated: Bool, remember: Bool = true) {
         guard let window, let root else { return }
         window.toolbar?.selectedItemIdentifier = pane.itemIdentifier
         window.title = pane.title
-        UserDefaults.standard.set(pane.rawValue, forKey: Self.lastPaneKey)
+        if remember {
+            UserDefaults.standard.set(pane.rawValue, forKey: Self.lastPaneKey)
+        }
         let incoming = host(for: pane)
         guard pane != current else { return }
         let outgoing = current.flatMap { panes[$0] }
