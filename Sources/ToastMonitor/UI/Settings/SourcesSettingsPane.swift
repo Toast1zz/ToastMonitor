@@ -1,13 +1,14 @@
 import SwiftUI
 
-/// Settings › Sources: per-tool data source (local Mac vs remote VPS feed),
-/// the remote feed URL, and collector status.
+/// Settings › Sources: where each tool's usage comes from (this Mac or the
+/// remote feed), the accounts behind quotas and balances, fixed
+/// subscriptions, and collector status.
 struct SourcesSettingsPane: View {
     /// UI-3: 订阅后 poll 完成时 feed 状态行随 @Published 刷新。
     @ObservedObject private var remote = HermesRemoteClient.shared
     @State private var feedURL = ""
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
-    /// UI-8: 生效值缓存（onAppear 加载、toggle 后更新）。body 每格渲染
+    /// UI-8: 生效值缓存（onAppear 加载、切换后更新）。body 每格渲染
     /// 直接读 tool.sourceIsRemote 会同步查 DB（每帧每工具一次）。
     @State private var effectiveSources: [ToolKind: Bool] = [:]
     @State private var saved = false
@@ -22,9 +23,6 @@ struct SourcesSettingsPane: View {
     @State private var sourceGeneration: [ToolKind: Int] = [:]
 
     private let tools = ToolKind.allCases.filter { $0 != .openrouter }
-    /// Codex billing draft: "subscription" (ChatGPT/Codex plan covers the
-    /// usage) or "api" (per-token API spend). Persisted via Database setting.
-    @State private var codexBilling: String = "api"
 
     var body: some View {
         dataSourcesSection
@@ -34,7 +32,6 @@ struct SourcesSettingsPane: View {
                     sources[t] = t.sourceIsRemote
                     effectiveSources[t] = t.sourceIsRemote
                 }
-                codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
             }
 
         remoteFeedSection
@@ -44,24 +41,28 @@ struct SourcesSettingsPane: View {
                 feedDisabled = false
             }
 
-        // Operational status: one compact list rather than a card per
-        // collector.
-        Section("Collector Status") {
-            SourcesView(embedded: true, localSources: effectiveSources)
-        }
+        AccountsSettingsSection()
+
+        SubscriptionSettingsSection()
+
+        CollectorStatusSection(remoteSources: effectiveSources)
     }
 
     private var dataSourcesSection: some View {
         Section("Data Sources") {
             ForEach(tools) { tool in
                 if tool.supportsRemoteSource {
-                    Picker(selection: sourceBinding(for: tool)) {
-                        Text("Local").tag(false)
-                        Text("Remote").tag(true)
+                    LabeledContent {
+                        Picker("\(tool.displayName) source", selection: sourceBinding(for: tool)) {
+                            Text("Local").tag(false)
+                            Text("Remote").tag(true)
+                        }
+                        .pickerStyle(.radioGroup)
+                        .horizontalRadioGroupLayout()
+                        .labelsHidden()
                     } label: {
                         sourceLabel(tool)
                     }
-                    .accessibilityLabel("\(tool.displayName) source")
                 } else {
                     LabeledContent {
                         Text("Local only")
@@ -69,29 +70,6 @@ struct SourcesSettingsPane: View {
                         sourceLabel(tool)
                     }
                 }
-                if tool == .codex {
-                    Picker(selection: $codexBilling) {
-                        Text("Subscription").tag("subscription")
-                        Text("API").tag("api")
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: ToolKind.codex.symbol)
-                                .foregroundStyle(ToolKind.codex.color)
-                                .frame(width: 18)
-                            Text("Codex Billing")
-                        }
-                    }
-                    .accessibilityLabel("Codex billing")
-                    .help(codexBilling == "subscription"
-                          ? "Treat Codex costs as covered by a ChatGPT/Codex subscription"
-                          : "Count Codex costs as per-token API spend")
-                }
-            }
-        }
-        .onChange(of: codexBilling) { newValue in
-            let value = newValue
-            DispatchQueue.global(qos: .userInitiated).async {
-                _ = Database.shared.setSetting("codex_billing_mode", value)
             }
         }
     }

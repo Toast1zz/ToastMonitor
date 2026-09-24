@@ -1,44 +1,35 @@
 import SwiftUI
 import Charts
 
-/// 计划与余额: one card per service — quota, balance, credentials and history
-/// in the same place. Fixed subscriptions are a read-only summary here;
-/// add/edit lives in 设置.
+/// 计划与余额: one card per connected service — quota, balance and history.
+/// Credentials, account options and subscriptions are managed in
+/// Settings › Sources; accounts that are not connected fold into one row
+/// that opens it.
 struct PlansView: View {
-    private enum CredentialTarget: Equatable {
-        case openCodeGo
-        case openRouter
-        case commandCode
-    }
-
     @EnvironmentObject var app: AppState
     @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
+    @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @State private var goSnapshots: [Database.OGSnapshot] = []
     @State private var orSnapshots: [Database.ORSnapshot] = []
-    @State private var showGoForm = false
-    @State private var showORForm = false
-    @State private var showCCForm = false
-    @State private var goWS = ""
-    @State private var goCookie = ""
-    @State private var orKey = ""
-    @State private var orAppend = false
-    @State private var ccCookie = ""
-    @State private var pendingCredentialClear: CredentialTarget?
-    /// Each credential form shows only its own message/color — saving Go
-    /// must never flash a message inside the OpenRouter form (and vice versa).
-    @State private var goFormMessage: String?
-    @State private var goFormFailed = false
-    @State private var orFormMessage: String?
-    @State private var orFormFailed = false
-    @State private var ccFormMessage: String?
-    @State private var ccFormFailed = false
     /// Last observed state markers; onReceive only reloads history when the
     /// client actually produced a new result (isLoading flips are ignored).
     @State private var goLastSeen: (lastOK: Int64, lastSync: Int64)?
     @State private var orLastSeen: Int64 = 0
+
+    private var claudeConnected: Bool { claudeQuota.enabled }
+    private var goConnected: Bool { goClient.configured || goClient.state.lastSync > 0 }
+    private var orConnected: Bool { orClient.hasKey }
+    private var deepseekConnected: Bool { deepseek.state.kind != nil }
+    private var ccConnected: Bool { ccQuota.state.configured || ccQuota.state.lastSync > 0 }
+
+    private var unconnected: [String] {
+        [(claudeConnected, "Claude"), (goConnected, "OpenCode Go"), (ccConnected, "Command Code"),
+         (orConnected, "OpenRouter"), (deepseekConnected, "DeepSeek")]
+            .filter { !$0.0 }.map(\.1)
+    }
 
     var body: some View {
         ScrollView {
@@ -46,14 +37,17 @@ struct PlansView: View {
                 SectionTitle("Plans & Balance")
                     .padding(.top, 18)
                     .padding(.bottom, 12)
-                claudeCard
-                goCard
-                orCard
-                serviceCard(title: "DeepSeek", icon: "d.circle.fill", color: TMDesign.accent) {
-                    DeepSeekBillingSettingsView()
+                if claudeConnected { claudeCard }
+                if goConnected { goCard }
+                if orConnected { orCard }
+                if deepseekConnected {
+                    serviceCard(title: "DeepSeek", icon: "d.circle.fill", color: ToolKind.dsh.color) {
+                        DeepSeekBalanceView()
+                    }
                 }
-                ccCard
-                subsCard
+                if ccConnected { ccCard }
+                if !app.subscriptions.isEmpty { subsCard }
+                if !unconnected.isEmpty { unconnectedCard }
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
@@ -75,56 +69,30 @@ struct PlansView: View {
                 loadORSnapshots()
             }
         }
-        .onChange(of: showGoForm) { open in
-            if open {
-                goFormMessage = nil
-            } else {
-                goWS = ""
-                goCookie = ""
-            }
-        }
-        .onChange(of: showORForm) { open in
-            if open {
-                orFormMessage = nil
-            } else {
-                orKey = ""
-                orAppend = false
-            }
-        }
-        .onChange(of: showCCForm) { open in
-            if open {
-                ccFormMessage = nil
-            } else {
-                ccCookie = ""
-            }
-        }
-        .sheet(isPresented: $showGoForm) {
-            goCredentialSheet
-        }
-        .sheet(isPresented: $showORForm) {
-            openRouterCredentialSheet
-        }
-        .sheet(isPresented: $showCCForm) {
-            ccCredentialSheet
-        }
-        .confirmationDialog("Clear saved credentials?", isPresented: Binding(
-            get: { pendingCredentialClear != nil },
-            set: { if !$0 { pendingCredentialClear = nil } })) {
-                Button("Cancel", role: .cancel) { pendingCredentialClear = nil }
-                Button("Clear Credentials", role: .destructive) { clearPendingCredentials() }
-            } message: {
-                Text(pendingCredentialClearMessage)
-            }
     }
 
-    private var pendingCredentialClearMessage: String {
-        switch pendingCredentialClear {
-        case .openCodeGo:
-            return "ToastMonitor will stop showing OpenCode Go quota data until credentials are configured again."
-        case .commandCode:
-            return "ToastMonitor will remove the saved Command Code GOAT session from Keychain and stop showing its quota."
-        case .openRouter, nil:
-            return "ToastMonitor will remove the saved OpenRouter key from Keychain and stop showing its balance."
+    private func openAccountSettings() {
+        SettingsWindowController.shared.show(pane: .sources)
+    }
+
+    private var unconnectedCard: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Not connected")
+                    .font(TMType.medium(TMType.body))
+                Text(unconnected.joined(separator: " · "))
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Set Up…", action: openAccountSettings)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous)
+                .stroke(TMDesign.divider, lineWidth: 1)
         }
     }
 
@@ -158,7 +126,7 @@ struct PlansView: View {
 
     private var goCard: some View {
         let go = goClient.state
-        return serviceCard(title: "OpenCode Go", icon: "g.circle.fill", color: TMDesign.accent) {
+        return serviceCard(title: "OpenCode Go", icon: "g.circle.fill", color: ToolKind.opencode.color) {
             VStack(alignment: .leading, spacing: 12) {
                 statusHeader(
                     isLoading: go.isLoading,
@@ -175,24 +143,6 @@ struct PlansView: View {
                         .lineLimit(2)
                 }
 
-                // Credentials live here — provisioning and quota are one task.
-                credentialsRow(
-                    configured: goClient.configured,
-                    summary: goClient.configured ? "Configured workspace" : "Not configured — quota unavailable",
-                    actionTitle: goClient.configured ? "Change credentials" : "Configure",
-                    action: { showGoForm = true },
-                    clearAction: {
-                        pendingCredentialClear = .openCodeGo
-                    }
-                )
-                // Form feedback stays visible after the form closes, so a
-                // successful save/clear is never silently swallowed.
-                if let goFormMessage {
-                    Text(goFormMessage)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(goFormFailed ? TMDesign.danger : TMDesign.accent)
-                }
-
                 if goClient.configured {
                     if let pct = go.monthlyPct {
                         quotaBar(
@@ -200,7 +150,7 @@ struct PlansView: View {
                             usedPct: pct,
                             resetAt: go.monthlyReset.map { go.lastSync + $0 },
                             limit: OpenCodeGoClient.monthlyLimitUSD,
-                            color: TMDesign.accent,
+                            color: ToolKind.opencode.color,
                             reference: subForGo?.price
                         )
                     }
@@ -335,7 +285,7 @@ struct PlansView: View {
 
     private var orCard: some View {
         let or = orClient.state
-        return serviceCard(title: "OpenRouter", icon: ToolKind.openrouter.symbol, color: TMDesign.accent) {
+        return serviceCard(title: "OpenRouter", icon: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color) {
             VStack(alignment: .leading, spacing: 12) {
                 statusHeader(
                     isLoading: or.isLoading,
@@ -350,21 +300,6 @@ struct PlansView: View {
                         .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.danger.opacity(0.85))
                         .lineLimit(2)
-                }
-
-                credentialsRow(
-                    configured: orClient.hasKey,
-                    summary: orClient.hasKey ? "\(or.keyCount) key\(or.keyCount == 1 ? "" : "s") (Keychain)" : "Not configured — quota unavailable",
-                    actionTitle: orClient.hasKey ? "Change / Add" : "Configure",
-                    action: { showORForm = true },
-                    clearAction: {
-                        pendingCredentialClear = .openRouter
-                    }
-                )
-                if let orFormMessage {
-                    Text(orFormMessage)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(orFormFailed ? TMDesign.danger : TMDesign.accent)
                 }
 
                 if orClient.hasKey {
@@ -385,7 +320,7 @@ struct PlansView: View {
                             usedPct: usedPct,
                             resetAt: nil,
                             limit: limit,
-                            color: TMDesign.accent,
+                            color: ToolKind.openrouter.color,
                             reference: nil,
                             remainingText: Format.money(remaining)
                         )
@@ -466,20 +401,6 @@ struct PlansView: View {
         let cq = claudeQuota.state
         return serviceCard(title: "Claude", icon: ToolKind.claude.symbol, color: ToolKind.claude.color) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Reads Claude Code's rate-limit percentages from an undocumented "
-                     + "Anthropic endpoint, using your existing Claude Code login. This is "
-                     + "not an officially supported integration — Anthropic's Consumer Terms "
-                     + "restrict OAuth tokens from Free/Pro/Max plans to Claude Code and "
-                     + "claude.ai. Off by default; enable at your own risk.")
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Toggle("Enable Claude quota monitoring", isOn: Binding(
-                    get: { claudeQuota.enabled },
-                    set: { claudeQuota.setEnabled($0) }
-                ))
-
                 if claudeQuota.enabled {
                     statusHeader(
                         isLoading: cq.lastSync <= 0 && cq.error == nil && cq.configured,
@@ -519,7 +440,7 @@ struct PlansView: View {
             Text("\(remaining)% left")
                 .font(TMType.semibold(TMType.caption))
                 .tmMonospacedDigit()
-                .foregroundStyle(remaining < 5 ? TMDesign.danger : (remaining < 20 ? TMDesign.accent : TMDesign.quiet))
+                .foregroundStyle(TMDesign.quiet)
             if let resetAt = window.resetAt {
                 let remainingSecs = resetAt - Int64(Date().timeIntervalSince1970)
                 if remainingSecs > 0 {
@@ -535,7 +456,7 @@ struct PlansView: View {
 
     private var ccCard: some View {
         let cc = ccQuota.state
-        return serviceCard(title: "Command Code GOAT", icon: "c.circle.fill", color: TMDesign.accent) {
+        return serviceCard(title: "Command Code GOAT", icon: "c.circle.fill", color: TMDesign.commandCode) {
             VStack(alignment: .leading, spacing: 12) {
                 statusHeader(
                     isLoading: cc.isLoading,
@@ -552,21 +473,6 @@ struct PlansView: View {
                         .lineLimit(2)
                 }
 
-                credentialsRow(
-                    configured: cc.configured,
-                    summary: cc.configured ? (cc.planName ?? "Session configured") : "Not configured — quota unavailable",
-                    actionTitle: cc.configured ? "Update Session…" : "Configure",
-                    action: { showCCForm = true },
-                    clearAction: {
-                        pendingCredentialClear = .commandCode
-                    }
-                )
-                if let ccFormMessage {
-                    Text(ccFormMessage)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(ccFormFailed ? TMDesign.danger : TMDesign.accent)
-                }
-
                 if cc.configured {
                     if let total = cc.monthlyCreditsTotal, let pct = cc.monthlyUsedPercent {
                         quotaBar(
@@ -574,7 +480,7 @@ struct PlansView: View {
                             usedPct: pct,
                             resetAt: cc.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) },
                             limit: total,
-                            color: TMDesign.accent,
+                            color: TMDesign.commandCode,
                             reference: nil
                         )
                     } else if let remaining = cc.monthlyCreditsRemaining {
@@ -587,59 +493,41 @@ struct PlansView: View {
         }
     }
 
-    private var ccCredentialSheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Command Code GOAT Session")
-                .font(.title2.weight(.semibold))
-            Text("Paste the Cookie header from your logged-in commandcode.ai browser "
-                 + "session (or just the session token). Stored only in the macOS "
-                 + "Keychain; experimental private API.")
-                .font(TMType.regular(TMType.body))
-                .foregroundStyle(.secondary)
-            Form {
-                SecureField("Cookie header or session token", text: $ccCookie,
-                            prompt: Text("__Secure-commandcode_prod_.session_token=…"))
-                    .font(.system(size: TMType.body, design: .monospaced))
-            }
-            .formStyle(.grouped)
-            if let ccFormMessage, ccFormFailed {
-                Text(ccFormMessage)
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.danger)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { showCCForm = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Save") { saveCommandCodeCredentials() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(TMDesign.accent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(ccCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(24)
-        .frame(width: 520)
-    }
-
-    private func saveCommandCodeCredentials() {
-        let raw = ccCookie.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        if ccQuota.provision(cookie: raw) {
-            ccQuota.refresh()
-            showCCForm = false
-            ccFormMessage = "Command Code GOAT session saved"
-            ccFormFailed = false
-        } else {
-            ccFormMessage = ccQuota.state.error ?? "Save failed (Keychain unavailable)"
-            ccFormFailed = true
-        }
-    }
-
     // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
 
+    /// Where each fixed subscription stands in its billing cycle. Adding and
+    /// editing happen in Settings › Sources.
     private var subsCard: some View {
-        SubscriptionSettingsSection()
+        serviceCard(title: "Subscriptions", icon: "calendar", color: TMDesign.accent) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(app.subscriptions) { sub in
+                    HStack(spacing: 8) {
+                        Image(systemName: SubscriptionSettingsSection.planIcon(sub.plan))
+                            .foregroundStyle(SubscriptionSettingsSection.planColor(sub.plan))
+                            .frame(width: 18)
+                        Text(sub.name)
+                            .font(TMType.medium(TMType.body))
+                        Spacer()
+                        Text("\(Format.money(sub.price))/\(sub.cycle == "yearly" ? "yr" : "mo")")
+                            .font(TMType.semibold(TMType.caption))
+                            .tmMonospacedDigit()
+                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
+                            Text("Day \(info.dayOfCycle)/\(info.totalDays) · renews \(SubscriptionMath.dateStr(info.end))")
+                                .font(TMType.regular(TMType.caption))
+                                .tmMonospacedDigit()
+                                .foregroundStyle(TMDesign.quiet)
+                            if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
+                                let line = ForecastText.line(for: fc, plan: sub.plan)
+                                Text(line.text)
+                                    .font(TMType.semibold(TMType.caption))
+                                    .tmMonospacedDigit()
+                                    .foregroundStyle(ForecastText.color(line.status))
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - 容器与通用行
@@ -711,158 +599,6 @@ struct PlansView: View {
         .frame(minHeight: 24)
     }
 
-    private func credentialsRow(configured: Bool, summary: String, actionTitle: String,
-                                action: @escaping () -> Void,
-                                clearAction: (() -> Void)? = nil) -> some View {
-        HStack(spacing: 8) {
-                Image(systemName: configured ? "key.fill" : "key.slash")
-                    .font(TMType.regular(11))
-                    .foregroundStyle(configured ? TMDesign.accent : TMDesign.quiet)
-                Text(summary)
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(configured ? TMDesign.quiet : .secondary)
-                Spacer()
-                if configured {
-                    Button(actionTitle, action: action)
-                        .font(TMType.regular(TMType.caption))
-                        .buttonStyle(.bordered)
-                } else {
-                    Button(actionTitle, action: action)
-                        .font(TMType.regular(TMType.caption))
-                        .buttonStyle(.borderedProminent)
-                        .tint(TMDesign.accent)
-                }
-                if configured, let clearAction {
-                    Button("Clear", action: clearAction)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.danger)
-                }
-            }
-    }
-
-    private var goCredentialSheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("OpenCode Go Credentials")
-                .font(.title2.weight(.semibold))
-            Text("These values are stored in your macOS Keychain and used only to query quota information.")
-                .font(TMType.regular(TMType.body))
-                .foregroundStyle(.secondary)
-            Form {
-                TextField("Workspace ID", text: $goWS, prompt: Text("wrk_..."))
-                    .font(.system(size: TMType.body, design: .monospaced))
-                SecureField("Authentication cookie", text: $goCookie, prompt: Text("Fe26.2**..."))
-                    .font(.system(size: TMType.body, design: .monospaced))
-            }
-            .formStyle(.grouped)
-            if let goFormMessage, goFormFailed {
-                Text(goFormMessage)
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.danger)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { showGoForm = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Save & Query") { saveGoCredentials() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(TMDesign.accent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(goWS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || goCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(24)
-        .frame(width: 520)
-    }
-
-    private var openRouterCredentialSheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("OpenRouter Credentials")
-                .font(.title2.weight(.semibold))
-            Text("The API key is stored in your macOS Keychain and is never displayed after saving.")
-                .font(TMType.regular(TMType.body))
-                .foregroundStyle(.secondary)
-            Form {
-                SecureField("API key", text: $orKey, prompt: Text("sk-or-..."))
-                    .font(.system(size: TMType.body, design: .monospaced))
-                if orClient.hasKey {
-                    Toggle("Add this key without replacing existing keys", isOn: $orAppend)
-                }
-            }
-            .formStyle(.grouped)
-            if let orFormMessage, orFormFailed {
-                Text(orFormMessage)
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.danger)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { showORForm = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Save") { saveOpenRouterCredentials() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(TMDesign.accent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(orKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(24)
-        .frame(width: 520)
-    }
-
-    private func saveGoCredentials() {
-        let ws = goWS.trimmingCharacters(in: .whitespacesAndNewlines)
-        let ck = goCookie.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ws.isEmpty, !ck.isEmpty else { return }
-        if goClient.provision(workspaceId: ws, cookie: ck) {
-            goClient.refresh()
-            showGoForm = false
-            goFormMessage = "OpenCode Go credentials saved"
-            goFormFailed = false
-        } else {
-            goFormMessage = goClient.state.error ?? "Save failed (Keychain unavailable)"
-            goFormFailed = true
-        }
-    }
-
-    private func saveOpenRouterCredentials() {
-        let key = orKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let ok = orAppend ? orClient.addKey(key) : orClient.setKey(key)
-        if ok {
-            showORForm = false
-            orFormMessage = "OpenRouter key saved"
-            orFormFailed = false
-        } else {
-            orFormMessage = orClient.state.error ?? "Save failed (Keychain unavailable)"
-            orFormFailed = true
-        }
-    }
-
-    private func clearPendingCredentials() {
-        switch pendingCredentialClear {
-        case .openCodeGo:
-            goClient.clear()
-            goWS = ""
-            goCookie = ""
-            goFormMessage = "OpenCode Go credentials cleared"
-            goFormFailed = false
-        case .openRouter:
-            _ = orClient.setKey(nil)
-            orKey = ""
-            orAppend = false
-            orFormMessage = "OpenRouter key cleared"
-            orFormFailed = false
-        case .commandCode:
-            ccQuota.clear()
-            ccCookie = ""
-            ccFormMessage = "Command Code GOAT session cleared"
-            ccFormFailed = false
-        case .none:
-            break
-        }
-        pendingCredentialClear = nil
-    }
-
     /// Quota progress bar. `usedPct` is the fraction of the limit already
     /// consumed (0–100); bar width and color follow usage, so a brand-new
     /// key at 100% remaining renders an empty bar instead of a full red one.
@@ -893,13 +629,13 @@ struct PlansView: View {
                 Text("\(Int(p))%")
                     .font(TMType.semibold(TMType.caption))
                     .tmMonospacedDigit()
-                    .foregroundStyle(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.warning : TMDesign.quiet))
+                    .foregroundStyle(TMDesign.quiet)
             }
             GeometryReader { geo in
                 let w = geo.size.width
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.07))
-                    Capsule().fill(p > 95 ? TMDesign.danger : (p > 80 ? TMDesign.warning : color))
+                    Capsule().fill(color)
                         // p == 0 renders a truly empty bar; the 3pt floor
                         // only protects tiny-but-nonzero usage from vanishing.
                         .frame(width: p > 0 ? max(3, w * CGFloat(p / 100)) : 0)
@@ -934,7 +670,7 @@ struct PlansView: View {
                 Text("\(Int(pct))%")
                     .font(TMType.semibold(TMType.caption))
                     .tmMonospacedDigit()
-                    .foregroundStyle(pct > 95 ? TMDesign.danger : (pct > 80 ? TMDesign.warning : TMDesign.quiet))
+                    .foregroundStyle(TMDesign.quiet)
             } else {
                 Text("—")
                     .font(TMType.regular(TMType.caption))

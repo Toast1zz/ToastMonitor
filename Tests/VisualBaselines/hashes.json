@@ -3,14 +3,14 @@
   "dashboard-analysis-light" : "3f010800322f00011fff1fff1fffffffffffffffffffffffffffffffffffffff",
   "dashboard-overview-dark" : "000000027ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe7ffe000000000000",
   "dashboard-overview-light" : "fffdbffd9ffd3fffb9cfbf7fbf7fbfffffff8001800180019fffffffffffffff",
-  "dashboard-plans-dark" : "000000007ffe7ffe70007ffc7ffe70067ffc7ffe40027ffe7ffe7ffe60007ffe",
-  "dashboard-plans-light" : "ffffbfffbfff80018fff9fff8ff88ff99fff8ff8bff9bfff87ff8fff9fff9fff",
+  "dashboard-plans-dark" : "00006000ffffffff000000000000000000000000000000000000000000000000",
+  "dashboard-plans-light" : "bfff1fff01f901f9ffffffffffffffffffffffffffffffffffffffffffffffff",
   "dashboard-sessions-dark" : "c00ef7ef70070000000000000000000000000000000000000000000000000000",
   "dashboard-sessions-light" : "3ff10ff00ff8ffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "popover-home-dark" : "70007ffe400078007ffe7ffc7ffe7ffe7ffe7fee7ffe7ffe0000000000000000",
   "popover-home-light" : "8fff8001bfff87ff800180ef800180118001815180018001ffffffffffffffe3",
-  "settings-general-dark" : "00007ffe7ffe7ffe7fc6779c701e60007ffe0000000000000000000000000000",
-  "settings-general-light" : "ffff800180018001803f886188019fff8001ffffffffffffffffffffffffffff",
-  "settings-sources-dark" : "000070007ffe780e700e700e7ffe7806600060fe200070ec79fe7f1e7f1e701e",
-  "settings-sources-light" : "ffff8fff8ff18ff98ff98ff18ff987f99fff9f01dfff8f13860181f181f19ff1"
+  "settings-general-dark" : "00007ffe7ffe7ffe7fc660007ffe001c00000000000000000000000000000000",
+  "settings-general-light" : "ffff800180018001803d9fff8001bfe3ffffffffffffffffffffffffffffffff",
+  "settings-sources-dark" : "000070007fde701e701e7ffe7806600060fe000060007bfe780e780e780e780e",
+  "settings-sources-light" : "ffff8fe184218fe18fe18fe187f99fff8f019fff9fff87f187f187f187f187f1"
 }

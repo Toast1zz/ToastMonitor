@@ -36,18 +36,18 @@ enum ToolKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The product's own brand color where it has one; tools whose brand is
+    /// monochrome (OpenCode, Hermes) or unpublished (Oh My Pi) use a system
+    /// color so they stay distinguishable and adapt to appearance.
     var color: Color {
-        // Each product keeps its brand hue; all share one saturation/
-        // brightness family so the page reads harmoniously in both
-        // appearances (see Tool.swift palette comment).
         switch self {
-        case .claude: return TMDesign.toolColor(hue: 22, sat: 0.55, bri: 0.74)
-        case .codex: return TMDesign.toolColor(hue: 214, sat: 0.60, bri: 0.74)
-        case .opencode: return TMDesign.toolColor(hue: 150, sat: 0.50, bri: 0.72)
-        case .hermes: return TMDesign.toolColor(hue: 272, sat: 0.48, bri: 0.78)
-        case .omp: return TMDesign.toolColor(hue: 190, sat: 0.52, bri: 0.72)
-        case .dsh: return TMDesign.toolColor(hue: 226, sat: 0.55, bri: 0.74)
-        case .openrouter: return TMDesign.toolColor(hue: 356, sat: 0.62, bri: 0.72)
+        case .claude: return TMDesign.brand(0xD97757)       // Claude brand orange
+        case .codex: return TMDesign.brand(0x7A9DFF)        // Codex app icon gradient midpoint
+        case .dsh: return TMDesign.brand(0x4D6BFE)          // DeepSeek brand blue
+        case .openrouter: return TMDesign.brand(0x7624F4, dark: 0xC8FF00) // OpenRouter Grape / Volt
+        case .opencode: return Color(nsColor: .systemGreen)
+        case .hermes: return Color(nsColor: .systemPurple)
+        case .omp: return Color(nsColor: .systemTeal)
         }
     }
 

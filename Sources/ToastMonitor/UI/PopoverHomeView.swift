@@ -82,6 +82,7 @@ struct PopoverHomeView: View {
     /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
     /// counter tick up during streaming.
     @AppStorage("popoverFullTokens") private var fullTokens = false
+    @AppStorage(CodexPlanName.customNameKey) private var codexCustomName = ""
     /// Activity card shows one history view at a time: heatmap or trend.
     @AppStorage("popoverHistoryMode") private var historyMode = HistoryMode.heatmap
     /// Cards the user hid with the eye button (comma-separated keys).
@@ -212,7 +213,7 @@ struct PopoverHomeView: View {
                 reloadHeatmap()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: PopoverSettingsPane.quotaRowsChanged)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: AccountsSettingsSection.quotaRowsChanged)) { _ in
             loadQuotaRowHidden()
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
@@ -441,7 +442,7 @@ struct PopoverHomeView: View {
                 || fm.fileExists(atPath: ClaudeCodeParser.coworkLocalAgentRoot) { tools.append(.claude) }
             if fm.fileExists(atPath: CodexParser.sessionsRoot) { tools.append(.codex) }
             if fm.fileExists(atPath: OpenCodeParser.dbPath) { tools.append(.opencode) }
-            if fm.fileExists(atPath: HermesParser.dbPath) { tools.append(.hermes) }
+            if !HermesParser.dbPaths.isEmpty { tools.append(.hermes) }
             if fm.fileExists(atPath: OmpParser.root) { tools.append(.omp) }
             if fm.fileExists(atPath: DSHParser.projCachePath)
                 || !DSHParser.listSessionFiles().isEmpty { tools.append(.dsh) }
@@ -494,9 +495,9 @@ struct PopoverHomeView: View {
                     if !unconnected.isEmpty {
                         if !visible.isEmpty { rowDivider }
                         UnconnectedSourcesRow(names: unconnected.map(\.name)) {
-                            // Quota and balance accounts are connected on the
-                            // dashboard's Plans page.
-                            WindowManager.shared.show(tab: .plans)
+                            // Quota and balance accounts are connected in
+                            // Settings › Sources.
+                            SettingsWindowController.shared.show(pane: .sources)
                             NotificationCenter.default.post(name: PanelController.hideNotification,
                                                             object: nil)
                         }
@@ -759,7 +760,7 @@ struct PopoverHomeView: View {
             window("Weekly", state.weeklyPct, reset: state.weeklyReset.map { state.lastSync + $0 }),
             window("Monthly", state.monthlyPct, reset: state.monthlyReset.map { state.lastSync + $0 }),
         ].compactMap { $0 }
-        return statusRow(name: "OpenCode Go", status: status,
+        return statusRow(name: "OpenCode Go", status: status, tint: ToolKind.opencode.color,
                          statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
@@ -817,7 +818,7 @@ struct PopoverHomeView: View {
         // weekly line if that's the tight one, the 5h/Opus subtitle if
         // that's the one about to run out, never just the primary line by
         // default regardless of which window earned it.
-        return statusRow(name: claudeRowName, status: status,
+        return statusRow(name: claudeRowName, status: status, tint: ToolKind.claude.color,
                          statusColor: .primary,
                          critical: claudeQuota.enabled && (remaining.map { $0 < 20 } ?? false),
                          resetSuffix: resetSuffix,
@@ -920,7 +921,9 @@ struct PopoverHomeView: View {
         } else if let sub {
             status = "Subscribed · \(Format.money(sub.price))/mo"
         }
-        return statusRow(name: "Codex Plus", status: status,
+        let name = CodexPlanName.resolve(custom: codexCustomName, apiPlan: state.planType,
+                                         subscription: sub)
+        return statusRow(name: name, status: status, tint: ToolKind.codex.color,
                          statusColor: .primary,
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
@@ -963,7 +966,7 @@ struct PopoverHomeView: View {
         } else if state.configured && state.lastSync <= 0 {
             status = "Loading"
         }
-        return statusRow(name: name, status: status,
+        return statusRow(name: name, status: status, tint: TMDesign.commandCode,
                          statusColor: .primary,
                          // Star = running low: remaining below 20% (used > 80%).
                          critical: state.monthlyUsedPercent.map { $0 > 80 } ?? false,
@@ -1029,7 +1032,8 @@ struct PopoverHomeView: View {
             .help("Account balance: \(deepseek.balanceText). \(state.balanceError ?? "")")
     }
 
-    private func statusRow(name: String, status: String, statusColor: Color,
+    private func statusRow(name: String, status: String, tint: Color = .accentColor,
+                           statusColor: Color,
                            critical: Bool = false, resetSuffix: String? = nil,
                            subtitle: String? = nil, subtitleCritical: Bool = false,
                            staleBadge: String? = nil,
@@ -1038,7 +1042,7 @@ struct PopoverHomeView: View {
         StatusRow(name: name, status: status, statusColor: statusColor,
                   critical: critical, resetSuffix: resetSuffix, subtitle: subtitle,
                   subtitleCritical: subtitleCritical, staleBadge: staleBadge,
-                  windows: windows,
+                  windows: windows, tint: tint,
                   hideAction: hideKey.map { key in { self.hideQuotaRow(key) } })
     }
 
@@ -1222,6 +1226,7 @@ private struct HeroValue: Equatable {
 /// SF Mono Regular，不让整行变成等宽。提供 hideAction 时行尾会出现一个
 /// 眼睛按钮（hover 显示），点击将该配额行隐藏。
 private struct StatusRow: View {
+    @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
     let name: String
     let status: String
     let statusColor: Color
@@ -1249,6 +1254,8 @@ private struct StatusRow: View {
     /// "name + one bar per window"; the plain status text is only for
     /// states without numbers (Loading / Error / Off / Subscribed).
     var windows: [QuotaWindow] = []
+    /// The service's color; every window bar of one service shares it.
+    var tint: Color = .accentColor
     var hideAction: (() -> Void)?
 
     @State private var hovering = false
@@ -1261,7 +1268,7 @@ private struct StatusRow: View {
                 VStack(alignment: .leading, spacing: 6) {
                     header
                     ForEach(windows, id: \.label) { window in
-                        QuotaWindowLine(window: window)
+                        QuotaWindowLine(window: window, tint: tint)
                     }
                 }
             }
@@ -1273,7 +1280,9 @@ private struct StatusRow: View {
         .accessibilityLabel(name)
         .accessibilityValue(Text(windows.isEmpty
             ? [status, resetSuffix].compactMap { $0 }.joined(separator: " · ")
-            : windows.map { "\($0.label) \(Int($0.usedPercent.rounded()))% used" }.joined(separator: ", ")))
+            : windows.map { showsRemaining
+                ? "\($0.label) \(Int((100 - $0.usedPercent).rounded()))% left"
+                : "\($0.label) \(Int($0.usedPercent.rounded()))% used" }.joined(separator: ", ")))
     }
 
     private var header: some View {
@@ -1435,14 +1444,16 @@ private struct PopoverCard<Accessory: View, Trailing: View, Content: View>: View
 }
 
 struct QuotaWindow {
+    /// Settings key: true shows how much of each window is left instead of
+    /// how much is used.
+    static let showsRemainingKey = "popoverQuotaShowsRemaining"
+
     let label: String
     /// 0…100, how much of the window is used.
     let usedPercent: Double
     /// Compact countdown ("3.9d", "2.1h"), nil once passed / unknown.
     let resetIn: String?
 
-    /// Same threshold the old ★ used: under 20% left.
-    var critical: Bool { usedPercent >= 80 }
 }
 
 /// ```
@@ -1454,6 +1465,12 @@ struct QuotaWindow {
 /// row width instead of being squeezed between columns.
 private struct QuotaWindowLine: View {
     let window: QuotaWindow
+    let tint: Color
+    @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
+
+    private var shownPercent: Int {
+        Int((showsRemaining ? 100 - window.usedPercent : window.usedPercent).rounded())
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1470,29 +1487,31 @@ private struct QuotaWindowLine: View {
                         .foregroundStyle(TMDesign.faint)
                 }
                 Spacer(minLength: 8)
-                Text("\(Int(window.usedPercent.rounded()))%")
+                Text("\(shownPercent)%")
                     .font(TMType.number(TMType.caption, weight: .medium))
                     .foregroundStyle(.primary)
             }
-            UsageBar(used: window.usedPercent / 100, critical: window.critical)
+            UsageBar(usedPercent: window.usedPercent, tint: tint)
         }
-        .help("\(window.label): \(Int(window.usedPercent.rounded()))% used"
+        .help("\(window.label): \(shownPercent)% \(showsRemaining ? "left" : "used")"
               + (window.resetIn.map { ", resets in \($0)" } ?? ""))
     }
 }
 
 /// Usage bar: empty = untouched, fills rightward as the window is used.
-/// Neutral fill, the warning color once the window is critical.
+/// Always shows usage; the used/remaining setting changes only the number.
+/// Filled with the service's color at every usage level.
 private struct UsageBar: View {
-    let used: Double
-    let critical: Bool
+    let usedPercent: Double
+    let tint: Color
 
     var body: some View {
+        let used = usedPercent / 100
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.08))
                 Capsule()
-                    .fill(critical ? TMDesign.warning : TMDesign.meter)
+                    .fill(tint)
                     .frame(width: used > 0 ? max(geo.size.width * min(used, 1), 4) : 0)
                     .animation(.easeOut(duration: 0.35), value: used)
             }

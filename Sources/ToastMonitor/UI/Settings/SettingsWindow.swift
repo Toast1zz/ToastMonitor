@@ -4,7 +4,7 @@ import SwiftUI
 /// Panes of the settings window, in toolbar order.
 enum SettingsPane: String, CaseIterable {
     case general
-    case popover
+    case appearance
     case sources
     case data
     case updates
@@ -12,7 +12,7 @@ enum SettingsPane: String, CaseIterable {
     var title: String {
         switch self {
         case .general: return "General"
-        case .popover: return "Popover"
+        case .appearance: return "Appearance"
         case .sources: return "Sources"
         case .data: return "Data"
         case .updates: return "Updates"
@@ -22,7 +22,7 @@ enum SettingsPane: String, CaseIterable {
     var symbol: String {
         switch self {
         case .general: return "gearshape"
-        case .popover: return "menubar.rectangle"
+        case .appearance: return "paintbrush"
         case .sources: return "tray.full"
         case .data: return "externaldrive"
         case .updates: return "arrow.triangle.2.circlepath"
@@ -33,7 +33,7 @@ enum SettingsPane: String, CaseIterable {
     var content: some View {
         switch self {
         case .general: GeneralSettingsPane()
-        case .popover: PopoverSettingsPane()
+        case .appearance: AppearanceSettingsPane()
         case .sources: SourcesSettingsPane()
         case .data: DataSettingsPane()
         case .updates: UpdatesSettingsPane()

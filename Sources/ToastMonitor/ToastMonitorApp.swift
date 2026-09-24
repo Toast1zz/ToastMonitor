@@ -22,7 +22,7 @@ Credentials (secret values are read from stdin):
 UI verification:
   --render-popover PATH [HEIGHT] [--period today|week|month|all]
   --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions]
-  --render-settings PATH [general|popover|sources|data|updates] [HEIGHT]
+  --render-settings PATH [general|appearance|sources|data|updates] [HEIGHT]
   --show-panel [--backdrop white|dark] [--appearance light|dark] [--capture PATH]
   --show-dashboard [--capture-dashboard PATH]
   --show-settings [PANE] [--appearance light|dark] [--capture-settings PATH]

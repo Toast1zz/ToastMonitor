@@ -1,13 +1,11 @@
 import SwiftUI
 import WebKit
 
-struct DeepSeekBillingSettingsView: View {
+/// Dashboard › Plans: DeepSeek balance and account spend, read-only.
+/// Connecting and the exchange rate live in Settings › Sources.
+struct DeepSeekBalanceView: View {
     @ObservedObject private var client: DeepSeekBillingClient
     @ObservedObject private var periods = UsagePeriodSettings.shared
-    @State private var showConnection = false
-    @State private var showDisconnect = false
-    @AppStorage(DeepSeekBilling.exchangeRateKey) private var cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
-    @State private var exchangeRateDraft = ""
 
     @MainActor init(client: DeepSeekBillingClient? = nil) {
         _client = ObservedObject(wrappedValue: client ?? .shared)
@@ -31,22 +29,6 @@ struct DeepSeekBillingSettingsView: View {
             }
             LabeledContent("Balance", value: client.balanceText)
                 .font(TMType.monoRegular(TMType.body))
-            LabeledContent("USD conversion") {
-                HStack(spacing: 6) {
-                    Text("1 USD =")
-                    TextField("7.00", text: $exchangeRateDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 90)
-                        .accessibilityLabel("CNY per USD")
-                    Text("CNY")
-                }
-                .font(TMType.monoRegular(TMType.body))
-                .help("Manual accounting exchange rate for Spent. Not a live market quote.")
-            }
-            if !exchangeRateDraft.isEmpty && (Double(exchangeRateDraft).map(DeepSeekBilling.validExchangeRate) != true) {
-                Text("Enter a rate between 0.01 and 1000.")
-                    .font(TMType.regular(TMType.caption)).foregroundStyle(TMDesign.danger)
-            }
             if client.state.kind == .platform {
                 LabeledContent("\(periods.configuration.label(for: client.selectedSlot)) account spend", value: client.spendText)
                     .font(TMType.monoRegular(TMType.body))
@@ -66,20 +48,49 @@ struct DeepSeekBillingSettingsView: View {
                 Text("Account spend updated \(Format.dateTime(Int64(updated.timeIntervalSince1970))) - \(window.timeZoneLabel)")
                     .font(TMType.regular(TMType.caption)).foregroundStyle(.secondary)
             }
-            if let error = client.connectionError ?? client.state.balanceError ?? client.state.spendError {
+            if let error = client.state.balanceError ?? client.state.spendError {
                 Text(error).font(TMType.regular(TMType.caption)).foregroundStyle(TMDesign.danger)
             }
+        }
+    }
+}
+
+/// Settings › Sources › Accounts › DeepSeek: connection and the manual
+/// CNY/USD rate used for Spent.
+struct DeepSeekAccountSettings: View {
+    @ObservedObject private var client = DeepSeekBillingClient.shared
+    @State private var showConnection = false
+    @State private var showDisconnect = false
+    @AppStorage(DeepSeekBilling.exchangeRateKey) private var cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
+    @State private var exchangeRateDraft = ""
+
+    var body: some View {
+        LabeledContent("Account") {
             HStack {
-                Button(client.state.kind == nil ? "Connect DeepSeek..." : "Reconnect...") {
-                    client.clearConnectionError()
-                    showConnection = true
-                }
-                .disabled(client.connecting)
                 if client.state.kind != nil || client.state.balanceError != nil {
                     Button("Disconnect", role: .destructive) { showDisconnect = true }
                         .disabled(client.connecting)
                 }
+                Button(client.state.kind == nil ? "Connect…" : "Reconnect…") {
+                    client.clearConnectionError()
+                    showConnection = true
+                }
+                .disabled(client.connecting)
             }
+        }
+        if let error = client.connectionError {
+            Text(error).foregroundStyle(TMDesign.danger)
+        }
+        LabeledContent("USD conversion") {
+            HStack(spacing: 6) {
+                Text("1 USD =")
+                TextField("CNY per USD", text: $exchangeRateDraft, prompt: Text("7.00"))
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 64)
+                Text("CNY")
+            }
+            .tmMonospacedDigit()
         }
         .onAppear {
             let rate = DeepSeekBilling.validExchangeRate(cnyPerUSD) ? cnyPerUSD : DeepSeekBilling.defaultCNYPerUSD
@@ -93,6 +104,10 @@ struct DeepSeekBillingSettingsView: View {
             Button("Disconnect", role: .destructive) { client.disconnect() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("The saved DeepSeek credential and displayed account data will be cleared.") }
+        if !exchangeRateDraft.isEmpty && (Double(exchangeRateDraft).map(DeepSeekBilling.validExchangeRate) != true) {
+            Text("Enter a rate between 0.01 and 1000.")
+                .foregroundStyle(TMDesign.danger)
+        }
     }
 }
 

@@ -95,14 +95,22 @@ enum TMDesign {
     /// A usage window close to its limit. Orange is the system's warning
     /// color; red stays for errors and windows that are nearly exhausted.
     static let warning = Color(nsColor: .systemOrange)
-    /// Usage bar fill below the warning threshold: neutral, so the switch
-    /// to the warning color is the thing that stands out.
-    static let meter = Color.primary.opacity(0.7)
+    /// Command Code's brand is monochrome and it is not a usage source, so
+    /// it gets a system color no source uses.
+    static let commandCode = Color(nsColor: .systemBrown)
 
-    /// Brand hues share one saturation/brightness family so multi-product
-    /// pages stay harmonious in both appearances.
-    static func toolColor(hue: CGFloat, sat: CGFloat, bri: CGFloat) -> Color {
-        Color(nsColor: NSColor(calibratedHue: hue / 360, saturation: sat, brightness: bri, alpha: 1))
+    /// A brand color from its hex value, with an optional dark-appearance
+    /// variant for brands that specify one.
+    static func brand(_ light: UInt32, dark: UInt32? = nil) -> Color {
+        func color(_ hex: UInt32) -> NSColor {
+            NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                    green: CGFloat((hex >> 8) & 0xFF) / 255,
+                    blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        }
+        guard let dark else { return Color(nsColor: color(light)) }
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? color(dark) : color(light)
+        })
     }
 
     /// Model category palette: evenly spaced hues, unified mid-lightness

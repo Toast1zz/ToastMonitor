@@ -99,68 +99,48 @@ struct GeneralSettingsPane: View {
             }
         }
 
-        Section {
-            LabeledContent("Menu bar font") {
-                MenuBarFontControls()
-            }
-        }
-
         UsagePeriodSettingsSection()
             .onAppear { launch.refresh() }
     }
 }
 
-// MARK: - Popover
+// MARK: - Appearance
 
-/// What the popover's home page shows. Cards can also be hidden in place
-/// with the eye button on a card's title; this pane is where they come back
-/// individually and where account rows are chosen.
-struct PopoverSettingsPane: View {
-    /// Posted when an account row is shown or hidden, so the resident home
-    /// page picks it up without waiting for its next appearance.
-    static let quotaRowsChanged = Notification.Name("tmQuotaRowsChanged")
-
+/// How the menu bar item and the popover look. Popover cards can also be
+/// hidden in place with the eye button on a card's title; this is where they
+/// come back.
+struct AppearanceSettingsPane: View {
     static let cards: [(key: String, title: String)] = [
         ("sources", "Sources"), ("quota", "Quota"),
         ("balance", "Balance"), ("activity", "Activity"),
     ]
 
-    static let accountRows: [(key: String, title: String)] = [
-        ("claude", "Claude"), ("go", "OpenCode Go"), ("codex", "Codex Plus"),
-        ("cc", "Command Code"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
-    ]
-
     /// Same key the home page's eye buttons write (comma-separated keys).
     @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
     @AppStorage("popoverFullTokens") private var fullTokens = false
-    @State private var rowVisible: [String: Bool] = [:]
+    @AppStorage(QuotaWindow.showsRemainingKey) private var quotaShowsRemaining = false
 
     var body: some View {
-        Section {
+        Section("Menu Bar") {
+            LabeledContent("Font") {
+                MenuBarFontControls()
+            }
+        }
+
+        Section("Popover") {
             Picker("Token count", selection: $fullTokens) {
                 Text("3.7M").tag(false)
                 Text("3,712,456").tag(true)
             }
+            Picker("Quota", selection: $quotaShowsRemaining) {
+                Text("Used").tag(false)
+                Text("Remaining").tag(true)
+            }
         }
 
-        Section {
+        Section("Cards") {
             ForEach(Self.cards, id: \.key) { card in
                 Toggle(card.title, isOn: cardBinding(card.key))
-            }
-        } header: {
-            Text("Cards")
-        }
-
-        Section {
-            ForEach(Self.accountRows, id: \.key) { row in
-                Toggle(row.title, isOn: accountBinding(row.key))
-            }
-        } header: {
-            Text("Accounts")
-        }
-        .onAppear {
-            for row in Self.accountRows {
-                rowVisible[row.key] = Database.shared.setting("hide_quota_row_\(row.key)") != "1"
             }
         }
     }
@@ -172,22 +152,6 @@ struct PopoverSettingsPane: View {
                 var keys = hiddenSectionsRaw.split(separator: ",").map(String.init).filter { $0 != key }
                 if !visible { keys.append(key) }
                 hiddenSectionsRaw = keys.joined(separator: ",")
-            }
-        )
-    }
-
-    private func accountBinding(_ key: String) -> Binding<Bool> {
-        Binding(
-            get: { rowVisible[key] ?? true },
-            set: { visible in
-                rowVisible[key] = visible
-                let value = visible ? nil : "1"
-                DispatchQueue.global(qos: .userInitiated).async {
-                    _ = Database.shared.setSetting("hide_quota_row_\(key)", value)
-                    DispatchQueue.main.async {
-                        NotificationCenter.default.post(name: Self.quotaRowsChanged, object: nil)
-                    }
-                }
             }
         )
     }

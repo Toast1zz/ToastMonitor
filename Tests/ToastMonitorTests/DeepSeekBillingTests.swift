@@ -513,7 +513,7 @@ final class DeepSeekBillingClientTests: XCTestCase {
         home.frame.size.height = 560
         try await Task.sleep(nanoseconds: 200_000_000)
         try capture(home, at: folder.appendingPathComponent("deepseek-short-window-light.png"))
-        let settings = NSHostingView(rootView: DeepSeekBillingSettingsView(client: client)
+        let settings = NSHostingView(rootView: DeepSeekBalanceView(client: client)
             .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color(nsColor: .windowBackgroundColor)))
         settings.appearance = NSAppearance(named: .aqua)
