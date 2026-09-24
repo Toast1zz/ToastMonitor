@@ -119,6 +119,9 @@ final class Database: @unchecked Sendable {
             """)
             setSetting("model_json_normalized", "1")
         }
+        // Last: every migration above may rebuild or rewrite `turns`, and a
+        // restored file may carry a stale rollup. Install, then verify.
+        ensureRollup()
     }
     /// Older stores can report user_version=1 while missing tables that were
     /// created by the original bootstrap. Recreate absent tables before
@@ -1092,13 +1095,12 @@ final class Database: @unchecked Sendable {
         // API). Tokens stay counted; only the cost sum is zeroed.
         let codexCovered = codexBilledBySubscription()
         let costExpr = codexCovered ? "SUM(CASE WHEN tool='codex' THEN 0.0 ELSE cost END)" : "SUM(cost)"
-        var sql = "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), \(costExpr), COUNT(*) FROM turns WHERE ts>=? AND ts<=?"
-        if tool != nil { sql += " AND tool=?" }
+        var sql = "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), \(costExpr), SUM(n) FROM (\(Self.usageSource))"
+        if tool != nil { sql += " WHERE tool=?5" }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
-        sqlite3_bind_int64(stmt, 1, from)
-        sqlite3_bind_int64(stmt, 2, to)
-        if let tool { sqlite3_bind_text(stmt, 3, (tool.rawValue as NSString).utf8String, -1, SQLITE_TRANSIENT) }
+        bindUsageRange(stmt, from: from, to: to)
+        if let tool { sqlite3_bind_text(stmt, 5, (tool.rawValue as NSString).utf8String, -1, SQLITE_TRANSIENT) }
         if sqlite3_step(stmt) == SQLITE_ROW {
             out.input = sqlite3_column_int64(stmt, 0)
             out.output = sqlite3_column_int64(stmt, 1)
@@ -1124,12 +1126,11 @@ final class Database: @unchecked Sendable {
         guard let db else { return out }
         var stmt: OpaquePointer?
         let sql = """
-        SELECT tool, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), SUM(cost), COUNT(*)
-        FROM turns WHERE ts>=? AND ts<=? GROUP BY tool ORDER BY SUM(cost) DESC;
+        SELECT tool, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), SUM(cost), SUM(n)
+        FROM (\(Self.usageSource)) GROUP BY tool ORDER BY SUM(cost) DESC;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
-        sqlite3_bind_int64(stmt, 1, from)
-        sqlite3_bind_int64(stmt, 2, to)
+        bindUsageRange(stmt, from: from, to: to)
         // Codex cost is covered by a ChatGPT/Codex subscription: keep the
         // token row but zero its cost so it cannot appear as API spend.
         let codexCovered = codexBilledBySubscription()
@@ -1157,12 +1158,12 @@ final class Database: @unchecked Sendable {
         let from = startOfDay(daysAgo: days - 1)
         var stmt: OpaquePointer?
         let sql = """
-        SELECT CAST(strftime('%Y%m%d', ts, 'unixepoch', 'localtime') AS INTEGER) AS day, tool,
-               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), COUNT(*)
-        FROM turns WHERE ts>=? GROUP BY day, tool;
+        SELECT CAST(strftime('%Y%m%d', bucket, 'unixepoch', 'localtime') AS INTEGER) AS day, tool,
+               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n)
+        FROM (\(Self.usageSource)) GROUP BY day, tool;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
-        sqlite3_bind_int64(stmt, 1, from)
+        bindUsageRange(stmt, from: from, to: .max)
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(DayAgg(
                 day: sqlite3_column_int64(stmt, 0),
@@ -1183,12 +1184,11 @@ final class Database: @unchecked Sendable {
         guard let db else { return out }
         var stmt: OpaquePointer?
         let sql = """
-        SELECT tool, COALESCE(NULLIF(model,''), '(unknown)'), SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), COUNT(*)
-        FROM turns WHERE ts>=? AND ts<=? GROUP BY tool, model ORDER BY SUM(cost) DESC;
+        SELECT tool, COALESCE(NULLIF(model,''), '(unknown)'), SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n)
+        FROM (\(Self.usageSource)) GROUP BY tool, model ORDER BY SUM(cost) DESC;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
-        sqlite3_bind_int64(stmt, 1, from)
-        sqlite3_bind_int64(stmt, 2, to)
+        bindUsageRange(stmt, from: from, to: to)
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(ModelAgg(
                 tool: String(cString: sqlite3_column_text(stmt, 0)),
@@ -1796,13 +1796,13 @@ final class Database: @unchecked Sendable {
         let since = startOfDay(daysAgo: max(days - 1, 0))
         var stmt: OpaquePointer?
         let sql = """
-        SELECT CAST(strftime('%Y%m%d', ts, 'unixepoch', 'localtime') AS INTEGER) AS day,
+        SELECT CAST(strftime('%Y%m%d', bucket, 'unixepoch', 'localtime') AS INTEGER) AS day,
                COALESCE(NULLIF(model, ''), '(unknown)') AS model,
-               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), COUNT(*)
-        FROM turns WHERE ts >= ? GROUP BY day, model ORDER BY day;
+               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n)
+        FROM (\(Self.usageSource)) GROUP BY day, model ORDER BY day;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        sqlite3_bind_int64(stmt, 1, since)
+        bindUsageRange(stmt, from: since, to: .max)
         var out: [(Int64, String, Int64, Int64, Int64, Double, Int64)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append((sqlite3_column_int64(stmt, 0),
@@ -1828,12 +1828,11 @@ final class Database: @unchecked Sendable {
         SELECT
           COALESCE(SUM(CASE WHEN cost_quality='estimated' THEN cost ELSE 0 END), 0),
           COALESCE(SUM(CASE WHEN cost_quality='actual' THEN cost ELSE 0 END), 0),
-          COALESCE(SUM(CASE WHEN cost_quality='actual' AND lower(trim(provider))='deepseek' THEN cost ELSE 0 END), 0)
-        FROM turns WHERE tool != 'hermes' AND ts BETWEEN ? AND ?;
+          COALESCE(SUM(CASE WHEN cost_quality='actual' AND deepseek THEN cost ELSE 0 END), 0)
+        FROM (\(Self.usageSource)) WHERE tool != 'hermes';
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0) }
-        sqlite3_bind_int64(stmt, 1, from)
-        sqlite3_bind_int64(stmt, 2, to)
+        bindUsageRange(stmt, from: from, to: to)
         var out = (0.0, 0.0, 0.0)
         if sqlite3_step(stmt) == SQLITE_ROW {
             out.0 = sqlite3_column_double(stmt, 0)
@@ -1861,19 +1860,18 @@ final class Database: @unchecked Sendable {
         if tool != nil {
             sql = """
             SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write)
-            FROM turns WHERE ts BETWEEN ? AND ? AND tool = ? GROUP BY model;
+            FROM (\(Self.usageSource)) WHERE tool = ?5 GROUP BY model;
             """
         } else {
             sql = """
             SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write)
-            FROM turns WHERE ts BETWEEN ? AND ? GROUP BY model;
+            FROM (\(Self.usageSource)) GROUP BY model;
             """
         }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-        sqlite3_bind_int64(stmt, 1, from)
-        sqlite3_bind_int64(stmt, 2, to)
+        bindUsageRange(stmt, from: from, to: to)
         if let tool {
-            sqlite3_bind_text(stmt, 3, (tool as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, (tool as NSString).utf8String, -1, SQLITE_TRANSIENT)
         }
         var total = 0.0
         while sqlite3_step(stmt) == SQLITE_ROW {
@@ -2251,6 +2249,219 @@ final class Database: @unchecked Sendable {
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         sqlite3_step(stmt)
         sqlite3_finalize(stmt)
+    }
+
+    // MARK: - Aggregate rollup
+
+    /// `turn_rollup` holds per-15-minute sums of `turns`, so period totals
+    /// read a few thousand pre-summed rows instead of every turn ever
+    /// recorded. SQLite triggers maintain it on every INSERT/UPDATE/DELETE,
+    /// so no Swift write path can forget to update it. 15 minutes divides
+    /// every real UTC offset, so each bucket lies inside one local day and
+    /// day grouping stays exact in any time zone.
+    static let rollupBucketSeconds: Int64 = 900
+    /// Bump when the rollup table or trigger definitions change.
+    private static let rollupSchemaVersion = "1"
+
+    /// Test hook: false routes every aggregate through raw `turns` rows, the
+    /// reference the rollup path must match exactly.
+    var aggregatesUseRollup = true
+
+    /// Grouping key of a `turns` row (qualified by `row`, e.g. NEW/OLD).
+    private static func rollupKey(_ row: String) -> [String] {
+        ["\(row).ts - ((\(row).ts % 900) + 900) % 900",
+         "\(row).tool",
+         "COALESCE(\(row).model, '')",
+         "\(row).model IS NULL",
+         "\(row).cost_quality",
+         "COALESCE(lower(trim(\(row).provider)) = 'deepseek', 0)"]
+    }
+
+    private static let rollupKeyColumns = ["bucket", "tool", "model", "model_null", "cost_quality", "deepseek"]
+    private static let rollupSumColumns = ["input_tokens", "output_tokens", "cache_read", "cache_write", "cost"]
+
+    private static func rollupMatch(_ row: String) -> String {
+        zip(rollupKeyColumns, rollupKey(row)).map { "\($0) = (\($1))" }.joined(separator: " AND ")
+    }
+
+    private static func rollupAdd(_ row: String) -> String {
+        let columns = (rollupKeyColumns + rollupSumColumns + ["n"]).joined(separator: ", ")
+        let values = (rollupKey(row) + rollupSumColumns.map { "\(row).\($0)" } + ["1"]).joined(separator: ", ")
+        let updates = (rollupSumColumns + ["n"]).map { "\($0) = \($0) + excluded.\($0)" }.joined(separator: ", ")
+        return """
+        INSERT INTO turn_rollup (\(columns)) VALUES (\(values))
+          ON CONFLICT(\(rollupKeyColumns.joined(separator: ", "))) DO UPDATE SET \(updates);
+        """
+    }
+
+    private static func rollupRemove(_ row: String) -> String {
+        let updates = (rollupSumColumns.map { "\($0) = \($0) - \(row).\($0)" } + ["n = n - 1"])
+            .joined(separator: ", ")
+        return """
+        UPDATE turn_rollup SET \(updates) WHERE \(rollupMatch(row));
+        DELETE FROM turn_rollup WHERE \(rollupMatch(row)) AND n <= 0;
+        """
+    }
+
+    private static var rollupSchemaSQL: String {
+        let watched = (["ts", "tool", "model", "provider", "cost_quality"] + rollupSumColumns)
+            .joined(separator: ", ")
+        return """
+        CREATE TABLE turn_rollup (
+          bucket INTEGER NOT NULL,
+          tool TEXT NOT NULL,
+          model TEXT NOT NULL,
+          model_null INTEGER NOT NULL,
+          cost_quality TEXT NOT NULL,
+          deepseek INTEGER NOT NULL,
+          input_tokens INTEGER NOT NULL,
+          output_tokens INTEGER NOT NULL,
+          cache_read INTEGER NOT NULL,
+          cache_write INTEGER NOT NULL,
+          cost REAL NOT NULL,
+          n INTEGER NOT NULL,
+          PRIMARY KEY (\(rollupKeyColumns.joined(separator: ", ")))
+        ) WITHOUT ROWID;
+        CREATE TRIGGER turn_rollup_insert AFTER INSERT ON turns BEGIN
+        \(rollupAdd("NEW"))
+        END;
+        CREATE TRIGGER turn_rollup_delete AFTER DELETE ON turns BEGIN
+        \(rollupRemove("OLD"))
+        END;
+        CREATE TRIGGER turn_rollup_update AFTER UPDATE OF \(watched) ON turns BEGIN
+        \(rollupRemove("OLD"))
+        \(rollupAdd("NEW"))
+        END;
+        """
+    }
+
+    private static var rollupRebuildSQL: String {
+        let key = rollupKey("turns")
+        let groups = (1...key.count).map(String.init).joined(separator: ", ")
+        return """
+        DELETE FROM turn_rollup;
+        INSERT INTO turn_rollup (\((rollupKeyColumns + rollupSumColumns + ["n"]).joined(separator: ", ")))
+        SELECT \(key.joined(separator: ", ")), \(rollupSumColumns.map { "SUM(\($0))" }.joined(separator: ", ")), COUNT(*)
+        FROM turns GROUP BY \(groups);
+        """
+    }
+
+    /// Installs the rollup on first run or after a definition change, and
+    /// otherwise checks it against `turns`, rebuilding on any mismatch.
+    private func ensureRollup() {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return }
+        aggregatesUseRollup = true
+        if setting("turn_rollup_schema") != Self.rollupSchemaVersion || !rollupTriggersPresent() {
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            let ok = execChecked("""
+                DROP TRIGGER IF EXISTS turn_rollup_insert;
+                DROP TRIGGER IF EXISTS turn_rollup_delete;
+                DROP TRIGGER IF EXISTS turn_rollup_update;
+                DROP TABLE IF EXISTS turn_rollup;
+                """)
+                && execChecked(Self.rollupSchemaSQL)
+                && execChecked(Self.rollupRebuildSQL)
+                && setSetting("turn_rollup_schema", Self.rollupSchemaVersion)
+            if !ok || sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
+                rollbackOrPoison()
+                settingsCache.set("turn_rollup_schema", nil)
+                aggregatesUseRollup = false
+                NSLog("[ToastMonitor] rollup install failed; aggregates read raw turns")
+            }
+            return
+        }
+        let mismatches = rollupMismatchCount()
+        guard mismatches != 0 else { return }
+        NSLog("[ToastMonitor] rollup drift in %d groups; rebuilding", mismatches)
+        guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+            aggregatesUseRollup = false
+            return
+        }
+        if !execChecked(Self.rollupRebuildSQL) || sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
+            rollbackOrPoison()
+            aggregatesUseRollup = false
+        }
+    }
+
+    private func rollupTriggersPresent() -> Bool {
+        guard let db else { return false }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT COUNT(*) FROM sqlite_master
+        WHERE (type='trigger' AND name IN ('turn_rollup_insert','turn_rollup_delete','turn_rollup_update'))
+           OR (type='table' AND name='turn_rollup');
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == 4
+    }
+
+    /// Number of rollup groups whose sums differ from the raw `turns` rows
+    /// (0 = consistent, -1 = check failed). Cost is REAL, so it is compared
+    /// with a tolerance far below one displayed cent.
+    func rollupMismatchCount() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return -1 }
+        let keys = Self.rollupKeyColumns.joined(separator: ", ")
+        let rawKey = zip(Self.rollupKey("turns"), Self.rollupKeyColumns)
+            .map { "\($0) AS \($1)" }.joined(separator: ", ")
+        let sums = Self.rollupSumColumns
+        let sql = """
+        SELECT COUNT(*) FROM (
+          SELECT \(sums.map { "SUM(\($0)) AS \($0)" }.joined(separator: ", ")), SUM(n) AS n FROM (
+            SELECT \(rawKey), \(sums.joined(separator: ", ")), 1 AS n FROM turns
+            UNION ALL
+            SELECT \(keys), \(sums.map { "-\($0)" }.joined(separator: ", ")), -n FROM turn_rollup
+          ) GROUP BY \(keys)
+        ) WHERE n <> 0 OR input_tokens <> 0 OR output_tokens <> 0
+             OR cache_read <> 0 OR cache_write <> 0 OR abs(cost) > 1e-6;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int64(stmt, 0)) : -1
+    }
+
+    /// Row source for aggregates over ts in [?3, ?4]: whole buckets in
+    /// [?1, ?2) come from `turn_rollup`, the partial edges from raw `turns`.
+    /// Columns: bucket, tool, model, cost_quality, deepseek, token sums,
+    /// cost, n. Bind with `bindUsageRange`; extra parameters start at ?5.
+    private static let usageSource = """
+    SELECT bucket, tool, CASE WHEN model_null THEN NULL ELSE model END AS model,
+           cost_quality, deepseek, input_tokens, output_tokens, cache_read, cache_write, cost, n
+    FROM turn_rollup WHERE bucket >= ?1 AND bucket < ?2
+    UNION ALL
+    SELECT ts - ((ts % 900) + 900) % 900, tool, model, cost_quality,
+           COALESCE(lower(trim(provider)) = 'deepseek', 0),
+           input_tokens, output_tokens, cache_read, cache_write, cost, 1
+    FROM turns WHERE ts >= ?3 AND ts < ?1
+    UNION ALL
+    SELECT ts - ((ts % 900) + 900) % 900, tool, model, cost_quality,
+           COALESCE(lower(trim(provider)) = 'deepseek', 0),
+           input_tokens, output_tokens, cache_read, cache_write, cost, 1
+    FROM turns WHERE ts >= ?2 AND ts <= ?4
+    """
+
+    /// Whole-bucket span [lo, hi) inside [from, to]. With no whole bucket
+    /// (or the rollup disabled) both are to+1, so the raw branch covers all.
+    static func rollupSpan(from: Int64, to: Int64, useRollup: Bool = true) -> (lo: Int64, hi: Int64) {
+        let b = rollupBucketSeconds
+        let to = min(to, Int64.max / 4)
+        func floorBucket(_ x: Int64) -> Int64 { x - ((x % b) + b) % b }
+        let lo = floorBucket(from) == from ? from : floorBucket(from) + b
+        let hi = floorBucket(to + 1)
+        guard useRollup, lo < hi else { return (to + 1, to + 1) }
+        return (lo, hi)
+    }
+
+    private func bindUsageRange(_ stmt: OpaquePointer?, from: Int64, to: Int64) {
+        let to = min(to, Int64.max / 4)
+        let span = Self.rollupSpan(from: from, to: to, useRollup: aggregatesUseRollup)
+        sqlite3_bind_int64(stmt, 1, span.lo)
+        sqlite3_bind_int64(stmt, 2, span.hi)
+        sqlite3_bind_int64(stmt, 3, from)
+        sqlite3_bind_int64(stmt, 4, to)
     }
 }
 
