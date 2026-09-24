@@ -179,7 +179,7 @@ final class HermesRemoteClient: ObservableObject {
     // MARK: - Poll
 
     /// Enqueues one poll on the serial queue. Safe to call from any thread,
-    /// including the main thread (SourcesView's "Test connection").
+    /// including the main thread (Settings' "Test Connection").
     /// `completion` is invoked on the main actor once this poll finishes —
     /// success or failure, including the skip paths where no network request
     /// is made.
@@ -412,44 +412,35 @@ final class HermesRemoteClient: ObservableObject {
                 // normalized (trailing slash) because Hermes flips the slash
                 // on route changes, which would otherwise open a fresh row
                 // carrying the FULL cumulative value (double counting).
-                let provider = row["billing_provider"] as? String ?? ""
-                let baseURL = ((row["billing_base_url"] as? String) ?? "")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                let key = "hm_d|\(sessionID)|\(model ?? "")|\(provider)|\(baseURL)"
+                let key = HermesUsageBaseline.key(session: sessionID, model: model,
+                                                  provider: row["billing_provider"] as? String,
+                                                  baseURL: row["billing_base_url"] as? String)
                 // hm_d| baselines grow one settings entry per distinct
                 // (session, model, billing route) and are never pruned.
                 // Retention is deliberately absent: deleting a baseline would
                 // replay that session's cumulative totals as fresh deltas
                 // (double counting). Growth is bounded by distinct sessions
-                // seen via the feed and is the accepted tradeoff.
+                // seen via the feed and is the accepted tradeoff. A session
+                // the local parser already counted continues from its
+                // baseline instead of starting over.
                 let prev = runningHermes[key]
-                    ?? (database.setting(key) ?? "").split(separator: ",").map { Int64($0) ?? 0 }
-                isFirstRow = prev.count != 5 && prev.count != 6
-                if prev.count == 6 {
-                    dInput = max(input - prev[0], 0)
-                    dOutput = max(output - prev[1], 0)
-                    dReasoning = max(reasoning - prev[2], 0)
-                    dCacheRead = max(cacheRead - prev[3], 0)
-                    dCacheWrite = max(cacheWrite - prev[4], 0)
-                } else if prev.count == 5 {
-                    // Legacy baseline stored input+reasoning together. Claim it
-                    // without replaying historical reasoning as a new delta.
-                    dInput = max(input + reasoning - prev[0], 0)
-                    dOutput = max(output - prev[1], 0)
-                    dReasoning = 0
-                    dCacheRead = max(cacheRead - prev[2], 0)
-                    dCacheWrite = max(cacheWrite - prev[3], 0)
-                }
-                let safeBase: [Int64]
-                if prev.count == 6 {
-                    safeBase = [max(input, prev[0]), max(output, prev[1]),
-                                max(reasoning, prev[2]), max(cacheRead, prev[3]),
-                                max(cacheWrite, prev[4]), 0]
-                } else {
-                    safeBase = [input, output, reasoning, cacheRead, cacheWrite, 0]
-                }
-                runningHermes[key] = safeBase
-                pendingHermesBaselines.append((key, safeBase.map(String.init).joined(separator: ",")))
+                    ?? database.setting(key).map { HermesUsageBaseline.parse($0) }
+                    ?? totals[HermesUsageBaseline.localTotalsKey(key)]
+                        .map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] }
+                    ?? []
+                let step = HermesUsageBaseline.advance(
+                    current: .init(input: input, output: output, reasoning: reasoning,
+                                   cacheRead: cacheRead, cacheWrite: cacheWrite),
+                    prev: prev)
+                isFirstRow = step.isFirst
+                dInput = step.delta.input
+                dOutput = step.delta.output
+                dReasoning = step.delta.reasoning
+                dCacheRead = step.delta.cacheRead
+                dCacheWrite = step.delta.cacheWrite
+                let encoded = HermesUsageBaseline.encode(step.base)
+                runningHermes[key] = HermesUsageBaseline.parse(encoded)
+                pendingHermesBaselines.append((key, encoded))
                 dCost = 0
                 costQuality = "unknown"
             case .opencode:

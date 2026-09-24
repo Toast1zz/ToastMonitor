@@ -23,6 +23,8 @@ protocol ParserStateStore: AnyObject {
     func setSessionTotals(_ key: String, tool: String, input: Int64, output: Int64,
                           reasoning: Int64, cacheRead: Int64, cacheWrite: Int64,
                           cost: Double, updated: Int64) -> Bool
+    /// Read-only settings lookup (e.g. baselines another importer owns).
+    func setting(_ key: String) -> String?
 }
 
 extension Database: ParserStateStore {}
@@ -94,6 +96,10 @@ final class StagedParserStateStore: ParserStateStore {
                                          identity: identity, context: context,
                                          sourceStat: current)
         return true
+    }
+
+    func setting(_ key: String) -> String? {
+        database.setting(key)
     }
 
     func sessionTotals() -> ParserSessionTotals {
