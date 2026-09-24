@@ -41,6 +41,9 @@ final class ClaudeQuotaClient: ObservableObject {
         var sevenDayOpus: Window?
         var lastSync: Int64 = 0
         var error: String?
+        /// When the next request is allowed (unix seconds; 0 = now), so the
+        /// row can say when a failed fetch will be retried.
+        var retryAt: TimeInterval = 0
 
         /// The window(s) besides the weekly one that are close enough to
         /// exhaustion to be worth flagging (5h and, rarely, a weekly-Opus
@@ -93,6 +96,7 @@ final class ClaudeQuotaClient: ObservableObject {
         }
         if let raw = Database.shared.setting(Self.backoffUntilSettingKey), let v = TimeInterval(raw) {
             nextAllowedRefresh = v
+            state.retryAt = v
         }
         loadCache()
         observeForeground()
@@ -496,10 +500,12 @@ final class ClaudeQuotaClient: ObservableObject {
                     return
                 }
                 guard http.statusCode == 200 else {
-                    self.state.error = (http.statusCode == 401 || http.statusCode == 403)
-                        ? "Claude login expired — run claude /login to restore"
-                        : "usage API HTTP \(http.statusCode)"
-                    self.applyBackoff(retryAfterHeader: retryAfter)
+                    switch http.statusCode {
+                    case 401, 403: self.state.error = "Claude login expired — run claude /login to restore"
+                    case 429: self.state.error = "Rate limited by Anthropic (HTTP 429)"
+                    default: self.state.error = "usage API HTTP \(http.statusCode)"
+                    }
+                    self.applyBackoff(retryAfterHeader: retryAfter, rateLimited: http.statusCode == 429)
                     return
                 }
                 guard http.expectedContentLength <= Self.maxResponseBytes,
@@ -607,6 +613,11 @@ final class ClaudeQuotaClient: ObservableObject {
 
     private nonisolated static let retryBaseSeconds: TimeInterval = 5
     private nonisolated static let retryMaxSeconds: TimeInterval = 5 * 60
+    /// A 429 limits the whole account, which Claude Code's own usage checks
+    /// share, and retrying every few minutes only keeps the limit in force.
+    /// Without a Retry-After it backs off in quarter hours, up to an hour.
+    private nonisolated static let rateLimitBaseSeconds: TimeInterval = 15 * 60
+    private nonisolated static let rateLimitMaxSeconds: TimeInterval = 60 * 60
     private nonisolated static let maxRetryAfterSeconds: TimeInterval = 60 * 60
     private nonisolated static let retryAfterJitterCapSeconds: TimeInterval = 5
 
@@ -633,19 +644,23 @@ final class ClaudeQuotaClient: ObservableObject {
     /// of `min(retryMaxSeconds, base * 2^attempt)` — same shape as the
     /// community tools polling this same endpoint converged on, and gentler
     /// than a fixed 60s→2m→5m→15m ladder with no randomness.
-    nonisolated static func computeBackoffDelay(attempt: Int, retryAfterHeader: String?) -> TimeInterval {
+    nonisolated static func computeBackoffDelay(attempt: Int, retryAfterHeader: String?,
+                                                rateLimited: Bool = false) -> TimeInterval {
         if let retryAfter = parseRetryAfter(retryAfterHeader), retryAfter > 0 {
             let jitterCap = min(retryAfterJitterCapSeconds, retryAfter * 0.1)
             return retryAfter + Double.random(in: 0...max(jitterCap, 0))
         }
+        let base = rateLimited ? rateLimitBaseSeconds : retryBaseSeconds
+        let maximum = rateLimited ? rateLimitMaxSeconds : retryMaxSeconds
         let exponent = max(0, min(30, attempt - 1))
-        let cap = min(retryMaxSeconds, retryBaseSeconds * pow(2, Double(exponent)))
+        let cap = min(maximum, base * pow(2, Double(exponent)))
         return (cap / 2) + Double.random(in: 0...max(cap / 2, 0))
     }
 
-    private func applyBackoff(retryAfterHeader: String?) {
+    private func applyBackoff(retryAfterHeader: String?, rateLimited: Bool = false) {
         backoffAttempt += 1
-        let delay = Self.computeBackoffDelay(attempt: backoffAttempt, retryAfterHeader: retryAfterHeader)
+        let delay = Self.computeBackoffDelay(attempt: backoffAttempt, retryAfterHeader: retryAfterHeader,
+                                             rateLimited: rateLimited)
         persistBackoffUntil(Date().timeIntervalSince1970 + delay)
     }
 
@@ -683,6 +698,7 @@ final class ClaudeQuotaClient: ObservableObject {
 
     private func persistBackoffUntil(_ t: TimeInterval) {
         nextAllowedRefresh = t
+        state.retryAt = t
         let v = t > 0 ? String(t) : nil
         DispatchQueue.global(qos: .utility).async { _ = Database.shared.setSetting(Self.backoffUntilSettingKey, v) }
     }

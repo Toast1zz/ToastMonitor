@@ -155,6 +155,25 @@ final class ClaudeQuotaTests: XCTestCase {
         }
     }
 
+    /// A 429 without a usable Retry-After waits quarter hours, not seconds:
+    /// the limit is account-wide and quick retries only prolong it.
+    func testRateLimitedBackoffStartsAtQuarterHourAndCapsAtOneHour() {
+        for _ in 0..<50 {
+            let first = ClaudeQuotaClient.computeBackoffDelay(attempt: 1, retryAfterHeader: nil, rateLimited: true)
+            XCTAssertGreaterThanOrEqual(first, 7.5 * 60)
+            XCTAssertLessThanOrEqual(first, 15 * 60)
+            let late = ClaudeQuotaClient.computeBackoffDelay(attempt: 20, retryAfterHeader: "0", rateLimited: true)
+            XCTAssertGreaterThanOrEqual(late, 30 * 60)
+            XCTAssertLessThanOrEqual(late, 60 * 60)
+        }
+    }
+
+    func testRateLimitedBackoffStillHonorsRetryAfter() {
+        let delay = ClaudeQuotaClient.computeBackoffDelay(attempt: 1, retryAfterHeader: "3600", rateLimited: true)
+        XCTAssertGreaterThanOrEqual(delay, 3600)
+        XCTAssertLessThanOrEqual(delay, 3605)
+    }
+
     // MARK: - Credential read (never interactive)
 
     /// The guard that replaced kSecUseAuthenticationUIFail is process-wide,
