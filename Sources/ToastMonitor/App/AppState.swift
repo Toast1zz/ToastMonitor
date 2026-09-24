@@ -210,6 +210,7 @@ final class AppState: ObservableObject {
                 self?.refresh()
             }
         }
+        t.tolerance = interval * 0.1
         RunLoop.main.add(t, forMode: .common)
         refreshTimer = t
         if fg {
