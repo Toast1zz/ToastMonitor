@@ -7,19 +7,47 @@ final class FormatTests: XCTestCase {
 
     func testCompactThresholds() {
         XCTAssertEqual(Format.compact(999), "999", "below 1k stays raw")
-        XCTAssertEqual(Format.compact(1_000), "1.0k")
-        XCTAssertEqual(Format.compact(999_999), "1000.0k", "still in the k band until 1M")
-        XCTAssertEqual(Format.compact(1_000_000), "1.0M")
+        XCTAssertEqual(Format.compact(1_000), "1.00k", "trailing zeros keep three digits")
+        XCTAssertEqual(Format.compact(999_999), "1.00M", "rounding to 1000 moves up a unit")
+        XCTAssertEqual(Format.compact(1_000_000), "1.00M")
         XCTAssertEqual(Format.compact(1_000_000_000), "1.00B")
         XCTAssertEqual(Format.compact(1_000_000_000_000), "1.00T")
     }
 
     func testCompactRepresentativeValues() {
-        XCTAssertEqual(Format.compact(1_234), "1.2k")
-        XCTAssertEqual(Format.compact(1_234_567), "1.2M")
+        XCTAssertEqual(Format.compact(1_234), "1.23k")
+        XCTAssertEqual(Format.compact(1_234_567), "1.23M")
         XCTAssertEqual(Format.compact(4_150_000_000), "4.15B")
         XCTAssertEqual(Format.compact(1_020_000_000_000), "1.02T")
         XCTAssertEqual(Format.compact(0), "0")
+    }
+
+    func testCompactAlwaysShowsThreeSignificantDigits() {
+        XCTAssertEqual(Format.compact(12_345_678), "12.3M")
+        XCTAssertEqual(Format.compact(189_800_000), "190M")
+        XCTAssertEqual(Format.compact(20_000_000), "20.0M")
+        XCTAssertEqual(Format.compact(12_350_000_000), "12.4B")
+        XCTAssertEqual(Format.compact(123_400_000_000), "123B")
+        XCTAssertEqual(Format.compact(-1_234_567), "-1.23M")
+    }
+
+    func testCompactRoundingCarriesAcrossBoundaries() {
+        XCTAssertEqual(Format.compact(9_996), "10.0k", "9.996k rounds into the next digit band")
+        XCTAssertEqual(Format.compact(99_960), "100k")
+        XCTAssertEqual(Format.compact(999_600_000), "1.00B", "never 1000M")
+        XCTAssertEqual(Format.compact(999_499_999), "999M")
+        XCTAssertEqual(Format.compact(1_500_000_000_000_000), "1500T", "T is the last unit")
+    }
+
+    func testCompactDigitCountNeverExceedsThree() {
+        var n: Int64 = 1_000
+        while n < 100_000_000_000_000 { // up to 99.9T; T is the last unit
+            for value in [n, n * 3 / 2, n * 999 / 100, n * 9_995 / 1_000] {
+                let digits = Format.compact(value).filter(\.isNumber).count
+                XCTAssertEqual(digits, 3, "\(value) -> \(Format.compact(value))")
+            }
+            n *= 10
+        }
     }
 
     // MARK: - money
