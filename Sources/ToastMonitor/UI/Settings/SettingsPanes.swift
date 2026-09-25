@@ -203,15 +203,15 @@ struct UpdatesSettingsPane: View {
     private var statusText: String {
         if updates.installing { return "Installing…" }
         if updates.checking { return "Checking…" }
-        if let update = updates.available { return "Version \(update.version) is available" }
         if let error = updates.lastError { return error }
+        if let update = updates.available { return "Version \(update.version) is available" }
         if updates.lastCheckAt != nil { return "ToastMonitor is up to date" }
         return "Not checked yet"
     }
 
     private var statusStyle: AnyShapeStyle {
-        if updates.available != nil { return AnyShapeStyle(TMDesign.accent) }
         if updates.lastError != nil { return AnyShapeStyle(TMDesign.danger) }
+        if updates.available != nil { return AnyShapeStyle(TMDesign.accent) }
         return AnyShapeStyle(.primary)
     }
 }

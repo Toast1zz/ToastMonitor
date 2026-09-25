@@ -22,6 +22,12 @@ private let shortDayFormatter: DateFormatter = {
 }()
 
 
+private struct PopoverBodyHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
 /// how much was used, where it came from, and whether a limit needs attention.
@@ -93,6 +99,7 @@ struct PopoverHomeView: View {
     /// 面板是否可见。PopoverHomeView 常驻（面板不销毁视图），隐藏时分钟
     /// tick 与热力图重载都必须停，否则每 60s 跑一次 371 天聚合（UI-1）。
     @State private var panelVisible = false
+    @State private var bodyContentHeight: CGFloat = 0
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     @MainActor init(deepseek: DeepSeekBillingClient? = nil) {
@@ -147,34 +154,44 @@ struct PopoverHomeView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .reportPopoverHeight(.pinned)
 
-            ScrollView(.vertical, showsIndicators: false) {
-                // 板块节奏统一：每块之间一条等宽分割线（撑满内容区），
-                // 线上下各 10pt 间距，所有板块间距一致。
-                // 第二轮：分隔线换成浅色圆角卡片。Hero 直接落在面板背景上
-                // 作为页眉，其余三块（来源 / 额度 / 历史）各自一张卡片。
-                // 第三轮：收紧留白。卡片离面板边 12pt、内边距 10pt，卡片间
-                // 8pt；每张卡片可在标题行用眼睛按钮隐藏，底部一行恢复。
-                VStack(alignment: .leading, spacing: 10) {
-                    hero
-                        // 与卡片左缘对齐（数字的字形自带约 2pt 侧距）。
-                        .padding(.horizontal, 2)
-                        .padding(.bottom, 4)
-                    if !isSectionHidden("sources") {
-                        PopoverCard(title: "Sources", onHide: { hideSection("sources") }) { sourceBar }
+            GeometryReader { viewport in
+                ZStack(alignment: .bottom) {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        // The footer remains fixed; a subtle bottom fade signals
+                        // that the card stack can continue below the viewport.
+                        VStack(alignment: .leading, spacing: 10) {
+                            hero
+                                .padding(.horizontal, 2)
+                                .padding(.bottom, 4)
+                            if !isSectionHidden("sources") {
+                                PopoverCard(title: "Sources", onHide: { hideSection("sources") }) { sourceBar }
+                            }
+                            if !isSectionHidden("quota") { quotaSection }
+                            if !isSectionHidden("balance") { balanceSection }
+                            if !isSectionHidden("activity") {
+                                PopoverCard(title: "Activity",
+                                            accessory: { historyAccessory },
+                                            trailing: { historyPicker },
+                                            onHide: { hideSection("activity") }) { historyBlock }
+                            }
+                        }
+                        .padding(.horizontal, TMLayout.popoverCardInset)
+                        .padding(.bottom, 12)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(GeometryReader { content in
+                            Color.clear.preference(key: PopoverBodyHeightKey.self,
+                                                   value: content.size.height)
+                        })
+                        .reportPopoverHeight(.body)
                     }
-                    if !isSectionHidden("quota") { quotaSection }
-                    if !isSectionHidden("balance") { balanceSection }
-                    if !isSectionHidden("activity") {
-                        PopoverCard(title: "Activity",
-                                    accessory: { historyAccessory },
-                                    trailing: { historyPicker },
-                                    onHide: { hideSection("activity") }) { historyBlock }
+                    if bodyContentHeight > viewport.size.height + 1 {
+                        LinearGradient(colors: [.clear, TMDesign.canvas.opacity(0.9)],
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: 18)
+                            .allowsHitTesting(false)
                     }
                 }
-                .padding(.horizontal, TMLayout.popoverCardInset)
-                .padding(.bottom, 12)
-                .fixedSize(horizontal: false, vertical: true)
-                .reportPopoverHeight(.body)
+                .onPreferenceChange(PopoverBodyHeightKey.self) { bodyContentHeight = $0 }
             }
             .id(period)
             .frame(minHeight: 0, maxHeight: .infinity)
@@ -1304,14 +1321,15 @@ private struct StatusRow: View {
 
     @ViewBuilder
     private var hideButton: some View {
-        if let hideAction, hovering {
+        if let hideAction {
             Button(action: hideAction) {
                 Image(systemName: "eye.slash")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Hide this quota row")
+            .accessibilityLabel("Hide \(name) quota")
             .padding(.leading, 2)
         }
     }
@@ -1417,16 +1435,14 @@ private struct PopoverCard<Accessory: View, Trailing: View, Content: View>: View
                 Button(action: onHide) {
                     Image(systemName: "eye.slash")
                         .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .frame(width: 16, height: 16)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Hide \(title)")
                 .accessibilityLabel("Hide \(title)")
-                // Hover-only so four idle eyes don't clutter the panel, but it
-                // keeps its slot so the trailing control never shifts.
-                .opacity(hovering ? 1 : 0)
+                .opacity(hovering ? 1 : 0.7)
                 trailing
             }
             .frame(height: 16)
@@ -1483,8 +1499,8 @@ private struct QuotaWindowLine: View {
                     .frame(width: 58, alignment: .leading)
                 if let resetIn = window.resetIn {
                     Text("resets in \(resetIn)")
-                        .font(TMType.number(TMType.micro))
-                        .foregroundStyle(TMDesign.faint)
+                        .font(TMType.number(TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
                 }
                 Spacer(minLength: 8)
                 Text("\(shownPercent)%")
@@ -1667,14 +1683,13 @@ private struct PopoverHeatmap: View {
     private func heatCell(_ key: Int64?, size: CGFloat) -> some View {
         let v = key.flatMap { heatmap[$0] } ?? 0
         let ratio = maxTokens > 0 ? Double(v) / Double(maxTokens) : 0
-        // 线性渐变不变；下限 0.4 保证任何有数据的日子（包括当天——其
-        // 比例常被峰值日压到 0.01 以下）都明显可见，而大日子保持原有
-        // 梯度。精确数值由悬停提供。
-        let opacity = max(0.4, 0.25 + 0.75 * ratio)
+        // A 0.52 lower bound keeps any populated day distinct from the
+        // empty-cell track while preserving relative intensity for large days.
+        let opacity = max(0.52, 0.28 + 0.72 * ratio)
         return RoundedRectangle(cornerRadius: 2.5, style: .continuous)
             .fill(v > 0
                   ? TMDesign.accent.opacity(opacity)
-                  : Color.primary.opacity(0.06))
+                  : Color.primary.opacity(0.10))
             .frame(width: size, height: size)
             .contentShape(Rectangle())
             .onHover { hovering in

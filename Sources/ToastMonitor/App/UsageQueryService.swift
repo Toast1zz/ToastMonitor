@@ -91,6 +91,17 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
+    /// Drop usage aggregates after a setting that changes their meaning commits.
+    /// Queue ordering ensures an already-running query cannot repopulate stale
+    /// snapshots after this invalidation. Completion runs on the main actor.
+    func invalidateBillingModeCaches(completion: @escaping @MainActor @Sendable () -> Void) {
+        queue.async {
+            self.cachedLight = nil
+            self.cachedSnapshot = nil
+            self.cachedDailyAggs = nil
+            DispatchQueue.main.async { completion() }
+        }
+    }
     func loadSnapshot(configuration: UsagePeriodConfiguration = UsagePeriodConfiguration(),
                       completion: @escaping @MainActor @Sendable (Snapshot) -> Void) {
         queue.async {

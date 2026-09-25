@@ -15,13 +15,13 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the popover
-- **Custom menu-bar font** — Settings → General → Menu bar font opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
-- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Hover a card title to hide it with the eye button; Settings → Popover picks which cards and accounts appear and whether the total is compact or full
+- **Custom menu-bar font** — `Settings → Appearance → Font` opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
+- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Card hide buttons remain keyboard/VoiceOver discoverable; Settings → Appearance controls which cards and accounts appear and whether the total is compact or full
 - **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn orange past 80%
 - **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
 - **Claude usage outside this Mac** — Cowork, claude.ai chat and Claude Code on other machines leave no local transcript; their usage is estimated from the shared quota and shown as its own Sources row
 - **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions
-- **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Popover, Sources, Data and Updates panes
+- **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Appearance, Sources, Data and Updates panes
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
 - **Built-in quotas** — no opencode-quota dependency; see [Quotas](#quotas-built-in-no-opencode-quota-dependency)
 - **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
@@ -114,6 +114,7 @@ gh release create vX.Y.Z dist/release/*.zip --title "..." --notes "..."
 - The update feed is hosted on GitHub Pages (`https://toast1zz.github.io/ToastMonitor/appcast.json`, deployed from `docs/` on `main`); short cache headers make a new manifest visible to clients within a minute
 - Manifest `download_url` is tag-pinned (`/releases/download/vX.Y.Z/…`) — note the `v` prefix; `/releases/latest/...` lags fresh releases and raw.githubusercontent caches stale manifests for many minutes
 - Verify the live feed with `curl -s https://toast1zz.github.io/ToastMonitor/appcast.json`
+- The updater verifies the downloaded bundle before handing its staging directory to a detached installer. Installation waits for the running process to exit, preserves the old bundle as `ToastMonitor.app.tm-backup`, and removes that backup only after the replacement completes normal startup and acknowledges readiness. If installation fails, the next launch reports the failure in Settings → Updates. A read-only app location fails before the running app quits; move ToastMonitor to a writable folder before retrying. If the new app does not acknowledge launch, both bundles remain for manual recovery instead of deleting the backup on a timer.
 
 ## Command line (headless / development)
 
@@ -128,7 +129,7 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 - `TM_DEBUG=1`: per-file scan decision logging
 - `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions`
 - `--render-popover <path> [height]`: headless popover PNG render
-- `--render-settings <path> [general|popover|sources|data|updates] [height]`: headless render of one settings pane
+- `--render-settings <path> [general|appearance|sources|data|updates] [height]`: headless render of one settings pane
 - `--show-settings [pane] [--appearance light|dark] [--capture-settings <path>]`: opens the real settings window (no collectors, no keychain)
 - `--show-panel`: open the popover on screen for inspection (does not start the OpenRouter / Go clients, so no Keychain prompts)
 - `--show-dashboard`: launch with the panel open

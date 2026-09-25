@@ -241,7 +241,7 @@ struct DataSettingsPane: View {
             }
             if let preview {
                 LabeledContent("Found") {
-                    Text("\(preview.turns) records · \(preview.sessions) sessions · \(Format.count(preview.tokens)) tokens")
+                    Text("Claude Code and Codex: \(preview.turns) records · \(preview.sessions) sessions · \(Format.count(preview.tokens)) tokens")
                         .tmMonospacedDigit()
                 }
                 HStack {
@@ -256,9 +256,7 @@ struct DataSettingsPane: View {
             }
             if isWorking || message != nil {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    if isWorking {
-                        ProgressView().controlSize(.small)
-                    }
+                    if isWorking { ProgressView().controlSize(.small) }
                     if let message {
                         Text(message)
                             .foregroundStyle(.secondary)
@@ -267,13 +265,13 @@ struct DataSettingsPane: View {
                 }
             }
         } header: {
-            Text("Rebuild")
+            Text("Rebuild Claude Code and Codex")
         }
-        .confirmationDialog("Rebuild local usage data?", isPresented: $confirmsRepair) {
+        .confirmationDialog("Rebuild Claude Code and Codex usage?", isPresented: $confirmsRepair) {
             Button("Back Up and Rebuild", role: .destructive) { repair() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Only sources set to Local are processed; a backup is created first, then raw logs are re-scanned.")
+            Text("Only local Claude Code and Codex logs are processed; a backup is created first, then those logs are re-scanned.")
         }
         .confirmationDialog("Restore pre-rebuild backup?", isPresented: $confirmsRestore) {
             Button("Restore Backup", role: .destructive) { restore() }

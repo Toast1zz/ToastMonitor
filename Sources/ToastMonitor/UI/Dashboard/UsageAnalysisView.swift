@@ -37,6 +37,8 @@ struct UsageAnalysisView: View {
     /// body evaluation. nil until the first load completes.
     @State private var analysis: AnalysisData?
     @State private var loadID = UUID()
+    @State private var exportError: String?
+    @State private var isLoading = true
     @State private var hoveredDayIdx: Int?
     @State private var hoveredCostIdx: Int?
     /// Model -> color, assigned by usage rank so distinct models always get
@@ -97,24 +99,22 @@ struct UsageAnalysisView: View {
             hairline
             if analysis == nil {
                 Spacer()
-                Text("No data in this range")
-                    .font(TMType.regular(TMType.body))
-                    .foregroundStyle(.secondary)
+                if isLoading {
+                    ProgressView("Loading analysis…").controlSize(.small)
+                } else {
+                    Text("No data in this range")
+                        .font(TMType.regular(TMType.body))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         summaryStrip
                         TMPanel {
-                            if metric == .tokens {
-                                tokensChart
-                            } else {
-                                costChart
-                            }
+                            if metric == .tokens { tokensChart } else { costChart }
                         }
-                        TMPanel {
-                            aggTable
-                        }
+                        TMPanel { aggTable }
                     }
                     .padding(.top, 14)
                     .padding(.bottom, 32)
@@ -125,11 +125,24 @@ struct UsageAnalysisView: View {
         .onAppear { load() }
         .onChange(of: range) { _ in load() }
         .onChange(of: grouping) { _ in load() }
+        .alert("Export failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } })) {
+                Button("OK", role: .cancel) { exportError = nil }
+            } message: {
+                Text(exportError ?? "The CSV could not be written.")
+            }
     }
 
     private var pageHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: 16) {
             SectionTitle("Analysis")
+            if isLoading, analysis != nil {
+                Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                    .accessibilityLabel("Updating analysis")
+            }
             Spacer(minLength: 8)
             controls
             Divider()
@@ -138,7 +151,7 @@ struct UsageAnalysisView: View {
                 Image(systemName: "square.and.arrow.up")
             }
             .buttonStyle(.borderless)
-            .disabled(analysis == nil)
+            .disabled(analysis == nil || isLoading)
             .help("Export current analysis as CSV")
             .accessibilityLabel("Export current analysis as CSV")
         }
@@ -164,8 +177,12 @@ struct UsageAnalysisView: View {
                 String(format: "%.6f", row.ratio),
             ].map(Self.csvField).joined(separator: ","))
         }
-        try? (lines.joined(separator: "\n") + "\n")
-            .write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try (lines.joined(separator: "\n") + "\n")
+                .write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 
     private static func csvField(_ value: String) -> String {
@@ -204,11 +221,13 @@ struct UsageAnalysisView: View {
     private func load() {
         let requestID = UUID()
         loadID = requestID
+        isLoading = true
         let grouping = self.grouping
         let range = self.range
         if grouping == .byTool {
             UsageQueryService.shared.loadDailyAggs(days: range.days) { aggs in
                 guard loadID == requestID else { return }
+                isLoading = false
                 self.analysis = Self.build(aggs: aggs, modelAggs: [],
                                            grouping: grouping, range: range,
                                            modelColors: self.modelColors)
@@ -218,6 +237,7 @@ struct UsageAnalysisView: View {
         } else {
             UsageQueryService.shared.loadDailyAggsByModel(days: range.days) { aggs in
                 guard loadID == requestID else { return }
+                isLoading = false
                 let colors = Self.assignModelColors(aggs)
                 self.modelColors = colors
                 self.analysis = Self.build(aggs: [], modelAggs: aggs,

@@ -179,6 +179,75 @@ final class DatabaseTests: XCTestCase {
         let turns = db.turns(sessionTool: "claude", sessionID: "null-title-session")
         XCTAssertEqual(turns.count, 1, "JSON null must be treated like a missing optional field")
     }
+    func testHermesCumulativeBaselineReplaysAfterTransactionRollback() {
+        XCTAssertTrue(db.setSetting("src_hermes", "remote"))
+        let first = hermesCumulativeRow(input: 100, id: "feed-100")
+        HermesRemoteClient.shared.importFeed(["rows": [first]], database: db)
+        XCTAssertEqual(db.turns(sessionTool: "hermes", sessionID: "remote-cumulative").reduce(Int64(0)) { $0 + $1.input }, 100)
+
+        // Fail after the hm_d baseline was written, while the watermark is
+        // being persisted. The outer transaction rolls back both writes.
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(tmpPath, &raw), SQLITE_OK)
+        defer { if let raw { sqlite3_close(raw) } }
+        XCTAssertEqual(sqlite3_exec(raw, "CREATE TRIGGER fail_hermes_watermark BEFORE INSERT ON settings WHEN NEW.k='remote_watermark_hermes' BEGIN SELECT RAISE(ABORT, 'forced watermark failure'); END;", nil, nil, nil), SQLITE_OK)
+        HermesRemoteClient.shared.importFeed(["rows": [hermesCumulativeRow(input: 200, id: "feed-200")]], database: db)
+        XCTAssertEqual(db.turns(sessionTool: "hermes", sessionID: "remote-cumulative").reduce(Int64(0)) { $0 + $1.input }, 100,
+                       "failed transaction must not retain staged turns")
+        XCTAssertEqual(sqlite3_exec(raw, "DROP TRIGGER fail_hermes_watermark;", nil, nil, nil), SQLITE_OK)
+
+        HermesRemoteClient.shared.importFeed(["rows": [hermesCumulativeRow(input: 200, id: "feed-200")]], database: db)
+        XCTAssertEqual(db.turns(sessionTool: "hermes", sessionID: "remote-cumulative").reduce(Int64(0)) { $0 + $1.input }, 200,
+                       "replay must import the 100-token delta after rollback")
+    }
+
+    private func hermesCumulativeRow(input: Int64, id: String) -> [String: Any] {
+        let now = Int64(Date().timeIntervalSince1970)
+        return ["tool": "hermes", "session_id": "remote-cumulative", "model": "m",
+                "first_seen": NSNumber(value: now - 10), "last_seen": NSNumber(value: now),
+                "input_tokens": NSNumber(value: input), "output_tokens": NSNumber(value: 0),
+                "event_id": id]
+    }
+
+    func testSettingsCacheChangesOnlyAfterOutermostTransactionCommits() {
+        XCTAssertTrue(db.setSetting("transaction-cache", "old"))
+        XCTAssertFalse(db.inTransaction {
+            XCTAssertTrue(db.setSetting("transaction-cache", "new"))
+            XCTAssertEqual(db.setting("transaction-cache"), "old")
+            XCTAssertTrue(db.inTransaction {
+                XCTAssertTrue(db.setSetting("transaction-cache", "nested"))
+                return true
+            })
+            XCTAssertEqual(db.setting("transaction-cache"), "old")
+            return false
+        })
+        XCTAssertEqual(db.setting("transaction-cache"), "old")
+
+        XCTAssertTrue(db.inTransaction {
+            XCTAssertTrue(db.setSetting("transaction-cache", "committed"))
+            XCTAssertEqual(db.setting("transaction-cache"), "old")
+            return true
+        })
+        XCTAssertEqual(db.setting("transaction-cache"), "committed")
+    }
+    func testClearAllRetainsHermesHighWatermarkAndPreferencesButClearsQuotaSamples() {
+        let now = Int64(Date().timeIntervalSince1970)
+        XCTAssertTrue(db.setSetting("user_preference", "kept"))
+        XCTAssertTrue(db.setSetting("hm_d|remote-cumulative|m||", "100,0,0,0,0,0"))
+        XCTAssertTrue(db.setSetting("src_hermes", "remote"))
+        XCTAssertTrue(db.insertClaudeQuotaSample(.init(ts: now, weeklyPct: 50, weeklyReset: now + 1000,
+                                                       fiveHourPct: 25, fiveHourReset: now + 100)))
+        XCTAssertTrue(db.clearAllData())
+        XCTAssertTrue(db.claudeQuotaSamples(since: 0).isEmpty)
+        XCTAssertEqual(db.claudeQuotaSampleMarker(), "0:0")
+        XCTAssertEqual(db.setting("user_preference"), "kept")
+        XCTAssertEqual(db.setting("hm_d|remote-cumulative|m||"), "100,0,0,0,0,0")
+
+        HermesRemoteClient.shared.importFeed(["rows": [hermesCumulativeRow(input: 150, id: "post-clear")]], database: db)
+        XCTAssertEqual(db.turns(sessionTool: "hermes", sessionID: "remote-cumulative").reduce(Int64(0)) { $0 + $1.input }, 50,
+                       "post-clear polling must import only growth beyond retained remote high-water")
+    }
+
 
     func testCanonicalEventSupersedesDerivedMigrationRow() {
         let legacy = TurnRecord(tool: .claude, sessionID: "s1", project: "p", model: "m",

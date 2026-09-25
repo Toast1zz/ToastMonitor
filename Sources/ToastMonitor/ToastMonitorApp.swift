@@ -458,6 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         KeychainStore.migrateLegacyVaultIfNeeded() // one-time: legacy vault file → login keychain
+        UpdateManager.shared.consumeInstallFailure()
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()
@@ -473,6 +474,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // fields and everywhere else, not just while the dashboard is open.
         WindowManager.shared.ensureMainMenu()
         UpdateManager.shared.startAutoCheckIfEnabled()
+        // Only acknowledge the replacement after normal startup completes.
+        // The detached installer retains the previous bundle until this point.
+        UpdateManager.acknowledgeLaunch(arguments: args)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             AppState.shared.refresh()
         }

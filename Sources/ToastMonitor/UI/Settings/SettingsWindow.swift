@@ -202,7 +202,11 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     /// from the window's content layout rect rather than assumed.
     private func frame(for host: SettingsPaneHost, in window: NSWindow) -> NSRect {
         let chrome = window.frame.height - window.contentLayoutRect.height
-        let height = host.height + chrome
+        let screenHeight = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let maxHeight = max(120, screenHeight - 24)
+        let contentHeight = min(host.height, max(120, maxHeight - chrome))
+        host.setViewportHeight(contentHeight)
+        let height = contentHeight + chrome
         var frame = window.frame
         frame.origin.y += frame.height - height
         frame.size = NSSize(width: window.frameRect(forContentRect: NSRect(
@@ -282,9 +286,9 @@ private final class SettingsPaneHost {
     let pane: SettingsPane
     let view: NSView
     private(set) var height = SettingsPaneView.fallbackHeight
-    /// Created once: it lives on the view itself, so it survives the view
-    /// leaving the window, and a new one per install would pile up stale
-    /// heights that fight the current one.
+    /// The form's measured content height remains separate from the visible
+    /// viewport. A short display caps the latter without losing scrollability.
+    private var viewportHeight: CGFloat?
     private let heightConstraint: NSLayoutConstraint
     var onHeightChange: ((SettingsPaneHost) -> Void)?
 
@@ -296,9 +300,21 @@ private final class SettingsPaneHost {
         hosting.translatesAutoresizingMaskIntoConstraints = false
         heightConstraint = hosting.heightAnchor.constraint(equalToConstant: height)
         heightConstraint.isActive = true
+        self.hosting = hosting
         hosting.rootView = SettingsPaneView(pane: pane) { [weak self] height in
             self?.adopt(height)
         }
+    }
+    private let hosting: NSHostingView<SettingsPaneView>
+    func setViewportHeight(_ height: CGFloat) {
+        let clamped = max(120, height)
+        viewportHeight = clamped
+        hosting.rootView = SettingsPaneView(pane: pane, viewportHeight: clamped) { [weak self] height in
+            self?.adopt(height)
+        }
+        guard abs(heightConstraint.constant - clamped) > 0.5 else { return }
+        heightConstraint.constant = clamped
+        view.superview?.layoutSubtreeIfNeeded()
     }
 
     /// Pinned to the top of the window's visible content area (below the
@@ -317,7 +333,8 @@ private final class SettingsPaneHost {
     private func adopt(_ height: CGFloat) {
         guard height > 0, height != self.height else { return }
         self.height = height
-        heightConstraint.constant = height
+        let effectiveHeight = viewportHeight ?? height
+        heightConstraint.constant = effectiveHeight
         onHeightChange?(self)
     }
 }
@@ -332,9 +349,17 @@ struct SettingsPaneView: View {
     static let fallbackHeight: CGFloat = 520
 
     let pane: SettingsPane
-    /// Receives the pane's height whenever it changes.
+    let viewportHeight: CGFloat?
+    /// Receives the pane's measured content height whenever it changes.
     var onHeightChange: (CGFloat) -> Void = { _ in }
     @State private var contentHeight: CGFloat = 0
+
+    init(pane: SettingsPane, viewportHeight: CGFloat? = nil,
+         onHeightChange: @escaping (CGFloat) -> Void = { _ in }) {
+        self.pane = pane
+        self.viewportHeight = viewportHeight
+        self.onHeightChange = onHeightChange
+    }
 
     var body: some View {
         Form {
@@ -342,7 +367,7 @@ struct SettingsPaneView: View {
         }
         .formStyle(.grouped)
         .modifier(ScrollContentHeight(height: $contentHeight))
-        .frame(width: Self.width, height: height)
+        .frame(width: Self.width, height: viewportHeight ?? height)
         .onChange(of: height) { onHeightChange($0) }
     }
 
