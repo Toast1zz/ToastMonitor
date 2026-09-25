@@ -13,6 +13,10 @@ final class Database: @unchecked Sendable {
     /// Duplicate conflicts are intentionally ignored by the turns UPSERT,
     /// but prepare/step/ALTER/commit errors must never be silently committed.
     private var transactionWriteError = false
+    private struct SettingCacheChange {
+        let value: String?
+    }
+    private var pendingSettingsCache: [String: SettingCacheChange]?
     typealias ScanState = (size: Int64, mtime: Int64, identity: Int64, context: String?)
     private var scanStatesCache: [String: ScanState]?
     private(set) var dbPath: String = ""
@@ -713,11 +717,17 @@ final class Database: @unchecked Sendable {
         }
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return false }
         transactionWriteError = false
+        pendingSettingsCache = [:]
         let ok = body()
         if ok && !transactionWriteError {
             if sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                for (key, change) in pendingSettingsCache ?? [:] {
+                    settingsCache.set(key, change.value)
+                }
+                pendingSettingsCache = nil
                 return true
             }
+            pendingSettingsCache = nil
             NSLog("[ToastMonitor] ingestion COMMIT failed")
             if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
                 // Both COMMIT and ROLLBACK failed (persistent I/O error): the
@@ -730,6 +740,7 @@ final class Database: @unchecked Sendable {
                 self.db = nil
             }
         } else {
+            pendingSettingsCache = nil
             NSLog("[ToastMonitor] ingestion transaction rolled back")
             if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
                 NSLog("[ToastMonitor] ROLLBACK failed; poisoning connection")
@@ -1008,9 +1019,15 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
-        // Only mirror the write once it is durable — a failed write must
-        // leave the cache matching the last value actually committed.
-        settingsCache.set(key, value)
+        // Nested inTransaction calls join the outer transaction and share it.
+        if pendingSettingsCache != nil {
+            pendingSettingsCache?[key] = SettingCacheChange(value: value)
+        } else if sqlite3_get_autocommit(db) == 0 {
+            // An external transaction owner controls durability; don't expose
+            // its uncommitted write through this process-local cache.
+        } else {
+            settingsCache.set(key, value)
+        }
         return true
     }
 
@@ -1824,12 +1841,14 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return (0, 0, 0) }
         var stmt: OpaquePointer?
+        let codexCovered = codexBilledBySubscription()
+        let codexFilter = codexCovered ? "AND NOT (tool='codex' AND cost_quality='estimated')" : ""
         let sql = """
         SELECT
           COALESCE(SUM(CASE WHEN cost_quality='estimated' THEN cost ELSE 0 END), 0),
           COALESCE(SUM(CASE WHEN cost_quality='actual' THEN cost ELSE 0 END), 0),
           COALESCE(SUM(CASE WHEN cost_quality='actual' AND deepseek THEN cost ELSE 0 END), 0)
-        FROM (\(Self.usageSource)) WHERE tool != 'hermes';
+        FROM (\(Self.usageSource)) WHERE tool != 'hermes' \(codexFilter);
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0) }
         bindUsageRange(stmt, from: from, to: to)
@@ -1998,6 +2017,7 @@ final class Database: @unchecked Sendable {
         let tables = [
             "turns", "sessions", "scan_state", "session_totals",
             "openrouter_snapshots", "opencodego_snapshots", "subscriptions",
+            "claude_quota_samples",
             // Resets the AUTOINCREMENT counters for turns/subscriptions so
             // re-imported ids start from 1 again (DB-4 housekeeping).
             "sqlite_sequence"
@@ -2024,6 +2044,7 @@ final class Database: @unchecked Sendable {
         // re-notify the UI.
         bumpDataVersion()
         scanStatesCache = nil
+        totalsCache = nil
         NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
     }

@@ -45,6 +45,40 @@ final class UpdateManager: ObservableObject {
     @Published private(set) var lastCheckAt: Date?
 
     private var autoCheckStarted = false
+    static let installFailureName = "update-install-failure.txt"
+
+    func consumeInstallFailure() {
+        let url = Self.installFailureURL
+        guard let message = try? String(contentsOf: url, encoding: .utf8) else { return }
+        lastError = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static var installFailureURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ToastMonitor", isDirectory: true)
+            .appendingPathComponent(installFailureName)
+    }
+    private static var hasPendingInstallFailure: Bool {
+        FileManager.default.fileExists(atPath: installFailureURL.path)
+    }
+
+    /// The replacement acknowledges startup only with its verified version.
+    static func acknowledgeLaunch(arguments: [String]) {
+        guard let flag = arguments.firstIndex(of: "--tm-update-ready"),
+              arguments.indices.contains(flag + 2) else { return }
+        let name = arguments[flag + 1]
+        let expectedVersion = arguments[flag + 2]
+        guard UUID(uuidString: name) != nil,
+              UpdateChecker.semanticVersion(expectedVersion) != nil,
+              Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String == expectedVersion,
+              Bundle.main.bundleURL.pathExtension == "app",
+              let pending = try? String(contentsOf: installFailureURL.deletingLastPathComponent()
+                .appendingPathComponent("update-pending-\(name)"), encoding: .utf8),
+              pending.trimmingCharacters(in: .whitespacesAndNewlines) == expectedVersion else { return }
+        let url = installFailureURL.deletingLastPathComponent()
+            .appendingPathComponent("update-ready-\(name)")
+        try? Data("ready\n".utf8).write(to: url, options: .atomic)
+    }
 
     private init() {}
 
@@ -82,7 +116,7 @@ final class UpdateManager: ObservableObject {
         guard !checking, !installing else { return }
         if !force, !Self.autoCheckEnabled { return }
         checking = true
-        lastError = nil
+        if !silentFailure, !Self.hasPendingInstallFailure { lastError = nil }
         defer { checking = false }
         do {
             let found = try await UpdateChecker.check(
@@ -124,7 +158,9 @@ final class UpdateManager: ObservableObject {
             available = found
             lastCheckAt = Date()
         } catch {
-            lastError = silentFailure ? nil : Self.friendlyMessage(for: error)
+            if !silentFailure, !Self.hasPendingInstallFailure {
+                lastError = Self.friendlyMessage(for: error)
+            }
             available = nil
         }
     }
@@ -167,22 +203,25 @@ final class UpdateManager: ObservableObject {
             // Reached only if staging succeeded but relaunch is pending.
             NSApp.terminate(nil)
         } catch {
-            lastError = (error as? UpdateChecker.CheckError)?.errorDescription
+            lastError = (error as? LocalizedError)?.errorDescription
                 ?? "Update install failed"
         }
     }
 
     // MARK: - Install machinery
 
-    /// Unzips into a staging dir, re-verifies the bundle (codesign + bundle id
-    /// + version), swaps it over the running bundle and relaunches via a
-    /// detached shell so the replacement survives this process exiting.
+    /// Verify the candidate before handing ownership of its staging directory
+    /// to a detached installer. Only that installer cleans the staging files.
     private static func stageAndReplace(archive: URL, version: String) async throws {
         let fm = FileManager.default
         let staging = fm.temporaryDirectory
             .appendingPathComponent("tm-update-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: staging) }
+        var handedOff = false
+        defer {
+            try? fm.removeItem(at: archive)
+            if !handedOff { try? fm.removeItem(at: staging) }
+        }
 
         // ditto unzips preserving symlinks/permissions; zip bombs are bounded
         // by the earlier SHA-256 artifact size check on the archive itself.
@@ -218,54 +257,126 @@ final class UpdateManager: ObservableObject {
         }
 
         let target = Bundle.main.bundleURL
-        // Detached installer: waits for THIS process to exit (the app calls
-        // NSApp.terminate right after this method returns), then swaps the
-        // bundle atomically — move the old bundle aside, ditto the new one
-        // into place, roll back on failure — and relaunches. The old bundle
-        // is kept until the new instance has had time to launch, so a failed
-        // swap can never leave the app unlaunchable.
-        // Paths arrive as $1/$2 argv, never interpolated into the script, so
-        // a bundle path containing quotes / $() / backticks cannot inject
-        // shell commands (M7).
-        let script = """
-        #!/bin/bash
-        set -euo pipefail
-        # Give the old process up to 20s to exit; replace only after it is
-        # gone so the old and new instances never overlap (double collection,
-        # DB contention). If it lingers (terminate blocked), proceed anyway —
-        # swapping files under a running process is safe on macOS.
-        old_pid="$3"
-        for _ in $(seq 1 40); do
-            if ! kill -0 "$old_pid" >/dev/null 2>&1; then break; fi
-            sleep 0.5
-        done
-        target="$1"
-        candidate="$2"
-        old="$target.tm-backup"
-        rm -rf "$old"
-        if [ -d "$target" ]; then mv "$target" "$old"; fi
-        if ! ditto "$candidate" "$target"; then
-            echo "ditto failed; rolling back previous bundle" >&2
-            rm -rf "$target"
-            mv "$old" "$target"
-            exit 1
-        fi
-        open "$target"
-        # Keep the backup until the new instance has launched, then clean up.
-        (sleep 8; rm -rf "$old") &
-        exit 0
-        """
+        let parent = target.deletingLastPathComponent()
+        guard fm.isWritableFile(atPath: parent.path),
+              fm.isWritableFile(atPath: target.path) else {
+            throw InstallerError.readOnlyLocation
+        }
+        let result = installFailureURL
+        try fm.createDirectory(at: result.deletingLastPathComponent(),
+                               withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        try fm.setAttributes([.posixPermissions: 0o700],
+                             ofItemAtPath: result.deletingLastPathComponent().path)
+        let token = UUID().uuidString
+        let ready = result.deletingLastPathComponent()
+            .appendingPathComponent("update-ready-\(token)")
+        let pending = result.deletingLastPathComponent()
+            .appendingPathComponent("update-pending-\(token)")
+        try "\(version)\n".write(to: pending, atomically: true, encoding: .utf8)
         let scriptURL = staging.appendingPathComponent("install.sh")
-        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try Self.installerScript.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
         let installer = Process()
         installer.executableURL = URL(fileURLWithPath: "/bin/bash")
         installer.arguments = [scriptURL.path, target.path, candidate.path,
-                               String(ProcessInfo.processInfo.processIdentifier)]
-        // Detached on purpose: waiting here would deadlock — the script waits
-        // for this process to exit, which only happens after we return.
-        try installer.run()
+                               String(ProcessInfo.processInfo.processIdentifier),
+                               ready.path, result.path, "/usr/bin/open", version]
+        do { try installer.run() } catch {
+            try? fm.removeItem(at: pending)
+            throw error
+        }
+        handedOff = true
     }
+
+    private enum InstallerError: LocalizedError {
+        case readOnlyLocation
+        var errorDescription: String? {
+            "ToastMonitor cannot update in this read-only location. Move the app to a writable folder and retry."
+        }
+    }
+
+    /// Positional paths are argv, not interpolated shell literals. Tests use
+    /// an isolated launcher with temp bundles; production uses /usr/bin/open.
+    static let installerScript = """
+    #!/bin/bash
+    set -euo pipefail
+    target="$1"
+    candidate="$2"
+    old_pid="$3"
+    ready="$4"
+    result="$5"
+    launcher="$6"
+    staging="$(dirname "$candidate")"
+    old="$target.tm-backup"
+    incoming="$target.tm-incoming"
+    expected_version="$7"
+    pending="${ready/update-ready-/update-pending-}"
+    report() {
+        local temp="$result.tmp.$$"
+        if printf '%s\\n' "$1" > "$temp" && mv -f "$temp" "$result"; then :
+        else echo "ToastMonitor update error: $1 (unable to write $result)" >&2; fi
+        if [ -d "$target" ]; then "$launcher" "$target" >/dev/null 2>&1 || true; fi
+    }
+    cleanup() { rm -rf "$staging"; rm -f "$pending" "$ready"; }
+    trap cleanup EXIT
+    for _ in $(seq 1 40); do
+        if ! kill -0 "$old_pid" >/dev/null 2>&1; then break; fi
+        sleep 0.5
+    done
+    if kill -0 "$old_pid" >/dev/null 2>&1; then
+        report 'Update failed: the running ToastMonitor did not quit. Please try again.'
+        exit 1
+    fi
+    if [ ! -d "$target" ] || [ -e "$old" ] || [ -e "$incoming" ]; then
+        report 'Update failed: original app is missing or a prior update needs recovery.'
+        exit 1
+    fi
+    if [ ! -w "$(dirname "$target")" ] || [ ! -w "$target" ]; then
+        report 'Update failed: app location is read-only. Move ToastMonitor to a writable folder.'
+        exit 1
+    fi
+    if ! ditto "$candidate" "$incoming"; then
+        rm -rf "$incoming"
+        report 'Update failed while copying the new app; the original app was not changed.'
+        exit 1
+    fi
+    if ! mv "$target" "$old"; then
+        rm -rf "$incoming"
+        report 'Update failed while backing up the original app.'
+        exit 1
+    fi
+    if ! mv "$incoming" "$target"; then
+        if ! mv "$old" "$target"; then
+            report 'Update failed and rollback failed; the original app is at the .tm-backup path.'
+        else
+            report 'Update failed while replacing the app; the original app was restored.'
+        fi
+        exit 1
+    fi
+    token="${ready##*/update-ready-}"
+    if ! "$launcher" -n "$target" --args --tm-update-ready "$token" "$expected_version"; then
+        if mv "$target" "$incoming" && mv "$old" "$target"; then
+            rm -rf "$incoming"
+            report 'Update failed to launch; the original app was restored.'
+        else
+            report 'Update failed to launch and rollback failed; recover the original app from .tm-backup.'
+        fi
+        exit 1
+    fi
+    for _ in $(seq 1 120); do
+        if [ -f "$ready" ]; then
+            rm -f "$ready" "$result"
+            rm -rf "$old"
+            exit 0
+        fi
+        sleep 0.5
+    done
+    # A successful `open` only requests startup; keep both bundles for manual
+    # recovery after timeout and try to launch the installed app for the error.
+    report 'Update launch was not confirmed. The previous app is preserved at .tm-backup.'
+    exit 1
+    """
 
     private static func verifyCodesign(_ app: URL, expectedTeamID: String) -> Bool {
         let verify = Process()

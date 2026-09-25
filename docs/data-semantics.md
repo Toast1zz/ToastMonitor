@@ -47,3 +47,9 @@ Rules:
 - `created` takes the earliest valid non-zero time; `updated` the latest.
 - `0` means unknown and the UI shows `—`, never 1970.
 - Hermes without a time column is explicitly unknown; never query columns that do not exist.
+
+## 5. Clearing usage data
+
+- **Clear All Data** removes local usage/history, including `claude_quota_samples`, cached session totals, and quota snapshots. It resets query/estimation cache markers and bumps the data version so displayed usage is recomputed.
+- Settings, user preferences, and Keychain credentials are preserved. Hermes remote `hm_d|...` cumulative baselines are also retained as historical high-water marks: a later feed poll imports only usage accumulated since the retained baseline, rather than replaying the cleared historical total as new usage. Clear therefore does not reset remote cumulative counters or their deduplication state.
+- Local Claude/Codex rebuild affects only local turns/sessions and does not reset quota samples or remote Hermes baselines.

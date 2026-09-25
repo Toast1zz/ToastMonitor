@@ -12,7 +12,7 @@ Version: 2026-08-09
 
 - The app's backup directory is `~/Library/Application Support/ToastMonitor/Backups/` with directory permissions 0700; database backup files are 0600.
 - `DataMaintenance.createBackup(label:)` uses an online SQLite backup snapshot and keeps the most recent 7; `exportDatabase(to:)` exports a full snapshot and sets the target file to 0600.
-- `DataMaintenance.clearAllData()` clears turns, sessions, scan_state, session_totals, quota snapshots and subscriptions, but keeps settings and Keychain credentials; a `pre-clear` backup is forced before execution and rolled back on failure.
+- `DataMaintenance.clearAllData()` clears turns, sessions, scan_state, session_totals, quota snapshots (including `claude_quota_samples`) and subscriptions, but keeps settings, user preferences, Keychain credentials, and Hermes `hm_d|...` cumulative high-water baselines. Retaining those remote baselines prevents a later feed poll from re-importing pre-clear cumulative usage; only usage accrued after the retained baseline can return. A `pre-clear` backup is forced before execution and the clear rolls back on failure.
 - A protected backup is always created before repair/clear; on failure the original database is never further modified.
 
 ## 3. Manual diagnostics

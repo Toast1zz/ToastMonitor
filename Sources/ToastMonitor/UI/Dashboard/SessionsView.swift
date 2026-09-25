@@ -5,7 +5,7 @@ struct SessionsView: View {
     @State private var selectedTool = "all"
     @State private var selectedSession: Database.SessionRow?
     @State private var loading = false
-
+    @State private var loadGeneration = 0
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -29,7 +29,11 @@ struct SessionsView: View {
             .padding(.bottom, 12)
             Rectangle().fill(TMDesign.divider).frame(height: 1)
 
-            if rows.isEmpty, !loading {
+            if loading && rows.isEmpty {
+                Spacer()
+                ProgressView("Loading sessions…").controlSize(.small)
+                Spacer()
+            } else if rows.isEmpty {
                 Spacer()
                 Text("No sessions found")
                     .foregroundStyle(TMDesign.quiet)
@@ -48,9 +52,11 @@ struct SessionsView: View {
                 }
             }
         }
-        .padding(.horizontal, 24)
         .onAppear(perform: load)
-        .onChange(of: selectedTool) { _ in load() }
+        .onChange(of: selectedTool) { _ in
+            rows = []
+            load()
+        }
         .sheet(item: $selectedSession) { SessionDetailView(session: $0) }
     }
 
@@ -89,9 +95,12 @@ struct SessionsView: View {
     }
 
     private func load() {
+        let generation = loadGeneration &+ 1
+        loadGeneration = generation
         loading = true
         let tool = selectedTool == "all" ? nil : ToolKind(rawValue: selectedTool)
         UsageQueryService.shared.loadSessions(tool: tool) {
+            guard generation == loadGeneration else { return }
             rows = $0
             loading = false
         }

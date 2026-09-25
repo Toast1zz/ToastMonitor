@@ -151,6 +151,151 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertTrue(UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.malformedManifest).contains("invalid"))
         XCTAssertFalse(UpdateManager.friendlyMessage(for: UpdateChecker.CheckError.malformedManifest).contains("Unable"))
     }
+
+    @MainActor
+    func testInstallerWaitsForParentExitThenReplacesAndAcknowledges() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        try fixture.createApp(fixture.target, version: "old")
+        try fixture.createApp(fixture.candidate, version: "new")
+        try fixture.createLauncher(success: true)
+        let parent = Process()
+        parent.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        parent.arguments = ["1"]
+        try parent.run()
+        let installer = try fixture.start(parentPID: parent.processIdentifier)
+        XCTAssertEqual(try fixture.version(fixture.target), "old", "installer must wait for parent exit")
+        parent.waitUntilExit()
+        installer.waitUntilExit()
+        XCTAssertEqual(installer.terminationStatus, 0)
+        XCTAssertEqual(try fixture.version(fixture.target), "new")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.backup.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.result.path))
+    }
+
+    @MainActor
+    func testInstallerReportsMissingTargetWithoutDiscardingCandidateElsewhere() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        try fixture.createApp(fixture.candidate, version: "new")
+        try fixture.createLauncher(success: true)
+        let installer = try fixture.start(parentPID: 999_999_999)
+        installer.waitUntilExit()
+        XCTAssertNotEqual(installer.terminationStatus, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.target.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.backup.path))
+        XCTAssertTrue(try String(contentsOf: fixture.result).contains("original app is missing"))
+    }
+
+    @MainActor
+    func testInstallerRestoresOldAppAndRecordsLaunchFailure() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        try fixture.createApp(fixture.target, version: "old")
+        try fixture.createApp(fixture.candidate, version: "new")
+        try fixture.createLauncher(success: false)
+        let installer = try fixture.start(parentPID: 999_999_999)
+        installer.waitUntilExit()
+        XCTAssertNotEqual(installer.terminationStatus, 0)
+        XCTAssertEqual(try fixture.version(fixture.target), "old")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.backup.path))
+        XCTAssertTrue(try String(contentsOf: fixture.result).contains("original app was restored"))
+    }
+
+    @MainActor
+    func testInstallerPreservesExistingBackupRatherThanOverwritingRecovery() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        try fixture.createApp(fixture.target, version: "old")
+        try fixture.createApp(fixture.backup, version: "recovery")
+        try fixture.createApp(fixture.candidate, version: "new")
+        try fixture.createLauncher(success: true)
+        let installer = try fixture.start(parentPID: 999_999_999)
+        installer.waitUntilExit()
+        XCTAssertNotEqual(installer.terminationStatus, 0)
+        XCTAssertEqual(try fixture.version(fixture.target), "old")
+        XCTAssertEqual(try fixture.version(fixture.backup), "recovery")
+        XCTAssertTrue(try String(contentsOf: fixture.result).contains("prior update needs recovery"))
+    }
+    @MainActor
+    func testLaunchFailureReportSurvivesNextStartup() throws {
+        let failureURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ToastMonitor/\(UpdateManager.installFailureName)")
+        let previous = try? Data(contentsOf: failureURL)
+        defer {
+            if let previous { try? previous.write(to: failureURL, options: .atomic) }
+            else { try? FileManager.default.removeItem(at: failureURL) }
+        }
+        try FileManager.default.createDirectory(at: failureURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("Update failed while replacing the app.\n".utf8).write(to: failureURL)
+        let updates = UpdateManager.shared
+        updates.consumeInstallFailure()
+        XCTAssertEqual(updates.lastError, "Update failed while replacing the app.")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: failureURL.path))
+    }
+
+}
+
+@MainActor
+private final class InstallerFixture {
+    let root: URL
+    let staging: URL
+    let candidate: URL
+    let target: URL
+    let backup: URL
+    let ready: URL
+    let pending: URL
+    let result: URL
+    let launcher: URL
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-installer-tests-\(UUID().uuidString)")
+        staging = root.appendingPathComponent("stage")
+        candidate = staging.appendingPathComponent("ToastMonitor.app")
+        target = root.appendingPathComponent("installed/ToastMonitor.app")
+        backup = root.appendingPathComponent("installed/ToastMonitor.app.tm-backup")
+        ready = root.appendingPathComponent("update-ready-\(UUID().uuidString)")
+        pending = root.appendingPathComponent("update-pending-\(ready.lastPathComponent.dropFirst("update-ready-".count))")
+        result = root.appendingPathComponent("failure.txt")
+        launcher = root.appendingPathComponent("launcher.sh")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+    }
+
+    func cleanup() { try? FileManager.default.removeItem(at: root) }
+
+    func createApp(_ url: URL, version: String) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try version.write(to: url.appendingPathComponent("version"), atomically: true, encoding: .utf8)
+    }
+
+    func version(_ url: URL) throws -> String {
+        try String(contentsOf: url.appendingPathComponent("version"), encoding: .utf8)
+    }
+
+    func createLauncher(success: Bool) throws {
+        let body = success
+            ? "#!/bin/bash\nprintf 'ready\\n' > '\(ready.path)'\n"
+            : "#!/bin/bash\nexit 1\n"
+        try body.write(to: launcher, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+    }
+
+    func start(parentPID: Int32) throws -> Process {
+        let script = staging.appendingPathComponent("install.sh")
+        try UpdateManager.installerScript.write(to: script, atomically: true, encoding: .utf8)
+        try "9.9.9\n".write(to: pending, atomically: true, encoding: .utf8)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [script.path, target.path, candidate.path, String(parentPID),
+                             ready.path, result.path, launcher.path, "9.9.9"]
+        try process.run()
+        return process
+    }
 }
 
 private extension Data {
