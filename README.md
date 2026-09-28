@@ -14,7 +14,7 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 
 ## Features
 
-- **Live menu-bar total** — today's tokens only; click for the popover
+- **Live menu-bar total** — today's tokens only; click for the popover. It uses a template icon and system-colored count; the unread-quota dot is red
 - **Custom menu-bar font** — `Settings → Appearance → Font` opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
 - **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Card hide buttons remain keyboard/VoiceOver discoverable; Settings → Appearance controls which cards and accounts appear and whether the total is compact or full
 - **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn orange past 80%

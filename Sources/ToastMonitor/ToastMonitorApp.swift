@@ -543,9 +543,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item
         if let button = item.button {
-            // NSStatusBarButton sizes itself from its title, not from
-            // subviews — a hosting view can never make it visible. Use
-            // attributedTitle (image attachment + text) natively.
+            // Keep the SF Symbol on the native status button so macOS can
+            // apply menu-bar template rendering on inactive displays.
+            if let image = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil) {
+                image.isTemplate = true
+                button.image = image
+                button.imagePosition = .imageLeading
+            }
             button.target = self
             button.action = #selector(togglePanel(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -683,24 +687,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Defaults to the system UI font (SF Pro, tabular digits); a
         // user-picked font comes from the Appearance settings section.
         let font = MenuBarFontSettings.shared.selection.resolvedFont
-        let attr = NSMutableAttributedString()
-        if let img = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil) {
-            let attach = NSTextAttachment()
-            attach.image = img
-            // 与系统时间同级排版：等宽数字 13pt；图标（16pt SF Symbol）
-            // 中心对齐文字 cap 高度中心 —— bounds.y 是相对基线的偏移，
-            // 下沉 (图标高 - capHeight)/2 让两者视觉共线。
-            let size = img.size
-            attach.bounds = NSRect(x: 0,
-                                   y: -round((size.height - font.capHeight) / 2),
-                                   width: size.width,
-                                   height: size.height)
-            attr.append(NSAttributedString(attachment: attach))
-        }
-        attr.append(NSAttributedString(string: " \(text)", attributes: [
+        let attr = NSMutableAttributedString(string: "\(text)", attributes: [
             .font: font,
-            .foregroundColor: NSColor.labelColor,
-        ]))
+        ])
         if quotaAlerts.unreadCount > 0 {
             attr.append(NSAttributedString(string: " ●", attributes: [
                 .font: NSFont.systemFont(ofSize: 8, weight: .bold),
