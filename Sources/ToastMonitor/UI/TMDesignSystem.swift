@@ -70,14 +70,16 @@ enum TMDesign {
     })
     static let canvas = Color(nsColor: .windowBackgroundColor)
     static let secondaryCanvas = Color(nsColor: .underPageBackgroundColor)
-    /// Card surface. The system controlBackgroundColor barely separates from
-    /// windowBackground in dark mode (30 vs 38), which makes panels read as
-    /// invisible boxes; dark mode gets a custom lift instead.
+    /// Card surface: one tonal step off the window background, opaque so a
+    /// pinned list header can sit on it. The system controlBackgroundColor
+    /// is no use here — in dark mode it barely separates from the window,
+    /// and in light mode it is the same white as the window, so cards
+    /// vanished entirely.
     static let surface = Color(nsColor: NSColor(name: nil) { appearance in
         if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
             return NSColor(calibratedWhite: 0.165, alpha: 1.0)
         }
-        return NSColor.controlBackgroundColor
+        return NSColor(calibratedWhite: 0.955, alpha: 1.0)
     })
     static let divider = Color.primary.opacity(0.13)
     // System label colors, not fixed opacities: they follow Increase

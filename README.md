@@ -9,24 +9,32 @@ Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-part
 Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness** local logs, plus **OpenRouter** cloud quota — everything rolls up into one "today" total, always visible in the menu bar.
 
 <p align="center">
-  <img src="docs/images/popover.png" width="800" alt="ToastMonitor menu-bar popover in light and dark appearance: token total, sources, subscription quota and activity">
+  <img src="docs/images/popover.png" width="800" alt="ToastMonitor menu-bar popover in light and dark appearance: token total, sources, subscription quota and account balances">
 </p>
 
 ## Features
 
 - **Live menu-bar total** — today's tokens only; click for the popover. It uses a template icon and system-colored count; the unread-quota dot is red
 - **Custom menu-bar font** — `Settings → Appearance → Font` opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
-- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. Card hide buttons remain keyboard/VoiceOver discoverable; Settings → Appearance controls which cards and accounts appear and whether the total is compact or full
+- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. `Settings → Appearance → Customize…` chooses which cards and accounts appear; the total can be compact or full
 - **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code) that fills as the quota is used, with its reset countdown; bars turn orange past 80%
 - **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
 - **Claude usage outside this Mac** — Cowork, claude.ai chat and Claude Code on other machines leave no local transcript; their usage is estimated from the shared quota and shown as its own Sources row
-- **Full panel (4 tabs)** — Overview / Usage Analysis / Plans & Balance / Sessions
-- **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Appearance, Sources, Data and Updates panes
+- **Dashboard (4 pages)** — every page fits the window without scrolling
+  - **Overview** — period figures (tokens, calls, actual spend, API value), tool and model breakdowns, a year of activity
+  - **Analysis** — tokens or estimated cost per day by tool or model over 7 / 30 / 90 days, with a per-day breakdown on hover and CSV export
+  - **Plans** — one card per connected account: quota windows, balances and balance history
+  - **Sessions** — every session, newest first, grouped by day
+- **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Appearance, Sources, Accounts, Data and Updates panes
 - **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
 - **Built-in quotas** — no opencode-quota dependency; see [Quotas](#quotas-built-in-no-opencode-quota-dependency)
 - **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
 - **Cost estimation** — built-in model price table; unknown models count tokens without a price
 - **Privacy-first** — data stays on this Mac, credentials live only in the macOS Keychain, no analytics or ad SDKs
+
+<p align="center">
+  <img src="docs/images/dashboard.png" width="800" alt="ToastMonitor dashboard Overview page in light and dark appearance: period figures, tool and model breakdowns and a year of activity">
+</p>
 
 <p align="center">
   <img src="docs/images/settings.png" width="800" alt="ToastMonitor settings window in light and dark appearance">
@@ -71,7 +79,7 @@ macOS ships no zstd support (Compression.framework covers LZ4/ZLIB/LZMA/LZFSE/BR
 
 ## Quotas (built-in, no opencode-quota dependency)
 
-- **OpenCode Go plan** (a separate entry from the OpenCode tool) — reads `opencode.ai/workspace/<id>/go` SolidJS SSR/data-slot data: 5h=$12 / week=$30 / month=$60 bars, reset countdown and history. Credentials: paste in Plans & Balance, or `--provision-go <workspaceId>` reading the cookie from stdin (opencode-quota's opencode-go.json works)
+- **OpenCode Go plan** (a separate entry from the OpenCode tool) — reads `opencode.ai/workspace/<id>/go` SolidJS SSR/data-slot data: 5h=$12 / week=$30 / month=$60 bars, reset countdown and history. Credentials: paste in `Settings → Accounts → OpenCode Go`, or `--provision-go <workspaceId>` reading the cookie from stdin (opencode-quota's opencode-go.json works)
 - **OpenRouter** — `/api/v1/key` + `/api/v1/credits` snapshotted every 60s while the UI is visible and every 5 minutes in background. Key: paste in the panel or `--provision-or-key` from stdin; the secret lives only in the macOS Keychain
 - **Claude subscription** (opt-in, off by default) — 5h / weekly / weekly-Opus rate-limit windows from `api.anthropic.com/api/oauth/usage`, using the login Claude Code already stored on this Mac. No credential to paste: the OAuth blob is read from `~/.claude/.credentials.json` and the `Claude Code-credentials` login-keychain item, newer expiry wins. **The read never prompts.** ToastMonitor's entry in that item's ACL is not durable (Claude Code rewrites the item several times a day as it refreshes the token); instead of surfacing a login-keychain password sheet from a background poll, an unauthorized read fails and is retried through `/usr/bin/security`, which Claude Code itself creates and updates the item through and which is therefore always trusted for it. ToastMonitor never modifies that item or its ACL
 - **Claude usage outside this Mac** — Cowork sessions that run server-side, claude.ai chat and Claude Code on other machines never write a local transcript, so their tokens cannot be counted. Instead, every successful Claude quota fetch is stored as a sample (5h and weekly percentages plus reset times). Within the current weekly window, a rise in weekly usage between two samples counts as non-local when this Mac recorded essentially no Claude Code activity in that interval (under 5,000 fresh tokens, with a 10-minute look-back for server aggregation lag). The popover shows `≈X% of weekly used outside this Mac` once the week has at least 4 intervals spanning 6 hours; hover it for details. It is a lower bound: the quota is only sampled while the popover or dashboard is open, and an interval with any local activity counts as local
