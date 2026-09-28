@@ -95,14 +95,14 @@ struct PopoverRootView: View {
             Button { openSettings() } label: {
                 Image(systemName: "gearshape")
             }
-            .footerButtonStyle(circle: true)
+            .tmGlassButton(circle: true)
             .help("Settings… (⌘,)")
             .accessibilityLabel("Settings")
 
             Button { NSApp.terminate(nil) } label: {
                 Image(systemName: "power")
             }
-            .footerButtonStyle(circle: true)
+            .tmGlassButton(circle: true)
             .help("Quit ToastMonitor (⌘Q)")
             .accessibilityLabel("Quit ToastMonitor")
 
@@ -112,7 +112,7 @@ struct PopoverRootView: View {
                 WindowManager.shared.show()
                 hidePanel()
             }
-            .footerButtonStyle(circle: false)
+            .tmGlassButton(circle: false)
         }
         .controlSize(.large)
         .padding(.horizontal, TMLayout.popoverCardInset)
@@ -204,21 +204,5 @@ private struct PopoverHeightReporter: ViewModifier {
 extension View {
     func reportPopoverHeight(_ slice: PopoverHeightSlice) -> some View {
         modifier(PopoverHeightReporter(slice: slice))
-    }
-}
-
-private extension View {
-    /// Glass on macOS 26+, the same shapes as bordered buttons on 14–15.
-    @ViewBuilder
-    func footerButtonStyle(circle: Bool) -> some View {
-        if #available(macOS 26.0, *) {
-            buttonStyle(.glass)
-                .buttonBorderShape(circle ? .circle : .capsule)
-        } else if #available(macOS 14.0, *) {
-            buttonStyle(.bordered)
-                .buttonBorderShape(circle ? .circle : .capsule)
-        } else {
-            buttonStyle(.bordered)
-        }
     }
 }

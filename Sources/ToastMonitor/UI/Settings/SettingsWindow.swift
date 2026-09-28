@@ -6,6 +6,7 @@ enum SettingsPane: String, CaseIterable {
     case general
     case appearance
     case sources
+    case accounts
     case data
     case updates
 
@@ -14,6 +15,7 @@ enum SettingsPane: String, CaseIterable {
         case .general: return "General"
         case .appearance: return "Appearance"
         case .sources: return "Sources"
+        case .accounts: return "Accounts"
         case .data: return "Data"
         case .updates: return "Updates"
         }
@@ -24,6 +26,7 @@ enum SettingsPane: String, CaseIterable {
         case .general: return "gearshape"
         case .appearance: return "paintbrush"
         case .sources: return "tray.full"
+        case .accounts: return "person.crop.circle"
         case .data: return "externaldrive"
         case .updates: return "arrow.triangle.2.circlepath"
         }
@@ -35,6 +38,7 @@ enum SettingsPane: String, CaseIterable {
         case .general: GeneralSettingsPane()
         case .appearance: AppearanceSettingsPane()
         case .sources: SourcesSettingsPane()
+        case .accounts: AccountsSettingsPane()
         case .data: DataSettingsPane()
         case .updates: UpdatesSettingsPane()
         }

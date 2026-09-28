@@ -160,6 +160,7 @@ final class DeepSeekBillingClient: ObservableObject {
                 guard self.connectionRevision == version else { return }
                 self.revision &+= 1
                 self.credentialRevision &+= 1
+                self.resetOtherSpends()
                 self.task?.cancel(); self.task = nil
                 self.credential = candidate
                 self.state = State(kind: kind, balance: balance, balanceUpdated: Date())
@@ -186,6 +187,7 @@ final class DeepSeekBillingClient: ObservableObject {
             guard saved else { self.connectionError = DeepSeekBilling.Failure.keychain.localizedDescription; return }
             self.revision &+= 1
             self.credentialRevision &+= 1
+            self.resetOtherSpends()
             self.task?.cancel(); self.task = nil
             self.credential = nil
             self.state = State()
@@ -279,6 +281,60 @@ final class DeepSeekBillingClient: ObservableObject {
         if state.loadingBalance { return "Loading" }
         if state.balanceError != nil { return "Unavailable" }
         return "Not connected"
+    }
+
+    // MARK: - Spend for a period other than the selected one
+
+    /// Account-wide spend for windows other than `window`, keyed by window.
+    /// The popover's period drives `state.spend`; a second surface that shows
+    /// a different range at the same time (the dashboard) reads and loads its
+    /// own window here instead of re-selecting the shared one, which would
+    /// make the two surfaces cancel each other's requests.
+    @Published private(set) var otherSpends: [DeepSeekBilling.Window: DeepSeekBilling.Spend] = [:]
+    private var otherSpendTasks: [DeepSeekBilling.Window: Task<Void, Never>] = [:]
+    private var otherSpendNext: [DeepSeekBilling.Window: Date] = [:]
+
+    private func resetOtherSpends() {
+        otherSpendTasks.values.forEach { $0.cancel() }
+        otherSpendTasks = [:]
+        otherSpendNext = [:]
+        otherSpends = [:]
+    }
+
+    /// The account spend for `slot`, from whichever cache holds it. Nil when
+    /// it is unavailable (not a platform account, expired, full history, or
+    /// not loaded yet).
+    func spend(for slot: UsagePeriodSlot, configuration: UsagePeriodConfiguration,
+               now: Date = Date()) -> DeepSeekBilling.Spend? {
+        guard state.kind == .platform, !state.expired,
+              let target = DeepSeekBilling.Window.make(slot: slot, configuration: configuration, now: now)
+        else { return nil }
+        if target == window, let spend = state.spend, spend.window == target { return spend }
+        return otherSpends[target]
+    }
+
+    /// Fetches `slot`'s spend when it is not the selected window and the cache
+    /// is older than a minute. Only while a surface is visible, and a failure
+    /// waits out the same minute before trying again.
+    func loadSpendIfNeeded(for slot: UsagePeriodSlot, configuration: UsagePeriodConfiguration,
+                           now: Date = Date()) {
+        guard popoverVisible || dashboardVisible,
+              let credential, credential.kind == .platform, !state.expired,
+              let target = DeepSeekBilling.Window.make(slot: slot, configuration: configuration, now: now),
+              target != window, otherSpendTasks[target] == nil,
+              now >= (otherSpendNext[target] ?? .distantPast) else { return }
+        let version = credentialRevision
+        otherSpendNext[target] = now.addingTimeInterval(60)
+        otherSpendTasks[target] = Task { [weak self, fetch] in
+            let result = await Self.loadSpend(credential, window: target, fetch: fetch)
+            guard let self, !Task.isCancelled, self.credentialRevision == version else { return }
+            self.otherSpendTasks[target] = nil
+            if case .success(let value)? = result {
+                // Four slots exist; keep the map from ever growing past them.
+                if self.otherSpends.count >= 4 { self.otherSpends = [:] }
+                self.otherSpends[target] = value
+            }
+        }
     }
 
     func stale(_ updated: Date?, error: String?, now: Date = Date()) -> Bool {

@@ -52,7 +52,34 @@ final class CodexBillingModeCoordinator {
 }
 
 
-/// Settings › Sources › Accounts: every quota/balance account in one list.
+/// Which quota/balance accounts show a row in the popover. One store behind
+/// both Settings › Appearance and Settings › Accounts, so the two
+/// lists always agree.
+enum PopoverAccountRows {
+    static let accounts: [(key: String, title: String)] = [
+        ("claude", "Claude"), ("go", "OpenCode Go"), ("codex", "Codex"),
+        ("cc", "Command Code"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
+    ]
+
+    static var keys: [String] { accounts.map(\.key) }
+
+    static func isVisible(_ key: String) -> Bool {
+        Database.shared.setting("hide_quota_row_\(key)") != "1"
+    }
+
+    /// Persists off the main thread, then tells the resident popover.
+    static func setVisible(_ key: String, _ visible: Bool) {
+        let value = visible ? nil : "1"
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = Database.shared.setSetting("hide_quota_row_\(key)", value)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: AccountsSettingsSection.quotaRowsChanged, object: nil)
+            }
+        }
+    }
+}
+
+/// Settings › Accounts: every quota/balance account in one list.
 /// A collapsed row names the account and its connection state; expanding it
 /// shows that account's credentials and options, including whether its row
 /// appears in the popover.
@@ -89,8 +116,6 @@ struct AccountsSettingsSection: View {
     @State private var pendingClear: CredentialTarget?
     /// Last save/clear outcome per account, shown inside that account only.
     @State private var message: [String: (text: String, failed: Bool)] = [:]
-
-    private static let popoverKeys = ["claude", "go", "codex", "cc", "router", "deepseek"]
 
     var body: some View {
         Section("Accounts") {
@@ -140,8 +165,8 @@ struct AccountsSettingsSection: View {
             }
         }
         .onAppear {
-            for key in Self.popoverKeys {
-                rowVisible[key] = Database.shared.setting("hide_quota_row_\(key)") != "1"
+            for key in PopoverAccountRows.keys {
+                rowVisible[key] = PopoverAccountRows.isVisible(key)
             }
             codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
         }
@@ -215,13 +240,7 @@ struct AccountsSettingsSection: View {
             get: { rowVisible[key] ?? true },
             set: { visible in
                 rowVisible[key] = visible
-                let value = visible ? nil : "1"
-                DispatchQueue.global(qos: .userInitiated).async {
-                    _ = Database.shared.setSetting("hide_quota_row_\(key)", value)
-                    DispatchQueue.main.async {
-                        NotificationCenter.default.post(name: Self.quotaRowsChanged, object: nil)
-                    }
-                }
+                PopoverAccountRows.setVisible(key, visible)
             }
         )
     }

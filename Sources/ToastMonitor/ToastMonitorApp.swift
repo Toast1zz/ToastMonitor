@@ -342,6 +342,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }()
             Database.shared.open()
+            // The complete snapshot (model breakdown, heatmap) is only loaded
+            // while the dashboard counts as visible, exactly like the window.
+            // Mark it visible before the first refresh so that one refresh
+            // is already the complete one.
+            _ = AppState.shared
+            NotificationCenter.default.post(name: TMNotifications.dashboardVisibility, object: true)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
             AppState.shared.start()
             let deadline = Date().addingTimeInterval(10)
             while AppState.shared.snapshotFetchedAt == 0 && Date() < deadline {

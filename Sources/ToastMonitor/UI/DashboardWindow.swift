@@ -139,7 +139,7 @@ final class WindowManager {
         }
     }
 
-    private static let defaultContentHeight: CGFloat = 830
+    private static let defaultContentSize = NSSize(width: 980, height: 680)
     private static let titlebarAllowance: CGFloat = 32
 
     func show(tab: DashboardView.Tab? = nil) {
@@ -166,17 +166,21 @@ final class WindowManager {
         // The regular unified toolbar lets macOS 26/27 supply its native
         // floating Liquid Glass geometry and current control height.
         window.toolbarStyle = .unified
-        // Tall enough for the Overview's usage card and the whole activity
-        // grid without scrolling, but never taller than the screen.
-        let visibleHeight = (NSScreen.main?.visibleFrame.height ?? 900) - Self.titlebarAllowance
-        window.setContentSize(NSSize(width: 1120, height: min(Self.defaultContentHeight, visibleHeight)))
+        // Wide enough for four metric tiles and two side-by-side cards, and
+        // short enough to sit comfortably on a laptop screen; the pages
+        // scroll. Never taller than the screen.
+        let visibleFrame = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+        window.setContentSize(NSSize(
+            width: min(Self.defaultContentSize.width, visibleFrame.width),
+            height: min(Self.defaultContentSize.height, visibleFrame.height - Self.titlebarAllowance)))
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 900, height: 580)
+        window.contentMinSize = NSSize(width: 900, height: 600)
         window.center()
-        // v2: frames saved under the old 720pt default clipped the activity
-        // grid, so the size memory starts over once at the new default.
-        window.setFrameAutosaveName("ToastMonitorDashboard.v2")
+        // v3: the default shrank, and a remembered v2 frame would keep
+        // reopening at the old large size, so the size memory starts over
+        // once at the new default.
+        window.setFrameAutosaveName("ToastMonitorDashboard.v3")
         // Build and lay out all four pages before the window appears. This
         // moves each SwiftUI page's one-time construction cost out of toolbar
         // clicks, so the native tab island never shares a frame with Charts,
