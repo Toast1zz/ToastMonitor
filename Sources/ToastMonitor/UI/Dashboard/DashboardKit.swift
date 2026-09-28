@@ -249,47 +249,6 @@ struct DashUsageBar: View {
     }
 }
 
-/// A quota window: name and reset on one line, the figure at the trailing end,
-/// the bar underneath at full width.
-struct QuotaMeter: View {
-    let title: String
-    var detail: String?
-    /// Figure at the trailing end ("96%", "$12.40 / $60").
-    let valueText: String
-    var unitText: String?
-    let usedPercent: Double
-    let tint: Color
-    var marker: Double?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title)
-                    .font(TMType.medium(TMType.body))
-                if let detail {
-                    Text(detail)
-                        .font(TMType.regular(TMType.caption))
-                        .tmMonospacedDigit()
-                        .foregroundStyle(TMDesign.quiet)
-                }
-                Spacer(minLength: 8)
-                Text(valueText)
-                    .font(TMType.semibold(TMType.body))
-                    .tmMonospacedDigit()
-                if let unitText {
-                    Text(unitText)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.quiet)
-                }
-            }
-            DashUsageBar(usedPercent: usedPercent, tint: tint, marker: marker)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
-        .accessibilityValue(Text([valueText, unitText, detail].compactMap { $0 }.joined(separator: ", ")))
-    }
-}
-
 /// Round-cornered tool/service glyph: the brand color as a wash behind a
 /// symbol in that color.
 struct DashGlyph: View {
