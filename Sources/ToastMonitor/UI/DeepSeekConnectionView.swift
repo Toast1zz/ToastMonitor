@@ -2,7 +2,7 @@ import SwiftUI
 import WebKit
 
 /// Dashboard › Plans: DeepSeek balance and account spend, read-only.
-/// Connecting and the exchange rate live in Settings › Sources.
+/// Connecting and the exchange rate live in Settings › Accounts.
 struct DeepSeekBalanceView: View {
     @ObservedObject private var client: DeepSeekBillingClient
     @ObservedObject private var periods = UsagePeriodSettings.shared
@@ -12,11 +12,11 @@ struct DeepSeekBalanceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(client.state.kind == .platform ? "Platform account - experimental" : "Official API")
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(client.state.kind == .platform ? "Platform account · experimental" : "Official API")
                     .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TMDesign.quiet)
                 Spacer()
                 if client.state.loadingBalance || client.state.loadingSpend {
                     ProgressView().controlSize(.small)
@@ -27,35 +27,47 @@ struct DeepSeekBalanceView: View {
                     .help("Refresh DeepSeek balance and account spend")
                     .accessibilityLabel("Refresh DeepSeek")
             }
-            LabeledContent("Balance", value: client.balanceText)
-                .font(TMType.monoRegular(TMType.body))
-            if client.state.kind == .platform {
-                LabeledContent("\(periods.configuration.label(for: client.selectedSlot)) account spend", value: client.spendText)
-                    .font(TMType.monoRegular(TMType.body))
+            HStack(alignment: .top, spacing: 28) {
+                stat("Balance", client.balanceText)
+                if client.state.kind == .platform {
+                    stat("\(periods.configuration.label(for: client.selectedSlot)) account spend", client.spendText)
+                }
             }
             if let balance = client.state.balance {
                 ForEach(balance.wallets, id: \.currency) { wallet in
-                    Text("Paid \(DeepSeekBilling.Money(currency: wallet.currency, amount: wallet.paid).formatted)  |  Granted \(DeepSeekBilling.Money(currency: wallet.currency, amount: wallet.granted).formatted)")
-                        .font(TMType.monoRegular(TMType.caption))
-                        .foregroundStyle(.secondary)
+                    Text("Paid \(DeepSeekBilling.Money(currency: wallet.currency, amount: wallet.paid).formatted)  ·  Granted \(DeepSeekBilling.Money(currency: wallet.currency, amount: wallet.granted).formatted)")
+                        .font(TMType.number(TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
                 }
             }
             if let updated = client.state.balanceUpdated {
                 Text("Balance updated \(Format.dateTime(Int64(updated.timeIntervalSince1970)))")
-                    .font(TMType.regular(TMType.caption)).foregroundStyle(.secondary)
+                    .font(TMType.regular(TMType.caption)).foregroundStyle(TMDesign.quiet)
             }
             if let updated = client.state.spendUpdated, let window = client.window {
-                Text("Account spend updated \(Format.dateTime(Int64(updated.timeIntervalSince1970))) - \(window.timeZoneLabel)")
-                    .font(TMType.regular(TMType.caption)).foregroundStyle(.secondary)
+                Text("Account spend updated \(Format.dateTime(Int64(updated.timeIntervalSince1970))) · \(window.timeZoneLabel)")
+                    .font(TMType.regular(TMType.caption)).foregroundStyle(TMDesign.quiet)
             }
             if let error = client.state.balanceError ?? client.state.spendError {
                 Text(error).font(TMType.regular(TMType.caption)).foregroundStyle(TMDesign.danger)
             }
         }
     }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+            Text(value)
+                .font(TMType.semibold(20))
+                .tmMonospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
 }
 
-/// Settings › Sources › Accounts › DeepSeek: connection and the manual
+/// Settings › Accounts › DeepSeek: connection and the manual
 /// CNY/USD rate used for Spent.
 struct DeepSeekAccountSettings: View {
     @ObservedObject private var client = DeepSeekBillingClient.shared

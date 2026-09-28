@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Settings › Sources › Subscriptions: list + add/edit form (fixed costs).
+/// Settings › Accounts › Subscriptions: list + add/edit form (fixed costs).
 struct SubscriptionSettingsSection: View {
     @ObservedObject private var app = AppState.shared
     @State private var showForm = false

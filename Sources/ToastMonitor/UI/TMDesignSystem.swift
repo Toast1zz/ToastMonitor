@@ -231,14 +231,11 @@ enum TMHealthStatus {
 /// Type scale for the dashboard. Data-heavy surfaces keep the floor at 10.5pt;
 /// readable copy stays at 11.5pt or above.
 ///
-/// Font rules (whole app): regular UI copy is system SF Pro only — no third-
-/// party fonts, no monospaced labels. Monospaced SF Mono is reserved for the
-/// brand title and optional fine-print suffixes. Every number that can change
+/// Font rules (whole app): UI copy is system SF Pro only — no third-party
+/// fonts, no monospaced labels. Every number that can change
 /// on refresh (tokens, money, percents, countdowns) gets .monospacedDigit()
 /// so the width never jumps.
 enum TMType {
-    /// Hero metric — the primary number (Popover 34pt bold 同规格).
-    static let hero: CGFloat = 34
     /// Section heading inside a panel.
     static let section: CGFloat = 14
     /// Body text.
@@ -258,29 +255,10 @@ enum TMType {
     static func semibold(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
     /// SF Pro Bold — the single hero figure.
     static func bold(_ size: CGFloat) -> Font { .system(size: size, weight: .bold) }
-    /// SF Mono Regular — fine-print suffixes (e.g. "resets in …").
-    static func monoRegular(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
     /// SF Pro with tabular digits — numbers that should not jitter in width
     /// but also should not switch typeface mid-sentence (Popover copy).
     static func number(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight).monospacedDigit()
-    }
-}
-
-/// 板块标题（Quota / Activity / Overview 等）：全大写 + 小号 + 字距 + 灰，
-/// 与内容行形成清晰层次。Popover 与主页面共用。
-struct SectionTitle: View {
-    let title: String
-
-    init(_ title: String) {
-        self.title = title
-    }
-
-    var body: some View {
-        Text(title.uppercased())
-            .font(TMType.semibold(11))
-            .kerning(0.6)
-            .foregroundStyle(TMDesign.quiet)
     }
 }
 
@@ -308,57 +286,6 @@ extension View {
     }
 }
 
-/// 板块标题（含可选右侧操作）。与 SectionTitle 同风格：全大写小号灰。
-struct TMSectionHeader: View {
-    let title: String
-    var action: (() -> Void)?
-    var actionTitle: String?
-
-    init(_ title: String, actionTitle: String? = nil, action: (() -> Void)? = nil) {
-        self.title = title
-        self.actionTitle = actionTitle
-        self.action = action
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            SectionTitle(title)
-            Spacer(minLength: 12)
-            if let action, let actionTitle {
-                Button(actionTitle, action: action)
-                    .buttonStyle(.link)
-                    .font(.system(size: TMType.caption))
-            }
-        }
-    }
-}
-
-/// 迷你指标：小标签 + 数值，Overview hero 与 Analysis 汇总条共用。
-/// 标签固定 caption quiet；数值字体由调用方指定（Overview hero regular 16、
-/// Analysis 汇总 semibold 16），一律 tmMonospacedDigit 防宽度跳动。
-struct TMMiniMetric: View {
-    let label: String
-    let value: String
-    let font: Font
-    var spacing: CGFloat = 1
-    /// 数值缩小时的最小缩放（1.0 = 不缩放）。
-    var minimumScaleFactor: CGFloat = 1
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: spacing) {
-            Text(label)
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-            Text(value)
-                .font(font)
-                .tmMonospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(minimumScaleFactor)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 struct TMStatusPill: View {
     let text: String
     let color: Color
@@ -372,39 +299,6 @@ struct TMStatusPill: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(color.opacity(0.10), in: Capsule(style: .continuous))
-    }
-}
-
-struct TMPanel<Content: View>: View {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    var body: some View {
-        content
-            .tmPanelSurface()
-    }
-}
-
-struct TMProgressBar: View {
-    let value: Double
-    var tint: Color = TMDesign.accent
-    var height: CGFloat = 4
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(0.08))
-                Capsule(style: .continuous)
-                    .fill(tint)
-                    .frame(width: proxy.size.width * min(max(value, 0), 1))
-            }
-        }
-        .frame(height: height)
-        .accessibilityValue(Text("\(Int(min(max(value, 0), 1) * 100))%"))
     }
 }
 
@@ -443,22 +337,6 @@ struct TMStatusCapsule: View {
     }
 }
 
-extension View {
-    /// A restrained elevated section for settings and service summaries.
-    /// Use one surface per task group; avoid nesting these inside each other.
-    /// 与 TMPanel 同规格（16pt padding、12 圆角、hairline 描边）。
-    func tmPanelSurface(cornerRadius: CGFloat = 12, padding: CGFloat = 16) -> some View {
-        self
-            .padding(padding)
-            .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(TMDesign.divider, lineWidth: 1)
-            }
-    }
-}
-import SwiftUI
-
 /// 预测状态语义 + 英文预测文案（计划页/设置页共用，避免逐字重复）。
 enum ForecastText {
     enum Status { case ok, warn, danger, neutral }
@@ -490,6 +368,30 @@ enum ForecastText {
         case .warn: return TMDesign.accent
         case .danger: return TMDesign.danger
         case .neutral: return .secondary
+        }
+    }
+}
+
+extension View {
+    /// Liquid Glass button on macOS 26+, the same shapes as bordered buttons
+    /// on 14–15. `extraLarge` matches the height of an extra-large segmented
+    /// control so both can share one row.
+    @ViewBuilder
+    func tmGlassButton(circle: Bool, extraLarge: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            if extraLarge {
+                buttonStyle(.glass)
+                    .buttonBorderShape(circle ? .circle : .capsule)
+                    .controlSize(.extraLarge)
+            } else {
+                buttonStyle(.glass)
+                    .buttonBorderShape(circle ? .circle : .capsule)
+            }
+        } else if #available(macOS 14.0, *) {
+            buttonStyle(.bordered)
+                .buttonBorderShape(circle ? .circle : .capsule)
+        } else {
+            buttonStyle(.bordered)
         }
     }
 }

@@ -1,8 +1,15 @@
 import SwiftUI
 
 /// Settings › Sources: where each tool's usage comes from (this Mac or the
-/// remote feed), the accounts behind quotas and balances, fixed
-/// subscriptions, and collector status.
+/// remote feed) and collector status. Quota/balance accounts and fixed
+/// subscriptions have their own Accounts pane.
+struct AccountsSettingsPane: View {
+    var body: some View {
+        AccountsSettingsSection()
+        SubscriptionSettingsSection()
+    }
+}
+
 struct SourcesSettingsPane: View {
     /// UI-3: 订阅后 poll 完成时 feed 状态行随 @Published 刷新。
     @ObservedObject private var remote = HermesRemoteClient.shared
@@ -40,10 +47,6 @@ struct SourcesSettingsPane: View {
                 feedError = nil
                 feedDisabled = false
             }
-
-        AccountsSettingsSection()
-
-        SubscriptionSettingsSection()
 
         CollectorStatusSection(remoteSources: effectiveSources)
     }

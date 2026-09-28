@@ -1,9 +1,9 @@
 import SwiftUI
 import Charts
 
-/// 计划与余额: one card per connected service — quota, balance and history.
+/// Plans: one card per connected account — quota windows, balance and history.
 /// Credentials, account options and subscriptions are managed in
-/// Settings › Sources; accounts that are not connected fold into one row
+/// Settings › Accounts; accounts that are not connected fold into one card
 /// that opens it.
 struct PlansView: View {
     @EnvironmentObject var app: AppState
@@ -12,6 +12,7 @@ struct PlansView: View {
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
+    @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
     @State private var goSnapshots: [Database.OGSnapshot] = []
     @State private var orSnapshots: [Database.ORSnapshot] = []
     /// Last observed state markers; onReceive only reloads history when the
@@ -19,11 +20,13 @@ struct PlansView: View {
     @State private var goLastSeen: (lastOK: Int64, lastSync: Int64)?
     @State private var orLastSeen: Int64 = 0
 
-    private var claudeConnected: Bool { claudeQuota.enabled }
-    private var goConnected: Bool { goClient.configured || goClient.state.lastSync > 0 }
-    private var orConnected: Bool { orClient.hasKey }
-    private var deepseekConnected: Bool { deepseek.state.kind != nil }
-    private var ccConnected: Bool { ccQuota.state.configured || ccQuota.state.lastSync > 0 }
+    // Shared with the popover, so an account never reads "Not configured"
+    // here while it shows numbers there.
+    private var claudeConnected: Bool { AccountConnection.claude }
+    private var goConnected: Bool { AccountConnection.openCodeGo }
+    private var orConnected: Bool { AccountConnection.openRouter }
+    private var deepseekConnected: Bool { AccountConnection.deepSeek }
+    private var ccConnected: Bool { AccountConnection.commandCode }
 
     private var unconnected: [String] {
         [(claudeConnected, "Claude"), (goConnected, "OpenCode Go"), (ccConnected, "Command Code"),
@@ -31,26 +34,36 @@ struct PlansView: View {
             .filter { !$0.0 }.map(\.1)
     }
 
+    /// Connected accounts and subscriptions in two columns; the "not
+    /// connected" card runs full width below them.
+    private var cards: [AnyView] {
+        var out: [AnyView] = []
+        if claudeConnected { out.append(AnyView(claudeCard)) }
+        if goConnected { out.append(AnyView(goCard)) }
+        if orConnected { out.append(AnyView(orCard)) }
+        if ccConnected { out.append(AnyView(ccCard)) }
+        if deepseekConnected { out.append(AnyView(deepseekCard)) }
+        if !app.subscriptions.isEmpty { out.append(AnyView(subsCard)) }
+        return out
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                SectionTitle("Plans & Balance")
-                    .padding(.top, 18)
-                    .padding(.bottom, 12)
-                if claudeConnected { claudeCard }
-                if goConnected { goCard }
-                if orConnected { orCard }
-                if deepseekConnected {
-                    serviceCard(title: "DeepSeek", icon: "d.circle.fill", color: ToolKind.dsh.color) {
-                        DeepSeekBalanceView()
+        DashPage {
+            let items = cards
+            // Two columns, each card at its own content height, stacked from
+            // the top. Cards are never stretched to fill the window: an
+            // account with one quota bar is a short card, not a tall empty one.
+            HStack(alignment: .top, spacing: DashLayout.gap) {
+                ForEach(0..<2, id: \.self) { column in
+                    VStack(spacing: DashLayout.gap) {
+                        ForEach(Array(stride(from: column, to: items.count, by: 2)), id: \.self) { index in
+                            items[index].dashFixedHeight()
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-                if ccConnected { ccCard }
-                if !app.subscriptions.isEmpty { subsCard }
-                if !unconnected.isEmpty { unconnectedCard }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
+            if !unconnected.isEmpty { unconnectedCard.dashFixedHeight() }
         }
         .onAppear {
             goLastSeen = (goClient.state.lastOK, goClient.state.lastSync)
@@ -72,27 +85,24 @@ struct PlansView: View {
     }
 
     private func openAccountSettings() {
-        SettingsWindowController.shared.show(pane: .sources)
+        SettingsWindowController.shared.show(pane: .accounts)
     }
 
     private var unconnectedCard: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Not connected")
-                    .font(TMType.medium(TMType.body))
-                Text(unconnected.joined(separator: " · "))
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(.secondary)
+        DashCard {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Not connected")
+                        .font(TMType.semibold(15))
+                    Text(unconnected.joined(separator: " · "))
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Set Up…", action: openAccountSettings)
+                    .tmGlassButton(circle: false)
             }
-            Spacer()
-            Button("Set Up…", action: openAccountSettings)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous)
-                .stroke(TMDesign.divider, lineWidth: 1)
         }
     }
 
@@ -126,63 +136,58 @@ struct PlansView: View {
 
     private var goCard: some View {
         let go = goClient.state
-        return serviceCard(title: "OpenCode Go", icon: "g.circle.fill", color: ToolKind.opencode.color) {
-            VStack(alignment: .leading, spacing: 12) {
-                statusHeader(
-                    isLoading: go.isLoading,
-                    configured: goClient.configured,
-                    error: go.error,
-                    lastSync: go.lastOK,
-                    syncedText: go.lastOK > 0 ? "Updated \(Format.dateTime(go.lastOK))" : nil,
-                    refresh: goClient.configured ? { goClient.refresh() } : nil
-                )
-                if let err = go.error, goClient.configured {
-                    Text(err)
+        return serviceCard(title: "OpenCode Go", symbol: "g.circle.fill", color: ToolKind.opencode.color,
+                           isLoading: go.isLoading, configured: goConnected,
+                           error: go.error, lastSync: go.lastOK,
+                           refresh: goClient.configured ? { goClient.refresh() } : nil) {
+            if goConnected {
+                if let pct = go.monthlyPct {
+                    let limit = OpenCodeGoClient.monthlyLimitUSD
+                    let used = min(max(pct, 0), 100) / 100 * limit
+                    meter("Monthly", usedPercent: pct,
+                          detail: "\(Format.money(used)) of \(Format.money(limit))"
+                              + resetSuffix(absolute: go.monthlyReset.map { go.lastSync + $0 }),
+                          color: ToolKind.opencode.color,
+                          marker: subForGo.map { $0.price / limit })
+                }
+                windowMeter("5h", pct: go.rollingPct, reset: go.rollingReset)
+                windowMeter("Weekly", pct: go.weeklyPct, reset: go.weeklyReset)
+
+                if let sub = subForGo,
+                   let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
+                    Divider()
+                    subscriptionLine(sub, info: info)
+                }
+                goHistory
+            }
+        }
+    }
+
+    /// The forecast for a subscription that is tied to a quota.
+    private func subscriptionLine(_ sub: Database.Subscription,
+                                  info: SubscriptionMath.CycleInfo) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Subscription")
+                    .font(TMType.medium(TMType.body))
+                Spacer()
+                Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "mo" : "yr")")
+                    .font(TMType.semibold(TMType.body))
+                    .tmMonospacedDigit()
+            }
+            HStack(alignment: .firstTextBaseline) {
+                if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
+                    let line = ForecastText.line(for: fc, plan: sub.plan)
+                    Text(line.text)
                         .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.danger.opacity(0.85))
-                        .lineLimit(2)
+                        .tmMonospacedDigit()
+                        .foregroundStyle(ForecastText.color(line.status))
                 }
-
-                if goClient.configured {
-                    if let pct = go.monthlyPct {
-                        quotaBar(
-                            title: "Monthly quota",
-                            usedPct: pct,
-                            resetAt: go.monthlyReset.map { go.lastSync + $0 },
-                            limit: OpenCodeGoClient.monthlyLimitUSD,
-                            color: ToolKind.opencode.color,
-                            reference: subForGo?.price
-                        )
-                    }
-                    windowRow("5h window", pct: go.rollingPct, reset: go.rollingReset)
-                    windowRow("Weekly window", pct: go.weeklyPct, reset: go.weeklyReset)
-
-                    if let sub = subForGo, let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
-                        Divider()
-                        HStack(spacing: 8) {
-                            Text("Fixed subscription")
-                                .font(TMType.regular(TMType.caption))
-                                .foregroundStyle(TMDesign.quiet)
-                            Spacer()
-                            Text("\(Format.money(sub.price))/\(sub.cycle == "monthly" ? "mo" : "yr")")
-                                .font(TMType.semibold(TMType.caption))
-                                .tmMonospacedDigit()
-                            Text("Day \(info.dayOfCycle)/\(info.totalDays)")
-                                .font(TMType.regular(TMType.caption))
-                                .tmMonospacedDigit()
-                                .foregroundStyle(TMDesign.quiet)
-                            if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                let line = ForecastText.line(for: fc, plan: sub.plan)
-                                Text(line.text)
-                                    .font(TMType.semibold(TMType.caption))
-                                    .tmMonospacedDigit()
-                                    .foregroundStyle(ForecastText.color(line.status))
-                            }
-                        }
-                    }
-
-                    goHistory
-                }
+                Spacer()
+                Text("Day \(info.dayOfCycle) of \(info.totalDays)")
+                    .font(TMType.regular(TMType.caption))
+                    .tmMonospacedDigit()
+                    .foregroundStyle(TMDesign.quiet)
             }
         }
     }
@@ -193,61 +198,34 @@ struct PlansView: View {
     private var goHistory: some View {
         let daily = Self.dailyMonthlyRemaining(goSnapshots)
         let currentRemaining = goClient.state.monthlyPct.map { max(0, min(100, 100 - $0)) }
-        return VStack(alignment: .leading, spacing: 6) {
-            if daily.count >= 2 {
-                HStack(spacing: 12) {
-                    Text("Monthly quota remaining (daily)")
-                        .font(TMType.semibold(TMType.caption))
-                    Spacer()
-                    if let currentRemaining {
-                        Text("\(Int(currentRemaining.rounded()))% left")
-                            .font(TMType.monoRegular(TMType.micro))
-                            .foregroundStyle(TMDesign.quiet)
-                    }
+        return historyBlock(title: "Monthly remaining, daily",
+                            current: currentRemaining.map { "\(Int($0.rounded()))% left" },
+                            hasData: daily.count >= 2) {
+            Chart(daily) { point in
+                if let remaining = point.remaining {
+                    LineMark(
+                        x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.ts))),
+                        y: .value("Remaining %", remaining)
+                    )
+                    .foregroundStyle(ToolKind.opencode.color)
+                    // A quota reset is a real discontinuity. Linear
+                    // interpolation keeps the daily samples honest and
+                    // avoids inventing a smooth curve between reset and
+                    // post-reset values.
+                    .interpolationMethod(.linear)
                 }
-                Chart(daily) { point in
-                    if let remaining = point.remaining {
-                        LineMark(
-                            x: .value("Date", Date(timeIntervalSince1970: TimeInterval(point.ts))),
-                            y: .value("Remaining %", remaining)
-                        )
-                        .foregroundStyle(TMDesign.accent)
-                        // A quota reset is a real discontinuity. Linear
-                        // interpolation keeps the daily samples honest and
-                        // avoids inventing a smooth curve between reset and
-                        // post-reset values.
-                        .interpolationMethod(.linear)
-                    }
-                }
-                .chartYScale(domain: 0...100)
-                .chartXAxis {
-                    AxisMarks(values: .stride(by: .day, count: max(daily.count / 6, 1))) { _ in
-                        AxisGridLine()
-                        AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading) { value in
-                        AxisGridLine()
-                        AxisValueLabel { if let v = value.as(Double.self) { Text("\(Int(v))%") } }
-                    }
-                }
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("OpenCode Go monthly quota remaining history chart")
-                .accessibilityValue(Text(goHistoryAccessibilitySummary(daily)))
-                .accessibilityHint("VoiceOver browses daily monthly quota remaining; increases indicate a quota reset")
-                .frame(height: 110)
-            } else {
-                Text("Not enough snapshots")
-                    .font(TMType.regular(TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
             }
+            .chartYScale(domain: 0...100)
+            .chartXAxis { historyDateAxis(count: daily.count) }
+            .chartYAxis {
+                historyValueAxis { Text("\(Int($0))%") }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("OpenCode Go monthly quota remaining history chart")
+            .accessibilityValue(Text(goHistoryAccessibilitySummary(daily)))
+            .accessibilityHint("VoiceOver browses daily monthly quota remaining; increases indicate a quota reset")
         }
-        .padding(.top, 4)
     }
-
-    /// Shared dash pattern for secondary quota guides elsewhere in Plans.
-    private static let historyDash: [CGFloat] = [4, 3]
 
     private struct DailyPoint: Identifiable {
         let day: Int64
@@ -285,54 +263,28 @@ struct PlansView: View {
 
     private var orCard: some View {
         let or = orClient.state
-        return serviceCard(title: "OpenRouter", icon: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color) {
-            VStack(alignment: .leading, spacing: 12) {
-                statusHeader(
-                    isLoading: or.isLoading,
-                    configured: orClient.hasKey,
-                    error: or.error,
-                    lastSync: or.lastOK,
-                    syncedText: or.lastOK > 0 ? "Updated \(Format.dateTime(or.lastOK))" : nil,
-                    refresh: orClient.hasKey ? { orClient.refresh() } : nil
-                )
-                if let err = or.error, orClient.hasKey {
-                    Text(err)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.danger.opacity(0.85))
-                        .lineLimit(2)
-                }
-
-                if orClient.hasKey {
-                    HStack(spacing: 24) {
-                        liveStat("Balance", or.accountBalance.map(Format.money) ?? "—")
-                        liveStat("Today", Format.money(or.usageDaily))
-                        liveStat("Month", Format.money(or.usageMonthly))
-                        if let limit = or.limit {
-                            liveStat("Key limit", Format.money(limit))
-                        }
+        return serviceCard(title: "OpenRouter", symbol: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color,
+                           isLoading: or.isLoading, configured: orClient.hasKey,
+                           error: or.error, lastSync: or.lastOK,
+                           refresh: orClient.hasKey ? { orClient.refresh() } : nil) {
+            if orClient.hasKey {
+                HStack(alignment: .top, spacing: 28) {
+                    liveStat("Balance", or.accountBalance.map(Format.money) ?? "—")
+                    liveStat("Today", Format.money(or.usageDaily))
+                    liveStat("Month", Format.money(or.usageMonthly))
+                    if let limit = or.limit {
+                        liveStat("Key limit", Format.money(limit))
                     }
-                    if let remaining = or.limitRemaining, let limit = or.limit {
-                        // Bar semantics are "used": a brand-new key at 100%
-                        // remaining renders an empty bar, never a full red one.
-                        let usedPct = limit > 0 ? (limit - remaining) / limit * 100 : 0
-                        quotaBar(
-                            title: "Key quota",
-                            usedPct: usedPct,
-                            resetAt: nil,
-                            limit: limit,
-                            color: ToolKind.openrouter.color,
-                            reference: nil,
-                            remainingText: Format.money(remaining)
-                        )
-                    }
-                    Text(or.isManagementKey
-                         ? "Management key"
-                         : "Standard key")
-                        .font(TMType.regular(TMType.micro))
-                        .foregroundStyle(TMDesign.faint)
-
-                    orHistory
                 }
+                if let remaining = or.limitRemaining, let limit = or.limit {
+                    // Bar semantics are "used": a brand-new key at 100%
+                    // remaining renders an empty bar, never a full one.
+                    let usedPct = limit > 0 ? (limit - remaining) / limit * 100 : 0
+                    meter("Key quota", usedPercent: usedPct,
+                          detail: "\(Format.money(remaining)) of \(Format.money(limit)) left",
+                          color: ToolKind.openrouter.color)
+                }
+                orHistory
             }
         }
     }
@@ -342,52 +294,35 @@ struct PlansView: View {
         let balanceSnapshots = orSnapshots.filter {
             useAccountBalance ? $0.accountBalance != nil : $0.limitRemaining != nil
         }
-        return VStack(alignment: .leading, spacing: 6) {
-            if balanceSnapshots.count >= 2 {
-                Text("Balance history (daily)")
-                    .font(TMType.semibold(TMType.caption))
-                Chart(balanceSnapshots) { s in
-                    if let balance = useAccountBalance ? s.accountBalance : s.limitRemaining {
-                        LineMark(
-                            x: .value("Time", Date(timeIntervalSince1970: TimeInterval(s.ts))),
-                            y: .value("Balance", balance)
-                        )
-                        .foregroundStyle(TMDesign.accent.opacity(0.85))
-                        // Balance changes are measured values. Linear segments
-                        // prevent a smoothing spline from inventing an upward
-                        // bump between two declining snapshots.
-                        .interpolationMethod(.linear)
-                    }
+        return historyBlock(title: "Balance, daily",
+                            current: balanceSnapshots.last
+                                .flatMap { useAccountBalance ? $0.accountBalance : $0.limitRemaining }
+                                .map(Format.money),
+                            hasData: balanceSnapshots.count >= 2) {
+            Chart(balanceSnapshots) { s in
+                if let balance = useAccountBalance ? s.accountBalance : s.limitRemaining {
+                    LineMark(
+                        x: .value("Time", Date(timeIntervalSince1970: TimeInterval(s.ts))),
+                        y: .value("Balance", balance)
+                    )
+                    .foregroundStyle(ToolKind.openrouter.color)
+                    // Balance changes are measured values. Linear segments
+                    // prevent a smoothing spline from inventing an upward
+                    // bump between two declining snapshots.
+                    .interpolationMethod(.linear)
                 }
-                .chartXAxis {
-                    // Same day-stride axis as goHistory so both history
-                    // charts share tick density and label format.
-                    AxisMarks(values: .stride(by: .day, count: max(balanceSnapshots.count / 6, 1))) { _ in
-                        AxisGridLine()
-                        AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading) { value in
-                        AxisGridLine()
-                        AxisValueLabel {
-                            if let v = value.as(Double.self) { Text(Format.moneyShort(v)) }
-                        }
-                    }
-                }
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("OpenRouter balance history chart")
-                .accessibilityValue(Text(orHistoryAccessibilitySummary(balanceSnapshots, useAccountBalance: useAccountBalance)))
-                .accessibilityHint("VoiceOver browses daily OpenRouter balance; decreases indicate usage")
-                .frame(height: 110)
-            } else {
-                Text("Not enough snapshots")
-                    .font(TMType.regular(TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
             }
+            .chartXAxis { historyDateAxis(count: balanceSnapshots.count) }
+            .chartYAxis {
+                historyValueAxis { Text(Format.moneyShort($0)) }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("OpenRouter balance history chart")
+            .accessibilityValue(Text(orHistoryAccessibilitySummary(balanceSnapshots, useAccountBalance: useAccountBalance)))
+            .accessibilityHint("VoiceOver browses daily OpenRouter balance; decreases indicate usage")
         }
-        .padding(.top, 4)
     }
+
     private func orHistoryAccessibilitySummary(_ snapshots: [Database.ORSnapshot], useAccountBalance: Bool) -> String {
         let current = snapshots.last.flatMap { useAccountBalance ? $0.accountBalance : $0.limitRemaining }
             .map(Format.money)
@@ -399,132 +334,121 @@ struct PlansView: View {
 
     private var claudeCard: some View {
         let cq = claudeQuota.state
-        return serviceCard(title: "Claude", icon: ToolKind.claude.symbol, color: ToolKind.claude.color) {
-            VStack(alignment: .leading, spacing: 12) {
-                if claudeQuota.enabled {
-                    statusHeader(
-                        isLoading: cq.lastSync <= 0 && cq.error == nil && cq.configured,
-                        configured: cq.configured,
-                        error: cq.error,
-                        lastSync: cq.lastSync,
-                        syncedText: cq.lastSync > 0 ? "Updated \(Format.dateTime(cq.lastSync))" : nil,
-                        refresh: { claudeQuota.refresh(force: true) }
-                    )
-                    if let err = cq.error, cq.configured {
-                        Text(err)
-                            .font(TMType.regular(TMType.caption))
-                            .foregroundStyle(TMDesign.danger.opacity(0.85))
-                            .lineLimit(2)
-                    }
-                    if let weekly = cq.sevenDay {
-                        claudeWindowRow("Weekly window", window: weekly)
-                    }
-                    if let fiveHour = cq.fiveHour {
-                        claudeWindowRow("5h window", window: fiveHour)
-                    }
-                    if let opus = cq.sevenDayOpus {
-                        claudeWindowRow("Weekly Opus window", window: opus)
-                    }
-                }
+        return serviceCard(title: "Claude", symbol: ToolKind.claude.symbol, color: ToolKind.claude.color,
+                           isLoading: cq.lastSync <= 0 && cq.error == nil && cq.configured,
+                           configured: claudeConnected, error: cq.error, lastSync: cq.lastSync,
+                           refresh: { claudeQuota.refresh(force: true) }) {
+            if let fiveHour = cq.fiveHour {
+                claudeMeter("5h", window: fiveHour)
+            }
+            if let weekly = cq.sevenDay {
+                claudeMeter("Weekly", window: weekly)
+            }
+            if let opus = cq.sevenDayOpus {
+                claudeMeter("Weekly Opus", window: opus)
             }
         }
     }
 
-    private func claudeWindowRow(_ label: String, window: ClaudeQuotaClient.Window) -> some View {
-        let remaining = 100 - window.usedPercent
-        return HStack(spacing: 8) {
-            Text(label)
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-            Spacer()
-            Text("\(remaining)% left")
-                .font(TMType.semibold(TMType.caption))
-                .tmMonospacedDigit()
-                .foregroundStyle(TMDesign.quiet)
-            if let resetAt = window.resetAt {
-                let remainingSecs = resetAt - Int64(Date().timeIntervalSince1970)
-                if remainingSecs > 0 {
-                    Text("resets in \(Format.remaining(remainingSecs))")
-                        .font(TMType.monoRegular(TMType.micro))
-                        .foregroundStyle(TMDesign.quiet)
-                }
-            }
-        }
+    private func claudeMeter(_ label: String, window: ClaudeQuotaClient.Window) -> some View {
+        meter(label, usedPercent: Double(window.usedPercent),
+              detail: resetSuffix(absolute: window.resetAt).nilIfEmpty,
+              color: ToolKind.claude.color)
     }
 
     // MARK: - Command Code GOAT (experimental private billing API)
 
     private var ccCard: some View {
         let cc = ccQuota.state
-        return serviceCard(title: "Command Code GOAT", icon: "c.circle.fill", color: TMDesign.commandCode) {
-            VStack(alignment: .leading, spacing: 12) {
-                statusHeader(
-                    isLoading: cc.isLoading,
-                    configured: cc.configured,
-                    error: cc.error,
-                    lastSync: cc.lastSync,
-                    syncedText: cc.lastSync > 0 ? "Updated \(Format.dateTime(cc.lastSync))" : nil,
-                    refresh: cc.configured ? { ccQuota.refresh() } : nil
-                )
-                if let err = cc.error, cc.configured {
-                    Text(err)
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.danger.opacity(0.85))
-                        .lineLimit(2)
-                }
-
-                if cc.configured {
-                    if let total = cc.monthlyCreditsTotal, let pct = cc.monthlyUsedPercent {
-                        quotaBar(
-                            title: "Monthly credits",
-                            usedPct: pct,
-                            resetAt: cc.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) },
-                            limit: total,
-                            color: TMDesign.commandCode,
-                            reference: nil
-                        )
-                    } else if let remaining = cc.monthlyCreditsRemaining {
-                        // Unknown plan or no allowance reported: show the raw
-                        // balance rather than fabricating a percentage.
-                        liveStat("Credits left", Format.money(remaining))
-                    }
+        return serviceCard(title: "Command Code GOAT", symbol: "c.circle.fill", color: TMDesign.commandCode,
+                           isLoading: cc.isLoading, configured: ccConnected,
+                           error: cc.error, lastSync: cc.lastSync,
+                           refresh: ccConnected ? { ccQuota.refresh() } : nil) {
+            if ccConnected {
+                if let total = cc.monthlyCreditsTotal, let pct = cc.monthlyUsedPercent {
+                    meter("Monthly credits", usedPercent: pct,
+                          detail: "\(Format.money(pct / 100 * total)) of \(Format.money(total))"
+                              + resetSuffix(absolute: cc.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) }),
+                          color: TMDesign.commandCode)
+                } else if let remaining = cc.monthlyCreditsRemaining {
+                    // Unknown plan or no allowance reported: show the raw
+                    // balance rather than fabricating a percentage.
+                    liveStat("Credits left", Format.money(remaining))
                 }
             }
         }
     }
 
-    // MARK: - 固定订阅（管理在计划页内嵌表单；设置页同组件）
+    // MARK: - DeepSeek
+
+    private var deepseekCard: some View {
+        let state = deepseek.state
+        let wallets = state.expired ? [] : state.balance?.wallets ?? []
+        // Same reading as the popover: funded wallets only, symbol amounts.
+        let funded = wallets.filter { $0.total.amount != 0 }
+        let shown = funded.isEmpty ? Array(wallets.prefix(1)) : funded
+        let balance = shown.isEmpty ? deepseek.balanceText
+            : shown.map { $0.total.symbolFormatted }.joined(separator: " · ")
+        let unavailable = state.balance?.available == false
+        let spend = deepseek.spend(for: .today, configuration: UsagePeriodSettings.shared.configuration)
+        let updated = state.balanceUpdated.map { Int64($0.timeIntervalSince1970) } ?? 0
+        return serviceCard(title: "DeepSeek", symbol: "d.circle.fill", color: ToolKind.dsh.color,
+                           isLoading: state.loadingBalance && updated == 0,
+                           configured: deepseekConnected,
+                           error: state.expired ? "Sign-in expired" : (state.balanceError ?? state.spendError),
+                           lastSync: updated,
+                           refresh: { deepseek.refresh(force: true) }) {
+            HStack(alignment: .top, spacing: 28) {
+                liveStat("Balance", balance, tint: unavailable ? TMDesign.danger : .primary)
+                    .help(unavailable ? "Unavailable for API calls" : "")
+                if state.kind == .platform {
+                    liveStat("Today", spend.map { $0.amounts.isEmpty ? "—"
+                        : $0.amounts.map(\.symbolFormatted).joined(separator: " · ") } ?? "—")
+                }
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                deepseek.loadSpendIfNeeded(for: .today, configuration: UsagePeriodSettings.shared.configuration)
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
+
+    // MARK: - 固定订阅（管理在设置页 › Accounts）
 
     /// Where each fixed subscription stands in its billing cycle. Adding and
-    /// editing happen in Settings › Sources.
+    /// editing happen in Settings › Accounts.
     private var subsCard: some View {
-        serviceCard(title: "Subscriptions", icon: "calendar", color: TMDesign.accent) {
-            VStack(alignment: .leading, spacing: 10) {
+        DashCard("Subscriptions") {
+            VStack(alignment: .leading, spacing: 14) {
                 ForEach(app.subscriptions) { sub in
-                    HStack(spacing: 8) {
-                        Image(systemName: SubscriptionSettingsSection.planIcon(sub.plan))
-                            .foregroundStyle(SubscriptionSettingsSection.planColor(sub.plan))
-                            .frame(width: 18)
-                        Text(sub.name)
-                            .font(TMType.medium(TMType.body))
-                        Spacer()
-                        Text("\(Format.money(sub.price))/\(sub.cycle == "yearly" ? "yr" : "mo")")
-                            .font(TMType.semibold(TMType.caption))
-                            .tmMonospacedDigit()
-                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
-                            Text("Day \(info.dayOfCycle)/\(info.totalDays) · renews \(SubscriptionMath.dateStr(info.end))")
-                                .font(TMType.regular(TMType.caption))
-                                .tmMonospacedDigit()
-                                .foregroundStyle(TMDesign.quiet)
-                            if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
-                                let line = ForecastText.line(for: fc, plan: sub.plan)
-                                Text(line.text)
-                                    .font(TMType.semibold(TMType.caption))
+                    HStack(alignment: .top, spacing: 12) {
+                        DashGlyph(symbol: SubscriptionSettingsSection.planIcon(sub.plan),
+                                  color: SubscriptionSettingsSection.planColor(sub.plan), size: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sub.name)
+                                .font(TMType.medium(TMType.body))
+                            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
+                                Text("Day \(info.dayOfCycle) of \(info.totalDays) · renews \(SubscriptionMath.dateStr(info.end))")
+                                    .font(TMType.regular(TMType.caption))
                                     .tmMonospacedDigit()
-                                    .foregroundStyle(ForecastText.color(line.status))
+                                    .foregroundStyle(TMDesign.quiet)
+                                if let fc = SubscriptionMath.forecast(plan: sub.plan, cycleStart: info.start, cycleEnd: info.end) {
+                                    let line = ForecastText.line(for: fc, plan: sub.plan)
+                                    Text(line.text)
+                                        .font(TMType.regular(TMType.caption))
+                                        .tmMonospacedDigit()
+                                        .foregroundStyle(ForecastText.color(line.status))
+                                }
                             }
                         }
+                        Spacer(minLength: 8)
+                        Text("\(Format.money(sub.price))/\(sub.cycle == "yearly" ? "yr" : "mo")")
+                            .font(TMType.semibold(TMType.body))
+                            .tmMonospacedDigit()
                     }
+                    .accessibilityElement(children: .combine)
                 }
             }
         }
@@ -532,191 +456,168 @@ struct PlansView: View {
 
     // MARK: - 容器与通用行
 
-    private func statusHeader(isLoading: Bool, configured: Bool, error: String?,
-                              lastSync: Int64, syncedText: String?,
-                              refresh: (() -> Void)?) -> some View {
-        let stale = lastSync > 0
-            && Date().timeIntervalSince1970 - TimeInterval(lastSync) > 120
-        return HStack(spacing: 8) {
-            Text("Status")
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-            if !configured {
-                // Not configured is neutral, never an error.
-                Text("Not configured")
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.quiet)
-            } else if error != nil {
-                TMStatusPill(text: "Error", color: TMDesign.danger, symbol: "xmark.circle.fill")
-            } else if isLoading && lastSync <= 0 {
-                // Loading only before the first result; refreshes with an old
-                // value keep showing the last known state.
-                HStack(spacing: 5) {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text("Loading")
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.quiet)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Loading")
-            } else if lastSync <= 0 {
-                TMStatusPill(text: "Idle", color: TMDesign.quiet, symbol: "circle.dashed")
-            } else if stale {
-                TMStatusPill(text: "Stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
-            } else {
-                Label("Synced", systemImage: "checkmark.circle.fill")
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.quiet)
-            }
-            Spacer()
-            if let syncedText {
-                Text(syncedText)
-                    .font(TMType.monoRegular(TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
-            }
-            if let refresh {
-                Button {
-                    refresh()
-                } label: {
-                    if isLoading {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
+    /// One account: glyph and name, its freshness at the trailing end, then
+    /// the account's own content.
+    private func serviceCard<Content: View>(
+        title: String, symbol: String, color: Color,
+        isLoading: Bool, configured: Bool, error: String?, lastSync: Int64,
+        refresh: (() -> Void)?,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        DashCard {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    DashGlyph(symbol: symbol, color: color)
+                    Text(title).font(TMType.semibold(15))
+                    Spacer(minLength: 8)
+                    freshness(isLoading: isLoading, configured: configured,
+                              error: error, lastSync: lastSync)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let refresh {
+                        Button(action: refresh) {
+                            if isLoading {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isLoading)
+                        .help("Refresh \(title)")
+                        .accessibilityLabel("Refresh \(title)")
                     }
                 }
-                .buttonStyle(.borderless)
-                .font(TMType.regular(TMType.caption))
-                .disabled(isLoading)
-                .accessibilityLabel("Refresh status")
-                .accessibilityHint("Re-queries this service's quota")
-            }
-        }
-        // Fixed minimum row height: the plain-text branches ("Not configured",
-        // "Synced") are ~10pt shorter than TMStatusPill's padded capsule, so
-        // switching states used to make the whole row jump in height.
-        .frame(minHeight: 24)
-    }
-
-    /// Quota progress bar. `usedPct` is the fraction of the limit already
-    /// consumed (0–100); bar width and color follow usage, so a brand-new
-    /// key at 100% remaining renders an empty bar instead of a full red one.
-    /// `resetAt` (absolute unix seconds) shows the "resets in …" fine-print.
-    /// `reference` draws a hairline at a fixed value — used for the
-    /// subscription price as a share of the quota limit (e.g. a $10 sub on a
-    /// $60 monthly limit marks the 16.7% position) so the paid tier is
-    /// visible against actual consumption.
-    private func quotaBar(title: String, usedPct: Double, resetAt: Int64?,
-                          limit: Double, color: Color, reference: Double?,
-                          remainingText: String? = nil) -> some View {
-        let p = min(max(usedPct, 0), 100)
-        let used = p / 100 * limit
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(TMType.medium(TMType.caption))
-                Spacer()
-                if let remainingText {
-                    Text("Left \(remainingText) / \(Format.money(limit))")
-                        .font(TMType.regular(TMType.caption))
-                        .tmMonospacedDigit()
-                } else {
-                    Text("Used \(Format.money(used)) / \(Format.money(limit))")
-                        .font(TMType.regular(TMType.caption))
-                        .tmMonospacedDigit()
-                }
-                Text("\(Int(p))%")
-                    .font(TMType.semibold(TMType.caption))
-                    .tmMonospacedDigit()
-                    .foregroundStyle(TMDesign.quiet)
-            }
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.07))
-                    Capsule().fill(color)
-                        // p == 0 renders a truly empty bar; the 3pt floor
-                        // only protects tiny-but-nonzero usage from vanishing.
-                        .frame(width: p > 0 ? max(3, w * CGFloat(p / 100)) : 0)
-                    if let reference {
-                        // Subscription-price reference line (see doc comment).
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.4))
-                            .frame(width: 1)
-                            .offset(x: w * CGFloat(min(reference / limit, 1)) - 0.5)
-                    }
-                }
-            }
-            .frame(height: 7)
-            if let resetAt, usedPct > 0 {
-                let remaining = resetAt - Int64(Date().timeIntervalSince1970)
-                if remaining > 0 {
-                    Text("resets in \(Format.remaining(remaining))")
-                        .font(TMType.monoRegular(TMType.micro))
-                        .foregroundStyle(TMDesign.faint)
-                }
+                // Straight into the card's stack: an account with nothing to
+                // show (e.g. an error) adds no gap under its header.
+                content()
             }
         }
     }
 
-    private func windowRow(_ label: String, pct: Double?, reset: Int64?) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
+    /// Trailing status: nothing for a healthy account beyond when it last
+    /// updated; a colored pill only for states that need attention.
+    @ViewBuilder
+    private func freshness(isLoading: Bool, configured: Bool, error: String?, lastSync: Int64) -> some View {
+        let stale = lastSync > 0 && Date().timeIntervalSince1970 - TimeInterval(lastSync) > 120
+        if !configured {
+            Text("Not configured")
                 .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
-            Spacer()
+        } else if let error {
+            // The reason itself, in red, instead of an "Error" pill plus a
+            // second line repeating it.
+            Label(error, systemImage: "exclamationmark.triangle.fill")
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.danger)
+                .help(error)
+        } else if isLoading && lastSync <= 0 {
+            Text("Loading")
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+        } else if lastSync <= 0 {
+            TMStatusPill(text: "Idle", color: TMDesign.quiet, symbol: "circle.dashed")
+        } else if stale {
+            TMStatusPill(text: "Stale", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
+        } else {
+            let age = Int64(Date().timeIntervalSince1970) - lastSync
+            Text(age < 60 ? "Just now" : "\(Format.remaining(age)) ago")
+                .font(TMType.regular(TMType.caption))
+                .tmMonospacedDigit()
+                .foregroundStyle(TMDesign.quiet)
+                .help("Updated \(Format.dateTime(lastSync))")
+        }
+    }
+
+    /// " · resets in 4.8d" for an absolute unix-seconds reset; empty once
+    /// passed or unknown.
+    private func resetSuffix(absolute: Int64?) -> String {
+        guard let absolute else { return "" }
+        let remaining = absolute - Int64(Date().timeIntervalSince1970)
+        return remaining > 0 ? " · resets in \(Format.remaining(remaining))" : ""
+    }
+
+    /// A quota meter. The bar always encodes usage; the used/remaining
+    /// preference from the popover changes only the number beside it.
+    private func meter(_ title: String, usedPercent: Double, detail: String?,
+                       color: Color, marker: Double? = nil) -> some View {
+        let p = min(max(usedPercent, 0), 100)
+        let shown = Int((showsRemaining ? 100 - p : p).rounded())
+        return QuotaMeter(title: title,
+                          detail: detail.map { $0.hasPrefix(" · ") ? String($0.dropFirst(3)) : $0 },
+                          valueText: "\(shown)%",
+                          unitText: showsRemaining ? "left" : "used",
+                          usedPercent: p, tint: color, marker: marker)
+    }
+
+    private func windowMeter(_ label: String, pct: Double?, reset: Int64?) -> some View {
+        let absolute = reset.flatMap { goClient.state.lastSync > 0 ? goClient.state.lastSync + $0 : nil }
+        return Group {
             if let pct {
-                Text("\(Int(pct))%")
-                    .font(TMType.semibold(TMType.caption))
-                    .tmMonospacedDigit()
-                    .foregroundStyle(TMDesign.quiet)
-            } else {
-                Text("—")
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.faint)
-            }
-            if let reset, goClient.state.lastSync > 0 {
-                let absReset = goClient.state.lastSync + reset
-                let remaining = absReset - Int64(Date().timeIntervalSince1970)
-                if remaining > 0 {
-                    Text("resets in \(Format.remaining(remaining))")
-                        .font(TMType.monoRegular(TMType.micro))
-                        .foregroundStyle(TMDesign.quiet)
-                }
+                meter(label, usedPercent: pct, detail: resetSuffix(absolute: absolute).nilIfEmpty,
+                      color: ToolKind.opencode.color)
             }
         }
     }
 
-    private func liveStat(_ label: String, _ value: String) -> some View {
+    private func liveStat(_ label: String, _ value: String, tint: Color = .primary) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
             Text(value)
-                .font(TMType.semibold(17))
+                .font(TMType.semibold(20))
                 .tmMonospacedDigit()
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - History charts
+
+    /// A history chart, shown only once there are enough samples to draw a
+    /// line; until then the card simply has no chart.
+    @ViewBuilder
+    private func historyBlock<C: View>(title: String, current: String?, hasData: Bool,
+                                       @ViewBuilder chart: () -> C) -> some View {
+        if hasData {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                chart().frame(height: 110)
+            }
         }
     }
 
-    private func serviceCard<Content: View>(title: String, icon: String, color: Color,
-                                            @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(TMType.medium(14))
-                    .foregroundStyle(color)
-                    .frame(width: 22)
-                SectionTitle(title)
-            }
-            content()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TMDesign.surface, in: RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: TMDesign.radius, style: .continuous)
-                .stroke(TMDesign.divider, lineWidth: 1)
+    private func historyDateAxis(count: Int) -> some AxisContent {
+        AxisMarks(values: .stride(by: .day, count: max(count / 6, 1))) { _ in
+            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                .foregroundStyle(Color.primary.opacity(0.12))
+            AxisValueLabel(format: Date.FormatStyle().month(.abbreviated).day()
+                .locale(Locale(identifier: "en_US")))
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
         }
     }
+
+    private func historyValueAxis<L: View>(@ViewBuilder label: @escaping (Double) -> L) -> some AxisContent {
+        AxisMarks(position: .leading) { value in
+            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                .foregroundStyle(Color.primary.opacity(0.12))
+            AxisValueLabel {
+                if let v = value.as(Double.self) {
+                    label(v)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
+                }
+            }
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

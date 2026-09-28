@@ -164,15 +164,14 @@ struct PopoverHomeView: View {
                                 .padding(.horizontal, 2)
                                 .padding(.bottom, 4)
                             if !isSectionHidden("sources") {
-                                PopoverCard(title: "Sources", onHide: { hideSection("sources") }) { sourceBar }
+                                PopoverCard(title: "Sources") { sourceBar }
                             }
                             if !isSectionHidden("quota") { quotaSection }
                             if !isSectionHidden("balance") { balanceSection }
                             if !isSectionHidden("activity") {
                                 PopoverCard(title: "Activity",
                                             accessory: { historyAccessory },
-                                            trailing: { historyPicker },
-                                            onHide: { hideSection("activity") }) { historyBlock }
+                                            trailing: { historyPicker }) { historyBlock }
                             }
                         }
                         .padding(.horizontal, TMLayout.popoverCardInset)
@@ -296,9 +295,7 @@ struct PopoverHomeView: View {
     }
 
     private var includedDeepSeekSpend: DeepSeekBilling.Spend? {
-        guard !deepseek.state.expired, let spend = deepseek.state.spend,
-              spend.window == deepseek.window else { return nil }
-        return spend
+        deepseek.spend(for: period.slot, configuration: periodSettings.configuration, now: now)
     }
 
     private var combinedSpentText: String {
@@ -381,7 +378,7 @@ struct PopoverHomeView: View {
                         .foregroundStyle(TMDesign.quiet)
                         .lineLimit(2)
                     Button("Configure Sources…") {
-                        SettingsWindowController.shared.show(pane: .sources)
+                        SettingsWindowController.shared.show(pane: .accounts)
                         NotificationCenter.default.post(name: PanelController.hideNotification,
                                                         object: nil)
                     }
@@ -503,7 +500,7 @@ struct PopoverHomeView: View {
         let visible = sources.filter { $0.connected && !(quotaRowHidden[$0.key] ?? false) }
         let unconnected = sources.filter { !$0.connected && !(quotaRowHidden[$0.key] ?? false) }
         if !visible.isEmpty || !unconnected.isEmpty {
-            PopoverCard(title: title, onHide: { hideSection(group == .quota ? "quota" : "balance") }) {
+            PopoverCard(title: title) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(visible.map(\.key).enumerated()), id: \.element) { index, key in
                         if index > 0 { rowDivider }
@@ -513,8 +510,8 @@ struct PopoverHomeView: View {
                         if !visible.isEmpty { rowDivider }
                         UnconnectedSourcesRow(names: unconnected.map(\.name)) {
                             // Quota and balance accounts are connected in
-                            // Settings › Sources.
-                            SettingsWindowController.shared.show(pane: .sources)
+                            // Settings › Accounts.
+                            SettingsWindowController.shared.show(pane: .accounts)
                             NotificationCenter.default.post(name: PanelController.hideNotification,
                                                             object: nil)
                         }
@@ -549,23 +546,13 @@ struct PopoverHomeView: View {
     /// number, only "Not configured", so it is folded into one summary line
     /// instead of taking a full two-line row each.
     private var quotaSources: [(key: String, name: String, group: SourceGroup, connected: Bool)] {
-        let codexSub = app.subscriptions.contains { $0.plan == "openai" || $0.plan == "codex" }
-        let goKeychainLocked = goClient.state.error?.localizedCaseInsensitiveContains("keychain") == true
-        return [
-            // Cached numbers count as connected: `configured` is only set
-            // once the credential read finishes, and a row must not fold
-            // away and pop back while that async read is in flight.
-            ("claude", "Claude", .quota, claudeQuota.enabled
-                && (claudeQuota.state.configured || claudeQuota.state.sevenDay != nil
-                    || claudeQuota.state.lastSync > 0 || claudeQuota.state.error != nil)),
-            ("go", "OpenCode Go", .quota, goClient.configured || goKeychainLocked || goClient.state.lastSync > 0),
-            ("codex", "Codex", .quota, codexSub || codexQuota.state.lastSync > 0),
-            // A failing source (expired cookie, locked Keychain) is still a
-            // connected one — its row has to stay visible to show the error.
-            ("cc", "Command Code", .quota, ccQuota.state.configured || ccQuota.state.lastSync > 0
-                || (ccQuota.state.error.map { $0 != "Not configured" } ?? false)),
-            ("router", "OpenRouter", .balance, orClient.hasKey),
-            ("deepseek", "DeepSeek", .balance, deepseek.state.kind != nil),
+        [
+            ("claude", "Claude", .quota, AccountConnection.claude),
+            ("go", "OpenCode Go", .quota, AccountConnection.openCodeGo),
+            ("codex", "Codex", .quota, AccountConnection.codex(subscriptions: app.subscriptions)),
+            ("cc", "Command Code", .quota, AccountConnection.commandCode),
+            ("router", "OpenRouter", .balance, AccountConnection.openRouter),
+            ("deepseek", "DeepSeek", .balance, AccountConnection.deepSeek),
         ]
     }
 
@@ -582,11 +569,6 @@ struct PopoverHomeView: View {
         for key in ["claude", "go", "codex", "cc", "router", "deepseek"] {
             quotaRowHidden[key] = Database.shared.setting(Self.quotaRowHiddenKey(key)) == "1"
         }
-    }
-
-    private func hideQuotaRow(_ key: String) {
-        quotaRowHidden[key] = true
-        _ = Database.shared.setSetting(Self.quotaRowHiddenKey(key), "1")
     }
 
     // MARK: - 活动与趋势（历史维度，与周期选择无关）
@@ -637,12 +619,6 @@ struct PopoverHomeView: View {
     }
 
     private func isSectionHidden(_ key: String) -> Bool { hiddenSections.contains(key) }
-
-    private func hideSection(_ key: String) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            hiddenSectionsRaw = (hiddenSections + [key]).joined(separator: ",")
-        }
-    }
 
     /// UserDefaults 持久化的上次热力图数据：冷启动先显示旧曲线，
     /// 异步刷新后再更新，避免 Activity/Trend 区块空白等待。
@@ -782,8 +758,7 @@ struct PopoverHomeView: View {
                          critical: remaining.map { $0 < 20 } ?? false,
                          resetSuffix: resetSuffix,
                          staleBadge: staleBadge,
-                         windows: windows,
-                         hideKey: "go")
+                         windows: windows)
     }
 
     /// Claude subscription quota, from the same OAuth usage endpoint Claude
@@ -842,8 +817,7 @@ struct PopoverHomeView: View {
                          subtitle: claudeQuota.enabled ? claudeSubtitle(state) : nil,
                          subtitleCritical: claudeQuota.enabled && state.hasCriticalSecondaryWindow,
                          staleBadge: staleBadge,
-                         windows: claudeQuota.enabled ? claudeWindows(state) : [],
-                         hideKey: "claude")
+                         windows: claudeQuota.enabled ? claudeWindows(state) : [])
             .help(claudeErrorHelp(state))
     }
 
@@ -946,8 +920,7 @@ struct PopoverHomeView: View {
                          resetSuffix: resetSuffix,
                          staleBadge: staleBadge,
                          windows: [window(codexWindowShortLabel, state.primaryPct.map(Double.init),
-                                          reset: state.resetAt)].compactMap { $0 },
-                         hideKey: "codex")
+                                          reset: state.resetAt)].compactMap { $0 })
     }
 
     /// Command Code GOAT quota (experimental private billing API).
@@ -990,8 +963,7 @@ struct PopoverHomeView: View {
                          resetSuffix: resetSuffix,
                          staleBadge: staleBadge,
                          windows: [window("Monthly", state.monthlyUsedPercent,
-                                          reset: state.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) })].compactMap { $0 },
-                         hideKey: "cc")
+                                          reset: state.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) })].compactMap { $0 })
     }
 
     private var routerStatusRow: some View {
@@ -1026,8 +998,7 @@ struct PopoverHomeView: View {
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet,
                          critical: state.authInvalid && orClient.hasKey,
                          resetSuffix: resetSuffix,
-                         staleBadge: staleBadge,
-                         hideKey: "router")
+                         staleBadge: staleBadge)
             .help(state.error ?? "")
     }
 
@@ -1044,8 +1015,7 @@ struct PopoverHomeView: View {
                          statusColor: state.kind == nil ? TMDesign.quiet : .primary,
                          critical: state.balance?.available == false,
                          subtitle: state.balance?.available == false ? "Unavailable for API calls" : nil,
-                         staleBadge: stale ? "Stale" : nil,
-                         hideKey: "deepseek")
+                         staleBadge: stale ? "Stale" : nil)
             .help("Account balance: \(deepseek.balanceText). \(state.balanceError ?? "")")
     }
 
@@ -1054,13 +1024,11 @@ struct PopoverHomeView: View {
                            critical: Bool = false, resetSuffix: String? = nil,
                            subtitle: String? = nil, subtitleCritical: Bool = false,
                            staleBadge: String? = nil,
-                           windows: [QuotaWindow] = [],
-                           hideKey: String? = nil) -> some View {
+                           windows: [QuotaWindow] = []) -> some View {
         StatusRow(name: name, status: status, statusColor: statusColor,
                   critical: critical, resetSuffix: resetSuffix, subtitle: subtitle,
                   subtitleCritical: subtitleCritical, staleBadge: staleBadge,
-                  windows: windows, tint: tint,
-                  hideAction: hideKey.map { key in { self.hideQuotaRow(key) } })
+                  windows: windows, tint: tint)
     }
 
 }
@@ -1240,8 +1208,7 @@ private struct HeroValue: Equatable {
 
 /// 额度状态行：名称 primary，状态按健康状态着色。纯信息行，不引导跳转。
 /// 状态主文本是 SF Pro Regular + 等宽数字；可选的 "resets in …" 后缀单独用
-/// SF Mono Regular，不让整行变成等宽。提供 hideAction 时行尾会出现一个
-/// 眼睛按钮（hover 显示），点击将该配额行隐藏。
+/// SF Mono Regular，不让整行变成等宽。
 private struct StatusRow: View {
     @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
     let name: String
@@ -1273,9 +1240,6 @@ private struct StatusRow: View {
     var windows: [QuotaWindow] = []
     /// The service's color; every window bar of one service shares it.
     var tint: Color = .accentColor
-    var hideAction: (() -> Void)?
-
-    @State private var hovering = false
 
     var body: some View {
         Group {
@@ -1291,8 +1255,6 @@ private struct StatusRow: View {
             }
         }
         .padding(.vertical, 5)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(Text(windows.isEmpty
@@ -1314,24 +1276,8 @@ private struct StatusRow: View {
                     .font(TMType.number(TMType.micro))
                     .foregroundStyle(TMDesign.quiet)
             }
-            hideButton
         }
         .frame(height: TMLayout.quotaPrimaryLineHeight)
-    }
-
-    @ViewBuilder
-    private var hideButton: some View {
-        if let hideAction {
-            Button(action: hideAction) {
-                Image(systemName: "eye.slash")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Hide this quota row")
-            .accessibilityLabel("Hide \(name) quota")
-            .padding(.leading, 2)
-        }
     }
 
     /// Only rows that actually carry a detail line reserve its height; a
@@ -1390,8 +1336,6 @@ private struct StatusRow: View {
                 }
             }
             .layoutPriority(1)
-
-            hideButton
         }
     }
 }
@@ -1401,48 +1345,32 @@ private enum HistoryMode: String {
 }
 
 /// Popover section card: faint tonal fill, continuous corners, and a title
-/// row whose eye button (shown on hover) hides the whole card.
+/// row. Which cards appear is a Settings › Appearance choice.
 private struct PopoverCard<Accessory: View, Trailing: View, Content: View>: View {
     let title: String
     @ViewBuilder var accessory: Accessory
     @ViewBuilder var trailing: Trailing
-    let onHide: () -> Void
     @ViewBuilder var content: Content
-
-    @State private var hovering = false
 
     init(title: String,
          @ViewBuilder accessory: () -> Accessory = { EmptyView() },
          @ViewBuilder trailing: () -> Trailing = { EmptyView() },
-         onHide: @escaping () -> Void,
          @ViewBuilder content: () -> Content) {
         self.title = title
         self.accessory = accessory()
         self.trailing = trailing()
-        self.onHide = onHide
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                // Title case, not the shared all-caps SectionTitle.
+                // Title case, matching the dashboard cards.
                 Text(title)
                     .font(TMType.semibold(12))
                     .foregroundStyle(TMDesign.quiet)
                 accessory
                 Spacer(minLength: 6)
-                Button(action: onHide) {
-                    Image(systemName: "eye.slash")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Hide \(title)")
-                .accessibilityLabel("Hide \(title)")
-                .opacity(hovering ? 1 : 0.7)
                 trailing
             }
             .frame(height: 16)
@@ -1454,8 +1382,6 @@ private struct PopoverCard<Accessory: View, Trailing: View, Content: View>: View
         // on the vibrant panel; grouped surfaces separate by tone alone.
         .background(Color.primary.opacity(0.055),
                     in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
     }
 }
 

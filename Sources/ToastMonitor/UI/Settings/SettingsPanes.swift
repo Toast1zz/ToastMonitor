@@ -106,19 +106,17 @@ struct GeneralSettingsPane: View {
 
 // MARK: - Appearance
 
-/// How the menu bar item and the popover look. Popover cards can also be
-/// hidden in place with the eye button on a card's title; this is where they
-/// come back.
+/// How the menu bar item and the popover look, including which cards and
+/// which accounts the popover shows.
 struct AppearanceSettingsPane: View {
     static let cards: [(key: String, title: String)] = [
         ("sources", "Sources"), ("quota", "Quota"),
         ("balance", "Balance"), ("activity", "Activity"),
     ]
 
-    /// Same key the home page's eye buttons write (comma-separated keys).
-    @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
     @AppStorage("popoverFullTokens") private var fullTokens = false
     @AppStorage(QuotaWindow.showsRemainingKey) private var quotaShowsRemaining = false
+    @State private var customizing = false
 
     var body: some View {
         Section("Menu Bar") {
@@ -136,13 +134,65 @@ struct AppearanceSettingsPane: View {
                 Text("Used").tag(false)
                 Text("Remaining").tag(true)
             }
-        }
-
-        Section("Cards") {
-            ForEach(Self.cards, id: \.key) { card in
-                Toggle(card.title, isOn: cardBinding(card.key))
+            // Ten on/off choices would double the pane's length, so they sit
+            // behind one row, the way System Settings keeps long lists in a
+            // sheet.
+            LabeledContent("Cards and accounts") {
+                Button("Customize…") { customizing = true }
             }
         }
+        .sheet(isPresented: $customizing) {
+            PopoverContentSheet()
+        }
+    }
+}
+
+/// Which cards and which accounts the popover shows: one switch per item, in
+/// the grouped form every other settings list uses.
+private struct PopoverContentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
+    @State private var accountVisible: [String: Bool] = [:]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section("Cards") {
+                    ForEach(AppearanceSettingsPane.cards, id: \.key) { card in
+                        Toggle(card.title, isOn: cardBinding(card.key))
+                    }
+                }
+                Section("Accounts") {
+                    ForEach(PopoverAccountRows.accounts, id: \.key) { account in
+                        Toggle(account.title, isOn: accountBinding(account.key))
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+        }
+        .frame(width: 420, height: 524)
+        .onAppear {
+            for key in PopoverAccountRows.keys {
+                accountVisible[key] = PopoverAccountRows.isVisible(key)
+            }
+        }
+    }
+
+    private func accountBinding(_ key: String) -> Binding<Bool> {
+        Binding(
+            get: { accountVisible[key] ?? PopoverAccountRows.isVisible(key) },
+            set: { visible in
+                accountVisible[key] = visible
+                PopoverAccountRows.setVisible(key, visible)
+            }
+        )
     }
 
     private func cardBinding(_ key: String) -> Binding<Bool> {
