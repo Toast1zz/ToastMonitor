@@ -24,7 +24,7 @@ UI verification:
   --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions]
   --render-settings PATH [general|appearance|sources|data|updates] [HEIGHT]
   --show-panel [--backdrop white|dark] [--appearance light|dark] [--capture PATH]
-  --show-dashboard [--capture-dashboard PATH]
+  --show-dashboard [--appearance light|dark] [--capture-dashboard PATH]
   --show-settings [PANE] [--appearance light|dark] [--capture-settings PATH]
   --show-dashboard --benchmark-dashboard-switches
   --verify-status-toggle
@@ -433,6 +433,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 setupMenuBar()
                 return
+            }
+            // --appearance light|dark, as for the panel and settings
+            // captures (README screenshots).
+            if let ai = args.firstIndex(of: "--appearance"), ai + 1 < args.count {
+                NSApp.appearance = NSAppearance(named: args[ai + 1] == "dark" ? .darkAqua : .aqua)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 AppState.shared.refresh()

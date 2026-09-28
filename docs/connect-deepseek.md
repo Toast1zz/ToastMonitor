@@ -2,7 +2,7 @@
 
 ## Connect
 
-Open **Dashboard > Plans & Balance > DeepSeek > Connect DeepSeek**.
+Open **Settings > Accounts > DeepSeek > Connect…**.
 
 - **Browser** (recommended, including Google accounts): choose Chrome or Safari, click **Open DeepSeek in Browser**, and sign in normally. Leave the signed-in Platform tab selected, return to ToastMonitor, and click **Connect from Browser**. Only that active DeepSeek tab's `userToken` is read, then validated and saved in Keychain. macOS may ask permission for ToastMonitor to automate the selected browser.
 - Chrome requires **View > Developer > Allow JavaScript from Apple Events**; Safari requires **Develop > Allow JavaScript from Apple Events**. ToastMonitor reports a specific permission error instead of silently failing. It does not enable these browser permissions automatically.
@@ -14,8 +14,8 @@ Only one credential/account is active at a time. Switching between Platform and 
 
 ## Popover
 
-- **DeepSeek** in Quota displays the latest account balance. CNY and USD remain separate; paid and granted balances are detailed in Plans & Balance.
-- **Spent** includes the official account's billed consumption, including other devices and all API-key/model series returned by the Platform. CNY spend is converted to USD using the editable **USD conversion** rate in Plans & Balance > DeepSeek (default: 1 USD = 7 CNY, a manual accounting rate, not a live market quote), then added to the dollar total. The rate is saved and changes apply immediately. Unsupported currencies remain explicit rather than being silently dropped. While account billing is available for the selected period, local actual costs explicitly attributed to the `deepseek` provider are replaced by account billing. Other providers are not inferred from model names. Balance stays in its original currency. Balance and spend display two decimal places; calculations retain their original precision until final display.
+- **DeepSeek** in the popover's Balance card and in Dashboard > Plans displays the latest account balance. CNY and USD remain separate.
+- **Spent** includes the official account's billed consumption, including other devices and all API-key/model series returned by the Platform. CNY spend is converted to USD using the editable **USD conversion** rate in Settings > Accounts > DeepSeek (default: 1 USD = 7 CNY, a manual accounting rate, not a live market quote), then added to the dollar total. The rate is saved and changes apply immediately. Unsupported currencies remain explicit rather than being silently dropped. While account billing is available for the selected period, local actual costs explicitly attributed to the `deepseek` provider are replaced by account billing. Other providers are not inferred from model names. Balance stays in its original currency. Balance and spend display two decimal places; calculations retain their original precision until final display.
 - Today, 7 Days and 30 Days follow the selected control. Calendar mode follows the configured week start and calendar month. The Platform uses billing-day buckets at the current fixed UTC offset, shown in the detail view/tooltip. On a DST transition this is not a variable-offset hourly ledger.
 - **All Time** displays **Full history unavailable**. There is no verified complete-history contract for this internal endpoint; the app does not relabel a limited window as all-time spend.
 
@@ -25,7 +25,7 @@ The current day's amount is the latest billed usage returned by DeepSeek, not a 
 
 Visible windows poll every 60 seconds; background polling uses five minutes. The refresh button also refreshes DeepSeek. Failures back off, keep the last successful snapshot with a stale indication, and never become zero spend. Changing periods clears the old period immediately. Expired sessions require reconnecting.
 
-Use **Disconnect** in Plans & Balance to clear the saved credential and account display. The Popover settings toggle restores a hidden DeepSeek balance row.
+Use **Disconnect** in Settings > Accounts > DeepSeek to clear the saved credential and account display. Settings > Appearance > Customize… restores a hidden DeepSeek balance row.
 
 ## Integration boundary
 
