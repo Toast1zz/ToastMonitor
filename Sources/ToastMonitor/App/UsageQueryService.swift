@@ -187,22 +187,6 @@ final class UsageQueryService: @unchecked Sendable {
             DispatchQueue.main.async { completion(aggs) }
         }
     }
-    /// Loads daily quota points plus intra-day balance-change events, retaining
-    /// the complete history rather than a polling-frequency-dependent row limit.
-    func loadOGSnapshotsByDay(completion: @escaping @MainActor @Sendable ([Database.OGSnapshot]) -> Void) {
-        queue.async {
-            let snapshots = self.database.ogSnapshotsByDay()
-            DispatchQueue.main.async { completion(snapshots) }
-        }
-    }
-
-    func loadORSnapshotsByDay(completion: @escaping @MainActor @Sendable ([Database.ORSnapshot]) -> Void) {
-        queue.async {
-            let snapshots = self.database.orSnapshotsByDay()
-            DispatchQueue.main.async { completion(snapshots) }
-        }
-    }
-
     private func cacheKey(configuration: UsagePeriodConfiguration, now: Date) -> String {
         "\(database.dataVersionKey())|\(configuration.cacheKey(now: now))"
     }
