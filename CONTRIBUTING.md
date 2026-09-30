@@ -15,6 +15,12 @@ swift test --filter DSHParserTests   # a single suite
 
 Builds in this repo are normally run with `swift build --disable-sandbox` on the host; CI uses a plain `swift build`.
 
+## Visual regression
+
+CI runs `xcrun swift scripts/visual-regression.swift compare` on Xcode 27. Each scenario gets a fresh temporary `HOME` and `CFFIXED_USER_HOME` as well as its own database; `TZ` and `LANG` are fixed. Popover renders use `TM_VISUAL_REFERENCE_UNIX_TIME=1790769600` (2026-09-30 12:00 UTC) to stabilize date-dependent labels and the activity grid.
+
+On failure, compare logs include expected and actual hashes, and failing popover PNGs are uploaded as a workflow artifact. Inspect the PNG against the intended UI before intentionally updating its entry in `Tests/VisualBaselines/hashes.json`; do not regenerate baselines blindly or loosen the comparison threshold.
+
 ## Constraints
 
 - **No third-party dependencies.** Everything ships with the system frameworks (AppKit, SwiftUI, sqlite3, Security). If you're adding a library, reconsider — almost everything here is a small amount of system-API code.
