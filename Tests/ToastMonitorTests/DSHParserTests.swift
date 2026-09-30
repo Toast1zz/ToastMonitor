@@ -181,7 +181,9 @@ final class DSHParserTests: XCTestCase {
         var calls = 0
         let failFoldOnce: (Data) -> Data? = { frame in
             calls += 1
-            return calls == 2 ? nil : frame
+            // The fold pass fails as a whole: the batch attempt and its
+            // per-frame fallback both return nil.
+            return (calls == 2 || calls == 3) ? nil : frame
         }
 
         let (failedTurns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
@@ -212,6 +214,9 @@ final class DSHParserTests: XCTestCase {
             data.append(Self.zstdMagic)
             data.append(Data("\n".utf8))
             data.append(Data(chunk.utf8))
+            // Real DSH frames end on a line boundary, so decoding several
+            // concatenated frames keeps every line intact.
+            data.append(Data("\n".utf8))
         }
         try data.write(to: URL(fileURLWithPath: dest))
         return dest
@@ -326,7 +331,8 @@ final class DSHParserTests: XCTestCase {
 
         let finishBytes = Data(finish.utf8)
         let messageBytes = Data(secondFrameJSON.utf8)
-        let decompressFakeFrame: (Data) -> Data? = { frame in
+        let frameStart = Self.zstdMagic + Data("\n".utf8)
+        let decodeOne: (Data) -> Data? = { frame in
             // A real decoder rejects the prefix ending at the embedded magic
             // because it cuts the frame before its finish record.
             guard frame.range(of: finishBytes) != nil || frame.range(of: messageBytes) != nil else {
@@ -335,6 +341,24 @@ final class DSHParserTests: XCTestCase {
             var output = Data(frame.dropFirst(Self.zstdMagic.count + 1))
             if let range = output.range(of: embeddedMagicAndNoise) {
                 output.removeSubrange(range)
+            }
+            return output
+        }
+        // Like the zstd CLI, decode every concatenated frame in the input.
+        // A frame starts at magic + "\n"; the embedded false magic does not.
+        let decompressFakeFrame: (Data) -> Data? = { input in
+            var starts: [Int] = []
+            var searchFrom = input.startIndex
+            while let r = input.range(of: frameStart, in: searchFrom..<input.endIndex) {
+                starts.append(r.lowerBound)
+                searchFrom = r.upperBound
+            }
+            var output = Data()
+            for (i, a) in starts.enumerated() {
+                let b = i + 1 < starts.count ? starts[i + 1] : input.endIndex
+                guard let piece = decodeOne(input.subdata(in: a..<b)) else { return nil }
+                output.append(piece)
+                output.append(Data("\n".utf8))
             }
             return output
         }
