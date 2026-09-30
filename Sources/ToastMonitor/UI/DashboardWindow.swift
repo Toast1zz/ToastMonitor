@@ -74,7 +74,8 @@ final class WindowManager {
     /// popover's secure fields, Cmd+W, Cmd+Q — resolve even in accessory
     /// mode where the menu bar itself is hidden.
     func ensureMainMenu() {
-        guard NSApp.mainMenu == nil else { return }
+        let application = NSApplication.shared
+        guard application.mainMenu == nil else { return }
         let mainMenu = NSMenu()
 
         let appItem = NSMenuItem()
@@ -127,7 +128,7 @@ final class WindowManager {
                            action: #selector(NSWindow.performMiniaturize(_:)),
                            keyEquivalent: "m")
 
-        NSApp.mainMenu = mainMenu
+        application.mainMenu = mainMenu
     }
 
     func toggle() {

@@ -324,8 +324,14 @@ final class DSHParserTests: XCTestCase {
         let path = (tempDir as NSString).appendingPathComponent("false-magic.jsonl.zstd")
         try encoded.write(to: URL(fileURLWithPath: path))
 
+        let finishBytes = Data(finish.utf8)
+        let messageBytes = Data(secondFrameJSON.utf8)
         let decompressFakeFrame: (Data) -> Data? = { frame in
-            if Data(frame.suffix(4)) == Self.zstdMagic { return nil } // inner false candidate
+            // A real decoder rejects the prefix ending at the embedded magic
+            // because it cuts the frame before its finish record.
+            guard frame.range(of: finishBytes) != nil || frame.range(of: messageBytes) != nil else {
+                return nil
+            }
             var output = Data(frame.dropFirst(Self.zstdMagic.count + 1))
             if let range = output.range(of: embeddedMagicAndNoise) {
                 output.removeSubrange(range)
@@ -335,12 +341,21 @@ final class DSHParserTests: XCTestCase {
         let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
                                             decompress: decompressFakeFrame)
         XCTAssertEqual(turns.count, 2, "the valid frame continues past an embedded false magic")
-        XCTAssertEqual(turns.first?.model, "deepseek-v4-flash",
-                       "the finish after the embedded magic must be processed")
-        XCTAssertEqual(turns.first?.provider, "opencodego")
-        XCTAssertEqual(turns.map(\.eventID), [
+        let expectedIDs: Set<String> = [
             "dsh-log:session-false-magic:40", "dsh-log:session-false-magic:42"
-        ])
+        ]
+        XCTAssertEqual(Set(turns.map(\.eventID)), expectedIDs)
+        let event40 = turns.first { $0.eventID == "dsh-log:session-false-magic:40" }
+        XCTAssertEqual(event40?.model, "deepseek-v4-flash",
+                       "the finish after the embedded magic must be processed")
+        XCTAssertEqual(event40?.provider, "opencodego")
+        XCTAssertEqual(event40?.inputTokens, 40)
+        XCTAssertEqual(event40?.outputTokens, 10)
+        let event42 = turns.first { $0.eventID == "dsh-log:session-false-magic:42" }
+        XCTAssertEqual(event42?.model, "deepseek-v4-flash")
+        XCTAssertEqual(event42?.provider, "opencodego")
+        XCTAssertEqual(event42?.inputTokens, 80)
+        XCTAssertEqual(event42?.outputTokens, 20)
     }
 
     func testLogModeZstdRealCompression() throws {
