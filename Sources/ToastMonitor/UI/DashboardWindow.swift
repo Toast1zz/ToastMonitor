@@ -9,6 +9,7 @@ final class WindowManager {
     private var toolbarController: DashboardToolbarController?
     private var pageController: DashboardPageController?
     private var closeObserver: NSObjectProtocol?
+    private var lastTab: DashboardView.Tab = .overview
 
     private init() {}
 
@@ -73,7 +74,8 @@ final class WindowManager {
     /// popover's secure fields, Cmd+W, Cmd+Q — resolve even in accessory
     /// mode where the menu bar itself is hidden.
     func ensureMainMenu() {
-        guard NSApp.mainMenu == nil else { return }
+        let application = NSApplication.shared
+        guard application.mainMenu == nil else { return }
         let mainMenu = NSMenu()
 
         let appItem = NSMenuItem()
@@ -126,12 +128,13 @@ final class WindowManager {
                            action: #selector(NSWindow.performMiniaturize(_:)),
                            keyEquivalent: "m")
 
-        NSApp.mainMenu = mainMenu
+        application.mainMenu = mainMenu
     }
 
     func toggle() {
         if let window, window.isVisible {
             window.orderOut(nil)
+            releaseWindow(window)
             setDockPresence(false)
             NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
         } else {
@@ -155,7 +158,8 @@ final class WindowManager {
             return
         }
 
-        let initialTab = tab ?? .overview
+        let initialTab = tab ?? lastTab
+        lastTab = initialTab
         let pageController = DashboardPageController(initialTab: initialTab)
         let window = NSWindow(contentViewController: pageController)
         window.title = "ToastMonitor"
@@ -198,19 +202,37 @@ final class WindowManager {
         self.pageController = pageController
         self.window = window
         // The close button (or Cmd-W) closes the window without going through
-        // toggle(); without this the foreground timer keeps firing after the
-        // dashboard is gone.
+        // toggle(); release the cached SwiftUI trees on either path.
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
             queue: .main
-        ) { _ in
-            NotificationCenter.default.post(name: TMNotifications.dashboardVisibility, object: false)
+        ) { [weak self, weak window] _ in
+            guard let self, let window else { return }
+            self.releaseWindow(window)
             self.setDockPresence(false)
+            NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
+    }
+
+    private func releaseWindow(_ closingWindow: NSWindow) {
+        guard window === closingWindow else { return }
+        if let selectedTab = pageController?.selectedTab {
+            lastTab = selectedTab
+        }
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+            self.closeObserver = nil
+        }
+        pageController?.releaseHosts()
+        closingWindow.contentViewController = nil
+        closingWindow.toolbar = nil
+        window = nil
+        pageController = nil
+        toolbarController = nil
     }
 
     /// Test-only command-line capture used by the UI verification hook. The
@@ -451,7 +473,7 @@ private final class DashboardRootView: NSView {
 @MainActor
 final class DashboardPageController: NSViewController {
     private let initialTab: DashboardView.Tab
-    private var selectedTab: DashboardView.Tab
+    private(set) var selectedTab: DashboardView.Tab
     private var hosts: [DashboardView.Tab: NSViewController] = [:]
     private weak var visibleHost: NSViewController?
     private var keyMonitor: Any?
@@ -561,6 +583,14 @@ final class DashboardPageController: NSViewController {
             controller.view.layoutSubtreeIfNeeded()
         }
         visibleHost?.view.isHidden = false
+    }
+    func releaseHosts() {
+        for controller in hosts.values {
+            controller.view.removeFromSuperview()
+            controller.removeFromParent()
+        }
+        hosts.removeAll()
+        visibleHost = nil
     }
 
     deinit {

@@ -276,13 +276,10 @@ final class UsageQueryService: @unchecked Sendable {
         let key = "\(database.claudeQuotaSampleMarker())|\(now / 300)"
         if let cached = cachedElsewhere, cached.key == key { return cached.estimate }
         let samples = database.claudeQuotaSamples(since: now - Database.claudeQuotaSampleRetention)
-        var estimate: ClaudeNonLocalEstimator.TokenEstimate?
-        if let first = samples.first {
-            estimate = ClaudeNonLocalEstimator.tokenEstimate(
-                samples: samples,
-                localEvents: database.claudeLocalEvents(since: first.ts - ClaudeNonLocalEstimator.serverLagSeconds),
-                now: now)
-        }
+        let estimate = ClaudeNonLocalEstimator.tokenEstimate(
+            samples: samples,
+            localIntervalTotals: database.claudeLocalIntervalTotals(samples: samples),
+            now: now)
         cachedElsewhere = (key, estimate)
         return estimate
     }

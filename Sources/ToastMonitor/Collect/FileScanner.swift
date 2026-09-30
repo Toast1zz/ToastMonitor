@@ -83,51 +83,62 @@ enum FileScanner {
     }
 
 
-    /// Reads newly appended lines from `path` given the last consumed offset.
-    /// Returns parsed JSON objects with their absolute byte offsets (stable
-    /// event identity, P0-3) and the new offset. Partial trailing lines are
-    /// not consumed; shrunken files rescan from 0.
+    /// Streams parsed JSON objects from `path` with their absolute byte
+    /// offsets (stable event identity, P0-3). Partial trailing lines are not
+    /// consumed; shrunken files rescan from 0.
     ///
-    /// NOTE for callers: pass fromOffset = 0 when the file's mtime changed
-    /// but its size stayed >= the cursor — an in-place rewrite (edit without
-    /// growth) is otherwise invisible and its events are lost. Event ids
-    /// derived from uuid/offset make the replay dedupe-safe.
-    static func readNewJSONLines(path: String, fromOffset: Int64) -> (objects: [(offset: Int64, obj: [String: Any])], newOffset: Int64) {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return ([], fromOffset) }
+    /// Pass fromOffset = 0 when the file's mtime changed but its size stayed
+    /// >= the cursor — an in-place rewrite is otherwise invisible.
+
+    /// Only the current line is retained, so large initial scans do not
+    /// duplicate the entire suffix. The callback runs synchronously.
+    @discardableResult
+    static func forEachNewJSONLine(path: String, fromOffset: Int64,
+                                   _ body: ((offset: Int64, obj: [String: Any])) -> Void) -> Int64 {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return fromOffset }
         defer { fh.closeFile() }
         let total = (try? fh.seekToEnd()) ?? 0
         var start: UInt64 = 0
         if fromOffset > 0 && Int64(total) >= fromOffset {
             start = UInt64(fromOffset)
-        } else if fromOffset > 0 {
-            start = 0 // file shrank; rescan from top
         }
-        guard total > start else { return ([], Int64(total)) }
-        fh.seek(toFileOffset: start)
-        let data = fh.readDataToEndOfFile()
-        // Parse raw bytes instead of first decoding the entire suffix as a
-        // String. Replacement characters change byte counts, which can move
-        // the persisted cursor past (or before) the next JSON record.
-        let bytes = [UInt8](data)
-        var objects: [(offset: Int64, obj: [String: Any])] = []
-        var consumed = 0
-        while consumed < bytes.count {
-            let lineStart = consumed
-            let newline = bytes[consumed...].firstIndex(of: 0x0a)
-            let lineEnd = newline ?? bytes.count
-            let line = Data(bytes[lineStart..<lineEnd])
-            let hasNewline = newline != nil
-            if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
-                objects.append((offset: Int64(start) + Int64(lineStart), obj: obj))
-            } else if !hasNewline {
-                // Partial line still being written — do not consume it.
+        guard total > start else { return Int64(total) }
+        do {
+            try fh.seek(toOffset: start)
+        } catch {
+            return fromOffset
+        }
+        var pending = Data()
+        pending.reserveCapacity(64 * 1024)
+        var consumed: UInt64 = 0
+        while true {
+            let chunk: Data?
+            do {
+                chunk = try fh.read(upToCount: 64 * 1024)
+            } catch {
                 break
             }
-            // Valid JSON, a blank line, and malformed complete lines all
-            // advance by their exact original byte length.
-            consumed = hasNewline ? lineEnd + 1 : lineEnd
+            guard let chunk, !chunk.isEmpty else { break }
+            pending.append(chunk)
+            while let newline = pending[pending.startIndex..<pending.endIndex].firstIndex(of: 0x0a) {
+                if let obj = try? JSONSerialization.jsonObject(
+                    with: pending[pending.startIndex..<newline]) as? [String: Any] {
+                    body((offset: Int64(start + consumed), obj: obj))
+                }
+                let count = pending.distance(from: pending.startIndex, to: newline) + 1
+                pending.removeSubrange(pending.startIndex..<pending.index(after: newline))
+                consumed += UInt64(count)
+            }
         }
-        return (objects, Int64(start) + Int64(consumed))
+        if !pending.isEmpty {
+            if let obj = try? JSONSerialization.jsonObject(with: pending) as? [String: Any] {
+                body((offset: Int64(start + consumed), obj: obj))
+                consumed += UInt64(pending.count)
+            }
+        }
+        // A final complete line without a newline is consumable; malformed
+        // unterminated data remains retryable.
+        return Int64(start + consumed)
     }
 
     /// True when `offset` rests on a JSONL line boundary: offset == 0, or
@@ -140,7 +151,11 @@ enum FileScanner {
         guard offset > 0 else { return true }
         guard let fh = FileHandle(forReadingAtPath: path) else { return false }
         defer { fh.closeFile() }
-        fh.seek(toFileOffset: UInt64(offset - 1))
+        do {
+            try fh.seek(toOffset: UInt64(offset - 1))
+        } catch {
+            return false
+        }
         let byte = fh.readData(ofLength: 1)
         return byte.count == 1 && byte[byte.startIndex] == 0x0A
     }

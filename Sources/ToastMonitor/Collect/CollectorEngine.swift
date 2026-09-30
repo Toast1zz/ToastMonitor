@@ -170,8 +170,8 @@ final class CollectorEngine: @unchecked Sendable {
         let t0 = CFAbsoluteTimeGetCurrent()
         lastScanStart = t0
 
-        var turns: [TurnRecord] = []
-        var sessions: [SessionInfo] = []
+        var turnCount = 0
+        var sessionCount = 0
         var failedSources: [String] = []
 
         func ingest(_ source: String, preflight: () -> Bool,
@@ -190,28 +190,29 @@ final class CollectorEngine: @unchecked Sendable {
             let prepared = Self.prepareAndCommit(database: .shared,
                                                  sourcePaths: sourcePaths,
                                                  scan: scan)
-            let out = (turns: prepared.turns, sessions: prepared.sessions)
+            let turnRows = prepared.turns.count
+            let sessionRows = prepared.sessions.count
             let duration = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
             if !prepared.committed {
                 failedSources.append(source)
                 Task { @MainActor in
-                    SourceHealthHub.shared.record(tool: source, rows: out.turns.count,
-                                                  failed: max(out.turns.count, 1), durationMs: duration,
+                    SourceHealthHub.shared.record(tool: source, rows: turnRows,
+                                                  failed: max(turnRows, 1), durationMs: duration,
                                                   error: "Source changed or write failed — retrying")
                 }
                 return
             }
             for path in [signaturePath].compactMap({ $0 }) + signaturePaths { rememberSource(path) }
-            if out.turns.isEmpty && out.sessions.isEmpty {
+            if turnRows == 0 && sessionRows == 0 {
                 Task { @MainActor in
                     SourceHealthHub.shared.recordIdle(tool: source, durationMs: duration)
                 }
                 return
             }
-            turns.append(contentsOf: out.turns)
-            sessions.append(contentsOf: out.sessions)
+            turnCount += turnRows
+            sessionCount += sessionRows
             Task { @MainActor in
-                SourceHealthHub.shared.record(tool: source, rows: out.turns.count,
+                SourceHealthHub.shared.record(tool: source, rows: turnRows,
                                               failed: 0, durationMs: duration, error: nil)
             }
         }
@@ -276,22 +277,22 @@ final class CollectorEngine: @unchecked Sendable {
         // can change independently of collector activity. Self-throttled
         // internally, so calling this every tick costs one setting read.
         DataMaintenance.maybeCreateRoutineBackupIfDue()
-        if !turns.isEmpty || !sessions.isEmpty {
+        if turnCount > 0 || sessionCount > 0 {
             Database.shared.backfillCosts()
         }
 
-        if !turns.isEmpty || !sessions.isEmpty {
+        if turnCount > 0 || sessionCount > 0 {
             Database.shared.setSetting("last_scan_heartbeat", "\(Int64(Date().timeIntervalSince1970))")
         }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
-        if !turns.isEmpty || !sessions.isEmpty || elapsed > 0.05 {
+        if turnCount > 0 || sessionCount > 0 || elapsed > 0.05 {
             NSLog("[ToastMonitor] scan: %d turns, %d sessions, %.1fms",
-                  turns.count, sessions.count, elapsed * 1000)
+                  turnCount, sessionCount, elapsed * 1000)
         }
         let receipt = ScanReceipt(requestID: requestID, startedAt: startedAt,
-                                  finishedAt: Date(), turns: turns.count,
-                                  sessions: sessions.count, failedSources: failedSources)
+                                  finishedAt: Date(), turns: turnCount,
+                                  sessions: sessionCount, failedSources: failedSources)
         Task { @MainActor in
             NotificationCenter.default.post(name: Self.didCollect, object: receipt)
             completion?(receipt)

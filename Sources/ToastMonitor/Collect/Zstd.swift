@@ -58,11 +58,15 @@ enum Zstd {
     /// cannot deadlock; a 30s watchdog terminates a wedged process so the
     /// collector queue is never blocked forever.
     ///
-    /// Results are cached by input content (S1): the DSH collector re-reads
-    /// the same tail slice on every incremental scan, and decompression runs
-    /// inside the DB transaction that holds the global lock — caching avoids
-    /// re-spawning the subprocess for frames that already decoded.
-    private static let cache = NSCache<NSString, NSData>()
+    /// Small results can be reused during a full-rescan metadata/fold pass.
+    /// Incremental scans begin at the next unconsumed frame, so they do not
+    /// depend on retaining already committed frame results.
+    private static let cache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.totalCostLimit = 16 * 1024 * 1024
+        cache.countLimit = 8
+        return cache
+    }()
 
     static func decompress(_ data: Data) -> Data? {
         // Whole-input cache: key on a cheap content hash. NSCache is
@@ -72,8 +76,8 @@ enum Zstd {
             return hit as Data
         }
         guard let out = decompressUncached(data) else { return nil }
-        if out.count <= 64 * 1024 * 1024 { // don't cache giant payloads
-            cache.setObject(out as NSData, forKey: key)
+        if out.count <= 8 * 1024 * 1024 { // keep per-entry retention conservative
+            cache.setObject(out as NSData, forKey: key, cost: out.count)
         }
         return out
     }
@@ -132,16 +136,17 @@ enum Zstd {
     /// the offset (e.g. the file is not zstd at all).
     static func nextFrameOffset(in data: Data, fromOffset: Int64) -> Int64? {
         let magic: [UInt8] = [0x28, 0xB5, 0x2F, 0xFD]
-        let bytes = [UInt8](data)
-        guard fromOffset >= 0, fromOffset < Int64(bytes.count) else { return nil }
-        var i = Int(fromOffset)
-        let end = bytes.count - 4
+        guard fromOffset >= 0, fromOffset < Int64(data.count), data.count >= 4 else { return nil }
+        var i = data.index(data.startIndex, offsetBy: Int(fromOffset))
+        let end = data.index(data.endIndex, offsetBy: -4)
         while i <= end {
-            if bytes[i] == magic[0], bytes[i + 1] == magic[1],
-               bytes[i + 2] == magic[2], bytes[i + 3] == magic[3] {
-                return Int64(i)
+            if data[i] == magic[0],
+               data[data.index(i, offsetBy: 1)] == magic[1],
+               data[data.index(i, offsetBy: 2)] == magic[2],
+               data[data.index(i, offsetBy: 3)] == magic[3] {
+                return Int64(data.distance(from: data.startIndex, to: i))
             }
-            i += 1
+            data.formIndex(after: &i)
         }
         return nil
     }

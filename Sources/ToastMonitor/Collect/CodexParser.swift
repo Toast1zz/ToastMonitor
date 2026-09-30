@@ -96,11 +96,21 @@ enum CodexParser {
                 && !pendingRewrite
                 && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
             let offset = sameAppendOnlyFile ? prev.size : 0
-            let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
-            if DebugLog.enabled {
-                NSLog("[ToastMonitor][codex] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objs.count)
+            var objectCount = 0
+            var chunkModel: String?
+            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+                objectCount += 1
+                let obj = item.obj
+                if obj["type"] as? String == "turn_context",
+                   let payload = obj["payload"] as? [String: Any],
+                   let m = payload["model"] as? String, !m.isEmpty {
+                    chunkModel = m
+                }
             }
-            if objs.isEmpty {
+            if DebugLog.enabled {
+                NSLog("[ToastMonitor][codex] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objectCount)
+            }
+            if objectCount == 0 {
                 let pending = st.size < prev.size || pendingRewrite
                 database.setScanState(file, size: newOffset, mtime: st.mtime,
                                       identity: st.identity,
@@ -129,22 +139,9 @@ enum CodexParser {
             }
 
 
-            // A scan chunk may start with token_count rows whose turn_context
-            // lives earlier in the stream (or arrived in a previous scan).
-            // Prescan the chunk so those turns still get a model instead of
-            // being inserted with model=NULL (which backfillCosts can never
-            // repair because it requires model IS NOT NULL).
-            var chunkModel: String?
-            for item in objs {
-                let obj = item.obj
-                if obj["type"] as? String == "turn_context",
-                   let payload = obj["payload"] as? [String: Any],
-                   let m = payload["model"] as? String, !m.isEmpty {
-                    chunkModel = m
-                }
-            }
 
-            for item in objs {
+
+            _ = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
                 let obj = item.obj
                 let type = obj["type"] as? String
                 if type == "session_meta", let payload = obj["payload"] as? [String: Any] {
@@ -156,7 +153,6 @@ enum CodexParser {
                         updated = max(updated, ts)
                     }
                 }
-                // turn_context carries the authoritative per-turn model.
                 if type == "turn_context", let payload = obj["payload"] as? [String: Any],
                    let m = payload["model"] as? String, !m.isEmpty {
                     model = m
@@ -172,8 +168,6 @@ enum CodexParser {
                     let reasoning = counts.reasoning
                     let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
                         ?? Int64(Date().timeIntervalSince1970)
-                    // Threads metadata is a valid fallback when a rollout
-                    // chunk does not contain turn_context before token_count.
                     let eventModel = model
                         ?? chunkModel
                         ?? threadMeta[sid]?.model

@@ -1521,24 +1521,77 @@ final class Database: @unchecked Sendable {
         return out
     }
 
-    /// Every locally recorded Claude Code turn since `since` (this Mac and any
-    /// ingested remote feed), as fresh tokens — see ClaudeNonLocalEstimator.
-    func claudeLocalEvents(since: Int64) -> [ClaudeNonLocalEstimator.LocalEvent] {
+    /// Aggregates every Claude turn once into adjacent sample intervals.
+    /// Caller supplies timestamp-ordered samples. Turn rows use idx_turns_tool
+    /// and are swept in timestamp order; auxiliary storage is O(samples).
+    func claudeLocalIntervalTotals(samples: [ClaudeNonLocalEstimator.Sample])
+        -> [ClaudeNonLocalEstimator.LocalIntervalTotals] {
+        guard samples.count > 1 else { return [] }
         lock.lock(); defer { lock.unlock() }
         guard let db else { return [] }
+
+        let intervalCount = samples.count - 1
+        var freshDiff = [Int64](repeating: 0, count: intervalCount + 1)
+        var totalByInterval = [Int64](repeating: 0, count: intervalCount)
         var stmt: OpaquePointer?
         let sql = """
         SELECT ts, input_tokens + output_tokens + cache_write,
-               input_tokens + output_tokens + cache_read FROM turns
-        WHERE tool = 'claude' AND ts >= ? ORDER BY ts;
+               input_tokens + output_tokens + cache_read
+        FROM turns
+        WHERE tool = 'claude' AND ts >= ? AND ts <= ?
+        ORDER BY ts;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, since)
-        var out: [ClaudeNonLocalEstimator.LocalEvent] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            out.append(.init(ts: sqlite3_column_int64(stmt, 0), tokens: sqlite3_column_int64(stmt, 1),
-                             total: sqlite3_column_int64(stmt, 2)))
+        sqlite3_bind_int64(stmt, 1, samples[0].ts - ClaudeNonLocalEstimator.serverLagSeconds)
+        sqlite3_bind_int64(stmt, 2, samples[intervalCount].ts)
+
+        func lowerBoundEnd(_ ts: Int64) -> Int {
+            var lo = 1, hi = samples.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if samples[mid].ts < ts { lo = mid + 1 } else { hi = mid }
+            }
+            return lo - 1
+        }
+        func upperBoundStart(_ ts: Int64) -> Int {
+            var lo = 0, hi = intervalCount
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if samples[mid].ts <= ts { lo = mid + 1 } else { hi = mid }
+            }
+            return lo
+        }
+        while true {
+            let rc = sqlite3_step(stmt)
+            guard rc == SQLITE_ROW else {
+                guard rc == SQLITE_DONE else { return [] }
+                break
+            }
+            let ts = sqlite3_column_int64(stmt, 0)
+            let fresh = max(sqlite3_column_int64(stmt, 1), 0)
+            let total = max(sqlite3_column_int64(stmt, 2), 0)
+
+            let firstFreshInterval = lowerBoundEnd(ts)
+            let afterLastFreshInterval = upperBoundStart(ts + ClaudeNonLocalEstimator.serverLagSeconds)
+            if firstFreshInterval < intervalCount,
+               firstFreshInterval < afterLastFreshInterval {
+                freshDiff[firstFreshInterval] += fresh
+                freshDiff[afterLastFreshInterval] -= fresh
+            }
+
+            let totalInterval = lowerBoundEnd(ts)
+            if totalInterval < intervalCount,
+               samples[totalInterval].ts < ts {
+                totalByInterval[totalInterval] += total
+            }
+        }
+        var out: [ClaudeNonLocalEstimator.LocalIntervalTotals] = []
+        out.reserveCapacity(intervalCount)
+        var freshRunning: Int64 = 0
+        for i in 0..<intervalCount {
+            freshRunning += freshDiff[i]
+            out.append(.init(freshTokens: freshRunning, totalTokens: totalByInterval[i]))
         }
         return out
     }
