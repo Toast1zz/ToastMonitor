@@ -129,10 +129,23 @@ var actual: [String: String] = [:]
 for scenario in scenarios {
     let output = tempRoot.appendingPathComponent("\(scenario.name).png").path
     let database = tempRoot.appendingPathComponent("\(scenario.name).sqlite").path
+    let scenarioHome = tempRoot.appendingPathComponent("\(scenario.name)-home", isDirectory: true)
+    try fileManager.createDirectory(at: scenarioHome, withIntermediateDirectories: true)
     var environment = ProcessInfo.processInfo.environment
     environment["TM_DATABASE_PATH"] = database
+    environment["HOME"] = scenarioHome.path
+    environment["CFFIXED_USER_HOME"] = scenarioHome.path
     environment["TZ"] = "UTC"
     environment["LANG"] = "en_US.UTF-8"
+    for key in ["DSH_HOME", "HERMES_HOME", "OPENCODE_HOME"] {
+        environment.removeValue(forKey: key)
+    }
+    if scenario.name.hasPrefix("popover-home-") {
+        let referenceTime = "1790769600"
+        environment["TM_VISUAL_REFERENCE_UNIX_TIME"] = referenceTime
+    } else {
+        environment.removeValue(forKey: "TM_VISUAL_REFERENCE_UNIX_TIME")
+    }
     if scenario.name.contains("dashboard-sessions") {
         let warmup = tempRoot.appendingPathComponent("\(scenario.name)-warmup.png").path
         _ = try run(executable,
@@ -145,9 +158,15 @@ for scenario in scenarios {
         """
         _ = try run("/usr/bin/sqlite3", [database, sql])
     }
-    _ = try run(executable,
-                scenario.arguments.map { $0 == "OUTPUT" ? output : $0 },
-                environment: environment)
+    let renderOutput = try run(executable,
+                               scenario.arguments.map { $0 == "OUTPUT" ? output : $0 },
+                               environment: environment)
+    if scenario.name.hasPrefix("popover-home-"),
+       let fixtureLog = renderOutput.split(separator: "\n").first(where: {
+           $0.contains("popover visual reference unix time:")
+       }) {
+        print(fixtureLog)
+    }
     actual[scenario.name] = try averageHash(path: output)
 }
 
@@ -166,16 +185,39 @@ guard let expected = try JSONSerialization.jsonObject(with: expectedData) as? [S
                   userInfo: [NSLocalizedDescriptionKey: "invalid baseline file"])
 }
 var failures: [String] = []
+var failedPopoverScenes: [String] = []
 for scenario in scenarios {
     guard let expectedHash = expected[scenario.name], let actualHash = actual[scenario.name] else {
         failures.append("\(scenario.name): missing hash")
+        if scenario.name.hasPrefix("popover-home-") {
+            failedPopoverScenes.append(scenario.name)
+        }
         continue
     }
     let distance = hammingDistance(expectedHash, actualHash)
     if distance > 20 {
-        failures.append("\(scenario.name): distance \(distance) > 20")
+        failures.append("\(scenario.name): distance \(distance) > 20 (expected \(expectedHash), actual \(actualHash))")
+        if scenario.name.hasPrefix("popover-home-") {
+            failedPopoverScenes.append(scenario.name)
+        }
     } else {
         print("\(scenario.name): distance \(distance)")
+    }
+}
+if !failures.isEmpty,
+   !failedPopoverScenes.isEmpty,
+   let artifactPath = ProcessInfo.processInfo.environment["TM_VISUAL_ARTIFACT_DIR"] {
+    let artifactDirectory = URL(fileURLWithPath: artifactPath, isDirectory: true)
+    do {
+        try fileManager.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
+        for name in failedPopoverScenes {
+            let source = tempRoot.appendingPathComponent("\(name).png")
+            let destination = artifactDirectory.appendingPathComponent("\(name).png")
+            try fileManager.copyItem(at: source, to: destination)
+        }
+        print("saved failing popover captures to \(artifactDirectory.path)")
+    } catch {
+        fputs("warning: could not save failing popover captures: \(error)\n", stderr)
     }
 }
 guard failures.isEmpty else {

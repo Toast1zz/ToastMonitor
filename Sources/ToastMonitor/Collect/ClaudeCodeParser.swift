@@ -92,39 +92,24 @@ enum ClaudeCodeParser {
                 && !pendingRewrite
                 && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
             let offset = sameAppendOnlyFile ? prev.size : 0
-            let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
-            if DebugLog.enabled {
-                NSLog("[ToastMonitor][claude] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objs.count)
-            }
-            if objs.isEmpty {
-                // Still record the offset so we don't re-read a file whose new
-                // content is only a partial line.
-                let pending = st.size < prev.size || pendingRewrite
-                database.setScanState(file, size: newOffset, mtime: st.mtime,
-                                      identity: st.identity,
-                                      context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
-                continue
-            }
-
+            var objectCount = 0
             var sessionID = (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
             let project = FileScanner.lastComponentOfEncodedPath(
                 ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent)
             var lastTs: Int64 = 0
             var firstTs: Int64 = 0
             var sessionModel: String?
-
-            for item in objs {
+            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+                objectCount += 1
                 let obj = item.obj
-                guard let type = obj["type"] as? String else { continue }
+                guard let type = obj["type"] as? String else { return }
                 if let recordSessionID = obj["sessionId"] as? String, !recordSessionID.isEmpty {
                     sessionID = recordSessionID
                 }
                 if type == "assistant" {
-                    // usage lives at top level in classic transcripts, inside
-                    // message.usage in the newer SDK format — accept both.
                     let usage = (obj["usage"] as? [String: Any])
                         ?? (obj["message"] as? [String: Any])?["usage"] as? [String: Any]
-                    guard let usage else { continue }
+                    guard let usage else { return }
                     var ts: Int64 = 0
                     if let tstr = obj["timestamp"] as? String {
                         ts = FileScanner.parseISO(tstr) ?? 0
@@ -140,13 +125,9 @@ enum ClaudeCodeParser {
                     let output = (usage["output_tokens"] as? NSNumber)?.int64Value ?? 0
                     let cacheRead = (usage["cache_read_input_tokens"] as? NSNumber)?.int64Value ?? 0
                     let cacheWrite = (usage["cache_creation_input_tokens"] as? NSNumber)?.int64Value ?? 0
-                    guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { continue }
+                    guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { return }
                     let est = Pricing.estimate(model: model, input: input, output: output,
                                                cacheRead: cacheRead, cacheWrite: cacheWrite)
-                    // A Claude response can be copied into several assistant/tool
-                    // transcript rows with different outer UUIDs. The message id
-                    // identifies the billable model call; the content hash is the
-                    // stable fallback for older rows without one.
                     let eventID = EventIdentity.claude(
                         sessionID: sessionID, object: obj, usage: usage,
                         model: model, timestamp: ts, offset: item.offset)
@@ -159,6 +140,18 @@ enum ClaudeCodeParser {
                     if ts > lastTs { lastTs = ts }
                 }
             }
+            if DebugLog.enabled {
+                NSLog("[ToastMonitor][claude] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objectCount)
+            }
+            if objectCount == 0 {
+                let pending = st.size < prev.size || pendingRewrite
+                database.setScanState(file, size: newOffset, mtime: st.mtime,
+                                      identity: st.identity,
+                                      context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
+                continue
+            }
+
+
             if lastTs > 0 {
                 sessions.append(SessionInfo(tool: .claude, sessionID: sessionID, title: nil,
                                             project: project, model: sessionModel, created: firstTs, updated: lastTs))

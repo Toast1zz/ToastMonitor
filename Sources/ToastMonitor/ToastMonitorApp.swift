@@ -314,8 +314,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 RunLoop.main.run(until: Date().addingTimeInterval(0.2))
             }
             RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-            // Opaque backdrop: off-screen cacheDisplay skips drawing for
-            // transparent views (the real panel draws on NSVisualEffectView).
+            // CI sets this only for popover visual renders to keep the
+            // activity grid and reset labels on a fixed reference date.
+            if let unixTime = PopoverHomeView.visualReferenceUnixTime {
+                print("popover visual reference unix time: \(unixTime)")
+            }
             renderSnapshot(PopoverRootView().background(Color(nsColor: .windowBackgroundColor)),
                            to: outPath, height: height, width: 400)
             exit(0)

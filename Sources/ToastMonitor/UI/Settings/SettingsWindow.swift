@@ -69,6 +69,8 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     private var root: NSView?
     private var panes: [SettingsPane: SettingsPaneHost] = [:]
     private var current: SettingsPane?
+    private var closeObserver: NSObjectProtocol?
+    private var lifecycleGeneration = 0
 
     @objc func showSettings(_ sender: Any?) {
         show()
@@ -116,6 +118,14 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         window.toolbar = toolbar
         self.window = window
         self.root = root
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self, weak window] _ in
+            guard let self, let window else { return }
+            self.releaseWindow(window)
+        }
         measureAllPanes(in: window)
         window.center()
         return window
@@ -166,6 +176,7 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
             return
         }
         incoming.view.alphaValue = 0
+        let generation = lifecycleGeneration
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = Self.switchDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -175,8 +186,8 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
             window.animator().setFrame(frame, display: false)
         }, completionHandler: { [weak self, weak outgoing] in
             MainActor.assumeIsolated {
-                // A quick second switch can bring the outgoing pane back.
-                guard let outgoing, outgoing.pane != self?.current else { return }
+                guard let self, self.lifecycleGeneration == generation,
+                      let outgoing, outgoing.pane != self.current else { return }
                 outgoing.view.removeFromSuperview()
                 outgoing.view.alphaValue = 1
             }
@@ -187,7 +198,7 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     /// A shown pane that changes height (a section appearing, a list
     /// loading) resizes the window; a hidden one is fitted when selected.
     private func paneHeightDidChange(_ host: SettingsPaneHost) {
-        guard host.pane == current, let window else { return }
+        guard panes[host.pane] === host, host.pane == current, let window else { return }
         let frame = frame(for: host, in: window)
         guard window.isVisible, window.alphaValue > 0 else {
             window.setFrame(frame, display: true)
@@ -222,12 +233,32 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     /// window stays unfocused until a control is clicked, as in System
     /// Settings. SwiftUI assigns focus after layout, hence the async hop.
     private func clearInitialFocus() {
+        let generation = lifecycleGeneration
         DispatchQueue.main.async { [weak self] in
-            guard let window = self?.window,
+            guard let self, self.lifecycleGeneration == generation,
+                  let window = self.window,
                   window.firstResponder is NSText || window.firstResponder is NSTextField
             else { return }
             window.makeFirstResponder(nil)
         }
+    }
+
+    private func releaseWindow(_ closingWindow: NSWindow) {
+        guard window === closingWindow else { return }
+        lifecycleGeneration += 1
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+            self.closeObserver = nil
+        }
+        for host in panes.values {
+            host.onHeightChange = nil
+            host.view.removeFromSuperview()
+        }
+        panes.removeAll()
+        closingWindow.toolbar = nil
+        closingWindow.contentView = nil
+        window = nil
+        root = nil
     }
 
     @objc private func paneClicked(_ sender: NSToolbarItem) {

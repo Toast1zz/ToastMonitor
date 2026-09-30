@@ -53,6 +53,16 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 | OpenRouter | Cloud API (key + credits snapshots) | — |
 | DeepSeek account | Platform balance + account-wide billed usage; API-key balance-only mode | — |
 
+### Collector memory use
+
+Claude, Codex and Oh My Pi JSONL scans read in 64 KiB chunks and parse one complete line at a time, rather than loading and byte-copying an entire file suffix into JSON dictionaries. Codex and Oh My Pi make a metadata pass before their event pass. OpenCode rows are folded directly from SQLite instead of first collecting every session row, and the collector keeps cross-source row counts rather than retaining completed source batches. Each source still prepares its own turns/sessions for atomic commit, so memory can grow with that source's output rows.
+
+Claude's non-local quota estimate streams indexed turn rows into sample-interval totals, using O(number of samples) Swift storage instead of materializing and sorting all Claude turns.
+
+DSH log scans seek through compressed input in bounded windows, then decompress and parse one frame at a time while folding pending-step state across frames. Peak scan memory therefore includes the largest compressed/decompressed frame and the source's output turn/session batch; neither frame size nor batch size is capped, and this is not an RSS guarantee. The Zstd result cache has a 16 MiB total-cost limit, caches only results no larger than 8 MiB per entry, and has an eight-entry limit; NSCache limits are advisory. Evicted or oversized frames may be decompressed again during a full-rescan pass.
+
+While visible, the dashboard prewarms all four page hosts; closing it or toggling it off releases those hosts. Settings pane hosts are released when Settings closes. This describes view-host lifetimes, not a process-wide RSS bound.
+
 ### Remote feeds
 
 - Only addresses you **explicitly configure** in Sources & Settings are contacted; the app ships no personal IPs or default remote hosts

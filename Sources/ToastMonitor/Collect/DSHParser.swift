@@ -163,58 +163,70 @@ enum DSHParser {
                 && lineBoundaryOK
                 && !stalled
             let offset = sameAppendOnlyFile ? prev.size : 0
-            let (objs, newOffset) = readObjects(path: file, fromOffset: offset, decompress: decompress)
+            let persisted = (try? JSONSerialization.jsonObject(with: Data((prev.context ?? "").utf8))) as? [String: Any]
+            var sessionID = persisted?["sid"] as? String
+            var project = persisted?["cwd"] as? String
+            var headerCreated: Int64 = 0
+            var newOffset = offset
+            var preliminaryCount: Int?
 
-            if objs.isEmpty {
-                // A scan that neither advanced the cursor nor started at 0
-                // made no progress: count the stall so a permanently stuck
-                // tail eventually forces a full rescan from the file start
-                // (where the first magic is the real header frame).
+            // A known append cursor already has header identity persisted, so
+            // fold it in one pass. Only a full rescan needs a header pass.
+            if offset == 0 || sessionID == nil {
+                var headerFound = false
+                var headerSessionID: String?
+                var headerProject: String?
+                let firstPass = forEachObject(path: file, fromOffset: offset, decompress: decompress) { item in
+                    guard offset == 0, !headerFound,
+                          item.obj["type"] as? String == "session" else { return }
+                    headerFound = true
+                    if let id = item.obj["id"] as? String, !id.isEmpty { headerSessionID = id }
+                    headerProject = item.obj["cwd"] as? String
+                    headerCreated = sec((item.obj["createdAt"] as? NSNumber)?.int64Value ?? 0)
+                }
+                preliminaryCount = firstPass.count
+                newOffset = firstPass.newOffset
+                if offset == 0 {
+                    sessionID = headerSessionID ?? sessionID
+                    project = headerProject ?? project
+                }
+            }
+
+            func recordEmptyScan() {
                 let noProgress = newOffset == offset && offset > 0
                 let stallCount = noProgress ? min(FileScanner.contextStallCount(prev.context) + 1, 3) : 0
-                let baseContext = FileScanner.contextWithFullRescan(prev.context,
-                                                                    pending: st.size < prev.size || pendingRewrite)
+                let baseContext = FileScanner.contextWithFullRescan(
+                    prev.context, pending: st.size < prev.size || pendingRewrite)
                 let context = FileScanner.contextWithStallCount(baseContext, count: stallCount)
                 if newOffset == offset && st.size >= prev.size {
-                    // Nothing consumable (corrupt tail, zero-length suffix):
-                    // keep the cursor and retry on the next append.
                     database.setScanState(file, size: prev.size, mtime: st.mtime,
                                           identity: st.identity, context: context)
                 } else {
                     database.setScanState(file, size: newOffset, mtime: st.mtime,
                                           identity: st.identity, context: context)
                 }
+            }
+            if preliminaryCount == 0 {
+                recordEmptyScan()
                 continue
             }
-
-            // Session identity lives in the transcript HEADER, which
-            // incremental scans never re-read; persist it in scan_state.
-            let persisted = (try? JSONSerialization.jsonObject(with: Data((prev.context ?? "").utf8))) as? [String: Any]
-            var sessionID = persisted?["sid"] as? String
-            var project = persisted?["cwd"] as? String
-            var headerCreated: Int64 = 0
-            if offset == 0 {
-                for item in objs {
-                    guard let o = item.obj["type"] as? String, o == "session" else { continue }
-                    if let sid = item.obj["id"] as? String, !sid.isEmpty { sessionID = sid }
-                    project = item.obj["cwd"] as? String ?? project
-                    headerCreated = sec((item.obj["createdAt"] as? NSNumber)?.int64Value ?? 0)
-                    break
-                }
-            }
             guard let sid = sessionID, !sid.isEmpty else {
-                // No session identity in the header (and none persisted):
-                // content without identity can never be attributed to a
-                // session, so advance past it instead of re-reading and
-                // re-decompressing the same tail on every scan (O(n²)).
-                // Keep prev context — there is no sid to persist.
                 database.setScanState(file, size: newOffset, mtime: st.mtime,
                                       identity: st.identity,
                                       context: FileScanner.contextWithStallCount(prev.context, count: 0))
                 continue
             }
 
-            let parsed = parseLogEvents(objs, sessionID: sid, project: project)
+            var foldPass = (count: 0, newOffset: offset)
+            let parsed = parseLogEvents({ consume in
+                foldPass = forEachObject(path: file, fromOffset: offset,
+                                         decompress: decompress, consume)
+            }, sessionID: sid, project: project)
+            newOffset = foldPass.newOffset
+            if parsed.objectCount == 0 {
+                recordEmptyScan()
+                continue
+            }
             turns.append(contentsOf: parsed.turns)
             if parsed.lastTs > 0 || !parsed.turns.isEmpty {
                 sessions.append(SessionInfo(tool: .dsh, sessionID: sid, title: nil, project: project,
@@ -232,97 +244,171 @@ enum DSHParser {
         return (turns, sessions)
     }
 
-    /// Reads new events from one transcript. `.zstd` files are sliced from the
-    /// first complete frame at/after the cursor and decompressed; plain
-    /// `.jsonl` files use the shared byte-offset line scan.
-    private static func readObjects(path: String, fromOffset: Int64,
-                                    decompress: (Data) -> Data?)
-        -> (objects: [(offset: Int64, obj: [String: Any])], newOffset: Int64) {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return ([], fromOffset) }
+    /// Reads new transcript objects one line at a time. Compressed input is
+    /// held one independent frame at a time, not as a whole log tail.
+    /// Peak memory also includes the largest decoded frame, output rows,
+    /// and bounded-cache retention (subject to NSCache's advisory limits).
+    @discardableResult
+    private static func forEachObject(path: String, fromOffset: Int64,
+                                      decompress: (Data) -> Data?,
+                                      _ body: ((offset: Int64, obj: [String: Any])) -> Void)
+        -> (count: Int, newOffset: Int64) {
+        guard path.hasSuffix(".zstd") else {
+            var count = 0
+            let newOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: fromOffset) {
+                count += 1
+                body($0)
+            }
+            return (count, newOffset)
+        }
+
+        guard let fh = FileHandle(forReadingAtPath: path) else { return (0, fromOffset) }
         defer { fh.closeFile() }
-        guard let total = try? fh.seekToEnd() else { return ([], fromOffset) }
+        guard let total = try? fh.seekToEnd() else { return (0, fromOffset) }
         var start: UInt64 = 0
         if fromOffset > 0 && Int64(total) >= fromOffset {
             start = UInt64(fromOffset)
-        } else if fromOffset > 0 {
-            start = 0 // file shrank; rescan from top
         }
-        guard total > start else { return ([], Int64(total)) }
-        fh.seek(toFileOffset: start)
-        let data = fh.readDataToEndOfFile()
-
-        guard path.hasSuffix(".zstd") else {
-            let (objs, consumed) = parseJSONLLines(data, baseOffset: Int64(start))
-            return (objs, Int64(start) + consumed)
+        guard total > start else { return (0, Int64(total)) }
+        let firstSearch = nextFrameOffset(handle: fh, from: start, end: total)
+        guard let firstFrame = firstSearch.offset else {
+            return (0, firstSearch.failed || fromOffset > 0 ? fromOffset : Int64(total))
         }
 
-        // Independent frames are appended whole, so the cursor always rests on
-        // a frame boundary and new data starts at the next magic.
-        guard let frameStart = Zstd.nextFrameOffset(in: data, fromOffset: 0) else {
-            // Not a zstd stream (or corrupt): do not consume anything.
-            return ([], fromOffset > 0 ? fromOffset : Int64(total))
-        }
-        let slice = data.subdata(in: Int(frameStart)..<data.count)
-        if let out = decompress(slice), !out.isEmpty {
-            let parsed = parseJSONLLines(out, baseOffset: Int64(start) + frameStart)
-            return (parsed.objects, Int64(total))
-        }
-        // Decompression failed (e.g. crash left a partial tail frame): keep
-        // every frame before the first bad one, matching DSH's own recovery.
-        return recoverFrames(data: data, baseOffset: Int64(start),
-                             fromFrame: frameStart, decompress: decompress)
-    }
-
-    /// Walks independent frames one by one, stopping at the first frame that
-    /// fails to decompress; the cursor advances only past good frames.
-    private static func recoverFrames(data: Data, baseOffset: Int64, fromFrame: Int64,
-                                      decompress: (Data) -> Data?)
-        -> (objects: [(offset: Int64, obj: [String: Any])], newOffset: Int64) {
-        var objects: [(offset: Int64, obj: [String: Any])] = []
-        var cursor = fromFrame
-        while true {
-            guard let magic = Zstd.nextFrameOffset(in: data, fromOffset: cursor) else { break }
-            let end = Zstd.nextFrameOffset(in: data, fromOffset: magic + 4) ?? Int64(data.count)
-            guard end > magic else { break }
-            let slice = data.subdata(in: Int(magic)..<Int(end))
-            guard let out = decompress(slice), !out.isEmpty else { break }
-            objects.append(contentsOf: parseJSONLLines(out, baseOffset: baseOffset + magic).objects)
-            cursor = end
-        }
-        return (objects, baseOffset + cursor)
-    }
-
-    /// Line-scans JSONL bytes (decompressed or plain); a trailing partial line
-    /// is not consumed. Returns parsed objects and the consumed byte count.
-    private static func parseJSONLLines(_ data: Data, baseOffset: Int64)
-        -> (objects: [(offset: Int64, obj: [String: Any])], consumed: Int64) {
-        let bytes = [UInt8](data)
-        var objects: [(offset: Int64, obj: [String: Any])] = []
-        var consumed = 0
-        while consumed < bytes.count {
-            let lineStart = consumed
-            let newline = bytes[consumed...].firstIndex(of: 0x0a)
-            let lineEnd = newline ?? bytes.count
-            let line = Data(bytes[lineStart..<lineEnd])
-            let hasNewline = newline != nil
-            if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
-                objects.append((offset: baseOffset + Int64(lineStart), obj: obj))
-            } else if !hasNewline {
-                break // partial line still being written — do not consume it
+        var count = 0
+        var cursor = firstFrame
+        while cursor < total {
+            var searchFrom = cursor + 4
+            var completedFrame = false
+            var searchFailed = false
+            while true {
+                let search = nextFrameOffset(handle: fh, from: searchFrom, end: total)
+                if search.failed {
+                    searchFailed = true
+                    break
+                }
+                guard let candidate = search.offset else { break }
+                let frameRead = readFrame(handle: fh, from: cursor, to: candidate)
+                if frameRead.failed {
+                    searchFailed = true
+                    break
+                }
+                if let compressed = frameRead.data,
+                   let decompressed = decompress(compressed), !decompressed.isEmpty {
+                    count += parseJSONLLines(decompressed, baseOffset: Int64(cursor), body)
+                    cursor = candidate
+                    completedFrame = true
+                    break
+                }
+                // A zstd magic can occur inside compressed payload. A failed
+                // prefix is not proof of a corrupt frame; try the next marker.
+                searchFrom = candidate + 4
             }
-            consumed = hasNewline ? lineEnd + 1 : lineEnd
+            if searchFailed { break }
+            if completedFrame { continue }
+            let frameRead = readFrame(handle: fh, from: cursor, to: total)
+            guard !frameRead.failed, let compressed = frameRead.data,
+                  let decompressed = decompress(compressed), !decompressed.isEmpty else {
+                break
+            }
+            count += parseJSONLLines(decompressed, baseOffset: Int64(cursor), body)
+            cursor = total
         }
-        return (objects, Int64(consumed))
+        return (count, Int64(cursor))
     }
 
-    /// Folds a batch of events into per-step turn records.
-    /// Per-step `assistant/chunk {type:'usage'}` records are the primary
-    /// signal; `assistant/message.usage` is the committed-step fallback and
-    /// REPLACES the chunk sample for the same (turn, step) — never added to
-    /// it — matching the harness's own token-meter fold.
-    private static func parseLogEvents(_ objects: [(offset: Int64, obj: [String: Any])],
-                                       sessionID: String, project: String?)
-        -> (turns: [TurnRecord], firstTs: Int64, lastTs: Int64, model: String?) {
+    /// Searches the file in bounded windows, retaining only three overlap
+    /// bytes so frame magic split across reads is still detected.
+    private static func nextFrameOffset(handle: FileHandle, from start: UInt64, end: UInt64)
+        -> (offset: UInt64?, failed: Bool) {
+        guard start < end else { return (nil, false) }
+        do {
+            try handle.seek(toOffset: start)
+        } catch {
+            return (nil, true)
+        }
+        var window = Data()
+        var windowStart = start
+        var readPosition = start
+        while readPosition < end {
+            let amount = Int(min(UInt64(64 * 1024), end - readPosition))
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: amount)
+            } catch {
+                return (nil, true)
+            }
+            guard let chunk, !chunk.isEmpty else { return (nil, true) }
+            window.append(chunk)
+            readPosition += UInt64(chunk.count)
+            if let relative = Zstd.nextFrameOffset(in: window, fromOffset: 0) {
+                return (windowStart + UInt64(relative), false)
+            }
+            if window.count > 3 {
+                let discarded = window.count - 3
+                window.removeSubrange(
+                    window.startIndex..<window.index(window.startIndex, offsetBy: discarded))
+                windowStart += UInt64(discarded)
+            }
+        }
+        return (nil, false)
+    }
+
+    private static func readFrame(handle: FileHandle, from start: UInt64, to end: UInt64)
+        -> (data: Data?, failed: Bool) {
+        guard end > start else { return (nil, true) }
+        do {
+            try handle.seek(toOffset: start)
+        } catch {
+            return (nil, true)
+        }
+        var frame = Data()
+        var remaining = end - start
+        while remaining > 0 {
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: Int(min(UInt64(64 * 1024), remaining)))
+            } catch {
+                return (nil, true)
+            }
+            guard let chunk, !chunk.isEmpty else { return (nil, true) }
+            frame.append(chunk)
+            remaining -= UInt64(chunk.count)
+        }
+        return (frame, false)
+    }
+
+    /// Line-scans one decompressed frame or plain JSONL chunk. Complete
+    /// malformed lines advance; an unterminated invalid line remains pending.
+    private static func parseJSONLLines(
+        _ data: Data, baseOffset: Int64,
+        _ body: ((offset: Int64, obj: [String: Any])) -> Void
+    ) -> Int {
+        var count = 0
+        var lineStart = data.startIndex
+        while lineStart < data.endIndex {
+            let newline = data[lineStart..<data.endIndex].firstIndex(of: 0x0a)
+            let lineEnd = newline ?? data.endIndex
+            let line = data[lineStart..<lineEnd]
+            if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
+                let byteOffset = data.distance(from: data.startIndex, to: lineStart)
+                body((offset: baseOffset + Int64(byteOffset), obj: obj))
+                count += 1
+            } else if newline == nil {
+                break
+            }
+            lineStart = newline.map { data.index(after: $0) } ?? data.endIndex
+        }
+        return count
+    }
+    /// Folds a streamed event slice into per-step turns. Pending step state
+    /// survives frame boundaries and is finalized once the requested slice ends.
+    /// An assistant/message usage replaces an earlier chunk sample for the
+    /// same turn/step, matching the harness's own token-meter fold.
+    private static func parseLogEvents(
+        _ stream: (_ consume: ((offset: Int64, obj: [String: Any])) -> Void) -> Void,
+        sessionID: String, project: String?
+    ) -> (turns: [TurnRecord], firstTs: Int64, lastTs: Int64, model: String?, objectCount: Int) {
         struct PendingStep {
             let usage: [String: Any]
             let seq: Int64
@@ -335,6 +421,7 @@ enum DSHParser {
         var firstTs: Int64 = 0
         var lastTs: Int64 = 0
         var firstModel: String?
+        var objectCount = 0
 
         func emit(usage: [String: Any], seq: Int64, time: Int64,
                   provider: String?, model: String?) {
@@ -358,9 +445,10 @@ enum DSHParser {
             if firstModel == nil, let model, !model.isEmpty { firstModel = model }
         }
 
-        for item in objects {
+        stream { item in
+            objectCount += 1
             let obj = item.obj
-            guard let type = obj["type"] as? String else { continue }
+            guard let type = obj["type"] as? String else { return }
             switch type {
             case "request/header":
                 if let d = obj["data"] as? [String: Any],
@@ -371,7 +459,7 @@ enum DSHParser {
                 }
             case "assistant/chunk":
                 guard let d = obj["data"] as? [String: Any],
-                      let chunk = d["chunk"] as? [String: Any] else { continue }
+                      let chunk = d["chunk"] as? [String: Any] else { return }
                 let key = "\(d["turn"] as? Int ?? 0):\(d["step"] as? Int ?? 0)"
                 switch chunk["type"] as? String {
                 case "usage":
@@ -394,7 +482,7 @@ enum DSHParser {
             case "assistant/message":
                 guard let d = obj["data"] as? [String: Any],
                       let msg = d["message"] as? [String: Any],
-                      let usage = msg["usage"] as? [String: Any] else { continue }
+                      let usage = msg["usage"] as? [String: Any] else { return }
                 let key = "\(d["turn"] as? Int ?? 0):\(d["step"] as? Int ?? 0)"
                 let provider = msg["provider"] as? String ?? headerProvider
                 let model = msg["model"] as? String ?? headerModel
@@ -420,7 +508,7 @@ enum DSHParser {
             emit(usage: p.usage, seq: p.seq, time: p.time,
                  provider: headerProvider, model: headerModel)
         }
-        return (turns, firstTs, lastTs, firstModel)
+        return (turns, firstTs, lastTs, firstModel, objectCount)
     }
 
     // MARK: - Cache mode

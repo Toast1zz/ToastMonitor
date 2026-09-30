@@ -172,6 +172,30 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(turns[0].costQuality, "unknown")
         XCTAssertEqual(turns[0].model, "mystery-model")
     }
+    func testLogModeFullScanDoesNotCommitCursorWhenFoldPassFails() throws {
+        let transcript = """
+        {"type":"session","version":0,"id":"session-fold-failure","createdAt":1786628702000,"cwd":"/tmp/z"}
+        {"type":"assistant/message","seq":55,"time":1786628800000,"data":{"turn":1,"step":1,"message":{"usage":{"inputTokens":123,"outputTokens":45}}}}
+        """
+        let path = try fakeZstdFile(name: "fold-failure.jsonl.zstd", chunks: [transcript])
+        var calls = 0
+        let failFoldOnce: (Data) -> Data? = { frame in
+            calls += 1
+            return calls == 2 ? nil : frame
+        }
+
+        let (failedTurns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
+                                                 decompress: failFoldOnce)
+        XCTAssertTrue(failedTurns.isEmpty)
+        XCTAssertEqual(db.scanState(path).size, 0,
+                       "the cursor stays before data the failed fold pass did not process")
+
+        let (replayed, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
+                                              decompress: failFoldOnce)
+        XCTAssertEqual(replayed.count, 1)
+        XCTAssertEqual(replayed.first?.eventID, "dsh-log:session-fold-failure:55")
+        XCTAssertEqual(db.scanState(path).size, FileScanner.fileStat(path)?.size ?? -1)
+    }
 
     // MARK: - Log mode (.zstd frame path with injected decompressor)
 
@@ -209,6 +233,8 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(turns[0].model, "deepseek-v4-flash")
         XCTAssertEqual(turns[0].eventID, "dsh-log:session-zstd-1:3")
         XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(db.scanState(path).size, FileScanner.fileStat(path)?.size ?? -1,
+                       "initial frame cursor reaches its absolute file boundary")
         XCTAssertTrue(db.insertTurns(turns))
 
         // Append a second independent frame.
@@ -225,10 +251,96 @@ final class DSHParserTests: XCTestCase {
 
         let (more, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: identity)
         XCTAssertEqual(more.count, 1, "only the new frame's step is parsed")
+        XCTAssertEqual(db.scanState(path).size, FileScanner.fileStat(path)?.size ?? -1,
+                       "appended frame cursor advances from the prior absolute offset")
         if more.count == 1 {
             XCTAssertEqual(more[0].eventID, "dsh-log:session-zstd-1:9")
             XCTAssertEqual(more[0].ts, 1786628800)
         }
+    }
+
+    func testLogModeZstdUsageAndMessageReplacementAcrossFrames() throws {
+        let headerAndUsage = """
+        {"type":"session","version":0,"id":"session-cross-frame","createdAt":1786628702000,"cwd":"/tmp/z"}
+        {"type":"assistant/chunk","seq":30,"time":1786628800000,"data":{"turn":2,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":100,"outputTokens":50}}}}
+        """
+        let message = """
+        {"type":"assistant/message","seq":31,"time":1786628801000,"data":{"turn":2,"step":1,"message":{"provider":"opencodego","model":"deepseek-v4-flash","usage":{"inputTokens":240,"outputTokens":90,"cacheReadTokens":10}}}}
+        """
+        let path = try fakeZstdFile(name: "cross-frame.jsonl.zstd", chunks: [headerAndUsage, message])
+        let identity: (Data) -> Data? = { $0 }
+        let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: identity)
+
+        XCTAssertEqual(turns.count, 1, "the pending usage from frame one is replaced, not emitted separately")
+        XCTAssertEqual(turns.first?.eventID, "dsh-log:session-cross-frame:31")
+        XCTAssertEqual(turns.first?.inputTokens, 240)
+        XCTAssertEqual(turns.first?.outputTokens, 90)
+        XCTAssertEqual(turns.first?.cacheRead, 10)
+    }
+
+    func testLogModeZstdPendingUsageFinishesAcrossFrames() throws {
+        let usageFrame = """
+        {"type":"session","version":0,"id":"session-finish-cross-frame","createdAt":1786628702000,"cwd":"/tmp/z"}
+        {"type":"assistant/chunk","seq":20,"time":1786628800000,"data":{"turn":3,"step":4,"chunk":{"type":"usage","usage":{"inputTokens":500,"outputTokens":70,"cacheReadTokens":20}}}}
+        """
+        let finishFrame = """
+        {"type":"assistant/chunk","seq":21,"time":1786628801000,"data":{"turn":3,"step":4,"chunk":{"type":"finish","replayState":{"provider":"opencodego","model":"deepseek-v4-flash"}}}}
+        """
+        let path = try fakeZstdFile(name: "finish-cross-frame.jsonl.zstd",
+                                    chunks: [usageFrame, finishFrame])
+        let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
+                                            decompress: { $0 })
+
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns.first?.model, "deepseek-v4-flash")
+        XCTAssertEqual(turns.first?.eventID, "dsh-log:session-finish-cross-frame:20")
+        XCTAssertEqual(turns.first?.inputTokens, 500)
+        XCTAssertEqual(turns.first?.cacheRead, 20)
+    }
+
+    func testLogModeZstdSkipsFalseMagicInsideCompressedPayload() throws {
+        let headerAndUsage = """
+        {"type":"session","version":0,"id":"session-false-magic","createdAt":1786628702000,"cwd":"/tmp/z"}
+        {"type":"assistant/chunk","seq":40,"time":1786628800000,"data":{"turn":4,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":40,"outputTokens":10}}}}
+        """
+        let finish = """
+        {"type":"assistant/chunk","seq":41,"time":1786628801000,"data":{"turn":4,"step":1,"chunk":{"type":"finish","replayState":{"provider":"opencodego","model":"deepseek-v4-flash"}}}}
+        """
+        let secondFrameJSON = """
+        {"type":"assistant/message","seq":42,"time":1786628802000,"data":{"turn":4,"step":2,"message":{"provider":"opencodego","model":"deepseek-v4-flash","usage":{"inputTokens":80,"outputTokens":20}}}}
+        """
+        var firstFrame = Self.zstdMagic
+        firstFrame.append(Data("\n".utf8))
+        firstFrame.append(Data((headerAndUsage + "\n").utf8))
+        var embeddedMagicAndNoise = Self.zstdMagic
+        embeddedMagicAndNoise.append(Data("false".utf8))
+        firstFrame.append(embeddedMagicAndNoise)
+        firstFrame.append(Data(finish.utf8))
+        var secondFrame = Self.zstdMagic
+        secondFrame.append(Data("\n".utf8))
+        secondFrame.append(Data(secondFrameJSON.utf8))
+        var encoded = firstFrame
+        encoded.append(secondFrame)
+        let path = (tempDir as NSString).appendingPathComponent("false-magic.jsonl.zstd")
+        try encoded.write(to: URL(fileURLWithPath: path))
+
+        let decompressFakeFrame: (Data) -> Data? = { frame in
+            if Data(frame.suffix(4)) == Self.zstdMagic { return nil } // inner false candidate
+            var output = Data(frame.dropFirst(Self.zstdMagic.count + 1))
+            if let range = output.range(of: embeddedMagicAndNoise) {
+                output.removeSubrange(range)
+            }
+            return output
+        }
+        let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
+                                            decompress: decompressFakeFrame)
+        XCTAssertEqual(turns.count, 2, "the valid frame continues past an embedded false magic")
+        XCTAssertEqual(turns.first?.model, "deepseek-v4-flash",
+                       "the finish after the embedded magic must be processed")
+        XCTAssertEqual(turns.first?.provider, "opencodego")
+        XCTAssertEqual(turns.map(\.eventID), [
+            "dsh-log:session-false-magic:40", "dsh-log:session-false-magic:42"
+        ])
     }
 
     func testLogModeZstdRealCompression() throws {
@@ -263,18 +375,45 @@ final class DSHParserTests: XCTestCase {
         {"type":"assistant/chunk","seq":3,"time":1786628706000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":100,"outputTokens":50}}}}
         {"type":"assistant/chunk","seq":4,"time":1786628706001,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"},"replayState":{"kind":"pi-ai","version":1,"api":"opencodego","provider":"opencodego","model":"deepseek-v4-flash","stopReason":"toolUse"}}}}
         """
-        var data = Self.zstdMagic
-        data.append(Data("\n".utf8))
-        data.append(Data(good.utf8))
-        data.append(Self.zstdMagic)
-        data.append(Data("{\"type\":\"assistant/chunk\",\"seq\":9".utf8)) // truncated line
+        var goodFrame = Self.zstdMagic
+        goodFrame.append(Data("\n".utf8))
+        goodFrame.append(Data(good.utf8))
+        var corruptFrame = Self.zstdMagic
+        corruptFrame.append(Data("\n{\"type\":\"assistant/chunk\",\"seq\":9".utf8))
         let path = (tempDir as NSString).appendingPathComponent("corrupt.jsonl.zstd")
+        var data = goodFrame
+        data.append(corruptFrame)
         try data.write(to: URL(fileURLWithPath: path))
 
-        let identity: (Data) -> Data? = { $0 }
-        let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: identity)
+        let truncatedPayload = Data("{\"type\":\"assistant/chunk\",\"seq\":9".utf8)
+        let rejectsTruncatedFrame: (Data) -> Data? = { frame in
+            Data(frame.suffix(truncatedPayload.count)) == truncatedPayload ? nil : frame
+        }
+        let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
+                                            decompress: rejectsTruncatedFrame)
         XCTAssertEqual(turns.count, 1, "the good frame before the truncated tail is kept")
         XCTAssertEqual(turns[0].eventID, "dsh-log:session-recover-1:3")
+        XCTAssertEqual(db.scanState(path).size, Int64(goodFrame.count),
+                       "the cursor stays at the corrupt frame start")
+
+        var repairedFrame = Self.zstdMagic
+        repairedFrame.append(Data("\n".utf8))
+        repairedFrame.append(Data("""
+        {"type":"assistant/chunk","seq":9,"time":1786628800000,"data":{"turn":1,"step":2,"chunk":{"type":"usage","usage":{"inputTokens":200,"outputTokens":80}}}}
+        {"type":"assistant/chunk","seq":10,"time":1786628800001,"data":{"turn":1,"step":2,"chunk":{"type":"finish","replayState":{"provider":"opencodego","model":"deepseek-v4-flash"}}}}
+        """.utf8))
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seek(toOffset: UInt64(goodFrame.count))
+        try fh.truncate(atOffset: UInt64(goodFrame.count))
+        try fh.write(contentsOf: repairedFrame)
+        try fh.close()
+
+        let (replayed, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
+                                              decompress: rejectsTruncatedFrame)
+        XCTAssertEqual(replayed.count, 1)
+        XCTAssertEqual(replayed.first?.eventID, "dsh-log:session-recover-1:9")
+        XCTAssertEqual(replayed.first?.inputTokens, 200)
+        XCTAssertEqual(db.scanState(path).size, Int64(goodFrame.count + repairedFrame.count))
     }
 
     // MARK: - Cache mode
@@ -363,6 +502,9 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(Zstd.nextFrameOffset(in: data, fromOffset: 3), 3, "a cursor exactly on the boundary finds it")
         XCTAssertNil(Zstd.nextFrameOffset(in: data, fromOffset: 4), "magic before the cursor is not a match")
         XCTAssertNil(Zstd.nextFrameOffset(in: data, fromOffset: 7))
+        let sliced = data[3..<data.count]
+        XCTAssertEqual(Zstd.nextFrameOffset(in: sliced, fromOffset: 0), 0,
+                       "frame scanning uses slice-relative byte offsets")
     }
 
     // MARK: - PARSER-2: truncate + regrow without an observed shrink

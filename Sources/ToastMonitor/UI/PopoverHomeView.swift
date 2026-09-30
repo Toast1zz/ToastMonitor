@@ -84,7 +84,7 @@ struct PopoverHomeView: View {
         }
     }()
     /// Drives countdown refresh (resets etc.) once a minute.
-    @State private var now = Date()
+    @State private var now: Date
     /// Full-number mode (1,234,567 instead of 1.2M) — switch to watch the
     /// counter tick up during streaming.
     @AppStorage("popoverFullTokens") private var fullTokens = false
@@ -104,6 +104,23 @@ struct PopoverHomeView: View {
 
     @MainActor init(deepseek: DeepSeekBillingClient? = nil) {
         _deepseek = ObservedObject(wrappedValue: deepseek ?? .shared)
+        _now = State(initialValue: Self.initialNow)
+    }
+
+    /// The screenshot harness can freeze popover-only dates without changing
+    /// the live clock used by ordinary app launches or unconfigured renders.
+    static var visualReferenceUnixTime: Double? {
+        guard CommandLine.arguments.contains("--render-popover"),
+              let raw = ProcessInfo.processInfo.environment["TM_VISUAL_REFERENCE_UNIX_TIME"],
+              let unixTime = Double(raw), unixTime.isFinite else {
+            return nil
+        }
+        return unixTime
+    }
+
+    private static var initialNow: Date {
+        guard let unixTime = visualReferenceUnixTime else { return Date() }
+        return Date(timeIntervalSince1970: unixTime)
     }
 
     private var totals: Database.ToolTotals {
@@ -681,7 +698,7 @@ struct PopoverHomeView: View {
 
     /// 近 24 周网格：key 与 heatmapData 的 yyyymmdd（本地日）对齐。
     private var activityWeeks: [[Int64?]] {
-        Self.buildHeatmapWeeks(now: Date(), configuration: periodSettings.configuration)
+        Self.buildHeatmapWeeks(now: now, configuration: periodSettings.configuration)
     }
 
     private static func buildHeatmapWeeks(now: Date,

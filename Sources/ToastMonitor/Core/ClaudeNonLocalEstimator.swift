@@ -22,16 +22,12 @@ enum ClaudeNonLocalEstimator {
         let fiveHourReset: Int64?
     }
 
-    /// One local Claude Code turn: timestamp and fresh tokens (input + output
-    /// + cache writes). Cache reads are excluded — every turn re-reads the
-    /// whole context (~250k tokens) and would drown the "idle" test.
-    struct LocalEvent: Equatable {
-        let ts: Int64
-        let tokens: Int64
-        /// Same turn in the app's headline metric (input + output + cache
-        /// reads) — what the calibration converts quota points back into.
-        var total: Int64 = 0
+    /// Aggregated local activity for one adjacent sample interval.
+    struct LocalIntervalTotals: Equatable {
+        let freshTokens: Int64
+        let totalTokens: Int64
     }
+
 
     /// "Basically no local activity": below one or two ordinary turns.
     static let idleTokenThreshold: Int64 = 5_000
@@ -70,53 +66,47 @@ enum ClaudeNonLocalEstimator {
     /// is trusted.
     static let minCalibrationPoints = 5
 
-    /// Converts non-local quota rises into tokens. The 5h window is used
-    /// when available — its percentage moves ~20× finer than the weekly
-    /// one — and the weekly window otherwise.
+    /// Converts non-local quota rises into tokens using per-interval local
+    /// totals. The 5h window is preferred because its percentage moves ~20×
+    /// finer than the weekly one; weekly data is the fallback.
     ///
-    /// Calibration: over intervals with real local activity, local tokens /
-    /// quota points consumed. Intervals that also contained non-local use
-    /// make the rate a little low, so the estimate stays conservative.
-    static func tokenEstimate(samples: [Sample], localEvents: [LocalEvent], now: Int64) -> TokenEstimate? {
-        let sorted = samples.sorted { $0.ts < $1.ts }
-        let events = localEvents.sorted { $0.ts < $1.ts }
+    /// Calibration uses intervals with local activity and can be conservative
+    /// when they also contain non-local use. Production interval totals are
+    /// aggregated in SQLite rather than retaining every local turn.
+    static func tokenEstimate(samples: [Sample], localIntervalTotals: [LocalIntervalTotals],
+                              now: Int64) -> TokenEstimate? {
         let series: [(Sample) -> (pct: Int, reset: Int64)?] = [
             { s in s.fiveHourPct.flatMap { p in s.fiveHourReset.map { (p, $0) } } },
             { s in s.weeklyReset.map { (s.weeklyPct, $0) } },
         ]
         for extract in series {
-            if let estimate = tokenEstimate(sorted, events, now: now, series: extract) {
+            if let estimate = tokenEstimate(samples, localIntervalTotals, now: now, series: extract) {
                 return estimate
             }
         }
         return nil
     }
 
-    private static func tokenEstimate(_ samples: [Sample], _ events: [LocalEvent], now: Int64,
-                                      series: (Sample) -> (pct: Int, reset: Int64)?) -> TokenEstimate? {
-        var freshPrefix: [Int64] = [0], totalPrefix: [Int64] = [0]
-        for e in events {
-            freshPrefix.append(freshPrefix[freshPrefix.count - 1] + max(e.tokens, 0))
-            totalPrefix.append(totalPrefix[totalPrefix.count - 1] + max(e.total, 0))
-        }
-        func sum(_ prefix: [Int64], _ start: Int64, _ end: Int64) -> Int64 {
-            let lo = lowerBound(events, start), hi = lowerBound(events, end + 1)
-            return hi > lo ? prefix[hi] - prefix[lo] : 0
-        }
 
+    private static func tokenEstimate(_ samples: [Sample], _ totals: [LocalIntervalTotals], now: Int64,
+                                      series: (Sample) -> (pct: Int, reset: Int64)?) -> TokenEstimate? {
+        guard totals.count == max(samples.count - 1, 0) else { return nil }
         var calibrationTokens: Int64 = 0
         var calibrationPoints = 0
         var idle: [(mid: Int64, points: Int)] = []
-        for (a, b) in zip(samples, samples.dropFirst()) {
+        for index in totals.indices {
+            let a = samples[index]
+            let b = samples[index + 1]
+            let intervalTotals = totals[index]
             guard b.ts <= now - ingestMarginSeconds,
                   let wa = series(a), let wb = series(b),
                   abs(wa.reset - wb.reset) <= sameWindowTolerance else { continue }
             let delta = wb.pct - wa.pct
             guard delta >= 0 else { continue }
-            if sum(freshPrefix, a.ts - serverLagSeconds, b.ts) < idleTokenThreshold {
+            if intervalTotals.freshTokens < idleTokenThreshold {
                 if delta > 0 { idle.append((a.ts + (b.ts - a.ts) / 2, delta)) }
             } else {
-                calibrationTokens += sum(totalPrefix, a.ts + 1, b.ts)
+                calibrationTokens += intervalTotals.totalTokens
                 calibrationPoints += delta
             }
         }
@@ -127,12 +117,4 @@ enum ClaudeNonLocalEstimator {
             events: idle.map { TokenEvent(ts: $0.mid, tokens: Int64((Double($0.points) * rate).rounded())) })
     }
 
-    private static func lowerBound(_ events: [LocalEvent], _ ts: Int64) -> Int {
-        var lo = 0, hi = events.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if events[mid].ts < ts { lo = mid + 1 } else { hi = mid }
-        }
-        return lo
-    }
 }
