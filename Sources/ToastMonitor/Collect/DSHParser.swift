@@ -278,6 +278,17 @@ enum DSHParser {
         var count = 0
         var cursor = firstFrame
         while cursor < total {
+            // DSH appends one tiny frame per event, so a log can hold tens of
+            // thousands of them. The zstd CLI decodes concatenated frames, so
+            // decode a bounded run of whole frames per call instead of
+            // spawning one subprocess per frame.
+            if let batchEnd = batchEnd(handle: fh, cursor: cursor, total: total),
+               let slice = readFrame(handle: fh, from: cursor, to: batchEnd).data,
+               let decompressed = decompress(slice), !decompressed.isEmpty {
+                count += parseJSONLLines(decompressed, baseOffset: Int64(cursor), body)
+                cursor = batchEnd
+                continue
+            }
             var searchFrom = cursor + 4
             var completedFrame = false
             var searchFailed = false
@@ -315,6 +326,30 @@ enum DSHParser {
             cursor = total
         }
         return (count, Int64(cursor))
+    }
+
+    private static let maxBatchBytes: UInt64 = 4 * 1024 * 1024
+
+    /// End offset of a run of whole frames starting at `cursor`: the rest of
+    /// the file when it fits in one batch, else the last frame magic inside
+    /// the batch window. Nil when no boundary falls inside the window (one
+    /// frame larger than a batch), so the caller takes the per-frame path.
+    private static func batchEnd(handle: FileHandle, cursor: UInt64, total: UInt64) -> UInt64? {
+        let windowEnd = min(total, cursor + maxBatchBytes)
+        if windowEnd == total { return total > cursor ? total : nil }
+        guard let window = readFrame(handle: handle, from: cursor, to: windowEnd).data,
+              window.count > 4 else { return nil }
+        let magic: [UInt8] = [0x28, 0xB5, 0x2F, 0xFD]
+        var i = window.count - 4
+        while i >= 4 {
+            let s = window.startIndex + i
+            if window[s] == magic[0], window[s + 1] == magic[1],
+               window[s + 2] == magic[2], window[s + 3] == magic[3] {
+                return cursor + UInt64(i)
+            }
+            i -= 1
+        }
+        return nil
     }
 
     /// Searches the file in bounded windows, retaining only three overlap
@@ -390,13 +425,16 @@ enum DSHParser {
             let newline = data[lineStart..<data.endIndex].firstIndex(of: 0x0a)
             let lineEnd = newline ?? data.endIndex
             let line = data[lineStart..<lineEnd]
-            if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
-                let byteOffset = data.distance(from: data.startIndex, to: lineStart)
-                body((offset: baseOffset + Int64(byteOffset), obj: obj))
-                count += 1
-            } else if newline == nil {
-                break
+            var parsed = false
+            autoreleasepool {
+                if let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
+                    let byteOffset = data.distance(from: data.startIndex, to: lineStart)
+                    body((offset: baseOffset + Int64(byteOffset), obj: obj))
+                    count += 1
+                    parsed = true
+                }
             }
+            if !parsed && newline == nil { break }
             lineStart = newline.map { data.index(after: $0) } ?? data.endIndex
         }
         return count

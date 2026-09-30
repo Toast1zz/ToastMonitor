@@ -111,6 +111,9 @@ enum FileScanner {
         var pending = Data()
         pending.reserveCapacity(64 * 1024)
         var consumed: UInt64 = 0
+        // Bytes at the front of `pending` already known to hold no newline,
+        // so a line spanning many chunks is not rescanned from its start.
+        var scanned = 0
         while true {
             let chunk: Data?
             do {
@@ -120,15 +123,26 @@ enum FileScanner {
             }
             guard let chunk, !chunk.isEmpty else { break }
             pending.append(chunk)
-            while let newline = pending[pending.startIndex..<pending.endIndex].firstIndex(of: 0x0a) {
-                if let obj = try? JSONSerialization.jsonObject(
-                    with: pending[pending.startIndex..<newline]) as? [String: Any] {
-                    body((offset: Int64(start + consumed), obj: obj))
+            var lineStart = 0
+            var searchFrom = scanned
+            while let newline = pending[searchFrom...].firstIndex(of: 0x0a) {
+                // Foundation parsing autoreleases per line; drain it here or a
+                // multi-GB scan keeps every line's temporaries alive.
+                autoreleasepool {
+                    if let obj = try? JSONSerialization.jsonObject(
+                        with: pending[lineStart..<newline]) as? [String: Any] {
+                        body((offset: Int64(start + consumed) + Int64(lineStart), obj: obj))
+                    }
                 }
-                let count = pending.distance(from: pending.startIndex, to: newline) + 1
-                pending.removeSubrange(pending.startIndex..<pending.index(after: newline))
-                consumed += UInt64(count)
+                lineStart = newline + 1
+                searchFrom = lineStart
             }
+            // Drop the completed lines once per chunk, not once per line.
+            if lineStart > 0 {
+                pending.removeSubrange(0..<lineStart)
+                consumed += UInt64(lineStart)
+            }
+            scanned = pending.count
         }
         if !pending.isEmpty {
             if let obj = try? JSONSerialization.jsonObject(with: pending) as? [String: Any] {
