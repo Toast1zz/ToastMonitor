@@ -8,7 +8,11 @@ name: CI
   pull_request:
     branches: [main]
   workflow_dispatch:
-
+    inputs:
+      unsigned:
+        description: "Publish as an ad-hoc-signed prerelease (not Developer ID signed)"
+        type: boolean
+        default: false
 # NOTE: the source uses macOS 27 SDK APIs (NSSegmentedControl.role etc.),
 # so this workflow needs an Xcode 27 toolchain. macOS 27 has shipped, but
 # GitHub's hosted runners label it `xcode-27` (public preview, arm64) — not
@@ -89,11 +93,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-test
     runs-on: xcode-27
-    # Secrets cannot be referenced inside `if:` expressions (workflow fails
-    # to parse), so surface the identity into env and gate the steps below
-    # on env.TM_SIGNING_IDENTITY instead.
+    permissions:
+      contents: write
+    # The normal tag-push path requires this identity. Unsigned builds are
+    # available only by explicitly dispatching this workflow for a tag.
     env:
       TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
+      TM_ALLOW_UNSIGNED: ${{ inputs.unsigned && '1' || '' }}
     steps:
       - name: Checkout tag
         uses: actions/checkout@v7
@@ -108,16 +114,50 @@ jobs:
             exit 1
           }
 
-      - name: Assemble signed app
-        if: ${{ env.TM_SIGNING_IDENTITY != '' }}
+      - name: Require a release signing mode
+        run: |
+          if [[ "$TM_ALLOW_UNSIGNED" == "1" && "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "Explicit manual opt-in: publishing an ad-hoc-signed prerelease."
+          elif [[ -n "$TM_SIGNING_IDENTITY" && "$TM_ALLOW_UNSIGNED" != "1" ]]; then
+            echo "Release signing identity is configured."
+          else
+            echo "::error::TM_SIGNING_IDENTITY is required for tag releases. To publish an unsigned prerelease, manually run this workflow for the tag with unsigned=true."
+            exit 1
+          fi
+
+      - name: Assemble app zips
+        if: ${{ env.TM_SIGNING_IDENTITY != '' || env.TM_ALLOW_UNSIGNED == '1' }}
         env:
           TM_VERSION: ${{ github.ref_name }}
           TM_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./scripts/build-app.sh
+        run: ./scripts/package-release.sh
 
-      - name: Upload app bundle
-        if: ${{ env.TM_SIGNING_IDENTITY != '' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: ToastMonitor-${{ github.ref_name }}
-          path: dist/ToastMonitor.app
+      - name: Verify release archives
+        if: ${{ env.TM_SIGNING_IDENTITY != '' || env.TM_ALLOW_UNSIGNED == '1' }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for arch in arm64 universal; do
+            archive="dist/release/ToastMonitor-${version}-${arch}.zip"
+            if [[ ! -s "$archive" ]]; then
+              echo "::error::Missing or empty release archive: $archive"
+              exit 1
+            fi
+            unzip -tq "$archive" >/dev/null
+          done
+
+      - name: Publish GitHub Release
+        if: ${{ env.TM_SIGNING_IDENTITY != '' || env.TM_ALLOW_UNSIGNED == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archives=(
+            "dist/release/ToastMonitor-${version}-arm64.zip"
+            "dist/release/ToastMonitor-${version}-universal.zip"
+          )
+          flags=(--generate-notes)
+          if [[ "$TM_ALLOW_UNSIGNED" == "1" ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${archives[@]}" \
+            --title "ToastMonitor $GITHUB_REF_NAME" "${flags[@]}"

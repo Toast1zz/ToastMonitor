@@ -103,12 +103,12 @@ cd ~/Projects/ToastMonitor
 
 - After switching to Apple Development signing for the first time, run `./scripts/authorize-local-keychain.sh` once; later builds from the same Team ID never prompt again. It only ever touches ToastMonitor's own `-s ToastMonitor` items — never Claude Code's or any other app's
 - Versioning comes from `vMAJOR.MINOR[.PATCH]` git tags; `TM_VERSION` / `TM_BUILD_NUMBER` are for controlled CI/release injection. Untagged local builds are explicitly `1.0` (development), never a commit hash
-- Distribution requires a Developer ID certificate; `build-app.sh` refuses ad-hoc signing and accepts an explicit identity via `TM_SIGNING_IDENTITY`
+- Stable public distribution requires a Developer ID certificate; `build-app.sh` refuses ad-hoc signing by default. `TM_ALLOW_UNSIGNED=1` is an explicit exception for ad-hoc-signed prereleases.
 - Or run the build product directly: `open dist/ToastMonitor.app`
 
 ### Release artifacts
 
-Every release ships the arm64 and universal zips plus a signed,
+Stable releases ship the arm64 and universal zips plus a signed,
 architecture-aware update manifest (`appcast.json`) that powers in-app updates
 (Settings → Updates). Apple Silicon selects arm64;
 Intel selects the universal artifact. The legacy top-level fields remain a
@@ -116,6 +116,8 @@ universal bootstrap for older clients. The manifest is Ed25519-signed with a
 key pair whose private half never leaves the maintainer's machine
 (`~/.config/toastmonitor/update-key.pem`, 0600); the app bakes in the public
 half.
+
+For an ad-hoc-signed prerelease, push a semantic-version tag and manually run **Actions → CI** for that tag with `unsigned` enabled; the tag-push run fails closed without `TM_SIGNING_IDENTITY`, and the explicit run publishes both architecture ZIPs as a GitHub prerelease. It has no TeamIdentifier or stable Keychain trust, is not notarized (Gatekeeper requires right-click → Open), and is not appcast-discoverable.
 
 ```bash
 ./scripts/package-release.sh         # builds and zips both arm64 and universal apps
