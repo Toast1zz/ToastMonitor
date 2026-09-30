@@ -19,7 +19,7 @@ Builds in this repo are normally run with `swift build --disable-sandbox` on the
 
 CI runs `xcrun swift scripts/visual-regression.swift compare` on Xcode 27. Each scenario gets a fresh temporary `HOME` and `CFFIXED_USER_HOME` as well as its own database; `TZ` and `LANG` are fixed. Popover renders use `TM_VISUAL_REFERENCE_UNIX_TIME=1790769600` (2026-09-30 12:00 UTC) to stabilize date-dependent labels and the activity grid.
 
-On failure, compare logs include expected and actual hashes, and failing popover PNGs are uploaded as a workflow artifact. Inspect the PNG against the intended UI before intentionally updating its entry in `Tests/VisualBaselines/hashes.json`; do not regenerate baselines blindly or loosen the comparison threshold.
+On a popover distance mismatch, CI logs the expected and actual hashes and uploads that scene's PNG for review. Blank or unreadable renders can fail before comparison and therefore may have no PNG artifact. Inspect the capture against the intended UI before intentionally updating its entry in `Tests/VisualBaselines/hashes.json`; never regenerate baselines blindly or relax the threshold.
 
 ## Constraints
 
