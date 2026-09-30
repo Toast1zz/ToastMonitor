@@ -20,26 +20,62 @@ final class FileScannerTests: XCTestCase {
         bytes.append(valid)
         try bytes.write(to: URL(fileURLWithPath: path))
 
-        let result = FileScanner.readNewJSONLines(path: path, fromOffset: 0)
-        XCTAssertEqual(result.objects.count, 1)
-        XCTAssertEqual(result.objects.first?.obj["type"] as? String, "valid")
-        XCTAssertEqual(result.newOffset, Int64(3 + valid.count))
+        var objects: [(offset: Int64, obj: [String: Any])] = []
+        let newOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: 0) { objects.append($0) }
+        XCTAssertEqual(objects.count, 1)
+        XCTAssertEqual(objects.first?.obj["type"] as? String, "valid")
+        XCTAssertEqual(newOffset, Int64(3 + valid.count))
     }
 
     func testPartialTrailingLineIsReplayable() throws {
         let prefix = Data("{\"type\":\"partial\"".utf8)
         try prefix.write(to: URL(fileURLWithPath: path))
-        let first = FileScanner.readNewJSONLines(path: path, fromOffset: 0)
-        XCTAssertTrue(first.objects.isEmpty)
-        XCTAssertEqual(first.newOffset, 0)
-
+        var firstObjects: [(offset: Int64, obj: [String: Any])] = []
+        let firstOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: 0) { firstObjects.append($0) }
+        XCTAssertTrue(firstObjects.isEmpty)
+        XCTAssertEqual(firstOffset, 0)
         var completed = prefix
         completed.append(Data("}\n".utf8))
         try completed.write(to: URL(fileURLWithPath: path))
-        let second = FileScanner.readNewJSONLines(path: path, fromOffset: first.newOffset)
-        XCTAssertEqual(second.objects.count, 1)
-        XCTAssertEqual(second.objects.first?.obj["type"] as? String, "partial")
-        XCTAssertEqual(second.newOffset, Int64(prefix.count + 2))
+        var secondObjects: [(offset: Int64, obj: [String: Any])] = []
+        let secondOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: firstOffset) { secondObjects.append($0) }
+        XCTAssertEqual(secondObjects.count, 1)
+        XCTAssertEqual(secondObjects.first?.obj["type"] as? String, "partial")
+        XCTAssertEqual(secondOffset, Int64(prefix.count + 2))
+    }
+
+    func testLongLineAndNewlineAcrossChunkBoundaryPreserveOffsetsAndTail() throws {
+        let prefix = "{\"type\":\"large\",\"padding\":\""
+        let suffix = "\"}"
+        let paddingCount = 64 * 1024 - prefix.utf8.count - suffix.utf8.count
+        let firstLine = prefix + String(repeating: "x", count: paddingCount) + suffix
+        XCTAssertEqual(firstLine.utf8.count, 64 * 1024)
+        let secondLine = "{\"type\":\"next\"}"
+        let partial = "{\"type\":\"tail\""
+        var bytes = Data((firstLine + "\n" + secondLine + "\n" + partial).utf8)
+        try bytes.write(to: URL(fileURLWithPath: path))
+
+        var objects: [(offset: Int64, obj: [String: Any])] = []
+        let partialOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: 0) {
+            objects.append($0)
+        }
+        XCTAssertEqual(objects.count, 2)
+        XCTAssertEqual(objects[0].offset, 0)
+        XCTAssertEqual(objects[0].obj["padding"] as? String, String(repeating: "x", count: paddingCount))
+        XCTAssertEqual(objects[1].offset, Int64(firstLine.utf8.count + 1))
+        XCTAssertEqual(objects[1].obj["type"] as? String, "next")
+        XCTAssertEqual(partialOffset, Int64(firstLine.utf8.count + 1 + secondLine.utf8.count + 1))
+
+        bytes.append(Data("}\n".utf8))
+        try bytes.write(to: URL(fileURLWithPath: path))
+        var tailObjects: [(offset: Int64, obj: [String: Any])] = []
+        let finalOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: partialOffset) {
+            tailObjects.append($0)
+        }
+        XCTAssertEqual(tailObjects.count, 1)
+        XCTAssertEqual(tailObjects[0].offset, partialOffset)
+        XCTAssertEqual(tailObjects[0].obj["type"] as? String, "tail")
+        XCTAssertEqual(finalOffset, Int64(bytes.count))
     }
 
     func testIsLineBoundary() throws {

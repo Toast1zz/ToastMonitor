@@ -13,5 +13,10 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(window?.title, SettingsPane.sources.title)
         XCTAssertEqual(UserDefaults.standard.string(forKey: "settingsLastPane"), SettingsPane.sources.rawValue)
         window?.close()
+        SettingsWindowController.shared.show()
+        let reopenedWindow = NSApp.windows.first { $0.toolbar?.identifier == "ToastMonitor.Settings" }
+        XCTAssertTrue(reopenedWindow?.isVisible == true)
+        XCTAssertEqual(reopenedWindow?.title, SettingsPane.sources.title)
+        reopenedWindow?.close()
     }
 }

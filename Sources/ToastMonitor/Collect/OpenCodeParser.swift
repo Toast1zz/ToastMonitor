@@ -32,11 +32,11 @@ enum OpenCodeParser {
         let timeUpdated: Int64
     }
 
-    static func readRows() -> [Row] {
-        var out: [Row] = []
-        guard FileManager.default.fileExists(atPath: dbPath) else { return [] }
+    @discardableResult
+    private static func forEachRow(_ body: (Row) -> Void) -> Int {
+        guard FileManager.default.fileExists(atPath: dbPath) else { return 0 }
         var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return 0 }
         defer { sqlite3_close(db) }
         var stmt: OpaquePointer?
         let sql = """
@@ -44,23 +44,25 @@ enum OpenCodeParser {
                tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
                time_created, time_updated FROM session;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
         defer { sqlite3_finalize(stmt) }
+        var count = 0
         while sqlite3_step(stmt) == SQLITE_ROW {
             let col = { (i: Int32) -> String in String(cString: sqlite3_column_text(stmt, i)) }
             let model: String? = sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : col(3)
-            out.append(Row(id: col(0), title: col(1), directory: col(2), model: normalizeModel(model),
-                           provider: normalizeProvider(model),
-                           cost: sqlite3_column_double(stmt, 4),
-                           input: sqlite3_column_int64(stmt, 5),
-                           output: sqlite3_column_int64(stmt, 6),
-                           reasoning: sqlite3_column_int64(stmt, 7),
-                           cacheRead: sqlite3_column_int64(stmt, 8),
-                           cacheWrite: sqlite3_column_int64(stmt, 9),
-                           timeCreated: sqlite3_column_int64(stmt, 10),
-                           timeUpdated: sqlite3_column_int64(stmt, 11)))
+            body(Row(id: col(0), title: col(1), directory: col(2), model: normalizeModel(model),
+                     provider: normalizeProvider(model),
+                     cost: sqlite3_column_double(stmt, 4),
+                     input: sqlite3_column_int64(stmt, 5),
+                     output: sqlite3_column_int64(stmt, 6),
+                     reasoning: sqlite3_column_int64(stmt, 7),
+                     cacheRead: sqlite3_column_int64(stmt, 8),
+                     cacheWrite: sqlite3_column_int64(stmt, 9),
+                     timeCreated: sqlite3_column_int64(stmt, 10),
+                     timeUpdated: sqlite3_column_int64(stmt, 11)))
+            count += 1
         }
-        return out
+        return count
     }
 
     /// The `model` column is sometimes a JSON object
@@ -87,14 +89,11 @@ enum OpenCodeParser {
         guard !ToolKind.opencode.sourceIsRemote else { return ([], []) } // source = VPS feed
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
-        let rows = readRows()
-        guard !rows.isEmpty else { return ([], []) }
-
         let prevTotals = database.sessionTotals()
         // opencode stores ms timestamps; normalize to seconds (P1).
         func sec(_ v: Int64) -> Int64 { v > 1_000_000_000_000 ? v / 1000 : v }
 
-        for row in rows {
+        let rowCount = forEachRow { row in
             let key = "opencode|\(row.id)"
             let project = row.directory.isEmpty ? nil : (row.directory as NSString).lastPathComponent
             sessions.append(SessionInfo(tool: .opencode, sessionID: row.id, title: row.title.isEmpty ? nil : row.title,
@@ -150,6 +149,7 @@ enum OpenCodeParser {
                                      cost: max(prev?.cost ?? 0, row.cost),
                                      updated: sec(row.timeUpdated))
         }
+        guard rowCount > 0 else { return ([], []) }
         return (turns, sessions)
     }
 }

@@ -45,11 +45,22 @@ enum OmpParser {
                 && !pendingRewrite
                 && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
             let offset = sameAppendOnlyFile ? prev.size : 0
-            let (objs, newOffset) = FileScanner.readNewJSONLines(path: file, fromOffset: offset)
-            if objs.isEmpty {
-                // Preserve header-derived identity while a trailing JSON line
-                // is incomplete. `newOffset` remains before that line, so the
-                // next append retries it instead of losing the record.
+            var objectCount = 0
+            var foundSessionID = false
+            let fileName = (file as NSString).lastPathComponent
+            let persistedContext = pendingRewrite ? nil : prev.context
+            var sessionID = persistedContext.flatMap { ctxData in
+                (try? JSONSerialization.jsonObject(with: Data(ctxData.utf8))) as? [String: Any]
+            }?["sid"] as? String ?? (fileName as NSString).deletingPathExtension
+            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+                objectCount += 1
+                if !foundSessionID, item.obj["type"] as? String == "session",
+                   let sid = item.obj["id"] as? String, !sid.isEmpty {
+                    sessionID = sid
+                    foundSessionID = true
+                }
+            }
+            if objectCount == 0 {
                 let pending = st.size < prev.size || pendingRewrite
                 database.setScanState(file, size: newOffset, mtime: st.mtime,
                                       identity: st.identity,
@@ -57,24 +68,7 @@ enum OmpParser {
                 continue
             }
 
-            let fileName = (file as NSString).lastPathComponent
-            // Session identity comes from the transcript's own `session`
-            // event UUID — subagent files named e.g. "UIAudit.jsonl" share a
-            // filename stem across top-level sessions, so using the stem
-            // would merge distinct sessions and collide event ids. The UUID
-            // lives in the file HEADER, which incremental scans never re-read,
-            // so it is persisted in scan_state.context and restored here.
-            let persistedContext = pendingRewrite ? nil : prev.context
-            var sessionID = persistedContext.flatMap { ctxData in
-                (try? JSONSerialization.jsonObject(with: Data(ctxData.utf8))) as? [String: Any]
-            }?["sid"] as? String ?? (fileName as NSString).deletingPathExtension
-            for item in objs {
-                if let o = item.obj["type"] as? String, o == "session",
-                   let sid = item.obj["id"] as? String, !sid.isEmpty {
-                    sessionID = sid
-                    break
-                }
-            }
+
             let project = FileScanner.lastComponentOfEncodedPath(
                 ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent)
             // Full relative path disambiguates subagent transcripts across
@@ -87,22 +81,20 @@ enum OmpParser {
             var lastTs: Int64 = 0
             var sessionModel: String?
 
-            for item in objs {
+            _ = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
                 let obj = item.obj
                 guard obj["type"] as? String == "message",
                       let msg = obj["message"] as? [String: Any],
                       msg["role"] as? String == "assistant",
-                      let usage = msg["usage"] as? [String: Any] else { continue }
+                      let usage = msg["usage"] as? [String: Any] else { return }
                 let input = (usage["input"] as? NSNumber)?.int64Value ?? 0
                 let output = (usage["output"] as? NSNumber)?.int64Value ?? 0
                 let cacheRead = (usage["cacheRead"] as? NSNumber)?.int64Value ?? 0
                 let cacheWrite = (usage["cacheWrite"] as? NSNumber)?.int64Value ?? 0
-                guard input + output + cacheRead + cacheWrite > 0 else { continue }
+                guard input + output + cacheRead + cacheWrite > 0 else { return }
                 let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
                     ?? Int64(Date().timeIntervalSince1970)
                 let model = msg["model"] as? String
-                // Provider-computed cost (per-request breakdown); OMP billing
-                // runs inside opencode-go plans, so treat it as an estimate.
                 let cost = (usage["cost"] as? [String: Any])?["total"] as? NSNumber
                 let eventID = EventIdentity.omp(relativePath: relKey, sessionID: sessionID,
                                                 object: obj, usage: usage)
