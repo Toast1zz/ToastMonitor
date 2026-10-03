@@ -18,10 +18,10 @@ enum DataMaintenance {
         return Database.shared.previewLocalRebuild(tools: tools)
     }
 
-    /// Creates a protected SQLite snapshot and keeps the newest seven managed
-    /// backups. The returned path is safe to present to the user.
+    /// Creates a protected SQLite snapshot and keeps seven managed backups,
+    /// reserving one slot for the newest routine snapshot.
     static func createBackup(label: String = "manual", database: Database = .shared,
-                             backupDirectory: URL? = nil) -> String? {
+                             backupDirectory: URL? = nil, date: Date = Date()) -> String? {
         let directory = backupDirectory ?? Self.directory
         let fm = FileManager.default
         do {
@@ -39,11 +39,16 @@ enum DataMaintenance {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let url = directory.appendingPathComponent("toastmonitor-\(String(safeLabel))-\(formatter.string(from: Date())).db")
-        guard database.backup(to: url.path) else { return nil }
-        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        pruneBackups(keeping: 7, in: directory)
-        return url.path
+        for _ in 0..<8 {
+            let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
+            let url = directory.appendingPathComponent("toastmonitor-\(String(safeLabel))-\(formatter.string(from: date))-\(suffix).db")
+            if database.backup(to: url.path, overwrite: false) {
+                pruneBackups(keeping: 7, in: directory)
+                return url.path
+            }
+            if !fm.fileExists(atPath: url.path) { return nil }
+        }
+        return nil
     }
 
     /// Exports a compact snapshot with known legacy credential keys removed.
@@ -123,8 +128,8 @@ enum DataMaintenance {
     /// unconditionally on every scan tick — the throttle keeps the actual
     /// backup+prune work to once per 7 days. This is the only automatic
     /// backup in the app; `repair()`/`clearAllData()` each also create their
-    /// own mandatory pre-operation backup, sharing the same rotation pool
-    /// (newest 7 kept, any label).
+    /// own mandatory pre-operation backup. Rotation reserves the latest weekly
+    /// snapshot; operation snapshots share the other six slots.
     static func maybeCreateRoutineBackupIfDue() {
         let now = Int64(Date().timeIntervalSince1970)
         let key = "routine_backup_last"
@@ -179,9 +184,23 @@ enum DataMaintenance {
     }
 
     static func pruneBackups(keeping count: Int, in directory: URL = DataMaintenance.directory) {
-        for url in availableBackups(in: directory).dropFirst(max(count, 0)) {
+        let backups = availableBackups(in: directory)
+        let routine = backups.first { ["weekly", "routine"].contains(managedBackupLabel(for: $0)) }
+        let capacity = max(count, routine == nil ? 0 : 1)
+        let operations = backups.filter { $0 != routine }.prefix(max(capacity - (routine == nil ? 0 : 1), 0))
+        let retained = Set(operations).union(routine.map { [$0] } ?? [])
+        for url in backups where !retained.contains(url) {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    static func managedBackupLabel(for url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        let pattern = "^toastmonitor-(.+)-[0-9]{8}-[0-9]{6}(?:-[a-f0-9]{8})?$"
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let range = Range(match.range(at: 1), in: name) else { return name }
+        return String(name[range])
     }
 
     private static func isManagedBackup(_ path: String, in directory: URL = DataMaintenance.directory) -> Bool {
