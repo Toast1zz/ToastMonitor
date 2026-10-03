@@ -46,9 +46,9 @@ enum DataMaintenance {
         return url.path
     }
 
-    /// Exports a full SQLite snapshot to a user-selected destination.
-    /// Credentials are not in this database; callers still must treat the
-    /// resulting file as sensitive usage and project metadata.
+    /// Exports a compact snapshot with known legacy credential keys removed.
+    /// Private managed backups retain recovery copies; exported usage and
+    /// project metadata still require sensitive handling.
     static func exportDatabase(to path: String, database: Database = .shared) -> Bool {
         guard let destination = safeDestination(path, database: database) else { return false }
         let fm = FileManager.default
@@ -61,7 +61,7 @@ enum DataMaintenance {
                     return false
                 }
             }
-            guard database.backup(to: destination.path) else { return false }
+            guard database.exportRedacted(to: destination.path) else { return false }
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
             return true
         } catch {

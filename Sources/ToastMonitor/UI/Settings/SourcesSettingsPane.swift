@@ -299,7 +299,7 @@ struct DataSettingsPane: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         isWorking = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = Database.shared.backup(to: url.path)
+            let ok = DataMaintenance.exportDatabase(to: url.path)
             DispatchQueue.main.async {
                 message = ok ? "Database exported: \(url.path)" : "Database export failed"
                 isWorking = false

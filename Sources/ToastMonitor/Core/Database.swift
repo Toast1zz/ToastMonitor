@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Darwin
 
 /// Thread-safe SQLite store. WAL mode, single writer, batched transactions.
 final class Database: @unchecked Sendable {
@@ -2137,6 +2138,36 @@ final class Database: @unchecked Sendable {
         guard step == SQLITE_DONE, finish == SQLITE_OK else { return false }
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination)
         return true
+    }
+
+    func exportRedacted(to destination: String) -> Bool {
+        let fm = FileManager.default
+        let parent = URL(fileURLWithPath: destination).deletingLastPathComponent()
+        let workspace = parent.appendingPathComponent(".tm-export-\(UUID().uuidString)")
+        do {
+            try fm.createDirectory(at: workspace, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+        } catch { return false }
+        defer { try? fm.removeItem(at: workspace) }
+        let raw = workspace.appendingPathComponent("raw.db").path
+        let compact = workspace.appendingPathComponent("compact.db").path
+        guard backup(to: raw) else { return false }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(raw, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let handle { sqlite3_close(handle) }
+            return false
+        }
+        defer { sqlite3_close(handle) }
+        guard sqlite3_exec(handle, "DELETE FROM settings WHERE k IN ('or_keys','openrouter_key','go_auth_cookie','go_workspace_id');",
+                           nil, nil, nil) == SQLITE_OK else { return false }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "VACUUM INTO ?;", -1, &statement, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (compact as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(statement) == SQLITE_DONE else { return false }
+        do { try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: compact) }
+        catch { return false }
+        return Darwin.rename(compact, destination) == 0
     }
 
     func restore(from source: String, beforeReplace: (() -> String?)? = nil) -> Bool {
