@@ -387,7 +387,8 @@ final class HermesRemoteClient: ObservableObject {
             var dCacheRead = cacheRead
             var dCacheWrite = cacheWrite
             var dCost = cost
-            var costQuality = "estimated"
+            let hasReportedCost = (row["cost_usd"] as? NSNumber).map { $0.doubleValue.isFinite } ?? false
+            var costQuality = hasReportedCost ? "estimated" : "unknown"
             let rawEventID = row["event_id"] as? String ?? ""
             let eventID = rawEventID.isEmpty
                 ? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
@@ -469,7 +470,7 @@ final class HermesRemoteClient: ObservableObject {
                                               safeRead, safeWrite, safeCost)
                 pendingOpenCodeTotals.append((totalsKey, safeInput, safeOutput, safeReasoning,
                                               safeRead, safeWrite, safeCost, lastSeenS))
-                costQuality = "actual"
+                costQuality = hasReportedCost ? "actual" : "unknown"
             default:
                 break // per-turn events: insert as-is
             }

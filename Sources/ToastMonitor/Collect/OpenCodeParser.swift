@@ -23,6 +23,7 @@ enum OpenCodeParser {
         let model: String?
         let provider: String?
         let cost: Double
+        let hasActualCost: Bool
         let input: Int64
         let output: Int64
         let reasoning: Int64
@@ -53,6 +54,7 @@ enum OpenCodeParser {
             body(Row(id: col(0), title: col(1), directory: col(2), model: normalizeModel(model),
                      provider: normalizeProvider(model),
                      cost: sqlite3_column_double(stmt, 4),
+                     hasActualCost: sqlite3_column_type(stmt, 4) != SQLITE_NULL,
                      input: sqlite3_column_int64(stmt, 5),
                      output: sqlite3_column_int64(stmt, 6),
                      reasoning: sqlite3_column_int64(stmt, 7),
@@ -116,7 +118,7 @@ enum OpenCodeParser {
                                       cacheRead: max(dCacheRead, 0), cacheWrite: max(dCacheWrite, 0),
                                       cost: max(dCost, 0), provider: row.provider,
                                       eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
-                                      costQuality: "actual")
+                                      costQuality: row.hasActualCost ? "actual" : "unknown")
                 if turn.inputTokens + turn.outputTokens + turn.reasoningTokens + turn.cacheRead + turn.cacheWrite > 0 {
                     turns.append(turn)
                 }
@@ -131,7 +133,7 @@ enum OpenCodeParser {
                                         cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, cost: row.cost,
                                         provider: row.provider,
                                         eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
-                                        costQuality: "actual"))
+                                        costQuality: row.hasActualCost ? "actual" : "unknown"))
             }
             // The baseline is the HIGH-WATER MARK per counter, never the raw
             // current value: a source rollback (totals dropping) must not
