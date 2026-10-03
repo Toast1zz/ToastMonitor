@@ -77,12 +77,12 @@ jobs:
           TM_VISUAL_ARTIFACT_DIR: ${{ runner.temp }}/visual-regression-failure
         run: xcrun swift scripts/visual-regression.swift compare
 
-      - name: Upload failing popover captures
+      - name: Upload failing scene captures and hashes
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: visual-regression-failure-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/visual-regression-failure/*.png
+          path: ${{ runner.temp }}/visual-regression-failure/*
           if-no-files-found: ignore
 
   release-bundle:

@@ -472,6 +472,7 @@ private final class DashboardRootView: NSView {
 /// separate SwiftUI reimplementation that could visually drift from it.
 @MainActor
 final class DashboardPageController: NSViewController {
+    private(set) var analysisReadyForCapture = false
     private let initialTab: DashboardView.Tab
     private(set) var selectedTab: DashboardView.Tab
     private var hosts: [DashboardView.Tab: NSViewController] = [:]
@@ -561,7 +562,9 @@ final class DashboardPageController: NSViewController {
         case .overview:
             page = AnyView(OverviewView().environmentObject(AppState.shared))
         case .analysis:
-            page = AnyView(UsageAnalysisView().environmentObject(AppState.shared))
+            page = AnyView(UsageAnalysisView(readinessChanged: { [weak self] ready in
+                self?.analysisReadyForCapture = ready
+            }).environmentObject(AppState.shared))
         case .plans:
             page = AnyView(PlansView().environmentObject(AppState.shared))
         case .sessions:
