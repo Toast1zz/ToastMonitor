@@ -19,7 +19,8 @@ cd "$ROOT"
 # Only an exact tag hit is a release version (see build-app.sh); untagged
 # commits package as 1.0 rather than impersonating the last release.
 TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
-VERSION="${TAG_VERSION#v}"
+RAW_VERSION="${TM_VERSION:-${TAG_VERSION#v}}"
+VERSION="${RAW_VERSION#v}"
 if [[ -z "$VERSION" ]]; then
     VERSION="1.0"
     # Zips built here are what sign-update-manifest.sh points released users
@@ -31,9 +32,14 @@ if [[ -z "$VERSION" ]]; then
         echo "         Build the tag instead: git checkout $NEAREST_TAG && ./scripts/package-release.sh" >&2
     fi
 fi
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+    echo "error: invalid release version: $VERSION" >&2
+    exit 1
+fi
+RELEASE_DIR="${TM_RELEASE_PATH:-$ROOT/dist/release}"
+APP="${TM_APP_PATH:-$ROOT/dist/ToastMonitor.app}"
 echo "== packaging ToastMonitor v$VERSION =="
-rm -rf dist/release
-mkdir -p dist/release
+mkdir -p "$RELEASE_DIR"
 
 ARCHS="arm64 universal"
 if [[ "${TM_ARM64_ONLY:-0}" == "1" ]]; then
@@ -46,16 +52,16 @@ for arch in $ARCHS; do
         arm64)     TM_ARCHS="arm64" ;;
         universal) TM_ARCHS="arm64 x86_64" ;;
     esac
-    TM_ARCHS="$TM_ARCHS" TM_SKIP_INSTALL=1 ./scripts/build-app.sh
-    file dist/ToastMonitor.app/Contents/MacOS/ToastMonitor
-    ZIP="dist/release/ToastMonitor-${VERSION}-${arch}.zip"
-    ditto -c -k --sequesterRsrc --keepParent dist/ToastMonitor.app "$ZIP"
+    TM_VERSION="$VERSION" TM_APP_PATH="$APP" TM_ARCHS="$TM_ARCHS" TM_SKIP_INSTALL=1 ./scripts/build-app.sh
+    file "$APP/Contents/MacOS/ToastMonitor"
+    ZIP="$RELEASE_DIR/ToastMonitor-${VERSION}-${arch}.zip"
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
     echo "== $ZIP ($(du -sh "$ZIP" | cut -f1)) =="
 done
 
 echo ""
 echo "== artifacts =="
-ls -la dist/release/
+ls -la "$RELEASE_DIR/"
 echo ""
 echo "上传到 GitHub Release："
 echo "  gh release create v$VERSION dist/release/*.zip --title 'ToastMonitor v$VERSION' --generate-notes"
