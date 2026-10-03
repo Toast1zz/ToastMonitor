@@ -122,7 +122,7 @@ enum OpenCodeParser {
                 if turn.inputTokens + turn.outputTokens + turn.reasoningTokens + turn.cacheRead + turn.cacheWrite > 0 {
                     turns.append(turn)
                 }
-            } else if totalInput > 0 || row.output > 0 || row.reasoning > 0 {
+            } else if totalInput > 0 || row.output > 0 || row.reasoning > 0 || row.cacheRead > 0 || row.cacheWrite > 0 {
                 // First sighting: record the full totals as one turn (backfill).
                 // ts uses the REAL last-update time so history lands on its
                 // true day instead of today (P1).
@@ -135,6 +135,7 @@ enum OpenCodeParser {
                                         eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
                                         costQuality: row.hasActualCost ? "actual" : "unknown"))
             }
+            // Cost-only changes without token growth are intentionally not imported.
             // The baseline is the HIGH-WATER MARK per counter, never the raw
             // current value: a source rollback (totals dropping) must not
             // reset the origin, or the later regrowth would be re-counted
