@@ -360,12 +360,13 @@ struct DataSettingsPane: View {
             let snapshot = DataMaintenance.restoreWithReceipt(backupPath: target.path)
             let ok = snapshot != nil
             DispatchQueue.main.async {
-                message = snapshot.map { "Restored: \(target.lastPathComponent); recovery: \(($0 as NSString).lastPathComponent)" }
+                message = snapshot.map { "Restored · \(($0 as NSString).lastPathComponent)" }
                     ?? "Restore failed; original data retained"
                 isWorking = false
                 if ok {
                     app.refresh()
                     refreshPreviewQuietly()
+                    loadBackups()
                 }
             }
         }
