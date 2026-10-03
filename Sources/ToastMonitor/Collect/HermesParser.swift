@@ -245,7 +245,7 @@ enum HermesParser {
                                         reasoningTokens: d.reasoning,
                                         cacheRead: d.cacheRead, cacheWrite: d.cacheWrite, cost: 0,
                                         provider: provider,
-                                        eventID: "hermes-local:\(key):\(current.input):\(current.output):\(current.cacheRead)",
+                                        eventID: "hermes-local:\(key):\(current.input):\(current.output):\(current.reasoning):\(current.cacheRead):\(current.cacheWrite)",
                                         costQuality: "unknown"))
             }
             let b = step.base

@@ -103,4 +103,46 @@ final class HermesSourceSwitchTests: XCTestCase {
         XCTAssertFalse(staged.validateForCommit())
         XCTAssertEqual(database.setting(key), "150,0,0,0,0,0")
     }
+
+    func testCacheWriteOnlyGrowthHasDistinctEventIdentity() throws {
+        try local(100, write: 5)
+        try local(100, write: 15)
+        try local(100, write: 15)
+        let rows = database.turns(sessionTool: "hermes", sessionID: "switch")
+        XCTAssertEqual(rows.reduce(Int64(0)) { $0 + $1.cacheWrite }, 15)
+        XCTAssertEqual(rows.count, 2)
+    }
+
+    func testReasoningAndMultiCounterGrowthAreNotDiscarded() throws {
+        try local(100, reasoning: 5)
+        try local(100, reasoning: 15)
+        try local(150, reasoning: 20, write: 5)
+        try local(150, reasoning: 20, write: 5)
+        let rows = database.turns(sessionTool: "hermes", sessionID: "switch")
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(database.dbPath, &handle, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(handle) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(handle, "SELECT SUM(reasoning_tokens) FROM turns WHERE tool='hermes';",
+                                         -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int64(statement, 0), 20)
+        XCTAssertEqual(rows.reduce(Int64(0)) { $0 + $1.cacheWrite }, 5)
+        XCTAssertEqual(inputTotal, 150)
+        XCTAssertEqual(rows.count, 3)
+    }
+
+    func testLegacyIdentityAndAdvancedBaselineDoNotReplayAfterUpgrade() throws {
+        let key = HermesUsageBaseline.key(session: "switch", model: "model", provider: "provider", baseURL: "https://example.com")
+        XCTAssertTrue(database.insertTurns([TurnRecord(tool: .hermes, sessionID: "switch", project: nil,
+            model: "model", ts: 100, inputTokens: 100, outputTokens: 10, cacheRead: 0,
+            cacheWrite: 5, cost: 0, eventID: "hermes-local:\(key):100:10:0", costQuality: "unknown")]))
+        XCTAssertTrue(database.setSetting(key, "100,10,0,0,5,0"))
+        try local(100, write: 5)
+        XCTAssertEqual(database.turnCount(), 1)
+        try local(100, write: 15)
+        XCTAssertEqual(database.turnCount(), 2)
+        XCTAssertEqual(inputTotal, 100)
+    }
 }
