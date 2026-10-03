@@ -74,11 +74,13 @@ enum Pricing {
     ]
 
     /// Returns estimated cost in USD for a turn, or nil when the model is unknown.
-    static func estimate(model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64) -> Double? {
+    static func estimate(model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64,
+                         inputIncludesCache: Bool = false) -> Double? {
         guard let model = model?.lowercased(), !model.isEmpty else { return nil }
         for entry in table where matches(model, pattern: entry.pattern) {
             let p = entry.price
-            return Double(input) / 1e6 * p.input
+            let billableInput = inputIncludesCache ? max(input - cacheRead, 0) : input
+            return Double(billableInput) / 1e6 * p.input
                 + Double(output) / 1e6 * p.output
                 + Double(cacheRead) / 1e6 * p.cacheRead
                 + Double(cacheWrite) / 1e6 * p.cacheWrite

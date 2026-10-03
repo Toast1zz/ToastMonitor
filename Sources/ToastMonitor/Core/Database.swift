@@ -941,14 +941,15 @@ final class Database: @unchecked Sendable {
         let now = Int64(Date().timeIntervalSince1970)
         if let last = Int64(setting("backfill_costs_last") ?? "0"), now - last < 60 { return }
         var stmt: OpaquePointer?
-        let select = "SELECT id, model, input_tokens, output_tokens, cache_read, cache_write FROM turns WHERE cost=0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
+        let select = "SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool FROM turns WHERE cost=0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
         guard sqlite3_prepare_v2(db, select, -1, &stmt, nil) == SQLITE_OK else { return }
-        var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64)] = []
+        var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             rows.append((sqlite3_column_int64(stmt, 0),
                          String(cString: sqlite3_column_text(stmt, 1)),
                          sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3),
-                         sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5)))
+                         sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
+                         String(cString: sqlite3_column_text(stmt, 6)) == "codex"))
         }
         sqlite3_finalize(stmt)
         guard !rows.isEmpty else { return }
@@ -957,7 +958,8 @@ final class Database: @unchecked Sendable {
         guard sqlite3_prepare_v2(db, update, -1, &stmt, nil) == SQLITE_OK else { return }
         for r in rows {
             guard let cost = Pricing.estimate(model: r.model, input: r.input, output: r.output,
-                                              cacheRead: r.cr, cacheWrite: r.cw) else { continue }
+                                              cacheRead: r.cr, cacheWrite: r.cw,
+                                              inputIncludesCache: r.includesCache) else { continue }
             sqlite3_bind_double(stmt, 1, cost)
             sqlite3_bind_text(stmt, 2, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int64(stmt, 3, r.id)
@@ -1920,7 +1922,7 @@ final class Database: @unchecked Sendable {
     ///
     /// Pricing.estimate is a per-token linear function of (input, output,
     /// cacheRead, cacheWrite) that depends only on `model` — summing tokens
-    /// per model at the SQL level and pricing once per model yields the same
+    /// per tool/model and cache-input validity at the SQL level yields the same
     /// total as pricing every row individually, but turns an O(rows) scan
     /// (hundreds of thousands of rows for the "All Time" period) into
     /// O(distinct models) (typically a few dozen).
@@ -1931,13 +1933,15 @@ final class Database: @unchecked Sendable {
         let sql: String
         if tool != nil {
             sql = """
-            SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write)
-            FROM (\(Self.usageSource)) WHERE tool = ?5 GROUP BY model;
+            SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), tool
+            FROM (\(Self.usageSource)) WHERE tool = ?5
+            GROUP BY tool, model, (tool = 'codex' AND input_tokens < cache_read);
             """
         } else {
             sql = """
-            SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write)
-            FROM (\(Self.usageSource)) GROUP BY model;
+            SELECT model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), tool
+            FROM (\(Self.usageSource))
+            GROUP BY tool, model, (tool = 'codex' AND input_tokens < cache_read);
             """
         }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
@@ -1952,7 +1956,8 @@ final class Database: @unchecked Sendable {
                                               input: sqlite3_column_int64(stmt, 1),
                                               output: sqlite3_column_int64(stmt, 2),
                                               cacheRead: sqlite3_column_int64(stmt, 3),
-                                              cacheWrite: sqlite3_column_int64(stmt, 4)) else { continue }
+                                              cacheWrite: sqlite3_column_int64(stmt, 4),
+                                              inputIncludesCache: String(cString: sqlite3_column_text(stmt, 5)) == "codex") else { continue }
             total += cost
         }
         sqlite3_finalize(stmt)

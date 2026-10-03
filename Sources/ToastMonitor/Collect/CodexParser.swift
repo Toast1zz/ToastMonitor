@@ -173,7 +173,8 @@ enum CodexParser {
                         ?? threadMeta[sid]?.model
                         ?? threadMeta[sid]?.provider
                     let est = Pricing.estimate(model: eventModel, input: input, output: output,
-                                                cacheRead: cacheRead, cacheWrite: cacheWrite)
+                                                cacheRead: cacheRead, cacheWrite: cacheWrite,
+                                                inputIncludesCache: true)
                     if input + output + reasoning + cacheRead + cacheWrite > 0,
                        let lastUsage = info["last_token_usage"] as? [String: Any] {
                         let eventID = EventIdentity.codex(
