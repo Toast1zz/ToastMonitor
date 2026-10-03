@@ -8,6 +8,7 @@ import SwiftUI
 /// per-day stacked bar chart and the aggregate table. Charts are Swift Charts,
 /// so axes, grid lines, VoiceOver and Audio Graphs are the system's.
 struct UsageAnalysisView: View {
+    var readinessChanged: ((Bool) -> Void)? = nil
     enum Range: String, CaseIterable, Identifiable {
         case d7 = "7 Days"
         case d30 = "30 Days"
@@ -206,6 +207,7 @@ struct UsageAnalysisView: View {
         let requestID = UUID()
         loadID = requestID
         isLoading = true
+        readinessChanged?(false)
         let grouping = self.grouping
         let range = self.range
         if grouping == .byTool {
@@ -216,6 +218,7 @@ struct UsageAnalysisView: View {
                                            grouping: grouping, range: range,
                                            modelColors: self.modelColors)
                 self.hoveredDay = nil
+                readinessChanged?(true)
             }
         } else {
             UsageQueryService.shared.loadDailyAggsByModel(days: range.days) { aggs in
@@ -227,6 +230,7 @@ struct UsageAnalysisView: View {
                                            grouping: grouping, range: range,
                                            modelColors: colors)
                 self.hoveredDay = nil
+                readinessChanged?(true)
             }
         }
     }

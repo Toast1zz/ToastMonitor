@@ -516,7 +516,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             view.appearance = NSAppearance(named: .aqua)
         }
         controller.prepareAllPages()
-        captureAndWritePNG(view, to: path)
+        if controller.selectedTab == .analysis {
+            let deadline = Date().addingTimeInterval(10)
+            while !controller.analysisReadyForCapture && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            guard controller.analysisReadyForCapture else {
+                print("render failed: analysis data did not become ready")
+                exit(1)
+            }
+        }
+        captureAndWritePNG(view, to: path, waitForLayout: controller.selectedTab != .analysis)
     }
 
     private func renderSnapshot<V: View>(_ root: V, to path: String, height: CGFloat, width: CGFloat) {
@@ -530,9 +540,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureAndWritePNG(hosting, to: path)
     }
 
-    private func captureAndWritePNG(_ view: NSView, to path: String) {
+    private func captureAndWritePNG(_ view: NSView, to path: String, waitForLayout: Bool = true) {
         view.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        if waitForLayout { RunLoop.main.run(until: Date().addingTimeInterval(0.4)) }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             print("render failed: no bitmap rep")
             exit(1)

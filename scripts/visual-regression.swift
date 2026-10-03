@@ -117,7 +117,13 @@ defer { try? fileManager.removeItem(at: tempRoot) }
 // Render with the native build system, as build-app.sh does. The default
 // engine records the deployment target as the SDK, so AppKit would draw the
 // pre-Liquid Glass compatibility controls users never see.
-let buildCommand = ["swift", "build", "--build-system", "native"]
+var buildCommand = ["swift", "build", "--build-system", "native"]
+if let path = ProcessInfo.processInfo.environment["TM_BUILD_PATH"] {
+    buildCommand += ["--scratch-path", path]
+}
+if let path = ProcessInfo.processInfo.environment["TM_CACHE_PATH"] {
+    buildCommand += ["--cache-path", path]
+}
 _ = try run("/usr/bin/env", buildCommand)
 // The path is the last line; `run` merges stderr, where SwiftPM prints a
 // deprecation warning for the native build system.
@@ -185,39 +191,41 @@ guard let expected = try JSONSerialization.jsonObject(with: expectedData) as? [S
                   userInfo: [NSLocalizedDescriptionKey: "invalid baseline file"])
 }
 var failures: [String] = []
-var failedPopoverScenes: [String] = []
+var failedScenes: [String] = []
 for scenario in scenarios {
     guard let expectedHash = expected[scenario.name], let actualHash = actual[scenario.name] else {
         failures.append("\(scenario.name): missing hash")
-        if scenario.name.hasPrefix("popover-home-") {
-            failedPopoverScenes.append(scenario.name)
-        }
+        failedScenes.append(scenario.name)
         continue
     }
     let distance = hammingDistance(expectedHash, actualHash)
     if distance > 20 {
         failures.append("\(scenario.name): distance \(distance) > 20 (expected \(expectedHash), actual \(actualHash))")
-        if scenario.name.hasPrefix("popover-home-") {
-            failedPopoverScenes.append(scenario.name)
-        }
+        failedScenes.append(scenario.name)
     } else {
         print("\(scenario.name): distance \(distance)")
     }
 }
 if !failures.isEmpty,
-   !failedPopoverScenes.isEmpty,
+   !failedScenes.isEmpty,
    let artifactPath = ProcessInfo.processInfo.environment["TM_VISUAL_ARTIFACT_DIR"] {
     let artifactDirectory = URL(fileURLWithPath: artifactPath, isDirectory: true)
     do {
         try fileManager.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
-        for name in failedPopoverScenes {
+        for name in failedScenes {
             let source = tempRoot.appendingPathComponent("\(name).png")
             let destination = artifactDirectory.appendingPathComponent("\(name).png")
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
             try fileManager.copyItem(at: source, to: destination)
         }
-        print("saved failing popover captures to \(artifactDirectory.path)")
+        try expectedData.write(to: artifactDirectory.appendingPathComponent("expected-hashes.json"))
+        let actualData = try JSONSerialization.data(withJSONObject: actual, options: [.prettyPrinted, .sortedKeys])
+        try actualData.write(to: artifactDirectory.appendingPathComponent("actual-hashes.json"))
+        print("saved failing scene captures and hashes to \(artifactDirectory.path)")
     } catch {
-        fputs("warning: could not save failing popover captures: \(error)\n", stderr)
+        fputs("warning: could not save failing scene captures: \(error)\n", stderr)
     }
 }
 guard failures.isEmpty else {
