@@ -37,4 +37,33 @@ final class CostNormalizationTests: XCTestCase {
         XCTAssertTrue(database.setSetting("codex_billing_mode", "api"))
         XCTAssertEqual(database.totals(from: 0, to: 200).cost, 7.75, accuracy: 0.00001)
     }
+
+    func testBackfillPreservesActualCostsAndRetriesUnknownModels() {
+        let fixtures: [(String, String, Double)] = [
+            ("actual-zero", "actual", 0), ("actual-paid", "actual", 4),
+            ("unknown", "unknown", 0), ("estimated", "estimated", 0)
+        ]
+        for (session, quality, cost) in fixtures {
+            XCTAssertTrue(database.insertTurns([TurnRecord(tool: .opencode, sessionID: session,
+                project: nil, model: "gpt-4o", ts: 100, inputTokens: 1_000_000,
+                outputTokens: 0, cacheRead: 0, cacheWrite: 0, cost: cost, costQuality: quality)]))
+        }
+        XCTAssertTrue(database.insertTurns([TurnRecord(tool: .opencode, sessionID: "unpriced",
+            project: nil, model: "unpriced-model", ts: 100, inputTokens: 1_000_000,
+            outputTokens: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costQuality: "unknown")]))
+        database.backfillCosts()
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "actual-zero").first?.cost, 0)
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "actual-paid").first?.cost, 4)
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "unknown").first?.cost, 2.5)
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "estimated").first?.cost, 2.5)
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "unpriced").first?.cost, 0)
+        XCTAssertTrue(database.insertTurns([TurnRecord(tool: .opencode, sessionID: "later",
+            project: nil, model: "gpt-4o", ts: 100, inputTokens: 1_000_000,
+            outputTokens: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costQuality: "unknown")]))
+        database.backfillCosts()
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "later").first?.cost, 0)
+        XCTAssertTrue(database.setSetting("backfill_costs_last", "0"))
+        database.backfillCosts()
+        XCTAssertEqual(database.turns(sessionTool: "opencode", sessionID: "later").first?.cost, 2.5)
+    }
 }

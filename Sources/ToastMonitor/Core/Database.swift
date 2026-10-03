@@ -941,7 +941,7 @@ final class Database: @unchecked Sendable {
         let now = Int64(Date().timeIntervalSince1970)
         if let last = Int64(setting("backfill_costs_last") ?? "0"), now - last < 60 { return }
         var stmt: OpaquePointer?
-        let select = "SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool FROM turns WHERE cost=0 AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
+        let select = "SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool FROM turns WHERE cost=0 AND cost_quality IN ('unknown','estimated') AND tool != 'hermes' AND model IS NOT NULL AND model != '';"
         guard sqlite3_prepare_v2(db, select, -1, &stmt, nil) == SQLITE_OK else { return }
         var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
