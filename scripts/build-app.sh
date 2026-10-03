@@ -12,6 +12,9 @@ cd "$ROOT"
 # Glass on macOS 26/27. Lowering the deployment target does not change that:
 # glass adoption follows the recorded SDK, not the minimum OS.
 SWIFT_BUILD=(swift build --build-system native)
+BUILD_ROOT="${TM_BUILD_PATH:-$ROOT/.build}"
+if [[ -n "${TM_BUILD_PATH:-}" ]]; then SWIFT_BUILD+=(--scratch-path "$BUILD_ROOT"); fi
+if [[ -n "${TM_CACHE_PATH:-}" ]]; then SWIFT_BUILD+=(--cache-path "$TM_CACHE_PATH"); fi
 # TM_ARCHS ("arm64", "arm64 x86_64", ...) overrides the host architecture so
 # releases can ship a universal binary. Defaults to the build machine.
 # A single multi-arch `swift build` records the deployment target as every
@@ -19,12 +22,12 @@ SWIFT_BUILD=(swift build --build-system native)
 # built on its own and the slices are merged with lipo afterwards.
 read -r -a ARCHS <<< "${TM_ARCHS:-}"
 if (( ${#ARCHS[@]} > 1 )); then
-    BIN="$ROOT/.build/universal-release/ToastMonitor"
+    BIN="$BUILD_ROOT/universal-release/ToastMonitor"
 else
     if (( ${#ARCHS[@]} == 1 )); then SWIFT_BUILD+=(--arch "${ARCHS[0]}"); fi
     BIN="$("${SWIFT_BUILD[@]}" -c release --show-bin-path)/ToastMonitor"
 fi
-APP="$ROOT/dist/ToastMonitor.app"
+APP="${TM_APP_PATH:-$ROOT/dist/ToastMonitor.app}"
 INSTALL_APP="${TM_INSTALL_PATH:-/Applications/ToastMonitor.app}"
 SKIP_INSTALL="${TM_SKIP_INSTALL:-0}"
 
