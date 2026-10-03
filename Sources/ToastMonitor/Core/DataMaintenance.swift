@@ -20,7 +20,9 @@ enum DataMaintenance {
 
     /// Creates a protected SQLite snapshot and keeps the newest seven managed
     /// backups. The returned path is safe to present to the user.
-    static func createBackup(label: String = "manual") -> String? {
+    static func createBackup(label: String = "manual", database: Database = .shared,
+                             backupDirectory: URL? = nil) -> String? {
+        let directory = backupDirectory ?? Self.directory
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -38,17 +40,17 @@ enum DataMaintenance {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let url = directory.appendingPathComponent("toastmonitor-\(String(safeLabel))-\(formatter.string(from: Date())).db")
-        guard Database.shared.backup(to: url.path) else { return nil }
+        guard database.backup(to: url.path) else { return nil }
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        pruneBackups(keeping: 7)
+        pruneBackups(keeping: 7, in: directory)
         return url.path
     }
 
     /// Exports a full SQLite snapshot to a user-selected destination.
     /// Credentials are not in this database; callers still must treat the
     /// resulting file as sensitive usage and project metadata.
-    static func exportDatabase(to path: String) -> Bool {
-        guard let destination = safeDestination(path) else { return false }
+    static func exportDatabase(to path: String, database: Database = .shared) -> Bool {
+        guard let destination = safeDestination(path, database: database) else { return false }
         let fm = FileManager.default
         do {
             let parent = destination.deletingLastPathComponent()
@@ -59,7 +61,7 @@ enum DataMaintenance {
                     return false
                 }
             }
-            guard Database.shared.backup(to: destination.path) else { return false }
+            guard database.backup(to: destination.path) else { return false }
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
             return true
         } catch {
@@ -100,8 +102,19 @@ enum DataMaintenance {
     /// Restores only a regular, non-empty managed backup. Database.restore
     /// performs the SQLite schema/integrity check before replacing live data.
     static func restore(backupPath path: String) -> Bool {
-        guard isManagedBackup(path), isSafeDatabaseFile(path) else { return false }
-        return Database.shared.restore(from: path)
+        restoreWithReceipt(backupPath: path) != nil
+    }
+
+    static func restoreWithReceipt(backupPath path: String, database: Database = .shared,
+                                   backupDirectory: URL? = nil) -> String? {
+        let directory = backupDirectory ?? Self.directory
+        guard isManagedBackup(path, in: directory), isSafeDatabaseFile(path) else { return nil }
+        var snapshot: String?
+        let restored = database.restore(from: path, beforeReplace: {
+            snapshot = createBackup(label: "pre-restore", database: database, backupDirectory: directory)
+            return snapshot
+        })
+        return restored ? snapshot : nil
     }
 
     /// Self-throttled weekly snapshot, independent of collector activity: an
@@ -124,7 +137,7 @@ enum DataMaintenance {
         _ = createBackup(label: "weekly")
     }
 
-    static func availableBackups() -> [URL] {
+    static func availableBackups(in directory: URL = DataMaintenance.directory) -> [URL] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: keys,
@@ -136,13 +149,13 @@ enum DataMaintenance {
 
         }
     }
-    private static func safeDestination(_ path: String) -> URL? {
+    private static func safeDestination(_ path: String, database: Database = .shared) -> URL? {
         guard !path.isEmpty, path.utf8.count <= 4096,
               !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) else {
             return nil
         }
         let destination = URL(fileURLWithPath: path).standardizedFileURL
-        guard destination.path != Database.shared.dbPath else { return nil }
+        guard destination.path != database.dbPath else { return nil }
         return destination
     }
 
@@ -165,13 +178,13 @@ enum DataMaintenance {
         return data.count >= magic.count && data.prefix(magic.count) == magic
     }
 
-    static func pruneBackups(keeping count: Int) {
-        for url in availableBackups().dropFirst(max(count, 0)) {
+    static func pruneBackups(keeping count: Int, in directory: URL = DataMaintenance.directory) {
+        for url in availableBackups(in: directory).dropFirst(max(count, 0)) {
             try? FileManager.default.removeItem(at: url)
         }
     }
 
-    private static func isManagedBackup(_ path: String) -> Bool {
+    private static func isManagedBackup(_ path: String, in directory: URL = DataMaintenance.directory) -> Bool {
         let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
         let root = directory.standardizedFileURL.path + "/"
         return candidate.hasPrefix(root)
