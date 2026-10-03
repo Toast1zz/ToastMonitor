@@ -325,7 +325,7 @@ struct DataSettingsPane: View {
                         Button("Restore…") { pendingRestoreBackup = url }
                             .disabled(isWorking)
                     } label: {
-                        Text(Self.label(for: url).capitalized)
+                        Text(DataMaintenance.managedBackupLabel(for: url).capitalized)
                         Text(Self.dateAndSize(for: url))
                             .tmMonospacedDigit()
                     }
@@ -336,22 +336,6 @@ struct DataSettingsPane: View {
         }
     }
 
-    /// The trailing "-yyyyMMdd-HHmmss.db" suffix is redundant with the date
-    /// line right below it — only the label (weekly / pre-rebuild / pre-clear
-    /// / manual) is worth a row of its own. Sliced by fixed length rather
-    /// than searching for the next "-", since a label can itself contain a
-    /// hyphen (createBackup's sanitizer allows "-" through unchanged, e.g.
-    /// "pre-rebuild") — the timestamp suffix's length is deterministic
-    /// ("-yyyyMMdd-HHmmss" is always exactly 16 characters) while the
-    /// label's is not.
-    private static func label(for url: URL) -> String {
-        let name = url.deletingPathExtension().lastPathComponent
-        let prefix = "toastmonitor-"
-        guard name.hasPrefix(prefix) else { return name }
-        let withoutPrefix = name.dropFirst(prefix.count)
-        guard withoutPrefix.count > 16 else { return String(withoutPrefix) }
-        return String(withoutPrefix.dropLast(16))
-    }
 
     private static func dateAndSize(for url: URL) -> String {
         let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])

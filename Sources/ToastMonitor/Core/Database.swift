@@ -2113,10 +2113,19 @@ final class Database: @unchecked Sendable {
         return true
     }
 
-    func backup(to destination: String) -> Bool {
+    func backup(to destination: String, overwrite: Bool = true) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return false }
         let fm = FileManager.default
+        if !overwrite {
+            let descriptor = Darwin.open(destination, O_RDWR | O_CREAT | O_EXCL, 0o600)
+            guard descriptor >= 0 else { return false }
+            Darwin.close(descriptor)
+        }
+        var completed = false
+        defer {
+            if !overwrite && !completed { try? fm.removeItem(atPath: destination) }
+        }
         // Pre-create with the private mode so the sqlite3 open never exposes
         // a umask-default (0644) file; opening without SQLITE_OPEN_CREATE
         // then cannot widen permissions either. An existing destination is
@@ -2137,6 +2146,7 @@ final class Database: @unchecked Sendable {
         let finish = sqlite3_backup_finish(backup)
         guard step == SQLITE_DONE, finish == SQLITE_OK else { return false }
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination)
+        completed = true
         return true
     }
 
