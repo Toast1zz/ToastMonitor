@@ -214,7 +214,6 @@ enum HermesParser {
             guard v.isFinite, v > 0 else { return 0 }
             return Int64(v > 1_000_000_000_000 ? v / 1000 : v)
         }
-        let totals = database.sessionTotals()
         var turns: [TurnRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let sid = text(0), !sid.isEmpty else { continue }
@@ -231,8 +230,9 @@ enum HermesParser {
             let key = HermesUsageBaseline.key(session: sid, model: model, provider: provider,
                                               baseURL: text(3))
             let localKey = HermesUsageBaseline.localTotalsKey(key)
-            let prev = totals[localKey].map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] }
-                ?? HermesUsageBaseline.parse(database.setting(key))
+            let local: [Int64] = database.sessionTotals()[localKey].map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] } ?? []
+            let prev = HermesUsageBaseline.merge(current: current, baselines: [local,
+                HermesUsageBaseline.parse(database.setting(key))])
             let step = HermesUsageBaseline.advance(current: current, prev: prev)
             let d = step.delta
             if d.input > 0 || d.output > 0 || d.reasoning > 0 || d.cacheRead > 0 || d.cacheWrite > 0 {
@@ -249,6 +249,7 @@ enum HermesParser {
                                         costQuality: "unknown"))
             }
             let b = step.base
+            database.setSetting(key, HermesUsageBaseline.encode(b))
             database.setSessionTotals(localKey, tool: "hermes", input: b.input, output: b.output,
                                       reasoning: b.reasoning, cacheRead: b.cacheRead,
                                       cacheWrite: b.cacheWrite, cost: 0, updated: lastSeen)
@@ -299,6 +300,19 @@ enum HermesUsageBaseline {
     static func encode(_ base: Counters) -> String {
         [base.input, base.output, base.reasoning, base.cacheRead, base.cacheWrite, 0]
             .map(String.init).joined(separator: ",")
+    }
+
+    static func merge(current: Counters, baselines: [[Int64]]) -> [Int64] {
+        let normalized = baselines.compactMap { values -> [Int64]? in
+            if values.count == 6 { return values }
+            guard values.count == 5 else { return nil }
+            let reasoning = min(current.reasoning, max(values[0], 0))
+            return [max(values[0] - reasoning, 0), values[1], reasoning, values[2], values[3], 0]
+        }
+        guard let first = normalized.first else { return [] }
+        return normalized.dropFirst().reduce(first) { merged, values in
+            zip(merged, values).map { max($0, $1) }
+        }
     }
 
     /// `prev` is a stored baseline: 6 values, or the legacy 5 whose input

@@ -25,6 +25,8 @@ protocol ParserStateStore: AnyObject {
                           cost: Double, updated: Int64) -> Bool
     /// Read-only settings lookup (e.g. baselines another importer owns).
     func setting(_ key: String) -> String?
+    @discardableResult
+    func setSetting(_ key: String, _ value: String?) -> Bool
 }
 
 extension Database: ParserStateStore {}
@@ -33,6 +35,11 @@ extension Database: ParserStateStore {}
 /// baselines are checked again while holding the short commit transaction.
 /// A mismatch discards the prepared result; the next tick safely replays it.
 final class StagedParserStateStore: ParserStateStore {
+    private struct SettingValue {
+        let value: String?
+    }
+    private var originalSettings: [String: SettingValue] = [:]
+    private var settingUpdates: [String: SettingValue] = [:]
     private struct ScanUpdate {
         let source: String
         let size: Int64
@@ -99,7 +106,18 @@ final class StagedParserStateStore: ParserStateStore {
     }
 
     func setting(_ key: String) -> String? {
-        database.setting(key)
+        if let update = settingUpdates[key] { return update.value }
+        if let original = originalSettings[key] { return original.value }
+        let value = database.setting(key)
+        originalSettings[key] = SettingValue(value: value)
+        return value
+    }
+
+    @discardableResult
+    func setSetting(_ key: String, _ value: String?) -> Bool {
+        _ = setting(key)
+        settingUpdates[key] = SettingValue(value: value)
+        return true
     }
 
     func sessionTotals() -> ParserSessionTotals {
@@ -127,6 +145,9 @@ final class StagedParserStateStore: ParserStateStore {
     /// Runs inside `Database.inTransaction`, before prepared row inserts.
     func validateForCommit() -> Bool {
         guard preparationIsConsistent else { return false }
+        for (key, original) in originalSettings {
+            guard database.setting(key) == original.value else { return false }
+        }
         for (path, snapshot) in sourceSnapshots {
             guard Self.sameStat(FileScanner.fileStat(path), snapshot) else { return false }
         }
@@ -146,6 +167,9 @@ final class StagedParserStateStore: ParserStateStore {
 
     /// Runs inside `Database.inTransaction`, after row inserts succeeded.
     func apply() -> Bool {
+        for key in settingUpdates.keys.sorted() {
+            guard database.setSetting(key, settingUpdates[key]?.value) else { return false }
+        }
         for update in scanUpdates.values.sorted(by: { $0.source < $1.source }) {
             guard database.setScanState(update.source, size: update.size,
                                         mtime: update.mtime, identity: update.identity,

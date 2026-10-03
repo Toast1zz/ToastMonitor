@@ -423,11 +423,12 @@ final class HermesRemoteClient: ObservableObject {
                 // seen via the feed and is the accepted tradeoff. A session
                 // the local parser already counted continues from its
                 // baseline instead of starting over.
-                let prev = runningHermes[key]
-                    ?? database.setting(key).map { HermesUsageBaseline.parse($0) }
-                    ?? totals[HermesUsageBaseline.localTotalsKey(key)]
-                        .map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] }
-                    ?? []
+                let current = HermesUsageBaseline.Counters(input: input, output: output, reasoning: reasoning,
+                                                            cacheRead: cacheRead, cacheWrite: cacheWrite)
+                let local: [Int64] = totals[HermesUsageBaseline.localTotalsKey(key)]
+                    .map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] } ?? []
+                let prev = HermesUsageBaseline.merge(current: current, baselines: [local,
+                    runningHermes[key] ?? HermesUsageBaseline.parse(database.setting(key))])
                 let step = HermesUsageBaseline.advance(
                     current: .init(input: input, output: output, reasoning: reasoning,
                                    cacheRead: cacheRead, cacheWrite: cacheWrite),
@@ -512,6 +513,10 @@ final class HermesRemoteClient: ObservableObject {
             writesOK = database.upsertSessions(Array(sessions.values)) && writesOK
             for p in pendingHermesBaselines {
                 writesOK = database.setSetting(p.key, p.value) && writesOK
+                let base = HermesUsageBaseline.parse(p.value)
+                writesOK = database.setSessionTotals(HermesUsageBaseline.localTotalsKey(p.key), tool: "hermes",
+                    input: base[0], output: base[1], reasoning: base[2], cacheRead: base[3], cacheWrite: base[4],
+                    cost: 0, updated: nowTs) && writesOK
             }
             for p in pendingOpenCodeTotals {
                 writesOK = database.setSessionTotals(p.key, tool: "opencode",
