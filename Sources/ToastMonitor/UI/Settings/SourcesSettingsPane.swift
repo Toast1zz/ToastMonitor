@@ -373,9 +373,11 @@ struct DataSettingsPane: View {
         pendingRestoreBackup = nil
         isWorking = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = DataMaintenance.restore(backupPath: target.path)
+            let snapshot = DataMaintenance.restoreWithReceipt(backupPath: target.path)
+            let ok = snapshot != nil
             DispatchQueue.main.async {
-                message = ok ? "Restored: \(target.lastPathComponent)" : "Restore failed; original data retained"
+                message = snapshot.map { "Restored: \(target.lastPathComponent); recovery: \(($0 as NSString).lastPathComponent)" }
+                    ?? "Restore failed; original data retained"
                 isWorking = false
                 if ok {
                     app.refresh()

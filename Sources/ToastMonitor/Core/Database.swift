@@ -13,6 +13,7 @@ final class Database: @unchecked Sendable {
     /// Duplicate conflicts are intentionally ignored by the turns UPSERT,
     /// but prepare/step/ALTER/commit errors must never be silently committed.
     private var transactionWriteError = false
+    private var startupHadError = false
     private struct SettingCacheChange {
         let value: String?
     }
@@ -79,6 +80,7 @@ final class Database: @unchecked Sendable {
     }
 
     private func openLocked(_ path: String) {
+        startupHadError = false
         scanStatesCache = nil
         let fm = FileManager.default
         let dir = (path as NSString).deletingLastPathComponent
@@ -556,6 +558,8 @@ final class Database: @unchecked Sendable {
             guard let db else { return }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
             transactionWriteError = false
+            ensureColumn("credits_total", "REAL", table: "openrouter_snapshots")
+            ensureColumn("credits_usage", "REAL", table: "openrouter_snapshots")
             ensureColumn("account_usage", "REAL", table: "openrouter_snapshots")
             ensureColumn("account_balance", "REAL", table: "openrouter_snapshots")
             ensureColumn("is_management_key", "INTEGER NOT NULL DEFAULT 0", table: "openrouter_snapshots")
@@ -596,6 +600,7 @@ final class Database: @unchecked Sendable {
         guard let db else { return false }
         var err: UnsafeMutablePointer<CChar>?
         if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+            startupHadError = true
             if let err { NSLog("[ToastMonitor] SQL error: %s", err); sqlite3_free(err) }
             return false
         }
@@ -2134,47 +2139,142 @@ final class Database: @unchecked Sendable {
         return true
     }
 
-    func restore(from source: String) -> Bool {
+    func restore(from source: String, beforeReplace: (() -> String?)? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard let db else { return false }
+        guard db != nil, source != dbPath else { return false }
+        let fm = FileManager.default
+        let workspace = fm.temporaryDirectory.appendingPathComponent("tm-restore-\(UUID().uuidString)")
+        do {
+            try fm.createDirectory(at: workspace, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+        } catch { return false }
+        defer { try? fm.removeItem(at: workspace) }
+        let candidatePath = workspace.appendingPathComponent("candidate.db").path
+        guard Self.copySQLite(from: source, to: candidatePath) else {
+            NSLog("[ToastMonitor] restore candidate copy failed")
+            return false
+        }
+        let candidate = Database()
+        candidate.dbPath = candidatePath
+        var inspection: OpaquePointer?
+        guard sqlite3_open_v2(candidatePath, &inspection, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let inspection { sqlite3_close(inspection) }
+            return false
+        }
+        candidate.db = inspection
+        let version = candidate.userVersion()
+        let tablesExist = Self.restoreTables.allSatisfy { !candidate.columnTypes(in: $0).isEmpty }
+        candidate.close()
+        guard (0...4).contains(version), tablesExist else {
+            NSLog("[ToastMonitor] restore source rejected: schema=%d tables=%d", version, tablesExist)
+            return false
+        }
+        candidate.openAt(candidatePath)
+        defer { candidate.close() }
+        let reference = Database.testInstance(path: workspace.appendingPathComponent("reference.db").path)
+        defer { reference.close() }
+        guard candidate.isUsable(comparedTo: reference) else { return false }
+        candidate.close()
+
+        let recovery: String
+        if let beforeReplace {
+            guard let path = beforeReplace() else { return false }
+            recovery = path
+        } else {
+            recovery = dbPath + ".pre-restore-\(UUID().uuidString).db"
+            guard backup(to: recovery) else { return false }
+        }
+        guard replaceContents(from: candidatePath) else {
+            NSLog("[ToastMonitor] restore replacement failed")
+            return false
+        }
+        close()
+        openLocked(dbPath)
+        guard isUsable(comparedTo: reference) else {
+            _ = replaceContents(from: recovery)
+            close()
+            openLocked(dbPath)
+            return false
+        }
+        bumpDataVersion()
+        return true
+    }
+
+    private static let restoreTables = ["turns", "sessions", "scan_state", "session_totals",
+                                        "openrouter_snapshots", "opencodego_snapshots", "subscriptions", "settings"]
+
+    private func columnTypes(in table: String) -> [String: String] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK else { return [:] }
+        defer { sqlite3_finalize(statement) }
+        var columns: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            columns[String(cString: sqlite3_column_text(statement, 1))] =
+                String(cString: sqlite3_column_text(statement, 2)).uppercased()
+        }
+        return columns
+    }
+
+    private func isUsable(comparedTo reference: Database) -> Bool {
+        guard db != nil, !startupHadError, userVersion() == 4 else {
+            NSLog("[ToastMonitor] restore readiness failed: open=%d startupError=%d schema=%d", db != nil, startupHadError, userVersion())
+            return false
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &statement, nil) == SQLITE_OK else { return false }
+        let valid = sqlite3_step(statement) == SQLITE_ROW
+            && String(cString: sqlite3_column_text(statement, 0)) == "ok"
+        sqlite3_finalize(statement)
+        guard valid else { return false }
+        for table in Self.restoreTables {
+            let expected = reference.columnTypes(in: table)
+            let actual = columnTypes(in: table)
+            guard !expected.isEmpty, expected.allSatisfy({ actual[$0.key] == $0.value }) else {
+                NSLog("[ToastMonitor] restore schema mismatch: %@", table)
+                return false
+            }
+            let query = "SELECT \(expected.keys.sorted().joined(separator: ",")) FROM \(table) LIMIT 0;"
+            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { return false }
+            let ready = sqlite3_step(statement) == SQLITE_DONE
+            sqlite3_finalize(statement)
+            guard ready else { return false }
+        }
+        return true
+    }
+
+    private static func copySQLite(from source: String, to destination: String) -> Bool {
         var origin: OpaquePointer?
-        guard sqlite3_open_v2(source, &origin,
-                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let origin else {
+        guard sqlite3_open_v2(source, &origin, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let origin else {
             if let origin { sqlite3_close(origin) }
             return false
         }
-        guard sqlite3_exec(origin, "PRAGMA query_only=ON;", nil, nil, nil) == SQLITE_OK else {
-            sqlite3_close(origin)
+        defer { sqlite3_close(origin) }
+        guard sqlite3_exec(origin, "PRAGMA query_only=ON;", nil, nil, nil) == SQLITE_OK else { return false }
+        guard FileManager.default.createFile(atPath: destination, contents: nil,
+                                             attributes: [.posixPermissions: 0o600]) else { return false }
+        var target: OpaquePointer?
+        guard sqlite3_open_v2(destination, &target, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let target { sqlite3_close(target) }
+            return false
+        }
+        defer { sqlite3_close(target) }
+        return copyContents(from: origin, to: target)
+    }
+
+    private func replaceContents(from source: String) -> Bool {
+        guard let db else { return false }
+        var origin: OpaquePointer?
+        guard sqlite3_open_v2(source, &origin, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let origin { sqlite3_close(origin) }
             return false
         }
         defer { sqlite3_close(origin) }
+        guard sqlite3_exec(origin, "PRAGMA query_only=ON;", nil, nil, nil) == SQLITE_OK else { return false }
+        return Self.copyContents(from: origin, to: db)
+    }
 
-        var checkStmt: OpaquePointer?
-        guard sqlite3_prepare_v2(origin, "PRAGMA integrity_check;", -1, &checkStmt, nil) == SQLITE_OK else {
-            return false
-        }
-        let isValid = sqlite3_step(checkStmt) == SQLITE_ROW
-            && String(cString: sqlite3_column_text(checkStmt, 0)) == "ok"
-        sqlite3_finalize(checkStmt)
-        guard isValid else { return false }
-
-        var schemaStmt: OpaquePointer?
-        guard sqlite3_prepare_v2(origin,
-                                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('turns','sessions','scan_state','session_totals','openrouter_snapshots','opencodego_snapshots','subscriptions','settings');",
-                                 -1, &schemaStmt, nil) == SQLITE_OK else {
-            return false
-        }
-        let schemaCount = sqlite3_step(schemaStmt) == SQLITE_ROW
-            ? sqlite3_column_int(schemaStmt, 0) : -1
-        let hasSchema = schemaCount == 8
-        sqlite3_finalize(schemaStmt)
-        guard hasSchema else { return false }
-
-        guard let backup = sqlite3_backup_init(db, "main", origin, "main") else {
-            NSLog("[ToastMonitor] restore init failed: %s", sqlite3_errmsg(db))
-            return false
-        }
+    private static func copyContents(from origin: OpaquePointer?, to target: OpaquePointer?) -> Bool {
+        guard let backup = sqlite3_backup_init(target, "main", origin, "main") else { return false }
         var step: Int32
         var retries = 0
         repeat {
@@ -2187,20 +2287,10 @@ final class Database: @unchecked Sendable {
         } while step == SQLITE_BUSY || step == SQLITE_LOCKED
         let finish = sqlite3_backup_finish(backup)
         if step != SQLITE_DONE || finish != SQLITE_OK {
-            NSLog("[ToastMonitor] restore failed: step=%d finish=%d error=%s",
-                  step, finish, sqlite3_errmsg(db))
-            return false
+            NSLog("[ToastMonitor] SQLite snapshot failed: step=%d finish=%d target=%s origin=%s",
+                  step, finish, sqlite3_errmsg(target), sqlite3_errmsg(origin))
         }
-        // The restored store may predate the current schema (a backup taken
-        // before later migrations). Close and re-open so migrate()/
-        // ensureBaseTables() run against the restored file, then force a
-        // snapshot-cache key change: MAX(id) cannot move on a restore that
-        // happens to restore identical content.
-        sqlite3_close(db)
-        self.db = nil
-        openLocked(dbPath)
-        bumpDataVersion()
-        return true
+        return step == SQLITE_DONE && finish == SQLITE_OK
     }
 
     /// Sanitized diagnostics: table counts, model distribution, cost quality,
