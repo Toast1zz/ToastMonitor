@@ -67,6 +67,7 @@ struct PopoverHomeView: View {
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
+    @ObservedObject private var grokQuota = GrokQuotaClient.shared
     @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
     @ObservedObject private var deepseek: DeepSeekBillingClient
     @AppStorage(DeepSeekBilling.exchangeRateKey) private var cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
@@ -545,6 +546,7 @@ struct PopoverHomeView: View {
         case "go": goStatusRow
         case "codex": codexStatusRow
         case "cc": commandCodeStatusRow
+        case "grok": grokStatusRow
         case "router": routerStatusRow
         default: deepseekStatusRow
         }
@@ -568,6 +570,7 @@ struct PopoverHomeView: View {
             ("go", "OpenCode Go", .quota, AccountConnection.openCodeGo),
             ("codex", "Codex", .quota, AccountConnection.codex(subscriptions: app.subscriptions)),
             ("cc", "Command Code", .quota, AccountConnection.commandCode),
+            ("grok", "SuperGrok", .quota, AccountConnection.grok),
             ("router", "OpenRouter", .balance, AccountConnection.openRouter),
             ("deepseek", "DeepSeek", .balance, AccountConnection.deepSeek),
         ]
@@ -583,7 +586,7 @@ struct PopoverHomeView: View {
     }
 
     private func loadQuotaRowHidden() {
-        for key in ["claude", "go", "codex", "cc", "router", "deepseek"] {
+        for key in PopoverAccountRows.keys {
             quotaRowHidden[key] = Database.shared.setting(Self.quotaRowHiddenKey(key)) == "1"
         }
     }
@@ -981,6 +984,38 @@ struct PopoverHomeView: View {
                          staleBadge: staleBadge,
                          windows: [window("Monthly", state.monthlyUsedPercent,
                                           reset: state.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) })].compactMap { $0 })
+    }
+
+    /// SuperGrok's shared weekly pool (Chat, Imagine, Build, Grok Bot). The
+    /// subtitle splits the used share by product when the API reports it.
+    private var grokStatusRow: some View {
+        let state = grokQuota.state
+        let name = (state.planName ?? "SuperGrok") + (state.error == nil ? "" : " ⚠")
+        let stale = state.lastSync > 0
+            && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
+        var status = state.configured ? "Loading" : "Not configured"
+        var resetSuffix: String?
+        var staleBadge: String?
+        if let used = state.usedPercent {
+            status = "\(Int((100 - used).rounded()))% weekly left"
+            resetSuffix = resetText(state.resetAt)
+            if stale {
+                let age = now.timeIntervalSince1970 - TimeInterval(state.lastSync)
+                staleBadge = "\(Format.remaining(Int64(age))) ago"
+            }
+        } else if state.error != nil {
+            status = "Error"
+        }
+        let breakdown = state.products
+            .map { "\($0.displayName) \(Int($0.usedPercent.rounded()))%" }
+            .joined(separator: " · ")
+        return statusRow(name: name, status: status, tint: TMDesign.grok,
+                         statusColor: .primary,
+                         critical: state.usedPercent.map { $0 > 80 } ?? false,
+                         resetSuffix: resetSuffix,
+                         subtitle: breakdown.isEmpty ? nil : breakdown,
+                         staleBadge: staleBadge,
+                         windows: [window("Weekly", state.usedPercent, reset: state.resetAt)].compactMap { $0 })
     }
 
     private var routerStatusRow: some View {

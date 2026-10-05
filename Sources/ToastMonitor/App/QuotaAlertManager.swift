@@ -97,6 +97,7 @@ final class QuotaAlertManager: ObservableObject {
             CodexQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
             OpenCodeGoClient.shared.objectWillChange.eraseToAnyPublisher(),
             CommandCodeQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
+            GrokQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
             OpenRouterClient.shared.objectWillChange.eraseToAnyPublisher(),
             AppState.shared.objectWillChange.eraseToAnyPublisher(),
         ]
@@ -206,6 +207,10 @@ final class QuotaAlertManager: ObservableObject {
                                   resetAt: CommandCodeQuotaClient.shared.state.billingPeriodEnd.map {
                                       Int64($0.timeIntervalSince1970)
                                   }))
+        }
+        if let used = GrokQuotaClient.shared.state.usedPercent {
+            readings.append(.init(id: "supergrok-weekly", name: "SuperGrok weekly",
+                                  remaining: 100 - used, resetAt: GrokQuotaClient.shared.state.resetAt))
         }
         let router = OpenRouterClient.shared.state
         if let limit = router.limit, limit > 0, let remaining = router.limitRemaining {

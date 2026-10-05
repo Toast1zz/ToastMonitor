@@ -100,6 +100,9 @@ enum TMDesign {
     /// Command Code's brand is monochrome and it is not a usage source, so
     /// it gets a system color no source uses.
     static let commandCode = Color(nsColor: .systemBrown)
+    /// xAI's brand is black on white (white on black in dark), so Grok
+    /// follows the label color and stays monochrome in both appearances.
+    static let grok = Color(nsColor: .labelColor)
 
     /// A brand color from its hex value, with an optional dark-appearance
     /// variant for brands that specify one.
