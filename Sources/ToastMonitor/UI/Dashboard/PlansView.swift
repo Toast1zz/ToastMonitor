@@ -11,6 +11,7 @@ struct PlansView: View {
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
+    @ObservedObject private var grokQuota = GrokQuotaClient.shared
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
 
@@ -25,9 +26,11 @@ struct PlansView: View {
     private var orConnected: Bool { AccountConnection.openRouter }
     private var deepseekConnected: Bool { AccountConnection.deepSeek }
     private var ccConnected: Bool { AccountConnection.commandCode }
+    private var grokConnected: Bool { AccountConnection.grok }
 
     private var unconnected: [String] {
         [(claudeConnected, "Claude"), (goConnected, "OpenCode Go"), (ccConnected, "Command Code"),
+         (grokConnected, "SuperGrok"),
          (orConnected, "OpenRouter"), (deepseekConnected, "DeepSeek")]
             .filter { !$0.0 }.map(\.1)
     }
@@ -36,6 +39,7 @@ struct PlansView: View {
         var out: [AnyView] = []
         if claudeConnected { out.append(AnyView(claudeCard)) }
         if ccConnected { out.append(AnyView(ccCard)) }
+        if grokConnected { out.append(AnyView(grokCard)) }
         if goConnected { out.append(AnyView(goCard)) }
         if orConnected { out.append(AnyView(orCard)) }
         if deepseekConnected { out.append(AnyView(deepseekCard)) }
@@ -106,6 +110,28 @@ struct PlansView: View {
             }
             if let plan = cc.planName {
                 FigureColumn(label: "Plan", value: plan)
+            }
+        }
+    }
+
+    /// One weekly pool shared by Grok Chat, Imagine, Build and Grok Bot;
+    /// the top products by share get their own columns.
+    private var grokCard: some View {
+        let g = grokQuota.state
+        return accountCard(title: g.planName ?? "SuperGrok", symbol: "x.circle.fill", color: TMDesign.grok,
+                           isLoading: g.isLoading && g.lastSync <= 0, error: g.error, lastSync: g.lastSync,
+                           refresh: { grokQuota.refresh() }) {
+            if let pct = g.usedPercent {
+                quotaColumn("Weekly", usedPercent: pct,
+                            captions: [resetText(absolute: g.resetAt)].compactMap { $0 },
+                            color: TMDesign.grok)
+            }
+            ForEach(g.products.prefix(2), id: \.product) { item in
+                FigureColumn(label: item.displayName, value: "\(Int(item.usedPercent.rounded()))%",
+                             unit: "of pool")
+            }
+            if let balance = g.prepaidBalanceUSD, balance > 0 {
+                FigureColumn(label: "Extra credits", value: Format.money(balance))
             }
         }
     }

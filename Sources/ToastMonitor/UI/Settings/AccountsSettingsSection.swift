@@ -58,7 +58,7 @@ final class CodexBillingModeCoordinator {
 enum PopoverAccountRows {
     static let accounts: [(key: String, title: String)] = [
         ("claude", "Claude"), ("go", "OpenCode Go"), ("codex", "Codex"),
-        ("cc", "Command Code"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
+        ("cc", "Command Code"), ("grok", "SuperGrok"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
     ]
 
     static var keys: [String] { accounts.map(\.key) }
@@ -98,6 +98,7 @@ struct AccountsSettingsSection: View {
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
+    @ObservedObject private var grokQuota = GrokQuotaClient.shared
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @AppStorage(CodexPlanName.customNameKey) private var codexName = ""
 
@@ -152,6 +153,16 @@ struct AccountsSettingsSection: View {
                     status: ccQuota.state.configured ? (ccQuota.state.planName ?? "Connected") : "Not connected") {
                 credentials(configured: ccQuota.state.configured, label: "Session",
                             change: { showCCForm = true }, clear: { pendingClear = .commandCode })
+            }
+            account("grok", "SuperGrok", symbol: "x.circle.fill", color: TMDesign.grok,
+                    status: grokStatus) {
+                LabeledContent("Login") {
+                    if grokQuota.state.configured {
+                        Text("Grok CLI")
+                    } else {
+                        Text("Run `grok login` in Terminal")
+                    }
+                }
             }
             account("router", "OpenRouter", symbol: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color,
                     status: orClient.hasKey ? keyCountText : "Not connected") {
@@ -249,6 +260,13 @@ struct AccountsSettingsSection: View {
         guard claudeQuota.enabled else { return "Off" }
         if claudeQuota.state.error != nil { return "Error" }
         return claudeQuota.state.configured || claudeQuota.state.lastSync > 0 ? "Connected" : "Not signed in"
+    }
+
+    private var grokStatus: String {
+        let state = grokQuota.state
+        if state.error != nil && state.configured { return "Error" }
+        guard state.configured else { return "Not signed in" }
+        return state.planName ?? "Connected"
     }
 
     private var keyCountText: String {

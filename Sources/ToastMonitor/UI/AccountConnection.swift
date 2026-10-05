@@ -36,6 +36,13 @@ enum AccountConnection {
             || (state.error.map { $0 != "Not configured" } ?? false)
     }
 
+    /// Connected once `grok login` left a token; an expired one stays
+    /// connected so the card can say so.
+    static var grok: Bool {
+        let state = GrokQuotaClient.shared.state
+        return state.configured || state.lastSync > 0
+    }
+
     static var openRouter: Bool { OpenRouterClient.shared.hasKey }
 
     static var deepSeek: Bool { DeepSeekBillingClient.shared.state.kind != nil }
