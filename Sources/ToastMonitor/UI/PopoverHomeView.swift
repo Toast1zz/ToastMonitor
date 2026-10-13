@@ -570,7 +570,7 @@ struct PopoverHomeView: View {
             ("go", "OpenCode Go", .quota, AccountConnection.openCodeGo),
             ("codex", "Codex", .quota, AccountConnection.codex(subscriptions: app.subscriptions)),
             ("cc", "Command Code", .quota, AccountConnection.commandCode),
-            ("grok", "SuperGrok", .quota, AccountConnection.grok),
+            ("grok", "Grok", .quota, AccountConnection.grok),
             ("router", "OpenRouter", .balance, AccountConnection.openRouter),
             ("deepseek", "DeepSeek", .balance, AccountConnection.deepSeek),
         ]
@@ -986,11 +986,12 @@ struct PopoverHomeView: View {
                                           reset: state.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) })].compactMap { $0 })
     }
 
-    /// SuperGrok's shared weekly pool (Chat, Imagine, Build, Grok Bot). The
-    /// subtitle splits the used share by product when the API reports it.
+    /// Grok's one weekly pool (Chat, Imagine, Build, Grok Bot), named
+    /// "Grok · <plan>" when the plan is known. The subtitle splits the used
+    /// share by product when the API reports it.
     private var grokStatusRow: some View {
         let state = grokQuota.state
-        let name = (state.planName ?? "SuperGrok") + (state.error == nil ? "" : " ⚠")
+        let name = "Grok" + (state.planName.map { " · \($0)" } ?? "") + (state.error == nil ? "" : " ⚠")
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         var status = state.configured ? "Loading" : "Not configured"

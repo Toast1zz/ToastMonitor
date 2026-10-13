@@ -209,7 +209,7 @@ final class QuotaAlertManager: ObservableObject {
                                   }))
         }
         if let used = GrokQuotaClient.shared.state.usedPercent {
-            readings.append(.init(id: "supergrok-weekly", name: "SuperGrok weekly",
+            readings.append(.init(id: "supergrok-weekly", name: "Grok weekly",
                                   remaining: 100 - used, resetAt: GrokQuotaClient.shared.state.resetAt))
         }
         let router = OpenRouterClient.shared.state

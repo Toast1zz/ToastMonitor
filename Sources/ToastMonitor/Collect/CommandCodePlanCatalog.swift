@@ -20,4 +20,10 @@ enum CommandCodePlanCatalog {
     static func allowance(forPlanID planID: String) -> Double? {
         monthlyAllowanceUSD[planID]
     }
+
+    /// "individual-goat" → "GOAT", for places with room for one word.
+    static func shortName(forPlanID planID: String) -> String {
+        let tier = planID.hasPrefix("individual-") ? String(planID.dropFirst("individual-".count)) : planID
+        return tier.isEmpty ? planID : tier.uppercased()
+    }
 }
