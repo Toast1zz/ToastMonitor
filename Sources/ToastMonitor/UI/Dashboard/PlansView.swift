@@ -16,8 +16,12 @@ struct PlansView: View {
     @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
 
     /// Tall enough for the largest figure column (label, figure, bar and two
-    /// caption lines) under a header.
-    static let cardHeight: CGFloat = 178
+    /// caption lines) under a header. Every account plus Subscriptions and
+    /// Not connected is at most nine cards: three rows of three fit the
+    /// dashboard's minimum window without scrolling.
+    static let cardHeight: CGFloat = 148
+    static let columns = 3
+    static let cardInset: CGFloat = 14
 
     // Shared with the popover, so an account never reads "Not configured"
     // here while it shows numbers there.
@@ -30,7 +34,7 @@ struct PlansView: View {
 
     private var unconnected: [String] {
         [(claudeConnected, "Claude"), (goConnected, "OpenCode Go"), (ccConnected, "Command Code"),
-         (grokConnected, "SuperGrok"),
+         (grokConnected, "Grok"),
          (orConnected, "OpenRouter"), (deepseekConnected, "DeepSeek")]
             .filter { !$0.0 }.map(\.1)
     }
@@ -50,8 +54,8 @@ struct PlansView: View {
 
     var body: some View {
         DashPage {
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: DashLayout.gap),
-                                GridItem(.flexible(), spacing: DashLayout.gap)],
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: DashLayout.gap),
+                                     count: Self.columns),
                       alignment: .leading, spacing: DashLayout.gap) {
                 ForEach(Array(cards.enumerated()), id: \.offset) { _, card in
                     card.frame(height: Self.cardHeight)
@@ -109,16 +113,17 @@ struct PlansView: View {
                 FigureColumn(label: "Credits left", value: Format.money(remaining))
             }
             if let plan = cc.planName {
-                FigureColumn(label: "Plan", value: plan)
+                FigureColumn(label: "Plan", value: CommandCodePlanCatalog.shortName(forPlanID: plan))
             }
         }
     }
 
-    /// One weekly pool shared by Grok Chat, Imagine, Build and Grok Bot;
-    /// the top products by share get their own columns.
+    /// The one weekly pool Grok's plan shares across Chat, Imagine, Build and
+    /// Grok Bot; the top product by share gets its own column when the API
+    /// breaks the pool down.
     private var grokCard: some View {
         let g = grokQuota.state
-        return accountCard(title: g.planName ?? "SuperGrok", symbol: "x.circle.fill", color: TMDesign.grok,
+        return accountCard(title: "Grok", symbol: "x.circle.fill", color: TMDesign.grok,
                            isLoading: g.isLoading && g.lastSync <= 0, error: g.error, lastSync: g.lastSync,
                            refresh: { grokQuota.refresh() }) {
             if let pct = g.usedPercent {
@@ -126,12 +131,15 @@ struct PlansView: View {
                             captions: [resetText(absolute: g.resetAt)].compactMap { $0 },
                             color: TMDesign.grok)
             }
-            ForEach(g.products.prefix(2), id: \.product) { item in
+            ForEach(g.products.prefix(1), id: \.product) { item in
                 FigureColumn(label: item.displayName, value: "\(Int(item.usedPercent.rounded()))%",
                              unit: "of pool")
             }
             if let balance = g.prepaidBalanceUSD, balance > 0 {
                 FigureColumn(label: "Extra credits", value: Format.money(balance))
+            }
+            if let plan = g.planName {
+                FigureColumn(label: "Plan", value: plan)
             }
         }
     }
@@ -267,7 +275,7 @@ struct PlansView: View {
         @ViewBuilder columns: () -> Columns
     ) -> some View {
         let failedEmpty = error != nil && lastSync <= 0
-        return DashCard {
+        return DashCard(inset: Self.cardInset) {
             VStack(alignment: .leading, spacing: 0) {
                 header(title: title, symbol: symbol, color: color) {
                     if !failedEmpty {
@@ -302,7 +310,7 @@ struct PlansView: View {
                 } else {
                     // Labels on one line across columns, whether or not a
                     // column carries a bar.
-                    HStack(alignment: .top, spacing: 24) { columns() }
+                    HStack(alignment: .top, spacing: 16) { columns() }
                 }
                 }
                 // The body sits centered in the space under the header, so
@@ -317,7 +325,7 @@ struct PlansView: View {
     /// same size and header, free-form body centered below it.
     private func plainCard<Content: View>(title: String, symbol: String, color: Color,
                                           @ViewBuilder content: () -> Content) -> some View {
-        DashCard {
+        DashCard(inset: Self.cardInset) {
             VStack(alignment: .leading, spacing: 0) {
                 header(title: title, symbol: symbol, color: color) { EmptyView() }
                 content()
@@ -328,10 +336,10 @@ struct PlansView: View {
 
     private func header<Trailing: View>(title: String, symbol: String, color: Color,
                                         @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: 10) {
-            DashGlyph(symbol: symbol, color: color)
+        HStack(spacing: 8) {
+            DashGlyph(symbol: symbol, color: color, size: 24)
             Text(title)
-                .font(TMType.semibold(15))
+                .font(TMType.semibold(14))
                 .lineLimit(1)
             Spacer(minLength: 8)
             trailing()
@@ -407,14 +415,14 @@ private struct FigureColumn: View {
     var captionTint: Color = TMDesign.quiet
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(label)
                 .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
                 .lineLimit(1)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
-                    .font(TMType.semibold(24))
+                    .font(TMType.semibold(19))
                     .tmMonospacedDigit()
                     .foregroundStyle(tint)
                     .lineLimit(1)
@@ -426,7 +434,7 @@ private struct FigureColumn: View {
                 }
             }
             if let usedPercent {
-                DashUsageBar(usedPercent: usedPercent, tint: barTint, height: 5)
+                DashUsageBar(usedPercent: usedPercent, tint: barTint, height: 4)
                     .padding(.vertical, 2)
             }
             ForEach(captions, id: \.self) { caption in
@@ -435,6 +443,7 @@ private struct FigureColumn: View {
                     .tmMonospacedDigit()
                     .foregroundStyle(captionTint)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

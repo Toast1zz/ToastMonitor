@@ -58,7 +58,7 @@ final class CodexBillingModeCoordinator {
 enum PopoverAccountRows {
     static let accounts: [(key: String, title: String)] = [
         ("claude", "Claude"), ("go", "OpenCode Go"), ("codex", "Codex"),
-        ("cc", "Command Code"), ("grok", "SuperGrok"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
+        ("cc", "Command Code"), ("grok", "Grok"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
     ]
 
     static var keys: [String] { accounts.map(\.key) }
@@ -154,7 +154,7 @@ struct AccountsSettingsSection: View {
                 credentials(configured: ccQuota.state.configured, label: "Session",
                             change: { showCCForm = true }, clear: { pendingClear = .commandCode })
             }
-            account("grok", "SuperGrok", symbol: "x.circle.fill", color: TMDesign.grok,
+            account("grok", "Grok", symbol: "x.circle.fill", color: TMDesign.grok,
                     status: grokStatus) {
                 LabeledContent("Login") {
                     if grokQuota.state.configured {

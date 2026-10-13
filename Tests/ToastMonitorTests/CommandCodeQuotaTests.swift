@@ -12,6 +12,11 @@ final class CommandCodeQuotaTests: XCTestCase {
         XCTAssertNil(CommandCodePlanCatalog.allowance(forPlanID: "individual-unknown"))
     }
 
+    func testPlanShortName() {
+        XCTAssertEqual(CommandCodePlanCatalog.shortName(forPlanID: "individual-goat"), "GOAT")
+        XCTAssertEqual(CommandCodePlanCatalog.shortName(forPlanID: "team-pro"), "TEAM-PRO")
+    }
+
     // MARK: - Credits parsing
 
     private func creditsData(monthly: Any?, purchased: Any? = nil) -> Data {

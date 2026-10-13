@@ -1,16 +1,16 @@
 import Foundation
 import Combine
 
-/// SuperGrok weekly quota via the Grok CLI billing proxy (same approach as
-/// CodexBar): reads the bearer token `grok login` stores in
+/// Grok plan (Xpass, formerly SuperGrok) weekly quota via the Grok CLI
+/// billing proxy (same approach as CodexBar): reads the bearer token `grok login` stores in
 /// ~/.grok/auth.json (never persisted anywhere in ToastMonitor) and GETs
 /// https://cli-chat-proxy.grok.com/v1/billing?format=credits, plus
 /// /v1/settings for the plan name.
 ///
 /// EXPERIMENTAL: the proxy is the Grok CLI's own backend, not a documented
-/// public API. Since June 2026 paid plans share one weekly pool across Grok
-/// Chat, Imagine, Build and Grok Bot; the API reports it as a percentage and
-/// optionally breaks it down per product.
+/// public API. Paid plans share one weekly pool across Grok Chat, Imagine,
+/// Build / CLI and Grok Bot, so this one query covers all of them; the API
+/// reports it as a percentage and optionally breaks it down per product.
 ///
 /// The token lives only in memory for the request; auth.json is never
 /// written. Failures are explicit states, never guessed numbers.
