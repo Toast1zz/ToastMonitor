@@ -369,7 +369,7 @@ enum DSHParser {
             let amount = Int(min(UInt64(64 * 1024), end - readPosition))
             let chunk: Data?
             do {
-                chunk = try handle.read(upToCount: amount)
+                chunk = try autoreleasepool { try handle.read(upToCount: amount) }
             } catch {
                 return (nil, true)
             }
@@ -402,7 +402,9 @@ enum DSHParser {
         while remaining > 0 {
             let chunk: Data?
             do {
-                chunk = try handle.read(upToCount: Int(min(UInt64(64 * 1024), remaining)))
+                chunk = try autoreleasepool {
+                    try handle.read(upToCount: Int(min(UInt64(64 * 1024), remaining)))
+                }
             } catch {
                 return (nil, true)
             }

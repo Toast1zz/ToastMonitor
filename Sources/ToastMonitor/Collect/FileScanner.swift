@@ -91,7 +91,9 @@ enum FileScanner {
     /// >= the cursor — an in-place rewrite is otherwise invisible.
 
     /// Only the current line is retained, so large initial scans do not
-    /// duplicate the entire suffix. The callback runs synchronously.
+    /// duplicate the entire suffix. Each synchronous callback has its own
+    /// autorelease pool: Foundation's JSON objects and callback temporaries
+    /// must not accumulate for the lifetime of a collector queue work item.
     @discardableResult
     static func forEachNewJSONLine(path: String, fromOffset: Int64,
                                    _ body: ((offset: Int64, obj: [String: Any])) -> Void) -> Int64 {
@@ -117,7 +119,9 @@ enum FileScanner {
         while true {
             let chunk: Data?
             do {
-                chunk = try fh.read(upToCount: 64 * 1024)
+                // FileHandle can also autorelease its backing NSData. Keep
+                // the returned Data alive without retaining every old chunk.
+                chunk = try autoreleasepool { try fh.read(upToCount: 64 * 1024) }
             } catch {
                 break
             }
@@ -145,9 +149,11 @@ enum FileScanner {
             scanned = pending.count
         }
         if !pending.isEmpty {
-            if let obj = try? JSONSerialization.jsonObject(with: pending) as? [String: Any] {
-                body((offset: Int64(start + consumed), obj: obj))
-                consumed += UInt64(pending.count)
+            autoreleasepool {
+                if let obj = try? JSONSerialization.jsonObject(with: pending) as? [String: Any] {
+                    body((offset: Int64(start + consumed), obj: obj))
+                    consumed += UInt64(pending.count)
+                }
             }
         }
         // A final complete line without a newline is consumable; malformed
