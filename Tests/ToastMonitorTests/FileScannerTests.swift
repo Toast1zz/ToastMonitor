@@ -96,6 +96,36 @@ final class FileScannerTests: XCTestCase {
                        "offset beyond EOF has no byte before it")
     }
 
+    func testCallbackCanRetainObjectsAcrossReadsAndFinalLine() throws {
+        // More than one read, with an unterminated but complete final line.
+        // Draining per-line/read pools must preserve anything a parser keeps.
+        let lines = (0..<80).map { index in
+            "{\"index\":\(index),\"message\":{\"text\":\"\(String(repeating: "🍞", count: 512))\"}}"
+        }
+        let bytes = Data(lines.joined(separator: "\n").utf8)
+        try bytes.write(to: URL(fileURLWithPath: path))
+
+        var retained: [[String: Any]] = []
+        var offsets: [Int64] = []
+        let cursor = autoreleasepool {
+            FileScanner.forEachNewJSONLine(path: path, fromOffset: 0) {
+                retained.append($0.obj)
+                offsets.append($0.offset)
+            }
+        }
+
+        XCTAssertEqual(cursor, Int64(bytes.count))
+        XCTAssertEqual(retained.count, lines.count)
+        var expectedOffset: Int64 = 0
+        for (index, object) in retained.enumerated() {
+            XCTAssertEqual(object["index"] as? Int, index)
+            XCTAssertEqual((object["message"] as? [String: Any])?["text"] as? String,
+                           String(repeating: "🍞", count: 512))
+            XCTAssertEqual(offsets[index], expectedOffset)
+            expectedOffset += Int64(lines[index].utf8.count + 1)
+        }
+    }
+
     func testListFilesOnlyReturnsJSONLWithinDepthBoundary() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("tm-tree-\(UUID().uuidString)")

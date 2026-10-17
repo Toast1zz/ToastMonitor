@@ -21,6 +21,14 @@ CI runs `xcrun swift scripts/visual-regression.swift compare` on Xcode 27. Each 
 
 On a popover distance mismatch, CI logs the expected and actual hashes and uploads that scene's PNG for review. Blank or unreadable renders can fail before comparison and therefore may have no PNG artifact. Inspect the capture against the intended UI before intentionally updating its entry in `Tests/VisualBaselines/hashes.json`; never regenerate baselines blindly or relax the threshold.
 
+## Collector memory benchmark
+
+```bash
+python3 scripts/benchmark-memory.py --baseline <revision-before-your-change>
+```
+
+This compiles the real JSONL reader with release optimization and scans a synthetic 46 MiB transcript in fresh processes. It retains extracted event fields like a parser, checks row/token totals and the final cursor, and compares median peak RSS across three runs. The command fails if the reduction is below 30% (override with `--minimum-reduction`). It reads no user transcripts or credentials. The result measures collection peak memory; measure the running app separately for idle or UI memory claims.
+
 ## Constraints
 
 - **No third-party dependencies.** Everything ships with the system frameworks (AppKit, SwiftUI, sqlite3, Security). If you're adding a library, reconsider — almost everything here is a small amount of system-API code.
