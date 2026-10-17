@@ -177,6 +177,10 @@ dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, test and PR workflow, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
+## Acknowledgements
+
+Thanks to [@yeyebbc](https://github.com/yeyebbc) for [#4](https://github.com/Toast1zz/ToastMonitor/pull/4), which releases transient read buffers during collector scans and cuts scan peak memory by more than 80% in the bundled benchmark.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party system components remain under their own licenses.
