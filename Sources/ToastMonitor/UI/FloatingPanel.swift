@@ -12,10 +12,8 @@ private final class FloatingPanel: NSPanel {
 /// the popover-material visual-effect view IS the window's root content
 /// view, and its silhouette comes from a `maskImage`, not a layer border.
 ///
-/// No outline is drawn. The previous 0.5pt `separatorColor` border resolved
-/// to a light gray in dark mode and read as a bright rim around the whole
-/// panel; the system shadow already separates the panel from what is behind
-/// it. The mask also shapes the material itself (a parent layer mask only
+/// No outline is drawn: a hairline reads as a bright rim in dark mode, and
+/// the system shadow already separates the panel. The mask also shapes the material itself (a parent layer mask only
 /// clips ordinary drawing), so AppKit derives the window shadow from the
 /// same rounded silhouette.
 private final class PanelSurfaceView: NSVisualEffectView {
@@ -59,13 +57,11 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     private var desiredHeight: CGFloat
 
-    /// 最近创建的 PanelController 实例（App 只创建一个；弱引用避免静态持有）。
+    /// The most recently created PanelController (the app makes one; weak).
     private static weak var livePanel: PanelController?
 
-    /// UI-5: 面板当前是否可见。WindowManager 降级 Dock 策略（NSApp.hide）
-    /// 前查询它，决定是否需要补发 popover 可见性通知——NSApp.hide 会静默
-    /// 收起面板但不触发通知，AppState/CollectorEngine 会带着 foreground=true
-    /// 空转。
+    /// Whether the panel is visible. WindowManager checks this before
+    /// NSApp.hide, which closes the panel without a visibility notification.
     static var isPanelVisible: Bool {
         livePanel?.isVisible ?? false
     }
@@ -176,7 +172,6 @@ final class PanelController: NSObject, NSWindowDelegate {
     var isVisible: Bool { panel.isVisible }
     var panelContent: NSView? { panel.contentView }
 
-    /// Legacy macOS 14–26 action and the hermetic UI verification hook.
     func toggle() {
         panel.isVisible ? dismiss() : show()
     }

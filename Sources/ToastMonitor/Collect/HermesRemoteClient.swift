@@ -92,7 +92,7 @@ final class HermesRemoteClient: ObservableObject {
 
     @discardableResult
     func provision(url: String?) -> Bool {
-        // 空值 = 清除远程 feed（回退本地源）：直接删除配置，不视为非法。
+        // Empty value clears the remote feed (back to local sources); not an error.
         let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty {
             return Database.shared.setSetting("remote_feed_url", nil)
@@ -321,11 +321,12 @@ final class HermesRemoteClient: ObservableObject {
         var unknownTools = 0
         var malformedRows = 0
         let totals = database.sessionTotals() // once per poll
-        // CLIENT-8: resolve the remote-source set once per poll instead of
+        // Resolve the remote-source set once per poll instead of
         // hitting the settings table for every row.
         let toolRemoteSources = Set(ToolKind.allCases.filter {
             (database.setting($0.sourceKey) ?? $0.defaultSource) == "remote"
         })
+        // Running baselines: a later row for the same key in this poll
         // must compute against the previous row's write, not the stale
         // committed value, or the cumulative delta is inserted twice.
         var runningHermes: [String: [Int64]] = [:]
@@ -416,12 +417,12 @@ final class HermesRemoteClient: ObservableObject {
             // INSERT ... ON CONFLICT DO NOTHING keeps the import exact.
             // Cumulative Hermes/OpenCode rows remain idempotent via their
             // persisted baselines below.
-            var isFirstRow = false // 首行 = 该 session 的累计基线 → 归 firstSeen 日期
+            var isFirstRow = false // first row = the session's cumulative baseline, dated firstSeen
 
             switch tool {
             case .hermes:
                 // Hermes traffic bills through the underlying plans
-                // (opencode-go 套餐 / OpenRouter 余额 / Codex 订阅) — tokens
+                // (OpenCode Go plan / OpenRouter balance / Codex subscription) — tokens
                 // only, never cost here.
                 // Delta key is per (session, model, billing route): one
                 // cumulative row per (provider, base_url) combo — sharing a
@@ -493,7 +494,7 @@ final class HermesRemoteClient: ObservableObject {
 
             if dInput > 0 || dOutput > 0 || dReasoning > 0 || dCacheRead > 0 || dCacheWrite > 0 {
                 // First-seen rows are cumulative baselines: attribute them to
-                // the session's start date, not "now" (spec: 历史累计不得归入今天).
+                // the session's start date, not "now".
                 let ts = (isFirstRow && firstSeenS > 0) ? firstSeenS : lastSeenS
                 let provider = (row["billing_provider"] as? String)
                     ?? (row["provider"] as? String)
@@ -543,10 +544,7 @@ final class HermesRemoteClient: ObservableObject {
                                                       cost: p.cost, updated: p.updated) && writesOK
             }
             for (tool, value) in pendingWatermarks {
-                // Diagnostic-only: persist just the timestamp. The old
-                // "ts:eventID" form embedded a colon-bearing event ID, which
-                // no reader could parse (unparseable + write amplification on
-                // every poll).
+                // Diagnostic-only: persist just the timestamp.
                 writesOK = database.setSetting("remote_watermark_\(tool.rawValue)",
                                                "\(value.ts)") && writesOK
             }
@@ -582,7 +580,7 @@ final class HermesRemoteClient: ObservableObject {
                                           error: errorText)
             // Remote import completes after the collector's local scan
             // notification. Publish the same refresh signal so the menu bar
-            // and dashboard do not wait for the next 15-second snapshot tick.
+            // and dashboard do not wait for the next snapshot poll.
             NotificationCenter.default.post(name: CollectorEngine.didCollect, object: nil)
         }
         if importedTurnCount > 0 || ignoredRows > 0 {

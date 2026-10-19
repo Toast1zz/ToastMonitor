@@ -5,7 +5,7 @@ import Foundation
 /// The harness keeps all user data under one root (`$DSH_HOME`, default
 /// `~/.dsh`). Token accounting is four disjoint buckets — uncached input,
 /// output (reasoning is already inside output), cache read, cache write —
-/// that map 1:1 onto ToastMonitor's `turns` columns, so "token 来源计算" is
+/// that map 1:1 onto ToastMonitor's `turns` columns, so token attribution is
 /// just recognizing those buckets in DSH's on-disk data:
 ///
 /// - **Log mode** (primary): incremental parse of the raw event logs
@@ -132,7 +132,7 @@ enum DSHParser {
     static func scanLogs(knownPaths: [String], database: any ParserStateStore = Database.shared,
                          decompress: (Data) -> Data? = { Zstd.decompress($0) })
         -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.dsh.sourceIsRemote else { return ([], []) } // local-only source
+        guard !ToolKind.dsh.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         for file in knownPaths {
@@ -140,28 +140,17 @@ enum DSHParser {
             let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
 
-            // Append-only cursor, mirroring the OMP/ClaudeCode pattern: an
-            // mtime change with the same size is an in-place rewrite and is
-            // replayed from 0; a shrink forces a full rescan too.
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
-            // JSONL transcripts: the cursor must rest on a line boundary so a
-            // truncate + regrow that happened entirely between polls (cursor
-            // mid-line) rescans from 0. zstd files are frame-delimited — the
-            // raw byte before a frame boundary is compressed data, never a
-            // reliable newline — so their recovery path handles rewrites.
-            let lineBoundaryOK = file.hasSuffix(".zstd")
-                || prev.size == 0
-                || FileScanner.isLineBoundary(path: file, offset: prev.size)
             // A tail that repeatedly fails to make progress (e.g. a false
             // zstd magic the cursor parks on forever) forces a full rescan
             // once it has stalled 3 scans in a row.
             let stalled = FileScanner.contextStallCount(prev.context) >= 3
-            let sameAppendOnlyFile = prev.identity == st.identity
-                && st.size > prev.size
-                && prev.mtime != 0
-                && !pendingRewrite
-                && lineBoundaryOK
-                && !stalled
+            // zstd files are frame-delimited: the byte before a frame boundary
+            // is compressed data, not a newline, so their recovery path handles
+            // rewrites instead of the line-boundary check.
+            let sameAppendOnlyFile = !stalled
+                && FileScanner.isAppendOnly(path: file, stat: st, previous: prev,
+                                            checkLineBoundary: !file.hasSuffix(".zstd"))
             let offset = sameAppendOnlyFile ? prev.size : 0
             let persisted = (try? JSONSerialization.jsonObject(with: Data((prev.context ?? "").utf8))) as? [String: Any]
             var sessionID = persisted?["sid"] as? String
@@ -558,7 +547,7 @@ enum DSHParser {
     /// `session_totals` baseline and the positive delta becomes one turn.
     static func scanProjCache(database: any ParserStateStore = Database.shared)
         -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.dsh.sourceIsRemote else { return ([], []) } // local-only source
+        guard !ToolKind.dsh.sourceIsRemote else { return ([], []) }
         guard FileManager.default.fileExists(atPath: projCachePath),
               let data = try? Data(contentsOf: URL(fileURLWithPath: projCachePath)),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

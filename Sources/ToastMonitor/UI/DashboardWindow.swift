@@ -54,9 +54,9 @@ final class WindowManager {
         if target == .regular {
             NSApp.setActivationPolicy(.regular)
         } else {
-            // UI-5: NSApp.hide 会静默收起 popover 面板但不触发可见性通知。
-            // 面板可见时先补发 false，否则 AppState/CollectorEngine 会带着
-            // foreground=true 空转（1s 定时器、quota 客户端全在跑）。
+            // NSApp.hide closes the popover panel without a visibility notification.
+            // Post `false` first, or AppState/CollectorEngine keep running in
+            // foreground mode (1s timer, every quota client polling).
             if PanelController.isPanelVisible {
                 NotificationCenter.default.post(name: TMNotifications.popoverVisibility, object: false)
             }
@@ -602,17 +602,7 @@ final class DashboardPageController: NSViewController {
 }
 
 /// Namespace for the dashboard's page enumeration. Page hosting and
-/// switching (both native-toolbar-driven and Cmd+1…4) live entirely in
-/// DashboardPageController / DashboardToolbarController above — there used
-/// to be a second, SwiftUI-only tab-switching implementation here (a
-/// `DashboardView: View` with its own `tab` state, its own Cmd+1…4 hidden
-/// buttons, and a selectTab/didSelectTab notification pair that nothing
-/// outside this type ever posted or observed). That second implementation
-/// was reachable only from the --render-dashboard screenshot hook, so a
-/// screenshot and the real window were never guaranteed to look alike and
-/// every navigation fix had to be made twice. Dead code and duplication
-/// both removed; `renderDashboard` in ToastMonitorApp.swift now builds an
-/// off-screen DashboardPageController directly.
+/// switching live in DashboardPageController / DashboardToolbarController.
 enum DashboardView {
     enum Tab: String, CaseIterable, Identifiable {
         case overview = "Overview"

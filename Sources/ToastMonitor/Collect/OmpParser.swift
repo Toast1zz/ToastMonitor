@@ -17,14 +17,11 @@ enum OmpParser {
     /// Depth 3 covers both top-level transcripts (<cwd>/<session>.jsonl)
     /// and subagent transcripts (<cwd>/<session>/<agent>.jsonl).
     static func scan(knownPaths: [String], database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.omp.sourceIsRemote else { return ([], []) } // local-only source
+        guard !ToolKind.omp.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let fm = FileManager.default
-        // Only short-circuit on a missing ~/.omp when no explicit paths were
-        // supplied. Callers passing concrete file paths (the collector's
-        // listFiles output lives under root so this is unchanged in prod;
-        // tests pass fixture paths that must be honored on a clean runner).
+        // Explicit paths are scanned even when ~/.omp does not exist.
         guard !knownPaths.isEmpty || fm.fileExists(atPath: root) else { return ([], []) }
 
         for file in knownPaths {
@@ -32,18 +29,8 @@ enum OmpParser {
             let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
 
-            // mtime changed with size unchanged = in-place rewrite; replay
-            // from 0 so edited events are not silently lost (dedupe handles
-            // the already-imported ones).
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
-            // The cursor must rest on a JSONL line boundary: a truncate +
-            // regrow that happened entirely between polls leaves it mid-line
-            // and the rewritten events would be skipped by the append path.
-            let sameAppendOnlyFile = prev.identity == st.identity
-                && st.size > prev.size
-                && prev.mtime != 0
-                && !pendingRewrite
-                && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
+            let sameAppendOnlyFile = FileScanner.isAppendOnly(path: file, stat: st, previous: prev)
             let offset = sameAppendOnlyFile ? prev.size : 0
             var objectCount = 0
             var foundSessionID = false

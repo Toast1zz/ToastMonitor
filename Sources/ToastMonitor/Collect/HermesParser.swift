@@ -3,7 +3,7 @@ import SQLite3
 
 /// Hermes parser: $HERMES_HOME/state.db (or ~/.hermes/state.db).
 /// Schema varies by version — we introspect columns and adapt.
-/// The user's Mac typically has no local Hermes install; this parser no-ops gracefully.
+/// No-ops when Hermes is not installed locally.
 enum HermesParser {
 
     static var home: String {
@@ -37,7 +37,7 @@ enum HermesParser {
     }
 
     static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.hermes.sourceIsRemote else { return ([], []) } // source = VPS feed
+        guard !ToolKind.hermes.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         for path in dbPaths {
@@ -56,7 +56,6 @@ enum HermesParser {
         }
         defer { sqlite3_close(db) }
 
-        // Introspect tables.
         var hasMessages = false
         var hasSessions = false
         var hasUsage = false
@@ -95,7 +94,6 @@ enum HermesParser {
             value > 1_000_000_000_000 ? value / 1000 : value
         }
 
-        // Session metadata.
         if hasSessions {
             let cols = columns(of: "sessions", db: db)
             let idCol = cols.contains("id") ? "id" : (cols.contains("session_id") ? "session_id" : "")

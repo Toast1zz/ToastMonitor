@@ -85,15 +85,14 @@ enum ToolKind: String, CaseIterable, Identifiable {
         "local"
     }
 
-    /// 主 token 口径：输入 + 输出 + 缓存命中（cacheRead 计入总量；
-    /// 唯一例外是 codex——其 input 已含缓存，不重复加）。
+    /// Primary token measure: input + output + cache reads. Codex is the
+    /// exception: its input already includes cache reads.
     func totalTokens(_ t: Database.ToolTotals) -> Int64 {
         totalTokens(input: t.input, output: t.output, cacheRead: t.cacheRead)
     }
 
-    /// 缓存命中也是真实消耗的 token（只是单价便宜）——必须计入总 token
-    /// （用户明确要求）。codex 的 cache 已含在 input 中（数据验证 0 行
-    /// 超限），不重复加。
+    /// Cache reads are real (cheaper) tokens and count toward the total,
+    /// except for Codex, whose input already contains them.
     var cacheIncludedInInput: Bool { self == .codex }
 
     func totalTokens(input: Int64, output: Int64, cacheRead: Int64) -> Int64 {
@@ -126,7 +125,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         /// 'actual' | 'estimated' | 'unknown'.
         let costQuality: String
 
-        /// Ceiling for token counts (DB-6): hostile/malformed logs must not be
+        /// Ceiling for token counts: hostile/malformed logs must not be
         /// able to overflow Int64 sums or poison daily/weekly aggregates.
         static let maxTokens: Int64 = 9_000_000_000_000_000
         /// Ceiling for a single turn's estimated/actual cost (USD).

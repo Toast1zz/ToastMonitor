@@ -142,7 +142,7 @@ struct OverviewView: View {
         }
     }
 
-    /// 这些 token 按 API 官方单价价值多少钱（全部工具，含 hermes）。
+    /// What these tokens are worth at API list prices (all tools, Hermes included).
     private var apiValue: Double {
         switch period {
         case .today: return app.apiValueToday
@@ -152,7 +152,7 @@ struct OverviewView: View {
         }
     }
 
-    /// 实际花了多少钱 = 账单/直连实际 + OpenRouter 实际 + 订阅按天分摊。
+    /// Actual spend = billed/direct cost + OpenRouter + amortized subscriptions.
     private var actualSpend: Double {
         let orUsage: Double
         let days: Int
@@ -160,7 +160,7 @@ struct OverviewView: View {
         case .today: orUsage = orClient.state.usageDaily; days = 1
         case .week: orUsage = orClient.state.usageWeekly; days = 7
         case .month: orUsage = orClient.state.usageMonthly; days = 30
-        case .all: orUsage = orClient.state.usageMonthly; days = 3650 // OpenRouter 只给月窗口；10 年窗口覆盖全部订阅期
+        case .all: orUsage = orClient.state.usageMonthly; days = 3650 // OpenRouter has only a monthly window; 10 years covers every subscription
         }
         return periodCost.actual + orUsage
             + SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
@@ -211,8 +211,7 @@ struct OverviewView: View {
         }
     }
 
-    /// One O(n) pass per body evaluation, shared by every heatmap cell
-    /// (the per-cell `values.max()` was 371 passes per body eval).
+    /// One O(n) pass per body evaluation, shared by every heatmap cell.
     private var heatmapMaxTokens: Int64 {
         app.heatmap.values.max() ?? 0
     }
@@ -249,8 +248,8 @@ struct OverviewView: View {
                     continue
                 }
                 if date > now {
-                    // 未来日哨兵 0：与有效日 0 token 区分（渲染用更淡色）。
-                    // 真实键恒为正（year*10000 + …），0 不可能冲突。
+                    // Future-day sentinel 0, distinct from a real zero-token day (drawn
+                    // fainter). Real keys are always positive, so 0 cannot collide.
                     column.append(0)
                 } else {
                     let components = calendar.dateComponents([.year, .month, .day], from: date)

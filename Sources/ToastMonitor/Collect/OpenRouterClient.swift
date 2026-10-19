@@ -74,46 +74,26 @@ final class OpenRouterClient: ObservableObject {
     private let session: URLSession
     /// Retained: URLSession holds its delegate weakly.
     private let redirectBlocker = NoRedirectDelegate()
-    private var timer: Timer?
     private var started = false
     private var refreshGeneration: UInt64 = 0
     private var keyLoadInFlight = false
     /// A refresh requested while the keychain load was in flight. The load
     /// completion re-runs refresh() so the request is not silently dropped
-    /// for up to the keychain-agent wait (60s timer interval).
+    /// until the next timer tick.
     private var pendingKeyRefresh = false
     private var legacyCleanupDone = false
     /// `nil` means the login Keychain has not been read yet. Once loaded,
     /// foreground refreshes reuse this in-memory copy and never call Security
     /// framework from the UI thread.
     private var cachedKeys: [String]?
-    /// Rate limiting / backoff (S2): after a failed / 429 / 5xx refresh the
-    /// next attempt backs off 60s → 2m → 5m → 15m; success resets. Prevents
-    /// hammering OpenRouter with a fixed 60s cadence during degradation.
-    private var backoffBase: TimeInterval = 0
-    private var nextAllowedRefresh: TimeInterval = 0
+    private var backoff = RefreshBackoff()
+    private let poller = ForegroundPoller()
     /// Merges concurrent refresh() calls so a timer tick + foreground + a
     /// manual setKey cannot fire overlapping request batches.
     private var refreshInFlight = false
 
-    private var popoverVisible = false
-    private var dashboardVisible = false
-    private var foreground = false
-
     /// Background polling continues at a slower cadence; foregrounding
     /// restores the existing cadence and refreshes immediately.
-    private func updateForeground() {
-        let fg = popoverVisible || dashboardVisible
-        // At launch the app is hidden and the timer has not been installed
-        // yet, so the missing timer is also a valid state transition.
-        guard fg != foreground || timer == nil else { return }
-        foreground = fg
-        startTimer(interval: TMRefreshPolicy.quotaInterval(foreground: fg))
-        if fg {
-            refreshNow()
-        }
-    }
-
     private init() {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
@@ -128,7 +108,7 @@ final class OpenRouterClient: ObservableObject {
 
     // MARK: - Keys
 
-    /// Keys live in the Keychain (P0-5); legacy SQLite values are migrated
+    /// Keys live in the Keychain; legacy SQLite values are migrated
     /// on first read, then erased.
     func storedKeys() -> [String] {
         if let kc = KeychainStore.get(account: "or-keys"), !kc.isEmpty {
@@ -291,35 +271,8 @@ final class OpenRouterClient: ObservableObject {
         guard !started else { return }
         started = true
         state.authInvalid = Database.shared.setting("or_auth_invalid") == "1"
-        observeForeground()
-        refresh() // one initial snapshot
-        updateForeground()
-    }
-
-    private func startTimer(interval: TimeInterval) {
-        timer?.invalidate()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-
-    private func refreshNow() { refresh() }
-
-    private func observeForeground() {
-        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let self else { return }
-                let visible = (note.object as? Bool) ?? false
-                if name == TMNotifications.popoverVisibility {
-                    self.popoverVisible = visible
-                } else {
-                    self.dashboardVisible = visible
-                }
-                self.updateForeground()
-            }
-        }
+        refresh()
+        poller.start { [weak self] in self?.refresh() }
     }
 
     func refresh() {
@@ -330,16 +283,9 @@ final class OpenRouterClient: ObservableObject {
             pendingKeyRefresh = true
             return
         }
-        // Backoff gate: after a failure the next batch waits before retrying
-        // (S2). Manual refreshes (Settings / toolbar) bypass the gate but
-        // still respect the merged-in-flight guard below.
-        if refreshInFlight { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if now < nextAllowedRefresh {
-            // A deferred retry is already scheduled or the gate is active.
-            // Leave the timer to fire the next attempt.
-            return
-        }
+        // Backoff gate: after a failure the next batch waits; the timer
+        // fires the next attempt.
+        if refreshInFlight || backoff.isWaiting { return }
         refreshInFlight = true
         if let cachedKeys {
             refresh(with: cachedKeys)
@@ -357,7 +303,7 @@ final class OpenRouterClient: ObservableObject {
                 self.cachedKeys = keys
                 self.refresh(with: keys)
                 // Deliver a refresh that was requested while the load was
-                // still running (CLIENT-3). keyLoadInFlight is already clear,
+                // still running. keyLoadInFlight is already clear,
                 // so this proceeds immediately.
                 if self.pendingKeyRefresh {
                     self.pendingKeyRefresh = false
@@ -386,15 +332,15 @@ final class OpenRouterClient: ObservableObject {
         }
         state.isLoading = true
         state.error = nil
-        // 刷新期间保留上一次的数值：UI 继续显示旧快照（余额/额度/用量），
-        // 新数据到达后由本代响应的完成回调整块替换，Popover 不闪
-        // Loading/Idle。失败响应仍设置 error，由 UI 优先显示。
+        // Keep the previous values while refreshing; this generation's
+        // completion replaces the snapshot whole, so the popover never flashes
+        // Loading. A failed response still sets `error`, which the UI shows first.
 
         let group = DispatchGroup()
         var results: [String: [String: Any]] = [:]
         var failures: [String] = []
 
-        // Concurrency cap (S2): URLSession would otherwise queue all keys and
+        // Concurrency cap: URLSession would otherwise queue all keys and
         // time out the tail; a semaphore bounds simultaneous requests so a
         // 64-key config never fires 66 requests at once.
         let semaphore = DispatchSemaphore(value: 6)
@@ -480,7 +426,7 @@ final class OpenRouterClient: ObservableObject {
     /// already populated by the credits/keys calls, if any).
     private func finishRefresh(results: [String: [String: Any]], failures: [String]) {
         refreshInFlight = false
-        // Backoff (S2): total failure or explicit 429/5xx backs off the next
+        // Backoff: total failure or explicit 429/5xx backs off the next
         // batch; partial success resets so transient single-key errors don't
         // stall the account view.
         let rateLimited = failures.contains { $0.contains("429") || $0.contains("HTTP 5") }
@@ -489,9 +435,9 @@ final class OpenRouterClient: ObservableObject {
         state.authInvalid = authInvalid
         Database.shared.setSetting("or_auth_invalid", authInvalid ? "1" : nil)
         if results.isEmpty || rateLimited {
-            applyBackoff()
+            backoff.failed()
         } else {
-            backoffBase = 0
+            backoff.succeeded()
             state.authInvalid = false
             Database.shared.setSetting("or_auth_invalid", nil)
         }
@@ -542,14 +488,6 @@ final class OpenRouterClient: ObservableObject {
         persist()
     }
 
-    /// Exponential backoff: 60s → 2m → 5m → 15m, capped. The next refresh()
-    /// is skipped until the window elapses; the 60s timer picks up after.
-    private func applyBackoff() {
-        let now = ProcessInfo.processInfo.systemUptime
-        backoffBase = min(max(backoffBase, 60), 15 * 60)
-        nextAllowedRefresh = now + backoffBase
-        backoffBase *= 2
-    }
 
     private func persist() {
         let s = state
@@ -561,7 +499,7 @@ final class OpenRouterClient: ObservableObject {
             accountUsage: s.accountUsage, accountBalance: s.accountBalance,
             isManagementKey: s.isManagementKey)
         // DB write off the main actor: the shared lock may be held by the
-        // collector or the hourly prune (M4).
+        // collector or the hourly prune.
         DispatchQueue.global(qos: .utility).async {
             Database.shared.insertORSnapshot(snap)
         }

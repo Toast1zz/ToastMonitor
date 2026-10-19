@@ -1,6 +1,6 @@
 import Foundation
 
-/// Off-main-thread aggregation facade (spec §9 / §11).
+/// Off-main-thread aggregation facade.
 /// UI state loads one Snapshot per refresh; no view touches the DB directly
 /// for aggregates, and no long query ever runs on the main thread.
 final class UsageQueryService: @unchecked Sendable {
@@ -56,12 +56,12 @@ final class UsageQueryService: @unchecked Sendable {
         var heatmapCost: [Int64: Double]
     }
 
-    /// 快照缓存：以 dataVersionKey 为失效键。DB 未变化时直接返回缓存，
-    /// 5s 保险轮询与 didCollect 驱动的刷新都不再触发全量聚合。
+    /// Snapshot cache keyed by dataVersionKey: while the DB is unchanged,
+    /// polling and didCollect refreshes reuse it instead of re-aggregating.
     private var cachedLight: (key: String, snapshot: LightSnapshot)?
     private var cachedSnapshot: (key: String, snapshot: Snapshot)?
-    /// 日聚合/热力图缓存（M8）：与快照同键策略。popover 可见期间每分钟
-    /// 的 minuteTicker 不再反复跑 371 天 strftime+GROUP BY 全量聚合。
+    /// Daily aggregate / heatmap cache, same keying, so the popover's
+    /// minute ticker does not rerun the 371-day GROUP BY.
     private var cachedDailyAggs: (key: String, aggs: [Database.DayAgg])?
     /// Estimated Claude tokens used outside this Mac. Recomputed only when a
     /// new quota sample lands or every 5 minutes — not on every new turn,
@@ -149,9 +149,9 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
-    /// 一年热力图（day yyyymmdd -> primary tokens，口径同主面板），供
-    /// Popover 使用——主面板走 AppState 的 complete snapshot，Popover
-    /// 前台只刷 light snapshot，heatmap 不会自动填充，需自行查询。
+    /// One year of day (yyyymmdd) -> primary tokens for the popover. The
+    /// dashboard gets its heatmap from AppState's complete snapshot; the
+    /// popover only refreshes the light snapshot, so it queries this itself.
     func loadHeatmap(days: Int = 371, completion: @escaping @MainActor @Sendable ([Int64: Int64]) -> Void) {
         loadDailyAggs(days: days) { aggs in
             completion(Self.buildHeatmap(aggs: aggs))
@@ -296,13 +296,13 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
-    /// 主 token 口径：输入 + 输出 + 缓存命中（cacheRead 计入总量；
-    /// codex 除外——其 input 已含缓存，见 ToolKind.totalTokens）。
+    /// Primary token measure: input + output + cache reads (Codex input
+    /// already includes cache reads; see ToolKind.totalTokens).
     private static func totalTokens(_ rows: [Database.ToolTotals]) -> Int64 {
         rows.reduce(Int64(0)) { $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output)) }
     }
 
-    /// day(yyyymmdd) -> primary tokens (totalTokens 口径：含缓存命中，codex 除外), for the last 371 days.
+    /// day(yyyymmdd) -> primary tokens (see totalTokens), for the last 371 days.
     private static func buildHeatmap(aggs: [Database.DayAgg]) -> [Int64: Int64] {
         var out: [Int64: Int64] = [:]
         for a in aggs {

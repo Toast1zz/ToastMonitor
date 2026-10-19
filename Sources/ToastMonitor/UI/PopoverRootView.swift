@@ -70,7 +70,7 @@ struct PopoverRootView: View {
 
     @ViewBuilder
     private var status: some View {
-        // 正常时右上角不占位：只有来源错误/过期才显示状态标签。
+        // Nothing in the corner while healthy; only failing or stale sources show a status.
         let brokenSources = health.sources.filter { $0.error != nil }
         let staleSources = health.sources.filter { $0.error == nil && $0.isStale }
         if !brokenSources.isEmpty || !staleSources.isEmpty {

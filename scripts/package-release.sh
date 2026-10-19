@@ -6,12 +6,11 @@
 # builds each universal slice separately and merges them with lipo, so both
 # artifacts record the current SDK and get the native macOS 26/27 look.
 #
-# Set TM_ARM64_ONLY=1 for a local/internal arm64-only package. The old
-# TM_ALSO_UNIVERSAL=1 flag remains harmless for callers that used it before.
+# Set TM_ARM64_ONLY=1 for a local/internal arm64-only package.
 #
 # Usage: ./scripts/package-release.sh
 # Produces dist/release/ToastMonitor-<version>-arm64.zip
-#   (+ dist/release/ToastMonitor-<version>-universal.zip when TM_ALSO_UNIVERSAL=1)
+#   and dist/release/ToastMonitor-<version>-universal.zip (unless TM_ARM64_ONLY=1)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

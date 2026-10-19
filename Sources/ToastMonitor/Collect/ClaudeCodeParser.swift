@@ -57,16 +57,12 @@ enum ClaudeCodeParser {
 
     /// Returns (turns, sessions) parsed from all changed files.
     static func scan(knownPaths: [String], database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.claude.sourceIsRemote else { return ([], []) } // source = VPS feed
+        guard !ToolKind.claude.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let fm = FileManager.default
-        // Either tree existing is enough to proceed — a Cowork-only user
-        // (Claude Desktop, never the standalone CLI) has no ~/.claude/projects
-        // at all, and must not be short-circuited out of the scan.
-        // Concrete fixture paths are valid even when neither production tree
-        // exists. This keeps parser tests hermetic on clean CI runners while
-        // preserving the normal no-op behavior for an empty live scan.
+        // Either tree is enough: a Cowork-only user has no ~/.claude/projects.
+        // Explicit paths are scanned even when neither tree exists.
         guard !knownPaths.isEmpty
             || fm.fileExists(atPath: root)
             || fm.fileExists(atPath: coworkLocalAgentRoot)
@@ -77,20 +73,8 @@ enum ClaudeCodeParser {
             let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
 
-            // Truncation can preserve an inode; a shorter file is still a
-            // new byte stream and must be replayed from offset zero.
-            // mtime changed with size unchanged = in-place rewrite; replay
-            // from 0 so edited events are not silently lost (dedupe handles
-            // the already-imported ones).
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
-            // The cursor must rest on a JSONL line boundary: a truncate +
-            // regrow that happened entirely between polls leaves it mid-line
-            // and the rewritten events would be skipped by the append path.
-            let sameAppendOnlyFile = prev.identity == st.identity
-                && st.size > prev.size
-                && prev.mtime != 0
-                && !pendingRewrite
-                && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
+            let sameAppendOnlyFile = FileScanner.isAppendOnly(path: file, stat: st, previous: prev)
             let offset = sameAppendOnlyFile ? prev.size : 0
             var objectCount = 0
             var sessionID = (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")

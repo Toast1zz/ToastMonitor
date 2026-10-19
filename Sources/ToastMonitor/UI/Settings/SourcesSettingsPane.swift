@@ -11,12 +11,12 @@ struct AccountsSettingsPane: View {
 }
 
 struct SourcesSettingsPane: View {
-    /// UI-3: 订阅后 poll 完成时 feed 状态行随 @Published 刷新。
+    /// Observed so the feed status row updates when a poll completes.
     @ObservedObject private var remote = HermesRemoteClient.shared
     @State private var feedURL = ""
     @State private var sources: [ToolKind: Bool] = [:] // tool -> isRemote (draft)
-    /// UI-8: 生效值缓存（onAppear 加载、切换后更新）。body 每格渲染
-    /// 直接读 tool.sourceIsRemote 会同步查 DB（每帧每工具一次）。
+    /// Effective sources, loaded on appear and updated on change. Reading
+    /// tool.sourceIsRemote in body would hit the DB per tool per render.
     @State private var effectiveSources: [ToolKind: Bool] = [:]
     @State private var saved = false
     @State private var feedError: String?
@@ -308,12 +308,8 @@ struct DataSettingsPane: View {
     }
 
     /// A backup is created automatically once a week (idle weeks included)
-    /// plus before any repair/clear operation; the newest 7 are kept. Listed
-    /// here so "the app has been quietly backing this up" is visible and
-    /// any of them — not just the current session's pre-repair one — can be
-    /// restored with one click, per the "只差编排" gap noted when this was
-    /// scoped: the backup/restore/integrity-check machinery already existed
-    /// end to end, it just had no way for a user to see or reach it.
+    /// plus before any repair/clear operation; the newest 7 are kept, and
+    /// any of them can be restored from here.
     private var backupsSection: some View {
         Section {
             if backups.isEmpty {

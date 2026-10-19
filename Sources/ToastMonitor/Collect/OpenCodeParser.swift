@@ -88,11 +88,11 @@ enum OpenCodeParser {
     }
 
     static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.opencode.sourceIsRemote else { return ([], []) } // source = VPS feed
+        guard !ToolKind.opencode.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let prevTotals = database.sessionTotals()
-        // opencode stores ms timestamps; normalize to seconds (P1).
+        // opencode stores ms timestamps; normalize to seconds.
         func sec(_ v: Int64) -> Int64 { v > 1_000_000_000_000 ? v / 1000 : v }
 
         let rowCount = forEachRow { row in
@@ -125,7 +125,7 @@ enum OpenCodeParser {
             } else if totalInput > 0 || row.output > 0 || row.reasoning > 0 || row.cacheRead > 0 || row.cacheWrite > 0 {
                 // First sighting: record the full totals as one turn (backfill).
                 // ts uses the REAL last-update time so history lands on its
-                // true day instead of today (P1).
+                // true day instead of today.
                 turns.append(TurnRecord(tool: .opencode, sessionID: row.id, project: project,
                                         model: row.model, ts: sec(row.timeUpdated),
                                         inputTokens: totalInput, outputTokens: row.output,

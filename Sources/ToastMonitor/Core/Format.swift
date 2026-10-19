@@ -66,8 +66,8 @@ enum Format {
         }
     }
 
-    /// 完整数字（千分位分组）：1,234,567。流式刷新时看数字增长用。
-    /// en_US_POSIX 强制分组/小数点，不受系统 locale 影响（FM-1）。
+    /// Full number with grouping: 1,234,567. en_US_POSIX keeps the
+    /// separators independent of the system locale.
     static let fullFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -85,8 +85,7 @@ enum Format {
         return fullFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
-    /// 整数金额的千分位分组（$173,564，避免无逗号的 "$173564"）。
-    /// >= $100 保留分位（$123.45）；en_US_POSIX 保证逗号分组（FM-1）。
+    /// Whole-dollar amounts with grouping ($173,564; $123.45 keeps cents).
     private static let moneyWholeFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -122,8 +121,8 @@ enum Format {
         return String(format: "$%.3f", v)
     }
 
-    /// yyyymmdd 整数键（热力图/聚合图）→ "2026-08-05"。不要用 day(_:)——
-    /// 那是 Unix 时间戳格式化，把 yyyymmdd 当秒会得到 1970 年的日期。
+    /// yyyymmdd key -> "2026-08-05". Not day(_:), which formats a Unix
+    /// timestamp and would read the key as seconds since 1970.
     static func dayKeyString(_ key: Int64) -> String {
         let y = Int(key) / 10_000
         let m = (Int(key) / 100) % 100
@@ -131,8 +130,8 @@ enum Format {
         return String(format: "%04d-%02d-%02d", y, m, d)
     }
 
-    /// yyyymmdd 整数键 → 英文短日期 "Aug 5"（Popover/主页面悬停统一格式，
-    /// en_US_POSIX 强制英文，不受系统 locale 影响）。
+    /// yyyymmdd key -> English short date "Aug 5", regardless of the
+    /// system locale.
     static func shortDayKey(_ key: Int64) -> String {
         var c = DateComponents()
         c.year = Int(key) / 10_000
@@ -150,12 +149,12 @@ enum Format {
     static func day(_ ts: Int64) -> String {
         dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "yyyy-MM-dd")
     }
-    /// 1.2k / 34 这类计数缩写（与 compact 同单位体系）。
+    /// Count abbreviation (1.2k / 34), same units as compact.
     static func count(_ n: Int64) -> String {
         compact(n)
     }
 
-    /// 相对剩余时间: "2.1h" / "45m" / "3d"。
+    /// Relative remaining time: "2.1h" / "45m" / "3d".
     static func remaining(_ seconds: Int64) -> String {
         let s = max(0, seconds)
         if s >= 86400 { return String(format: "%.1fd", Double(s) / 86400) }
@@ -169,7 +168,7 @@ enum Format {
         ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
     }
 
-    /// 重置倒计时: "3天2小时" / "45分后"（配额窗口重置）。
+    /// Reset countdown: "3d 2h" / "1h 5m" / "in 45m".
     static func countdown(_ secs: Int64) -> String {
         if secs <= 0 { return "resetting soon" }
         let d = secs / 86400

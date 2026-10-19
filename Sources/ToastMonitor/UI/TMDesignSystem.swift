@@ -49,8 +49,8 @@ enum TMDesign {
     // red for anomalies, and neutral grays. Tool/model distinction uses
     // lightness layers of the accent (accentShade), never extra hues.
     static let accent = Color(nsColor: NSColor(name: nil) { appearance in
-        // 深色分支浅化：popover 现在永远深色玻璃，原 0.78/0.32/0.16 在
-        // 深底上偏暗。同色相提亮（暖橙 → 亮铜橙），保持品牌色族。
+        // Dark variant is lightened (same hue, brighter copper-orange) so the
+        // accent does not read too dark on dark glass.
         if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
             return NSColor(calibratedRed: 0.92, green: 0.51, blue: 0.30, alpha: 1)
         }
@@ -90,8 +90,7 @@ enum TMDesign {
 
     /// The one semantic color: anomalies/danger (quota past 80%, errors).
     /// The system red, which Apple tunes for light, dark and Increase
-    /// Contrast; the earlier custom coral read as pink in dark mode rather
-    /// than as a warning.
+    /// Contrast.
     static let danger = Color(nsColor: .systemRed)
     static let dangerFill = Color(nsColor: .systemRed).opacity(0.16)
     /// A usage window close to its limit. Orange is the system's warning
@@ -163,10 +162,10 @@ enum TMDesign {
     }
 }
 
-/// 月份轴刻度：Overview 热力图与 Analysis 两个图表共用。
-/// 输入按时间升序的 yyyymmdd 键（热力图取每周首键），输出
-/// [(index, label)]——每个新月份的第一个位置一个刻度。一月附带两位年份，
-/// 长跨度里年界可见。未来哨兵 0 等非日期键由调用方过滤，不进本函数。
+/// Month-axis ticks shared by the Overview heatmap and the Analysis charts.
+/// Takes ascending yyyymmdd keys (the heatmap passes each week's first key)
+/// and returns one (index, label) per new month; January carries a 2-digit
+/// year. Callers filter out non-date keys such as the future sentinel 0.
 enum MonthAxis {
     static let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -342,7 +341,7 @@ struct TMStatusCapsule: View {
     }
 }
 
-/// 预测状态语义 + 英文预测文案（计划页/设置页共用，避免逐字重复）。
+/// Forecast status and English forecast copy, shared by the Plans and Settings panes.
 enum ForecastText {
     enum Status { case ok, warn, danger, neutral }
 

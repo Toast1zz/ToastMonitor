@@ -2,8 +2,6 @@ import AppKit
 import Charts
 import SwiftUI
 
-/// 用量分析 (spec §3.2): 集中控制条（日期范围 / 按工具·按模型 / 图型）+
-/// token 堆叠图 + 成本图（按天聚合，禁止跨工具连线）+ 聚合表。
 /// Analysis: one control bar (metric, range, grouping), summary figures, a
 /// per-day stacked bar chart and the aggregate table. Charts are Swift Charts,
 /// so axes, grid lines, VoiceOver and Audio Graphs are the system's.
@@ -49,9 +47,9 @@ struct UsageAnalysisView: View {
     /// distinct palette entries (hash-based mapping collided).
     @State private var modelColors: [String: Color] = [:]
 
-    // MARK: - Derived data（单次求值，仅数据到达时重建）
+    // MARK: - Derived data (rebuilt only when data arrives)
 
-    /// 归一化行：(day, groupKey, input, output, cacheRead, cost, calls)
+    /// Normalized row: (day, groupKey, input, output, cacheRead, cost, calls)
     private struct Row {
         let day: Int64
         let key: String
@@ -81,8 +79,8 @@ struct UsageAnalysisView: View {
         let color: Color
     }
 
-    /// 图表/表格的全部派生输入，在原始行上单遍聚合得到。只有新数据到达时
-    /// 才重建；切换 range/grouping 时旧值继续渲染，避免整页 loading 闪屏。
+    /// Every derived chart/table input, built in one pass over the raw rows
+    /// when data arrives; old values keep rendering while range/grouping change.
     private struct AnalysisData {
         let grouping: Grouping
         let range: Range
@@ -286,8 +284,8 @@ struct UsageAnalysisView: View {
         return Int64((c.year ?? 0) * 10_000 + (c.month ?? 0) * 100 + (c.day ?? 0))
     }
 
-    /// 单遍聚合：day × name token 和、按名称聚合、按天成本，一次算出
-    /// 图表与表格的全部输入。
+    /// One pass: per-day × name token sums, per-name totals and per-day cost —
+    /// every chart and table input.
     private static func build(aggs: [Database.DayAgg],
                               modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)],
                               grouping: Grouping,
@@ -382,12 +380,12 @@ struct UsageAnalysisView: View {
         if grouping == .byTool {
             return ToolKind(rawValue: name)?.color ?? TMDesign.accent
         }
-        // 模型色：按用量排名预分配（assignModelColors），同一模型在
-        // 图表/图例/表格里永远同色；新出现的模型兜底第一个色。
+        // Model colors are pre-assigned by usage rank (assignModelColors), so a
+        // model has one color everywhere; a newly seen model gets the first.
         return modelColors[name] ?? TMDesign.modelPalette[0]
     }
 
-    /// 当前展示数据的分组（切换期间旧数据渲染时跟随旧分组，保持标签一致）。
+    /// Grouping of the data on screen (follows the old grouping until new data lands).
     private var displayGrouping: Grouping {
         analysis?.grouping ?? grouping
     }
@@ -398,7 +396,7 @@ struct UsageAnalysisView: View {
             : name
     }
 
-    // MARK: - Chart（按天堆叠；token 与成本共用一张图）
+    // MARK: - Chart (stacked per day; tokens and cost share one chart)
 
     private func chart(_ data: AnalysisData) -> some View {
         let points = metric == .tokens ? data.tokenPoints : data.costPoints
@@ -535,7 +533,7 @@ struct UsageAnalysisView: View {
         .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
     }
 
-    // MARK: - 聚合表
+    // MARK: - Aggregate table
 
     private var aggTable: some View {
         let rows = analysis?.aggregates ?? []

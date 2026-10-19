@@ -16,7 +16,7 @@ enum CodexParser {
             .appendingPathComponent(".codex/state_5.sqlite").path
     }
 
-    /// Map rollout filename -> session UUID (P0-1).
+    /// Map rollout filename -> session UUID.
     /// Format: rollout-<YYYY-MM-DDTHH-MM-SS>-<uuid...>.jsonl
     /// The timestamp is fixed-width (19 chars); everything after is the UUID.
     static func sessionID(fromRolloutName name: String) -> String? {
@@ -65,13 +65,12 @@ enum CodexParser {
     }
 
     static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        guard !ToolKind.codex.sourceIsRemote else { return ([], []) } // source = VPS feed
+        guard !ToolKind.codex.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         let fm = FileManager.default
         guard fm.fileExists(atPath: sessionsRoot) else { return ([], []) }
 
-        // Threads metadata first.
         let threadMeta = readThreads()
 
         // Rollout files: incremental per-file with persisted parse context
@@ -81,20 +80,8 @@ enum CodexParser {
             guard let st = FileScanner.fileStat(file) else { continue }
             let prev = database.scanState(file)
             if prev.size == st.size && prev.mtime == st.mtime && prev.identity == st.identity { continue }
-            // Truncation can preserve an inode; a shorter file is still a
-            // new byte stream and must be replayed from offset zero.
-            // mtime changed with size unchanged = in-place rewrite; replay
-            // from 0 so edited events are not silently lost (dedupe handles
-            // the already-imported ones).
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
-            // The cursor must rest on a JSONL line boundary: a truncate +
-            // regrow that happened entirely between polls leaves it mid-line
-            // and the rewritten events would be skipped by the append path.
-            let sameAppendOnlyFile = prev.identity == st.identity
-                && st.size > prev.size
-                && prev.mtime != 0
-                && !pendingRewrite
-                && (prev.size == 0 || FileScanner.isLineBoundary(path: file, offset: prev.size))
+            let sameAppendOnlyFile = FileScanner.isAppendOnly(path: file, stat: st, previous: prev)
             let offset = sameAppendOnlyFile ? prev.size : 0
             var objectCount = 0
             var chunkModel: String?
@@ -192,7 +179,6 @@ enum CodexParser {
                 }
             }
 
-            // Join with threads for model/title when available.
             if !sid.isEmpty {
                 if let meta = threadMeta[sid] {
                     let threadModel = meta.model.flatMap { $0.isEmpty ? nil : $0 } ?? meta.provider
@@ -208,7 +194,7 @@ enum CodexParser {
             }
 
             // Persist parse context so incremental scans never depend on
-            // session_meta re-appearing (P0-1).
+            // session_meta re-appearing.
             var ctx: [String: Any] = ["sid": sid, "model": model ?? "", "provider": provider ?? "",
                                       "cwd": cwd ?? "", "title": title ?? "",
                                       "created": created, "updated": updated]

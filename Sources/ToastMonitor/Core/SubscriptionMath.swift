@@ -54,7 +54,7 @@ enum SubscriptionMath {
     }
 
     /// Value of usage consumed inside the current cycle, when a quota source is linked.
-    /// - go: monthly quota % × $60 plan cap (×12 for yearly cycles)
+    /// - go: monthly quota % × $60 plan cap (monthly cycles only)
     /// - openrouter: sum of per-day OpenRouter spend since cycle start (from snapshots)
     static func cycleValue(plan: String, cycle: String, cycleStart: Date) -> Double? {
         switch plan {
@@ -91,10 +91,10 @@ enum SubscriptionMath {
         return f.string(from: d)
     }
 
-    /// 订阅金额按「窗口与订阅期重叠天数 × 日均价」分摊（实际花费口径）。
-    /// 已结束的订阅同样计入——它在窗口内覆盖过的天数就是你真实付过
-    /// 的钱。日均价取真实周期长度（active 用 cycleInfo），已结束的
-    /// 订阅无法再算周期，用 30/365 近似。
+    /// Subscription cost amortized as overlap days × daily price (actual
+    /// spend). Ended subscriptions count for the days they covered. The
+    /// daily price uses the real cycle length for active ones (cycleInfo);
+    /// ended ones approximate with 30/365 days.
     static func amortized(days: Int, subscriptions: [Database.Subscription], now: Date = Date()) -> Double {
         var t = 0.0
         let windowStart = now.addingTimeInterval(-Double(days) * 86400)
@@ -120,18 +120,18 @@ enum SubscriptionMath {
         return t
     }
 
-    // MARK: - 用量预测（用完/用不完）
+    // MARK: - Forecast
 
     struct Forecast {
-        let used: Double          // 当前周期已用（美元，官方口径）
-        let dailyRate: Double     // 日均消耗
-        let limit: Double         // 额度上限（Go=$60）或余额（OR）
-        let projectedEnd: Double? // 期末预测总消耗（Go；OR 为 nil）
-        let exhaustDate: Date?    // 用尽/耗尽日期（nil=不会用完）
-        let isBreakeven: Bool     // 价值参考线（已用价值 ≥ 订阅价）
+        let used: Double          // used this cycle (USD, provider-reported)
+        let dailyRate: Double     // average per day
+        let limit: Double         // cap (Go: $60) or balance (OpenRouter)
+        let projectedEnd: Double? // projected cycle total (Go; nil for OpenRouter)
+        let exhaustDate: Date?    // when it runs out (nil = it won't)
+        let isBreakeven: Bool     // used value ≥ subscription price
     }
 
-    /// 基于「已用总量 ÷ 已过天数」的日均速率外推。
+    /// Extrapolates the daily rate (used so far ÷ days elapsed).
     static func forecast(plan: String, cycleStart: Date, cycleEnd: Date, now: Date = Date()) -> Forecast? {
         guard cycleStart <= now else { return nil }
         let cal = Calendar.current

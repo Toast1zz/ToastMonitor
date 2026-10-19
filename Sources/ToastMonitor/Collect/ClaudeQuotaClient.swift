@@ -69,9 +69,8 @@ final class ClaudeQuotaClient: ObservableObject {
     private var refreshGeneration: UInt64 = 0
 
     /// Consecutive-failure counter driving the backoff schedule (reset on
-    /// any success). Wall-clock based and persisted, not systemUptime-based —
-    /// systemUptime resets on every relaunch, which previously meant
-    /// restarting the app silently discarded a server-imposed backoff.
+    /// any success). Wall-clock based and persisted, not systemUptime-based,
+    /// so a relaunch cannot discard a server-imposed backoff.
     private var backoffAttempt = 0
     private var nextAllowedRefresh: TimeInterval = 0
     /// Last attempt time (success or failure), independent of the backoff
@@ -313,11 +312,9 @@ final class ClaudeQuotaClient: ObservableObject {
     /// its ACL only while an earlier "Always Allow" still stands, and in
     /// practice that authorization does not stay put — a one-time "Allow"
     /// never persists at all, and Claude Code rewrites the item several times
-    /// a day as it refreshes the token. Whatever the cause, the consequence
-    /// used to be a modal SecurityAgent sheet asking for the login keychain
-    /// password, raised from a background poll the user never initiated.
-    /// An unauthorized read now fails instead, and `securityToolCredentials`
-    /// recovers from it without involving the user.
+    /// a day as it refreshes the token. An interactive read would raise a
+    /// login-keychain password sheet from a background poll; instead an
+    /// unauthorized read fails and `securityToolCredentials` recovers.
     private nonisolated static func keychainCredentials() -> Data? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
