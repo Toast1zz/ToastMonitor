@@ -144,6 +144,19 @@ final class HermesParserTests: XCTestCase {
         XCTAssertEqual(grown[0].ts, 1_790_001_000)
     }
 
+    /// A migrated store can carry zeroed timestamps; the session id still
+    /// says when the session began.
+    func testCorruptTimestampsFallBackToSessionIDDate() {
+        writeUsage(session: "20260708_190049_1faef3d3", input: 1_000, output: 100,
+                   firstSeen: 0, lastSeen: 0)
+        let turns = HermesParser.scan(database: db).turns
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns[0].ts, HermesParser.sessionStart(fromID: "20260708_190049_1faef3d3"))
+        let day = Calendar.current.dateComponents([.year, .month, .day],
+                                                  from: Date(timeIntervalSince1970: TimeInterval(turns[0].ts)))
+        XCTAssertEqual([day.year, day.month, day.day], [2026, 7, 8])
+    }
+
     /// Switching remote -> local continues from the feed's baseline.
     func testLocalScanContinuesFromRemoteBaseline() {
         XCTAssertTrue(db.setSetting(key("s"), "1000,100,0,5000,0,0"))
