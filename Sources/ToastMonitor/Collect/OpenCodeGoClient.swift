@@ -1,6 +1,6 @@
 import Foundation
 
-/// OpenCode Go subscription quota (套餐).
+/// OpenCode Go subscription quota.
 /// There is no public quota API — the workspace dashboard page
 /// (https://opencode.ai/workspace/<id>/go) embeds SolidJS SSR hydration
 /// data with rollingUsage / weeklyUsage / monthlyUsage (usagePercent +
@@ -17,7 +17,7 @@ final class OpenCodeGoClient: ObservableObject {
     static let rollingLimitUSD: Double = 12
     static let weeklyLimitUSD: Double = 30
     static let monthlyLimitUSD: Double = 60
-    /// 订阅价（$10 买 $60 额度）；可在设置中修改，这里仅作兜底。
+    /// Default subscription price ($10 buys $60 of usage); editable in Settings.
     static let monthlyPriceUSD: Double = 10
 
     struct State {
@@ -40,13 +40,11 @@ final class OpenCodeGoClient: ObservableObject {
     private let session: URLSession
     /// Retained: URLSession holds its delegate weakly.
     private let redirectBlocker = NoRedirectDelegate()
-    private var timer: Timer?
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
-    /// Backoff (M1): failed refreshes wait 60s → 2m → 5m → 15m; success resets.
-    private var backoffBase: TimeInterval = 0
-    private var nextAllowedRefresh: TimeInterval = 0
+    private var backoff = RefreshBackoff()
+    private let poller = ForegroundPoller()
     private var credentialsLoaded = false
     private var cachedCredentials: (workspaceId: String, cookie: String)?
     /// Set when a keychain read/write failed with errSecInteractionNotAllowed
@@ -82,7 +80,7 @@ final class OpenCodeGoClient: ObservableObject {
         return value
     }
 
-    /// Credentials live in the Keychain (P0-5); legacy SQLite values are
+    /// Credentials live in the Keychain; legacy SQLite values are
     /// migrated on first read, then erased. Fail closed: when the Keychain
     /// is unavailable the app reports unconfigured instead of serving
     /// plaintext SQLite values to live API calls.
@@ -194,57 +192,14 @@ final class OpenCodeGoClient: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        observeForeground()
-        refresh() // one initial snapshot
-        updateForeground()
-    }
-
-    private func startTimer(interval: TimeInterval) {
-        timer?.invalidate()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-
-    private func refreshNow() { refresh() }
-
-    private var popoverVisible = false
-    private var dashboardVisible = false
-    private var foreground = false
-
-    private func updateForeground() {
-        let fg = popoverVisible || dashboardVisible
-        // At launch the app is hidden and the timer has not been installed
-        // yet, so the missing timer is also a valid state transition.
-        guard fg != foreground || timer == nil else { return }
-        foreground = fg
-        startTimer(interval: TMRefreshPolicy.quotaInterval(foreground: fg))
-        if fg {
-            refreshNow()
-        }
-    }
-
-    private func observeForeground() {
-        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let self else { return }
-                let visible = (note.object as? Bool) ?? false
-                if name == TMNotifications.popoverVisibility {
-                    self.popoverVisible = visible
-                } else {
-                    self.dashboardVisible = visible
-                }
-                self.updateForeground()
-            }
-        }
+        refresh()
+        poller.start { [weak self] in self?.refresh() }
     }
 
     func refresh() {
         guard !inFlight else { return }
-        // Backoff gate (M1): skip attempts inside the backoff window.
-        if ProcessInfo.processInfo.systemUptime < nextAllowedRefresh { return }
+        // Backoff gate: skip attempts inside the backoff window.
+        if backoff.isWaiting { return }
         inFlight = true
         if credentialsLoaded {
             guard let cachedCredentials else {
@@ -286,9 +241,9 @@ final class OpenCodeGoClient: ObservableObject {
         configured = true
         state.isLoading = true
         state.error = nil
-        // 刷新期间保留上一次的数值：UI 继续显示旧快照，新数据到达后
-        // 整块替换，Popover 状态行不会闪 Loading/Idle。失败响应仍会
-        // 设置 error，由 UI 优先显示。
+        // Keep the previous values while refreshing; new data replaces the
+        // snapshot whole, so the popover row never flashes Loading. A failed
+        // response still sets `error`, which the UI shows first.
 
         let url = "https://opencode.ai/workspace/\(creds.workspaceId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? creds.workspaceId)/go"
         guard let u = URL(string: url) else {
@@ -312,57 +267,57 @@ final class OpenCodeGoClient: ObservableObject {
                 self.state.isLoading = false
                 if let err {
                     self.state.error = err.localizedDescription
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 guard let data else {
                     self.state.error = "Empty response"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 guard data.count <= Self.maxHTMLLength else {
                     self.state.error = "Response too large (>10MB)"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
                     self.state.error = "No HTTP response"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 if (300..<400).contains(http.statusCode) {
                     self.state.error = "Redirect rejected (HTTP \(http.statusCode))"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 // Reject oversized responses from the header before buffering.
                 if http.expectedContentLength > 10_000_000 {
                     self.state.error = "Response too large (>10MB)"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 guard http.statusCode == 200 else {
                     self.state.error = (http.statusCode == 401 || http.statusCode == 403)
                         ? "Cookie expired, reconfigure needed (HTTP \(http.statusCode))"
                         : "HTTP \(http.statusCode)"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 if let mime = http.mimeType,
                    !mime.contains("html") && !mime.contains("json") && !mime.contains("text") {
                     self.state.error = "Non-web response (\(mime))"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 guard let html = String(data: data, encoding: .utf8) else {
                     self.state.error = "Failed to parse response"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 let parsed = Self.parse(html)
                 guard let parsed, parsed.0 != nil || parsed.1 != nil || parsed.2 != nil else {
                     self.state.error = "No usage data found (page structure may have changed)"
-                    self.applyBackoff()
+                    self.backoff.failed()
                     return
                 }
                 self.state.rollingPct = parsed.0?.pct
@@ -372,23 +327,16 @@ final class OpenCodeGoClient: ObservableObject {
                 self.state.monthlyPct = parsed.2?.pct
                 self.state.monthlyReset = parsed.2?.reset
                 self.state.lastOK = Int64(Date().timeIntervalSince1970)
-                // Only a successful fetch advances the sync clock (L7);
+                // Only a successful fetch advances the sync clock;
                 // otherwise the UI could show "just synced" over an error.
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
-                self.backoffBase = 0
+                self.backoff.succeeded()
                 self.persist()
             }
         }.resume()
     }
 
-    /// Exponential backoff (M1): 60s → 2m → 5m → 15m, capped.
-    private func applyBackoff() {
-        let now = ProcessInfo.processInfo.systemUptime
-        backoffBase = min(max(backoffBase, 60), 15 * 60)
-        nextAllowedRefresh = now + backoffBase
-        backoffBase *= 2
-    }
 
     private func persist() {
         let s = state
@@ -397,7 +345,7 @@ final class OpenCodeGoClient: ObservableObject {
             rollingPct: s.rollingPct, rollingReset: s.rollingReset,
             weeklyPct: s.weeklyPct, weeklyReset: s.weeklyReset,
             monthlyPct: s.monthlyPct, monthlyReset: s.monthlyReset)
-        // DB write off the main actor (M4).
+        // DB write off the main actor.
         DispatchQueue.global(qos: .utility).async {
             Database.shared.insertOGSnapshot(snap)
         }

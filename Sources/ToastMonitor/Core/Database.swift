@@ -238,7 +238,7 @@ final class Database: @unchecked Sendable {
     }
 
 
-    /// P0-3: rebuilds `turns` without the legacy compound UNIQUE constraint
+    /// Rebuilds `turns` without the legacy compound UNIQUE constraint
     /// when SQLite's autoindex for it is still present. Data is preserved;
     /// the event_id index becomes the sole dedupe authority.
     private func migrateDropLegacyTurnsUnique() {
@@ -386,7 +386,7 @@ final class Database: @unchecked Sendable {
     }
 
     private func migrate() {
-        // Versioned migrations (spec §7): schema version tracked in
+        // Versioned migrations: schema version tracked in
         // PRAGMA user_version; each version runs once, in order.
         let current = userVersion()
         if current < 1 {
@@ -415,7 +415,7 @@ final class Database: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS idx_turns_ts ON turns(ts);
         CREATE INDEX IF NOT EXISTS idx_turns_tool ON turns(tool, ts);
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(tool, session_id);
-        -- Partial index for the cost backfill scan (M5): only rows that still
+        -- Partial index for the cost backfill scan: only rows that still
         -- need pricing, so the 60s backfill never full-scans the table.
         CREATE INDEX IF NOT EXISTS idx_turns_backfill
           ON turns(id) WHERE cost = 0 AND tool != 'hermes'
@@ -431,7 +431,7 @@ final class Database: @unchecked Sendable {
           updated INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(tool, session_id)
         );
-        -- Recent-session ordering (L4): sessions() sorts by updated DESC.
+        -- Recent-session ordering: sessions() sorts by updated DESC.
         -- Created after the sessions table (the earlier position referenced
         -- a table that may not exist yet on fresh installs).
         CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(tool, updated);
@@ -495,16 +495,16 @@ final class Database: @unchecked Sendable {
           currency TEXT NOT NULL DEFAULT 'USD'
         );
 
-        -- P0-9 migration: rebuild id=0 rows with real auto-increment ids.
+        -- Rebuild id=0 rows with real auto-increment ids.
         INSERT INTO subscriptions (name, plan, start_date, cycle, price, currency)
         SELECT name, plan, start_date, cycle, price, currency FROM subscriptions WHERE id=0;
         DELETE FROM subscriptions WHERE id=0;
 
-        -- P0-3: the event_id unique index is created AFTER the legacy table
+        -- The event_id unique index is created AFTER the legacy table
         -- rebuild (see migrateDropLegacyTurnsUnique) — on legacy schemas the
         -- column does not exist yet and index creation would abort the batch.
 
-        -- P0-3 migration: the legacy table-level UNIQUE(tool, session_id, ts,
+        -- The legacy table-level UNIQUE(tool, session_id, ts,
         -- input, output) must go — it still swallows distinct events that
         -- share the same second and token counts. Rebuild the table without it.
         -- (Detected by the presence of SQLite's autoindex for that constraint.)
@@ -552,9 +552,8 @@ final class Database: @unchecked Sendable {
                 transactionWriteError = false
             }
         }
-        // v4: openrouter_snapshots account columns. These used to be ensured
-        // on every insert (L2) — three pragma_table_info probes per snapshot
-        // write on the hot path. Fold into the versioned migration instead.
+        // v4: openrouter_snapshots account columns, added here once rather
+        // than probed on every snapshot insert.
         if previousVersion < 4 {
             guard let db else { return }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
@@ -617,7 +616,7 @@ final class Database: @unchecked Sendable {
 
     /// Inserts turn rows. Duplicates are ignored (by event_id when present,
     /// otherwise by the legacy compound key). Transaction-aware: joins an
-    /// outer `inTransaction` instead of committing independently (P0-2).
+    /// outer `inTransaction` instead of committing independently.
     /// Returns false when the write failed (caller should roll back).
     @discardableResult
     func insertTurns(_ turns: [TurnRecord]) -> Bool {
@@ -710,7 +709,7 @@ final class Database: @unchecked Sendable {
     }
 
     /// Runs a body inside one transaction. When the body returns false the
-    /// transaction is rolled back and no cursor/watermark may advance (P0-2).
+    /// transaction is rolled back and no cursor/watermark may advance.
     /// Nested calls (body invoking inTransaction again) join the outer
     /// transaction instead of starting a second one.
     func inTransaction(_ body: () -> Bool) -> Bool {
@@ -832,7 +831,7 @@ final class Database: @unchecked Sendable {
     func sessionTotals() -> [String: (tool: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return [:] }
-        // M6: session_totals is read on every foreground scan (1s); a heavy
+        // session_totals is read on every foreground scan (1s); a heavy
         // user can have tens of thousands of rows. Cache by dataVersionKey —
         // writers invalidate explicitly, so the cache always matches the
         // committed rows.
@@ -884,7 +883,7 @@ final class Database: @unchecked Sendable {
         let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
         if rc != SQLITE_DONE { markTransactionWriteFailure(); return false }
-        // Invalidate the totals cache (M6): this write is not yet reflected
+        // Invalidate the totals cache: this write is not yet reflected
         // in dataVersionKey until the surrounding transaction commits, so the
         // writer must drop the cached rows explicitly.
         totalsCache = nil
@@ -986,10 +985,8 @@ final class Database: @unchecked Sendable {
     /// Reads the full settings table into the in-memory cache once, at the
     /// end of openLocked (fresh install and restore alike). Caller must
     /// already hold `lock` (openLocked's caller does) and `db` must be open.
-    /// A NULL `v` row is skipped rather than cached as a present empty
-    /// value, matching the old direct-SQL reader's behavior: `sqlite3_
-    /// column_text` on a NULL column yields no C string, so the old code
-    /// left `out` as nil for that row.
+    /// A NULL `v` row is skipped, so `setting()` returns nil for it rather
+    /// than an empty string.
     private func loadSettingsCache() {
         guard let db else { return }
         var stmt: OpaquePointer?
@@ -1363,7 +1360,7 @@ final class Database: @unchecked Sendable {
         return out
     }
 
-    /// Deletes quota-snapshot rows older than 400 days (DB-7 retention), so a
+    /// Deletes quota-snapshot rows older than 400 days, so a
     /// long-running poller cannot grow the tables without bound. Internal so
     /// tests can drive the DELETE deterministically; the insert paths throttle
     /// it to once per hour via the `snapshot_prune_last` setting.
@@ -1391,7 +1388,7 @@ final class Database: @unchecked Sendable {
         _ = setSetting("snapshot_prune_last", "\(now)")
     }
 
-    /// Weekly WAL checkpoint + VACUUM (L1). Deletes/updates (clearAllData,
+    /// Weekly WAL checkpoint + VACUUM. Deletes/updates (clearAllData,
     /// snapshot prune, resetLocalUsage) never shrink the SQLite file, so a
     /// long-running store grows unbounded. Gated weekly AND on file size so
     /// small stores skip the work entirely. Caller must hold the lock; it is
@@ -1776,7 +1773,7 @@ final class Database: @unchecked Sendable {
         }
         var stmt: OpaquePointer?
         if s.id == 0 {
-            // New record: let SQLite assign the id (P0-9).
+            // New record: let SQLite assign the id.
             let sql = "INSERT INTO subscriptions (name, plan, start_date, end_date, cycle, price, currency) VALUES (?,?,?,?,?,?,?);"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { markTransactionWriteFailure(); return false }
             sqlite3_bind_text(stmt, 1, (s.name as NSString).utf8String, -1, SQLITE_TRANSIENT)
@@ -1895,7 +1892,7 @@ final class Database: @unchecked Sendable {
         return out
     }
 
-    /// Cost breakdown by quality (spec §5.2): estimated vs actual variable
+    /// Cost breakdown by quality: estimated vs actual variable
     /// spend. Hermes is excluded because its traffic is billed inside
     /// OCG/OpenRouter/Codex plans.
     func costBreakdown(from: Int64, to: Int64) -> (estimated: Double, actual: Double, deepseekActual: Double) {
@@ -1923,8 +1920,8 @@ final class Database: @unchecked Sendable {
         return out
     }
 
-    /// API 价值：全部工具（含 hermes）的所有 turns 按模型官方单价重估。
-    /// 与实际账单无关——回答「这些 token 按 API 价值多少钱」。
+    /// API value: every tool's turns (Hermes included) repriced at list
+    /// prices. Unrelated to actual billing.
     ///
     /// Pricing.estimate is a per-token linear function of (input, output,
     /// cacheRead, cacheWrite) that depends only on `model` — summing tokens
@@ -2061,7 +2058,7 @@ final class Database: @unchecked Sendable {
                 }
             }
             // Deletes do not grow MAX(id); bump the version stamp so the
-            // snapshot cache invalidates after a local rebuild (DB-1).
+            // snapshot cache invalidates after a local rebuild.
             if ok {
                 scanStatesCache = nil
                 bumpDataVersion()
@@ -2083,7 +2080,7 @@ final class Database: @unchecked Sendable {
             "openrouter_snapshots", "opencodego_snapshots", "subscriptions",
             "claude_quota_samples",
             // Resets the AUTOINCREMENT counters for turns/subscriptions so
-            // re-imported ids start from 1 again (DB-4 housekeeping).
+            // re-imported ids start from 1 again.
             "sqlite_sequence"
         ]
         for table in tables {
@@ -2417,13 +2414,13 @@ final class Database: @unchecked Sendable {
         return max(out, beat)
     }
 
-    /// 轻量数据版本戳：任何会改变快照的写路径（turns / 额度快照 / 订阅 /
-    /// 有效扫描 heartbeat）都会反映在计数与最大时间戳上。快照缓存用它
-    /// 判断是否需要重算——版本未变时直接复用上次聚合结果。
-    /// 包含当日本地日期：跨午夜后"今日"窗口必须滚动。
-    /// turns 用 MAX(id)（O(1) b-tree 尾）而不是 COUNT(*)：插入总是增长
-    /// MAX(id)，而删除路径不增长 —— clearAllData/resetLocalUsage/restore
-    /// 必须显式 bump `data_version`，否则清空后键不变化、缓存不失效。
+    /// Cheap data-version stamp: every write that changes a snapshot (turns,
+    /// quota snapshots, subscriptions, scan heartbeat) shows up in a count or
+    /// max timestamp, so snapshot caches recompute only when it changes.
+    /// Includes the local date so "today" rolls over at midnight.
+    /// turns uses MAX(id) (O(1)) rather than COUNT(*): inserts grow it but
+    /// deletes do not, so clearAllData/resetLocalUsage/restore must bump
+    /// `data_version` explicitly.
     func dataVersionKey() -> String {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return "closed" }
@@ -2447,8 +2444,8 @@ final class Database: @unchecked Sendable {
         return out
     }
 
-    /// 订阅写路径的修改计数（UPDATE 不改变 COUNT/MAX(id)，需要显式 bump，
-    /// 否则快照缓存会命中旧值）。
+    /// Bumps `data_version` for writes that change neither COUNT nor MAX(id)
+    /// (updates, deletes), so snapshot caches invalidate.
     private func bumpDataVersion() {
         guard let db else { return }
         var stmt: OpaquePointer?

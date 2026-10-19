@@ -26,11 +26,8 @@ final class CommandCodeQuotaClient: ObservableObject {
     /// stores whatever the user pastes as the full Cookie header; this list is
     /// only used for the token-only convenience form.
     ///
-    /// NOTE: the live cookie name is Command Code's production prefix
-    /// (`__Secure-commandcode_prod_.session_token`), NOT the stock Better Auth
-    /// name the original skill assumed — verified against the real API on
-    /// 2026-08-18. The token-only convenience form wraps bare tokens in the
-    /// real name so they work without the session_data cookie.
+    /// The live API uses Command Code's production prefix, not the stock
+    /// Better Auth name; bare tokens are wrapped in the first entry.
     static let sessionCookieNames = [
         "__Secure-commandcode_prod_.session_token",
         "__Host-commandcode_prod_.session_token",
@@ -55,15 +52,11 @@ final class CommandCodeQuotaClient: ObservableObject {
     }
 
     @Published private(set) var state = State()
-    private var timer: Timer?
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
-    /// Backoff (M1): failed refreshes wait 60s → 2m → 5m → 15m before the
-    /// next attempt; success resets. Prevents fixed-cadence hammering while
-    /// the remote API is down or rate-limiting.
-    private var backoffBase: TimeInterval = 0
-    private var nextAllowedRefresh: TimeInterval = 0
+    private var backoff = RefreshBackoff()
+    private let poller = ForegroundPoller()
 
     private let session: URLSession
     /// Retained because URLSession delegates are weak.
@@ -76,65 +69,22 @@ final class CommandCodeQuotaClient: ObservableObject {
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
-        observeForeground()
     }
 
     // MARK: - Foreground-aware refresh
-
-    private var popoverVisible = false
-    private var dashboardVisible = false
-    private var foreground = false
-
-    private func updateForeground() {
-        let fg = popoverVisible || dashboardVisible
-        // At launch the app is hidden and the timer has not been installed
-        // yet, so the missing timer is also a valid state transition.
-        guard fg != foreground || timer == nil else { return }
-        foreground = fg
-        startTimer(interval: TMRefreshPolicy.quotaInterval(foreground: fg))
-        if fg {
-            refresh()
-        }
-    }
-
-    private func observeForeground() {
-        for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let visible = (note.object as? Bool) ?? false
-                    if name == TMNotifications.popoverVisibility {
-                        self.popoverVisible = visible
-                    } else {
-                        self.dashboardVisible = visible
-                    }
-                    self.updateForeground()
-                }
-            }
-        }
-    }
 
     func start() {
         guard !started else { return }
         started = true
         refresh()
-        updateForeground()
-    }
-
-    private func startTimer(interval: TimeInterval) {
-        timer?.invalidate()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
+        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
     }
 
     // MARK: - Provisioning
 
     /// Stores the full Cookie header in the Keychain. Accepts either a
     /// complete `Cookie:` header or a bare session token (wrapped in the
-    /// standard Better Auth cookie). Only the Keychain is written; nothing
+    /// production session cookie name). Only the Keychain is written; nothing
     /// plaintext is persisted.
     @discardableResult
     func provision(cookie raw: String) -> Bool {
@@ -167,8 +117,7 @@ final class CommandCodeQuotaClient: ObservableObject {
 
     private static func normalizedCookie(_ raw: String) -> String? {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Bare token convenience: wrap in the real production cookie name.
-        // (The stock Better Auth name is NOT what the live API accepts.)
+        // Bare token convenience: wrap in the production cookie name.
         if !value.contains("=") {
             value = "__Secure-commandcode_prod_.session_token=\(value)"
         }
@@ -182,9 +131,8 @@ final class CommandCodeQuotaClient: ObservableObject {
 
     func refresh() {
         guard !inFlight else { return }
-        // Backoff gate (M1): skip attempts inside the backoff window; the
-        // 60s timer picks up after it elapses.
-        if ProcessInfo.processInfo.systemUptime < nextAllowedRefresh { return }
+        // Backoff gate: skip attempts inside the backoff window.
+        if backoff.isWaiting { return }
         inFlight = true
         refreshGeneration &+= 1
         let generation = refreshGeneration
@@ -215,14 +163,6 @@ final class CommandCodeQuotaClient: ObservableObject {
         return ck
     }
 
-    /// Exponential backoff (M1): 60s → 2m → 5m → 15m, capped. The next
-    /// refresh() is skipped until the window elapses.
-    private func applyBackoff() {
-        let now = ProcessInfo.processInfo.systemUptime
-        backoffBase = min(max(backoffBase, 60), 15 * 60)
-        nextAllowedRefresh = now + backoffBase
-        backoffBase *= 2
-    }
 
     private func requestUsage(cookie: String, generation: UInt64) {
         state.isLoading = true
@@ -249,9 +189,8 @@ final class CommandCodeQuotaClient: ObservableObject {
         var creditsResult: Result<Data, HTTPError>?
         var subsResult: Result<Data, HTTPError>?
 
-        // Enter BEFORE resume: group.notify must observe a non-zero count.
-        // Entering inside the completion (asynchronously) let notify fire
-        // immediately with nil results, leaving isLoading stuck true.
+        // Enter BEFORE resume: group.notify must observe a non-zero count,
+        // or it fires immediately with nil results.
         group.enter()
         let creditsTask = redirectBlocker.boundedDataTask(
             in: session, request: makeRequest(creditsURL),
@@ -282,14 +221,14 @@ final class CommandCodeQuotaClient: ObservableObject {
             switch (creditsResult, subsResult) {
             case (.failure(let creditsError), _):
                 self.state.error = Self.message(for: creditsError)
-                self.applyBackoff()
+                self.backoff.failed()
                 return
             case (_, .failure(let subsError)):
                 self.state.error = Self.message(for: subsError)
-                self.applyBackoff()
+                self.backoff.failed()
                 return
             default:
-                self.backoffBase = 0
+                self.backoff.succeeded()
                 break
             }
             guard case .success(let creditsData)? = creditsResult,

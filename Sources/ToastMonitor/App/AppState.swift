@@ -105,10 +105,8 @@ final class AppState: ObservableObject {
     /// True only while a USER-initiated refresh is in flight.
     @Published private(set) var manualRefreshing = false
 
-    // Keep the established property names for existing views/callers.
-    // UI-10: read-only — every write flows through refresh()'s single
-    // `state = next` publish, so the per-property setters were dead code
-    // (verified: no caller writes these).
+    // Read-only views of `state`; every write goes through refresh()'s
+    // single `state = next` publish.
     var today: Database.ToolTotals { state.today }
     var week: Database.ToolTotals { state.week }
     var month: Database.ToolTotals { state.month }
@@ -141,10 +139,10 @@ final class AppState: ObservableObject {
 
     private var refreshTimer: Timer?
     private var refreshCoordinator = RefreshCoordinator()
-    /// 快照加载开始时间；超过看门狗阈值视为卡死，允许下一次刷新重试。
-    /// 若不重置，一次永不完成的加载会让 refreshInFlight 永久为 true，
-    /// didCollect 与定时器刷新全部被合并锁挡掉——popover 冻结在旧快照，
-    /// 而 quota 客户端独立轮询照常更新，形成"额度在动、来源不动"。
+    /// When the in-flight snapshot load started. A load older than the
+    /// watchdog threshold counts as stuck so the next refresh can retry;
+    /// otherwise refreshInFlight stays true forever, every didCollect and
+    /// timer refresh is coalesced away, and the popover freezes.
     private static let refreshWatchdogSeconds: CFAbsoluteTime = 10
     private var popoverVisible = false
     private var dashboardVisible = false
@@ -166,8 +164,8 @@ final class AppState: ObservableObject {
             }
         }
         NotificationCenter.default.addObserver(forName: CollectorEngine.didCollect, object: nil, queue: .main) { [weak self] note in
-            // 变更驱动：只有真的扫到新数据才刷新快照；空转扫描（0 新增）
-            // 直接跳过，避免每秒一轮完整聚合。
+            // Change-driven: refresh only when the scan found new data, so idle
+            // scans do not run a full aggregation every second.
             if let receipt = note.object as? CollectorEngine.ScanReceipt,
                receipt.turns == 0, receipt.sessions == 0 { return }
             Task { @MainActor [weak self] in
@@ -202,8 +200,8 @@ final class AppState: ObservableObject {
             t.invalidate()
             refreshTimer = nil
         }
-        // 5s 保险轮询：实时性由 didCollect 的变更驱动保证（新数据到达
-        // 立即刷新）；后台 30s 轮询兜底 missed notifications/cache races。
+        // Safety-net polling: didCollect already refreshes on new data; the
+        // timer covers missed notifications and cache races (5s / 30s).
         let interval = TMRefreshPolicy.snapshotInterval(foreground: fg)
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in

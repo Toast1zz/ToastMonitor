@@ -3,7 +3,7 @@ import Combine
 import AppKit
 import Charts
 
-/// yyyymmdd → Date（本地日历）。
+/// yyyymmdd -> Date (local calendar).
 private func dayFromKey(_ key: Int64) -> Date {
     var c = DateComponents()
     c.year = Int(key / 10_000)
@@ -12,8 +12,8 @@ private func dayFromKey(_ key: Int64) -> Date {
     return Calendar.current.date(from: c) ?? .distantPast
 }
 
-/// "Aug 5" 式短日期（hover 提示用）。固定英文 locale：系统为中文时
-/// DateFormatter 会输出 "8月5日"，Popover 全英文必须强制 en_US。
+/// "Aug 5" short date for hover readouts. Fixed en_US locale: the
+/// popover is English even when the system language is not.
 private let shortDayFormatter: DateFormatter = {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
@@ -34,13 +34,13 @@ private struct PopoverBodyHeightKey: PreferenceKey {
 struct PopoverHomeView: View {
     static let testPeriodNotification = Notification.Name("tmTestPopoverPeriod")
 
-    /// UI-1 决策：面板隐藏时跳过分钟 tick（不推进 now、不重载热力图）。
+    /// The minute tick is skipped while the panel is hidden.
     static func minuteTickAllowed(panelVisible: Bool) -> Bool {
         panelVisible
     }
 
-    /// UI-1 决策：可见性通知 → (新可见状态, 是否需要本次重载热力图)。
-    /// 仅在 隐藏→显示 转换时重载；其余转换（含保持显示）不重载。
+    /// Visibility notification -> (new visibility, reload heatmap now?).
+    /// Only a hidden -> visible transition reloads.
     static func visibilityTransition(visible: Bool, wasVisible: Bool) -> (visible: Bool, reload: Bool) {
         (visible, visible && !wasVisible)
     }
@@ -92,13 +92,13 @@ struct PopoverHomeView: View {
     @AppStorage(CodexPlanName.customNameKey) private var codexCustomName = ""
     /// Activity card shows one history view at a time: heatmap or trend.
     @AppStorage("popoverHistoryMode") private var historyMode = HistoryMode.heatmap
-    /// Cards the user hid with the eye button (comma-separated keys).
+    /// Cards hidden in Settings › Appearance (comma-separated keys).
     @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
-    /// 年度每日用量（Popover 自持：AppState 只在 dashboard 可见时填 heatmap）。
+    /// Daily usage for a year. The popover loads its own: AppState fills its heatmap only while the dashboard is visible.
     @State private var heatmapData: [Int64: Int64] = [:]
     @State private var detectedTools: [ToolKind] = []
-    /// 面板是否可见。PopoverHomeView 常驻（面板不销毁视图），隐藏时分钟
-    /// tick 与热力图重载都必须停，否则每 60s 跑一次 371 天聚合（UI-1）。
+    /// Whether the panel is visible. The view stays alive while hidden, so the
+    /// minute tick and heatmap reload must stop or a 371-day aggregation runs every 60s.
     @State private var panelVisible = false
     @State private var bodyContentHeight: CGFloat = 0
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -228,16 +228,16 @@ struct PopoverHomeView: View {
             deepseek.select(period.slot, configuration: periodSettings.configuration)
         }
         .onReceive(minuteTicker) { tick in
-            // UI-1: 面板隐藏时跳过整轮 tick——不推进 now、不重载热力图。
-            // 显示时再由可见性通知补一次加载，所以数据不会等下一个 60s。
+            // Hidden panel: skip the whole tick. Becoming visible reloads at once,
+            // so the data never waits for the next minute.
             guard Self.minuteTickAllowed(panelVisible: panelVisible) else { return }
             now = tick
             deepseek.select(period.slot, configuration: periodSettings.configuration, now: tick)
             reloadHeatmap()
         }
         .onReceive(NotificationCenter.default.publisher(for: TMNotifications.popoverVisibility)) { note in
-            // UI-1: 面板常驻，可见性由通知驱动。仅在 隐藏→显示 转换时
-            // 立即重载热力图（初始 onAppear 已负责首次加载）。
+            // Only a hidden -> visible transition reloads the heatmap; onAppear
+            // handles the first load.
             let visible = (note.object as? Bool) ?? false
             let transition = Self.visibilityTransition(visible: visible, wasVisible: panelVisible)
             panelVisible = transition.visible
@@ -273,7 +273,7 @@ struct PopoverHomeView: View {
                     .minimumScaleFactor(0.6)
                     .tmNumericTextTransition(value: Double(tokens))
                     // Both the token count and the display format drive the
-                    // transition, so toggling 缩写/完整 animates the same way
+                    // transition, so toggling compact/full numbers animates the same way
                     // as a live token update.
                     .animation(.easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
                     .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
@@ -338,12 +338,12 @@ struct PopoverHomeView: View {
         }
     }
 
-    /// 实际支出 = turns 实际 + OpenRouter 今日实际 + 全部订阅摊销。
+    /// Actual spend = billed turns + OpenRouter + amortized subscriptions.
     private var actualShown: Double {
         cost.actual + periodOrUsage + subsAmortized
     }
 
-    /// API 价值 = 全部工具（含 hermes）turns 按模型官方单价重估。
+    /// API value = every tool's turns (Hermes included) at list prices.
     private var estimatedShown: Double {
         switch period {
         case .today: return app.apiValueToday
@@ -358,7 +358,7 @@ struct PopoverHomeView: View {
         case .today: orClient.state.usageDaily
         case .week: orClient.state.usageWeekly
         case .month: orClient.state.usageMonthly
-        // OpenRouter 只提供月窗口；全部时按最近月近似。
+        // OpenRouter only reports a monthly window; All uses the latest month.
         case .all: orClient.state.usageMonthly
         }
     }
@@ -369,20 +369,20 @@ struct PopoverHomeView: View {
         case .today: days = 1
         case .week: days = 7
         case .month: days = 30
-        // 全部：10 年窗口覆盖全部订阅期（含已结束的），全额计入。
+        // All: a 10-year window covers every subscription, ended ones included.
         case .all: days = 3650
         }
         return SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
     }
 
-    /// 来源分段条 + 每来源一行（行尾直接显示占比，无隐式交互）。
+    /// Source share bar plus one row per source.
     private var sourceBar: some View {
         let rows = sortedRows
         let total = rows.reduce(Int64(0)) {
             $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
         }
-        // 从未配置过 source（全部时间都没有任何数据）才是"未开始"，光是
-        // 当前周期没有数据不代表没配置——否则每天开局都会误判成 Get Started。
+        // "Never configured" means no data at all, ever. An empty current
+        // period must not show Get Started at the start of every day.
         let neverConfigured = rows.isEmpty && app.byToolAll.isEmpty
         return VStack(alignment: .leading, spacing: 7) {
             if neverConfigured {
@@ -409,7 +409,7 @@ struct PopoverHomeView: View {
             } else {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        // 轨道：系统低层级填充（不发光）
+                        // Track: low-level system fill
                         Capsule().fill(Color.primary.opacity(0.06))
                         HStack(spacing: 0) {
                             ForEach(rows, id: \.tool) { row in
@@ -495,7 +495,7 @@ struct PopoverHomeView: View {
         }
     }
 
-    // MARK: - 额度状态（实时账户快照，与所选周期无关）
+    // MARK: - Quota (live account state, independent of the period)
 
     /// Quota/balance is a live account snapshot — it only changes as time
     /// passes, never with the selected period. Showing it inside the period
@@ -591,10 +591,10 @@ struct PopoverHomeView: View {
         }
     }
 
-    // MARK: - 活动与趋势（历史维度，与周期选择无关）
+    // MARK: - Activity and trend (history, independent of the period)
 
-    /// 历史板块：热力图与趋势合并为一张卡片，标题行右侧的小分段切换，
-    /// 选择持久化。两种视图占同一高度，切换时面板不跳。
+    /// Heatmap and trend share one card with a small switch in its title
+    /// row (persisted). Both views have one height, so switching never jumps.
     private var historyBlock: some View {
         Group {
             switch historyMode {
@@ -632,7 +632,7 @@ struct PopoverHomeView: View {
         .fixedSize()
     }
 
-    // MARK: - 板块隐藏
+    // MARK: - Hidden sections
 
     private var hiddenSections: [String] {
         hiddenSectionsRaw.split(separator: ",").map(String.init)
@@ -640,8 +640,8 @@ struct PopoverHomeView: View {
 
     private func isSectionHidden(_ key: String) -> Bool { hiddenSections.contains(key) }
 
-    /// UserDefaults 持久化的上次热力图数据：冷启动先显示旧曲线，
-    /// 异步刷新后再更新，避免 Activity/Trend 区块空白等待。
+    /// Last heatmap data, persisted so a cold start draws it immediately
+    /// instead of an empty Activity/Trend card.
     private static let heatmapCacheKey = "popoverHeatmapCache"
 
     private func cachedHeatmap() -> [Int64: Int64]? {
@@ -662,7 +662,7 @@ struct PopoverHomeView: View {
     }
 
     private func reloadHeatmap() {
-        // 打开时立即用缓存数据渲染，再异步刷新。
+        // Draw from the cache at once, then refresh asynchronously.
         if heatmapData.isEmpty, let cached = cachedHeatmap() {
             heatmapData = cached
         }
@@ -688,7 +688,7 @@ struct PopoverHomeView: View {
         visibleHeatmapKeys.compactMap { heatmapData[$0] }.max() ?? 0
     }
 
-    /// 最近 60 天（含今天）按日排序的用量序列。
+    /// Daily usage for the last 60 days (today included), oldest first.
     private var trendSeries: [(key: Int64, tokens: Int64)] {
         heatmapData.sorted { $0.key < $1.key }
             .suffix(60)
@@ -699,7 +699,7 @@ struct PopoverHomeView: View {
         trendSeries.map(\.tokens).max() ?? 0
     }
 
-    /// 近 24 周网格：key 与 heatmapData 的 yyyymmdd（本地日）对齐。
+    /// Last 24 weeks; keys match heatmapData's local yyyymmdd days.
     private var activityWeeks: [[Int64?]] {
         Self.buildHeatmapWeeks(now: now, configuration: periodSettings.configuration)
     }
@@ -815,7 +815,7 @@ struct PopoverHomeView: View {
         if !claudeQuota.enabled {
             // Opt-in, off by default (see ClaudeQuotaClient) — distinct from
             // "Not configured" so it reads as a choice, not a missing login.
-            status = "Off — enable in Dashboard"
+            status = "Off — enable in Settings"
         } else if let remaining, let weekly {
             status = "\(remaining)% weekly left"
             resetSuffix = resetText(weekly.resetAt)
@@ -915,7 +915,7 @@ struct PopoverHomeView: View {
         let sub = app.subscriptions.first { $0.plan == "openai" || $0.plan == "codex" }
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        // 刷新期间保留上次结果：只有从未同步过才显示 Loading。
+        // Keep the last result while refreshing; Loading only before the first sync.
         var status = sub == nil ? "Not configured"
                     : (state.lastSync <= 0 ? "Loading" : "Idle")
         var resetSuffix: String?
@@ -1086,10 +1086,10 @@ struct PopoverHomeView: View {
 
 }
 
-/// 趋势折线图独占悬停状态（UI-2，同 PopoverHeatmap 模式）：悬停只重渲
-/// 本子视图，不重渲整页。悬停信息行放在图上方、固定行高，无悬停时空占位。
+/// Trend line chart. Hover state lives here, so hovering re-renders only
+/// this view; the readout row above the chart keeps a fixed height.
 private struct TrendChartView: View {
-    /// 最近 60 天（含今天）按日排序的用量序列。
+    /// Daily usage for the last 60 days (today included), oldest first.
     let series: [(key: Int64, tokens: Int64)]
 
     @State private var hoveredTrend: (key: Int64, tokens: Int64)?
@@ -1105,8 +1105,8 @@ private struct TrendChartView: View {
                 Spacer()
             }
             .frame(height: 16)
-            // Charts 平滑折线（catmullRom）。冷启动延迟由热力图缓存解决：
-            // 打开时先用上次持久化的数据立即渲染，再异步刷新新曲线。
+            // Smoothed line (catmullRom). The persisted heatmap cache covers the
+            // cold start; fresh data replaces it asynchronously.
             Chart(series, id: \.key) { d in
                 AreaMark(
                     x: .value("Day", dayFromKey(d.key)),
@@ -1125,7 +1125,7 @@ private struct TrendChartView: View {
                 .interpolationMethod(.catmullRom)
             }
             .chartXAxis {
-                // 3 个日期标签，颜色与 Activity 月份标签一致（TMDesign.quiet）。
+                // Three date labels, colored like the Activity month labels.
                 AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
                     AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
@@ -1192,8 +1192,7 @@ private struct NativePeriodSelector: NSViewRepresentable {
         control.selectedSegment = selectedIndex
         if #available(macOS 26.0, *) {
             // The current macOS value-selection control uses the system's
-            // extra-large 36 pt metric. `.large` is the 28 pt compact form
-            // and is why the popover still looked like the previous design.
+            // extra-large 36 pt metric; `.large` is the 28 pt compact form.
             control.controlSize = .extraLarge
             control.borderShape = .capsule
         } else {
@@ -1253,15 +1252,15 @@ private struct NativePeriodSelector: NSViewRepresentable {
 
 
 /// Drives the hero number transition: any change to the token count OR the
-/// 缩写/完整 format toggle re-runs the same numericText animation.
+/// compact/full format toggle re-runs the same numericText animation.
 private struct HeroValue: Equatable {
     let tokens: Int64
     let full: Bool
 }
 
-/// 额度状态行：名称 primary，状态按健康状态着色。纯信息行，不引导跳转。
-/// 状态主文本是 SF Pro Regular + 等宽数字；可选的 "resets in …" 后缀单独用
-/// SF Mono Regular，不让整行变成等宽。
+/// Quota status row: primary name, status colored by health. Information only.
+/// Status text is SF Pro with tabular digits; the optional "resets in …"
+/// suffix alone is SF Mono, so the whole row is not monospaced.
 private struct StatusRow: View {
     @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
     let name: String
@@ -1339,8 +1338,8 @@ private struct StatusRow: View {
 
     private var content: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // 固定两行高度：空字符串 Text 固有高度会塌缩为 0，所以用
-            // 显式 frame 占位——Loading → 数据切换时行高恒定，面板不跳。
+            // Fixed two-line height: an empty Text collapses to zero, so an explicit
+            // frame keeps the row height constant from Loading to data.
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
                     .font(TMType.medium(TMType.body))
@@ -1574,16 +1573,16 @@ private struct UnconnectedSourcesRow: View {
     }
 }
 
-/// 紧凑近半年活动热力图（Popover 版）：26 周 × 7 天方格，月份标签悬浮在
-/// 网格上方。无悬停交互——活跃度一眼扫读即可。
+/// Compact activity heatmap for the popover: 24 weeks × 7 days, month
+/// labels above the grid, and a hover readout row.
 private struct PopoverHeatmap: View {
     let weeks: [[Int64?]]
     let heatmap: [Int64: Int64]
     let maxTokens: Int64
 
-    /// 24 周：格间距收到 2pt 后格子仍够大，高度比 20 周 × 3pt 更省。
+    /// 24 weeks keeps cells large enough with a 2 pt gutter.
     static let weekCount = 24
-    /// 网格与月份标签的垂直间距。
+    /// Vertical gap between the grid and the month labels.
     private static let labelGap: CGFloat = 12
     private static let cellGutter: CGFloat = 2
     private static let hoverRowHeight: CGFloat = 11
@@ -1601,8 +1600,8 @@ private struct PopoverHeatmap: View {
     /// keeps one height in both modes.
     static var totalHeight: CGFloat { hoverRowHeight + 4 + gridHeight }
 
-    /// 月份标签放在每月第一次出现的那一列上（而不是均分），首列若离下一
-    /// 个标签太近则省略，避免重叠。
+    /// Month labels sit on each month's first column; the first label is
+    /// dropped when it would overlap the next.
     private var monthLabels: [(index: Int, label: String)] {
         var out: [(Int, String)] = []
         var lastMonth = -1
@@ -1621,7 +1620,7 @@ private struct PopoverHeatmap: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // 悬停信息行：无悬停时空占位，保持高度稳定。
+            // Hover readout; an empty placeholder keeps the height stable.
             HStack {
                 if let h = hoveredDay {
                     Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens)) tokens")

@@ -19,7 +19,6 @@ enum FileScanner {
 
     private static let listCache = FileListCacheStore()
 
-    /// Stat info for a file.
     struct Stat {
         let size: Int64
         let mtime: Int64
@@ -84,7 +83,7 @@ enum FileScanner {
 
 
     /// Streams parsed JSON objects from `path` with their absolute byte
-    /// offsets (stable event identity, P0-3). Partial trailing lines are not
+    /// offsets (stable event identity). Partial trailing lines are not
     /// consumed; shrunken files rescan from 0.
     ///
     /// Pass fromOffset = 0 when the file's mtime changed but its size stayed
@@ -159,6 +158,22 @@ enum FileScanner {
         // A final complete line without a newline is consumable; malformed
         // unterminated data remains retryable.
         return Int64(start + consumed)
+    }
+
+    /// Whether a changed file only grew since the last scan, so parsing can
+    /// resume at the stored cursor. Anything else replays from offset 0 and
+    /// relies on event dedupe: a shrink (truncation can keep the inode), an
+    /// in-place rewrite (same size, new mtime), a pending full-rescan marker,
+    /// or a cursor left mid-line by a truncate + regrow between polls. Pass
+    /// `checkLineBoundary: false` for formats whose cursor is not a newline.
+    static func isAppendOnly(path: String, stat st: Stat,
+                             previous prev: (size: Int64, mtime: Int64, identity: Int64, context: String?),
+                             checkLineBoundary: Bool = true) -> Bool {
+        prev.identity == st.identity
+            && st.size > prev.size
+            && prev.mtime != 0
+            && !contextNeedsFullRescan(prev.context)
+            && (!checkLineBoundary || prev.size == 0 || isLineBoundary(path: path, offset: prev.size))
     }
 
     /// True when `offset` rests on a JSONL line boundary: offset == 0, or
@@ -262,7 +277,7 @@ enum FileScanner {
         return Int64(date.timeIntervalSince1970)
     }
 
-    /// "…-Users-toast1-Documents-Tusi" -> "Tusi" (last path component, "-" = "/").
+    /// "…-Users-me-Projects-App" -> "App" (last path component, "-" = "/").
     static func lastComponentOfEncodedPath(_ s: String) -> String {
         let parts = s.split(separator: "-").map(String.init)
         guard let last = parts.last, !last.isEmpty else { return s }

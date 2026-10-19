@@ -117,7 +117,6 @@ struct DashMetric: View {
     }
 }
 
-/// Equal-width row of metrics.
 struct DashMetricRow<Content: View>: View {
     @ViewBuilder var content: Content
 

@@ -33,7 +33,7 @@ UI verification:
 
 /// Pure AppKit entry point. No SwiftUI Scene at all: a WindowGroup or
 /// Settings scene makes macOS re-open an empty window when the last window
-/// closes (user reported the mystery "ToastMonitor" blank window). The
+/// closes. The
 /// Dashboard is an NSWindow owned by WindowManager, the menu-bar surface is a
 /// status-item NSPanel owned by PanelController — nothing needs a scene.
 @main
@@ -581,7 +581,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.setAccessibilityLabel("ToastMonitor usage and quotas")
             updateStatusLabel(button)
-            // Refresh the label whenever AppState publishes changes.
             appStateObserver = AppState.shared.objectWillChange.sink { [weak self] _ in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, let button = self.statusItem?.button else { return }
@@ -606,9 +605,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController = PanelController(
             statusItem: item,
             content: PopoverRootView(),
-            // Start near the measured home-page size. A legacy 640 pt seed
-            // visibly expanded on first presentation and made the fixed tabs
-            // look as though the whole document had shifted upward.
+            // Start near the measured home-page size so the first
+            // presentation does not visibly resize.
             size: NSSize(width: 400, height: 780)
         )
         // A borderless NSPanel owns its own visibility state. Keep the status
@@ -617,10 +615,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // interfaces whose lifecycle is delegated back to AppKit; combining
         // both mechanisms made an already-visible panel ignore the next click.
 
-        // 真实运行截图钩子（重设计验收用）：--show-panel 显示 popover，
-        // --backdrop white|dark 在背后垫一个大窗口模拟亮/暗桌面背景，
-        // --capture <path> 让 app 自己把窗口保存成 PNG（窗口真实显示，
-        // 玻璃采样到背后窗口；screencapture 受会话隔离不可靠）。
+        // Live screenshot hooks: --show-panel shows the popover, --backdrop
+        // white|dark puts a large window behind it to stand in for the desktop,
+        // --capture <path> has the app save its own window as PNG (the glass
+        // samples the real backdrop; screencapture is unreliable across sessions).
         let args = CommandLine.arguments
         if args.contains("--verify-quota-badge") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in

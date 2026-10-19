@@ -20,7 +20,6 @@ struct MenuBarTextFont: Equatable, Codable {
 
     var isSystemDefault: Bool { name.isEmpty }
 
-    /// Label for the settings row and its picker button.
     var displayName: String {
         if isSystemDefault { return "System UI (SF Pro)" }
         return family.isEmpty ? name : family

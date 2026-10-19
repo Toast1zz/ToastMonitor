@@ -2,14 +2,14 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 
-/// 开机自启动开关的系统状态封装（SMAppService.mainApp，macOS 13+）。
-/// 状态始终以系统实际状态为准：注册失败/待批准时回滚开关并给出原因。
+/// Launch-at-login switch backed by SMAppService.mainApp (macOS 13+).
+/// The system state is the truth: a failed or pending registration reverts the switch with a reason.
 @MainActor
 final class LaunchAtLoginSettings: ObservableObject {
     static let shared = LaunchAtLoginSettings()
 
     @Published private(set) var enabled: Bool
-    /// 失败/待批准时的说明；nil = 正常。
+    /// Why registration failed or awaits approval; nil when fine.
     @Published private(set) var message: String?
 
     private init() {
@@ -18,15 +18,15 @@ final class LaunchAtLoginSettings: ObservableObject {
         message = Self.hint(for: st)
     }
 
-    /// 从系统状态刷新（设置页出现时），不写系统。
+    /// Re-reads the system state (when the pane appears); never writes it.
     func refresh() {
         let st = SMAppService.mainApp.status
         enabled = st == .enabled
         message = Self.hint(for: st)
     }
 
-    /// 切换开关。写入失败回滚并给出原因；部分系统上 register() 成功返回
-    /// 但仍需用户在「系统设置 → 通用 → 登录项」里批准（.requiresApproval）。
+    /// Toggles the setting, reverting with a reason on failure. register() can
+    /// succeed yet still need approval in System Settings › General › Login Items (.requiresApproval).
     func setEnabled(_ on: Bool) {
         guard on != enabled else { return }
         do {

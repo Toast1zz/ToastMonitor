@@ -124,10 +124,6 @@ final class UpdateManager: ObservableObject {
                 currentVersion: currentVersion,
                 publicKey: Self.publicKey,
                 timeout: 5)
-            // A verified candidate below the highest version this user was
-            // ever offered is a feed rollback, not a real update: suppress it
-            // (the same version may be offered again — e.g. after the user
-            // dismissed it — so only strictly-lower candidates are rejected).
             if let found {
                 let defaults = UserDefaults.standard
                 let candidateParts = UpdateChecker.semanticVersion(found.version)

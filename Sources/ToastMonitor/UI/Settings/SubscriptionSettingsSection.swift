@@ -69,8 +69,7 @@ struct SubscriptionSettingsSection: View {
             Text("Subscriptions")
         }
         .onChange(of: showForm) { open in
-            // Draft validation must not survive closing and later reopening
-            // the form; especially dateError used to appear on a fresh edit.
+            // Draft validation must not survive closing and reopening the form.
             priceError = false
             dateError = false
             // A stale persistence error (e.g. failed delete) is cleared when
@@ -88,7 +87,7 @@ struct SubscriptionSettingsSection: View {
                         DispatchQueue.global(qos: .userInitiated).async {
                             let ok = Database.shared.deleteSubscription(id: sub.id)
                             DispatchQueue.main.async {
-                                // subscriptionsDidChange 通知驱动 AppState 刷新。
+                                // subscriptionsDidChange triggers the AppState refresh.
                                 databaseError = ok ? nil
                                     : "Failed to delete subscription (disk space or database permissions)"
                             }
