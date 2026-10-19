@@ -238,9 +238,14 @@ enum HermesParser {
             if d.input > 0 || d.output > 0 || d.reasoning > 0 || d.cacheRead > 0 || d.cacheWrite > 0 {
                 // A first sighting is the session's whole history: date it
                 // to the session start, not to now.
-                let ts = step.isFirst && firstSeen > 0 ? firstSeen : lastSeen
+                var ts = step.isFirst && firstSeen > 0 ? firstSeen : lastSeen
+                if ts < minPlausibleTimestamp {
+                    // Corrupt or reset timestamps (e.g. a migrated store):
+                    // Hermes session ids start with their creation time.
+                    ts = sessionStart(fromID: sid) ?? Int64(Date().timeIntervalSince1970)
+                }
                 turns.append(TurnRecord(tool: .hermes, sessionID: sid, project: nil, model: model,
-                                        ts: ts > 0 ? ts : Int64(Date().timeIntervalSince1970),
+                                        ts: ts,
                                         inputTokens: d.input, outputTokens: d.output,
                                         reasoningTokens: d.reasoning,
                                         cacheRead: d.cacheRead, cacheWrite: d.cacheWrite, cost: 0,
@@ -255,6 +260,20 @@ enum HermesParser {
                                       cacheWrite: b.cacheWrite, cost: 0, updated: lastSeen)
         }
         return turns
+    }
+
+    /// Anything before 2001 is not a real Hermes timestamp.
+    private static let minPlausibleTimestamp: Int64 = 1_000_000_000
+
+    /// Parses the `YYYYMMDD_HHMMSS_` prefix of a Hermes session id (local time).
+    static func sessionStart(fromID id: String) -> Int64? {
+        let parts = id.split(separator: "_", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count >= 2, parts[0].count == 8, parts[1].count == 6 else { return nil }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMddHHmmss"
+        guard let d = f.date(from: String(parts[0]) + String(parts[1])) else { return nil }
+        return Int64(d.timeIntervalSince1970)
     }
 
     private static func columns(of table: String, db: OpaquePointer?) -> [String] {
