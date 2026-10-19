@@ -22,7 +22,7 @@ final class HermesRemoteClient: ObservableObject {
     static let maxFieldLength = 512
     static let maxProviderLength = 256
 
-    struct SyncStatus {
+    struct SyncStatus: Equatable {
         var lastSync: Int64 = 0
         var lastRows: Int = 0
         var error: String?
@@ -124,7 +124,10 @@ final class HermesRemoteClient: ObservableObject {
 
     /// Called from the collector loop; rate-limited internally (60s).
     func maybePoll() {
-        guard remoteSourcesEnabled else { return }
+        guard remoteSourcesEnabled else {
+            clearRemoteHealth()
+            return
+        }
         // Foreground uses the existing 15s timer. Background scans also call
         // this method, but the serial-queue rate limit below reduces them to
         // at most one feed request per 60s.
@@ -196,7 +199,11 @@ final class HermesRemoteClient: ObservableObject {
             guard let completion else { return }
             Task { @MainActor in completion() }
         }
-        guard remoteSourcesEnabled else { finish(); return }
+        guard remoteSourcesEnabled else {
+            clearRemoteHealth()
+            finish()
+            return
+        }
         guard !inFlight else { finish(); return }
         inFlight = true
         lastPoll = Int64(Date().timeIntervalSince1970)
@@ -261,6 +268,15 @@ final class HermesRemoteClient: ObservableObject {
                 self.importFeed(obj)
             }
         }.resume()
+    }
+
+    /// With remote ingestion off, stale feed state must not linger in the UI.
+    private func clearRemoteHealth() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.status != SyncStatus() { self.status = SyncStatus() }
+            SourceHealthHub.shared.purgeRemote()
+        }
     }
 
     private func publishStatus(_ update: @escaping (inout SyncStatus) -> Void) {

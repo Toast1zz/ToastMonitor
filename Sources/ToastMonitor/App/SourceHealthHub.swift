@@ -53,6 +53,14 @@ final class SourceHealthHub: ObservableObject {
         }
     }
 
+    /// Drop the remote feed and any remote-mode records once remote ingestion
+    /// is disabled; nothing refreshes them afterwards, so they would otherwise
+    /// age into a permanent "stale" status.
+    func purgeRemote() {
+        let kept = sources.filter { $0.tool != "remote-feed" && $0.mode != "remote" }
+        if kept.count != sources.count { sources = kept }
+    }
+
     /// An unchanged scan is still a successful parse. Clear an old error so a
     /// transient failure cannot remain visible forever after recovery.
     func recordIdle(tool: String, durationMs: Double) {

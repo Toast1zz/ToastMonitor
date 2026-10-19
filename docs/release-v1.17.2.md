@@ -1,0 +1,1 @@
+Fixes a permanent "1 source stale · Remote Feed" status after remote sources are turned off: with remote ingestion disabled, the stale remote-feed and remote-mode health records are now cleared instead of aging forever.
