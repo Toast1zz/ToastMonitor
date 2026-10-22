@@ -63,6 +63,17 @@ final class ClaudeQuotaClient: ObservableObject {
     @Published private(set) var enabled: Bool
     @Published private(set) var state = State()
 
+    /// README screenshots only (`--demo`): shows made-up numbers instead of
+    /// fetching anything.
+    func showDemo(_ demo: State) {
+        isDemo = true
+        enabled = true
+        state = demo
+    }
+    /// Set by `showDemo`; a demo client never fetches, so nothing real can
+    /// replace the made-up numbers.
+    private var isDemo = false
+
     private var timer: Timer?
     private var started = false
     private var inFlight = false
@@ -196,7 +207,7 @@ final class ClaudeQuotaClient: ObservableObject {
     ///   by the explicit "Refresh" button); a real server-imposed backoff
     ///   from `nextAllowedRefresh` still applies even when forced.
     func refresh(force: Bool = false) {
-        guard enabled else { return }
+        guard enabled, !isDemo else { return }
         guard !inFlight else { return }
         let now = Date().timeIntervalSince1970
         guard now >= nextAllowedRefresh else { return }

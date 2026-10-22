@@ -22,6 +22,16 @@ final class DeepSeekBillingClient: ObservableObject {
     }
 
     @Published private(set) var state = State()
+
+    /// README screenshots only (`--demo`): shows made-up numbers instead of
+    /// fetching anything.
+    func showDemo(_ demo: State) {
+        isDemo = true
+        state = demo
+    }
+    /// Set by `showDemo`; a demo client never fetches, so nothing real can
+    /// replace the made-up numbers.
+    private var isDemo = false
     @Published private(set) var connecting = false
     @Published private(set) var connectionError: String?
     @Published private(set) var selectedSlot: UsagePeriodSlot = .today
@@ -202,6 +212,7 @@ final class DeepSeekBillingClient: ObservableObject {
     func clearConnectionError() { connectionError = nil }
 
     func refresh(force: Bool = false, now: Date = Date()) {
+        guard !isDemo else { return }
         let current = DeepSeekBilling.Window.make(slot: selectedSlot, configuration: configuration, now: now)
         if current != window { select(selectedSlot, configuration: configuration, now: now); return }
         guard task == nil, let credential, !state.expired,

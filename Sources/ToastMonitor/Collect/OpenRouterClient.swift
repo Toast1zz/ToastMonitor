@@ -71,6 +71,17 @@ final class OpenRouterClient: ObservableObject {
     @Published private(set) var state = State()
     @Published private(set) var hasKey = false
 
+    /// README screenshots only (`--demo`): shows made-up numbers instead of
+    /// fetching anything.
+    func showDemo(_ demo: State) {
+        isDemo = true
+        hasKey = true
+        state = demo
+    }
+    /// Set by `showDemo`; a demo client never fetches, so nothing real can
+    /// replace the made-up numbers.
+    private var isDemo = false
+
     private let session: URLSession
     /// Retained: URLSession holds its delegate weakly.
     private let redirectBlocker = NoRedirectDelegate()
@@ -276,6 +287,7 @@ final class OpenRouterClient: ObservableObject {
     }
 
     func refresh() {
+        guard !isDemo else { return }
         guard !keyLoadInFlight else {
             // A setKey/addKey/foreground refresh arrived while the keychain
             // read is pending; remember it so the load completion re-runs us
