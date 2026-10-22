@@ -285,14 +285,17 @@ struct OverviewView: View {
         case .month: aggs = app.modelAggsMonth
         case .all: aggs = app.modelAggsAll
         }
-        // The same model can be used by multiple tools. Aggregate it into one
-        // row so the ranking answers "which model" instead of leaking source
-        // implementation details as duplicate labels.
+        // The same model can be used by multiple tools, and one model can be
+        // logged under several ids ("deepseek-v4-flash" and
+        // "deepseek/deepseek-v4-flash"). Aggregate by what the reader sees so
+        // the ranking answers "which model" instead of leaking source details
+        // as duplicate labels.
         var totals: [String: (tokens: Int64, cost: Double, color: Color)] = [:]
         for row in aggs {
             let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead) ?? row.input + row.output
-            let previous = totals[row.model]
-            totals[row.model] = (
+            let name = ModelName.display(row.model)
+            let previous = totals[name]
+            totals[name] = (
                 tokens: (previous?.tokens ?? 0) + value,
                 cost: (previous?.cost ?? 0) + row.cost,
                 color: previous?.color ?? ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent

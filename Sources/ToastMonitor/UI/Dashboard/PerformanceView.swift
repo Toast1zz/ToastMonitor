@@ -113,7 +113,13 @@ struct PerformanceView: View {
         }
     }
 
-    private static func build(_ points: [PerfPoint], range: Range) -> PerfData {
+    private static func build(_ rawPoints: [PerfPoint], range: Range) -> PerfData {
+        // Group by the name the reader sees, so one model logged under
+        // several ids is one line and one table row.
+        let points = rawPoints.map {
+            PerfPoint(day: $0.day, tool: $0.tool, model: ModelName.display($0.model),
+                      ttftMs: $0.ttftMs, tokensPerSecond: $0.tokensPerSecond)
+        }
         var callsByModel: [String: Int] = [:]
         var speedByModel: [String: [Double]] = [:]
         var ttftByModel: [String: [Double]] = [:]
