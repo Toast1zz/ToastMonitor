@@ -29,6 +29,15 @@ private struct PopoverBodyHeightKey: PreferenceKey {
     }
 }
 
+/// Where the scrolled card stack sits in the viewport (0 at the top, negative
+/// as it scrolls up).
+private struct PopoverScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// Compact, single-purpose menu bar home. It answers three questions quickly:
 /// how much was used, where it came from, and whether a limit needs attention.
 struct PopoverHomeView: View {
@@ -101,6 +110,8 @@ struct PopoverHomeView: View {
     /// minute tick and heatmap reload must stop or a 371-day aggregation runs every 60s.
     @State private var panelVisible = false
     @State private var bodyContentHeight: CGFloat = 0
+    /// True once the scrolled content reaches the bottom of the viewport.
+    @State private var scrolledToEnd = true
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     @MainActor init(deepseek: DeepSeekBillingClient? = nil) {
@@ -165,11 +176,14 @@ struct PopoverHomeView: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { viewport in
+                // Cards fade out at the bottom edge while more content is below
+                // the viewport. A mask, not a colored overlay: the panel is
+                // translucent, so any fixed color would show as a band.
+                let overflows = bodyContentHeight > viewport.size.height + 1
+                let fading = overflows && !scrolledToEnd
                 ZStack(alignment: .bottom) {
                     ScrollViewReader { scroller in
                         ScrollView(.vertical, showsIndicators: false) {
-                            // The footer remains fixed; a subtle bottom fade signals
-                            // that the card stack can continue below the viewport.
                             VStack(alignment: .leading, spacing: 10) {
                                 // Everything the period selector changes lives in
                                 // this one card; Quota and Balance below are
@@ -201,6 +215,21 @@ struct PopoverHomeView: View {
                             })
                             .reportPopoverHeight(.body)
                             .id(Self.scrollTopID)
+                            .background(GeometryReader { content in
+                                Color.clear.preference(key: PopoverScrollOffsetKey.self,
+                                                       value: content.frame(in: .named("popoverScroll")).minY)
+                            })
+                        }
+                        .coordinateSpace(name: "popoverScroll")
+                        .mask {
+                            VStack(spacing: 0) {
+                                Rectangle()
+                                if fading {
+                                    LinearGradient(colors: [.black, .clear],
+                                                   startPoint: .top, endPoint: .bottom)
+                                        .frame(height: 22)
+                                }
+                            }
                         }
                         // A new period starts at the top. Scrolling instead of
                         // rebuilding the stack (`.id(period)`) keeps the native
@@ -208,14 +237,12 @@ struct PopoverHomeView: View {
                         // re-growing on every switch.
                         .onChange(of: period) { _ in scroller.scrollTo(Self.scrollTopID, anchor: .top) }
                     }
-                    if bodyContentHeight > viewport.size.height + 1 {
-                        LinearGradient(colors: [.clear, TMDesign.canvas.opacity(0.9)],
-                                       startPoint: .top, endPoint: .bottom)
-                            .frame(height: 18)
-                            .allowsHitTesting(false)
-                    }
                 }
                 .onPreferenceChange(PopoverBodyHeightKey.self) { bodyContentHeight = $0 }
+                .onPreferenceChange(PopoverScrollOffsetKey.self) { offset in
+                    let atEnd = bodyContentHeight + offset <= viewport.size.height + 1
+                    if atEnd != scrolledToEnd { scrolledToEnd = atEnd }
+                }
             }
             .frame(minHeight: 0, maxHeight: .infinity)
             .layoutPriority(1)
@@ -1651,6 +1678,12 @@ private struct QuotaWindowLine: View {
 /// Usage bar: empty = untouched, fills rightward as the window is used.
 /// Always shows usage; the used/remaining setting changes only the number.
 /// Filled with the service's color at every usage level.
+///
+/// With a time mark, solid color runs to whichever comes first, usage or
+/// elapsed time; the stretch between the two is one step lighter. Behind
+/// time it is a darker track (headroom); past time it is a paler fill
+/// (using the window faster than it passes). Either way the solid edge is
+/// the time mark, so it never disappears under the fill.
 private struct UsageBar: View {
     let usedPercent: Double
     let tint: Color
@@ -1658,23 +1691,31 @@ private struct UsageBar: View {
     var elapsed: Double?
 
     var body: some View {
-        let used = usedPercent / 100
+        let used = min(max(usedPercent / 100, 0), 1)
         GeometryReader { geo in
+            let usedWidth = used > 0 ? max(geo.size.width * used, 4) : 0
+            let timeWidth = elapsed.map { $0 > 0 ? max(geo.size.width * min($0, 1), 4) : 0 }
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.06))
-                // Elapsed time: a darker stretch of track, like a player's
-                // buffered range. Usage behind it means headroom; usage past
-                // it means spending faster than time.
-                if let elapsed, elapsed > 0 {
+                if let timeWidth, usedWidth > timeWidth {
                     Capsule()
-                        .fill(Color.primary.opacity(0.12))
-                        .frame(width: max(geo.size.width * elapsed, 4))
+                        .fill(tint.opacity(0.45))
+                        .frame(width: usedWidth)
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: timeWidth)
+                } else {
+                    if let timeWidth, timeWidth > 0 {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.12))
+                            .frame(width: timeWidth)
+                    }
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: usedWidth)
                 }
-                Capsule()
-                    .fill(tint)
-                    .frame(width: used > 0 ? max(geo.size.width * min(used, 1), 4) : 0)
-                    .animation(.easeOut(duration: 0.35), value: used)
             }
+            .animation(.easeOut(duration: 0.35), value: used)
         }
         .frame(height: 4)
         .accessibilityHidden(true)
