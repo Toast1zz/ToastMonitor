@@ -44,14 +44,14 @@ final class UIStateTests: XCTestCase {
 
     func testPopoverHeightWaitsForEveryMeasuredSlice() {
         XCTAssertNil(PopoverHeightMeasurements(values: [
-            .header: 48, .body: 620, .footer: 46,
+            .header: 48, .footer: 46,
         ]).naturalHeight)
         XCTAssertNil(PopoverHeightMeasurements(values: [
-            .pinned: 48, .body: 620, .footer: 46,
+            .body: 620, .footer: 46,
         ]).naturalHeight)
         XCTAssertEqual(PopoverHeightMeasurements(values: [
-            .header: 48, .pinned: 48, .body: 620, .footer: 46,
-        ]).naturalHeight, 762)
+            .header: 48, .body: 620, .footer: 46,
+        ]).naturalHeight, 714)
     }
 
     func testPopoverShortPageKeepsItsNaturalHeight() {

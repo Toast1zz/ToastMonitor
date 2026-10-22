@@ -601,10 +601,28 @@ final class Database: @unchecked Sendable {
                 setUserVersion(previousVersion)
             }
         }
+        // v6: DeepSeek balance history. Its API has no spend history for
+        // API-key logins, so the burn rate comes from how the balance falls.
+        if previousVersion < 6 {
+            guard let db else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            let ok = execChecked("""
+            CREATE TABLE IF NOT EXISTS deepseek_balance_samples (
+              ts INTEGER NOT NULL,
+              currency TEXT NOT NULL,
+              amount REAL NOT NULL,
+              PRIMARY KEY (ts, currency)
+            ) WITHOUT ROWID;
+            """) && setUserVersion(6)
+            if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
+                rollbackOrPoison()
+                setUserVersion(previousVersion)
+            }
+        }
     }
 
     /// The user_version the last migration step sets.
-    static let schemaVersion: Int32 = 5
+    static let schemaVersion: Int32 = 6
 
     private func userVersion() -> Int32 {
         guard let db else { return 0 }
@@ -1400,7 +1418,7 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return }
         let cutoff = now - 400 * 86400
-        for table in ["openrouter_snapshots", "opencodego_snapshots"] {
+        for table in ["openrouter_snapshots", "opencodego_snapshots", "deepseek_balance_samples"] {
             var stmt: OpaquePointer?
             let sql = "DELETE FROM \(table) WHERE ts < ?;"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
@@ -1758,7 +1776,7 @@ final class Database: @unchecked Sendable {
     struct Subscription: Identifiable, Equatable, Sendable {
         let id: Int64
         var name: String
-        var plan: String      // "" | "go" | "openrouter" | "claude"
+        var plan: String      // "" | "go" | "openrouter" | "claude" | "openai" | "grok"
         var startDate: Int64  // unix seconds
         var endDate: Int64 = 0 // 0 = active; unix seconds when it ended/stops
         var cycle: String     // "monthly" | "yearly"
@@ -1868,6 +1886,76 @@ final class Database: @unchecked Sendable {
     /// the most recent snapshot with ts < start (any day — on the first day of
     /// a cycle there may be no same-day snapshot yet); when none exists the
     /// baseline is 0.
+    /// Account-level OpenRouter credit used (cumulative): the oldest and the
+    /// newest reading since `start`. Covers spend from every key, unlike
+    /// `usage_daily`; a cumulative counter only needs its two ends.
+    func orCreditUsage(since start: Int64) -> [(ts: Int64, value: Double)] {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT ts, credits_usage FROM (
+          SELECT ts, credits_usage FROM (SELECT ts, credits_usage FROM openrouter_snapshots
+            WHERE ts >= ?1 AND credits_usage IS NOT NULL ORDER BY ts ASC LIMIT 1)
+          UNION
+          SELECT ts, credits_usage FROM (SELECT ts, credits_usage FROM openrouter_snapshots
+            WHERE ts >= ?1 AND credits_usage IS NOT NULL ORDER BY ts DESC LIMIT 1)
+        ) ORDER BY ts;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        sqlite3_bind_int64(stmt, 1, start)
+        var out: [(ts: Int64, value: Double)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append((sqlite3_column_int64(stmt, 0), sqlite3_column_double(stmt, 1)))
+        }
+        sqlite3_finalize(stmt)
+        return out
+    }
+
+    /// Records a DeepSeek balance reading. Unchanged readings are stored at
+    /// most every 10 minutes; that is enough to measure how time passes.
+    func insertDeepSeekBalance(currency: String, amount: Double, ts: Int64 = Int64(Date().timeIntervalSince1970)) {
+        lock.lock(); defer { lock.unlock() }
+        guard let db, amount.isFinite else { return }
+        var stmt: OpaquePointer?
+        let lastSQL = "SELECT ts, amount FROM deepseek_balance_samples WHERE currency = ? ORDER BY ts DESC LIMIT 1;"
+        if sqlite3_prepare_v2(db, lastSQL, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW,
+               ts - sqlite3_column_int64(stmt, 0) < 600,
+               sqlite3_column_double(stmt, 1) == amount {
+                sqlite3_finalize(stmt)
+                return
+            }
+            sqlite3_finalize(stmt)
+        }
+        let sql = "INSERT OR REPLACE INTO deepseek_balance_samples (ts, currency, amount) VALUES (?,?,?);"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { markTransactionWriteFailure(); return }
+        sqlite3_bind_int64(stmt, 1, ts)
+        sqlite3_bind_text(stmt, 2, (currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 3, amount)
+        if sqlite3_step(stmt) != SQLITE_DONE { markTransactionWriteFailure() }
+        sqlite3_finalize(stmt)
+        pruneSnapshotsIfDue()
+    }
+
+    /// DeepSeek balance readings in `currency` since `start`, oldest first.
+    func deepSeekBalances(currency: String, since start: Int64) -> [(ts: Int64, value: Double)] {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        let sql = "SELECT ts, amount FROM deepseek_balance_samples WHERE currency = ? AND ts >= ? ORDER BY ts;"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        sqlite3_bind_text(stmt, 1, (currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, start)
+        var out: [(ts: Int64, value: Double)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append((sqlite3_column_int64(stmt, 0), sqlite3_column_double(stmt, 1)))
+        }
+        sqlite3_finalize(stmt)
+        return out
+    }
+
     func orSpendSince(_ start: Int64) -> Double {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return 0 }
@@ -2113,6 +2201,7 @@ final class Database: @unchecked Sendable {
             "turns", "sessions", "scan_state", "session_totals",
             "openrouter_snapshots", "opencodego_snapshots", "subscriptions",
             "claude_quota_samples", "perf_samples", "perf_cursors",
+            "deepseek_balance_samples",
             // Resets the AUTOINCREMENT counters for turns/subscriptions so
             // re-imported ids start from 1 again.
             "sqlite_sequence"

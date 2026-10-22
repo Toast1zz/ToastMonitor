@@ -53,4 +53,43 @@ final class ClaudeCLIRefresherTests: XCTestCase {
 
         XCTAssertNil(ClaudeCLIRefresher.locateBinary(env: [:], home: home, fixedCandidates: []))
     }
+
+    func testQuarantineFlagParsing() {
+        // Homebrew-installed, never approved (the real value that triggered the dialog).
+        XCTAssertTrue(ClaudeCLIRefresher.quarantineBlocksLaunch("0181;6ada222b;;9604CC98-E333-49CA-AFAA-0FA61756BF20"))
+        // Same file after the user approved opening it.
+        XCTAssertFalse(ClaudeCLIRefresher.quarantineBlocksLaunch("01c1;6ada222b;;9604CC98-E333-49CA-AFAA-0FA61756BF20"))
+        // Unreadable value: assume it would be blocked.
+        XCTAssertTrue(ClaudeCLIRefresher.quarantineBlocksLaunch("garbage"))
+    }
+
+    func testQuarantineIsReadThroughSymlinks() throws {
+        let dir = NSTemporaryDirectory() + "claude-qtn-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let real = "\(dir)/claude-real", link = "\(dir)/claude"
+        FileManager.default.createFile(atPath: real, contents: Data("#!/bin/sh\n".utf8))
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+
+        XCTAssertFalse(ClaudeCLIRefresher.isQuarantined(link))
+
+        let value = Array("0181;6ada222b;;9604CC98-E333-49CA-AFAA-0FA61756BF20".utf8)
+        XCTAssertEqual(setxattr(real, "com.apple.quarantine", value, value.count, 0, 0), 0)
+        XCTAssertTrue(ClaudeCLIRefresher.isQuarantined(link))
+    }
+
+    func testQuarantinedBinaryIsNeverLaunched() throws {
+        let dir = NSTemporaryDirectory() + "claude-qtn-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        // Launching this would leave a marker file; a quarantined copy must not run.
+        let script = "\(dir)/claude", marker = "\(dir)/ran"
+        FileManager.default.createFile(atPath: script, contents: Data("#!/bin/sh\ntouch \(marker)\n".utf8),
+                                       attributes: [.posixPermissions: 0o755])
+        let value = Array("0181;6ada222b;;9604CC98-E333-49CA-AFAA-0FA61756BF20".utf8)
+        XCTAssertEqual(setxattr(script, "com.apple.quarantine", value, value.count, 0, 0), 0)
+
+        XCTAssertFalse(ClaudeCLIRefresher.refresh(binary: script))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
+    }
 }

@@ -138,7 +138,7 @@ struct PlansView: View {
             if let balance = g.prepaidBalanceUSD, balance > 0 {
                 FigureColumn(label: "Extra credits", value: Format.money(balance))
             }
-            if let plan = g.planName {
+            if let plan = GrokQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: g.planName) {
                 FigureColumn(label: "Plan", value: plan)
             }
         }

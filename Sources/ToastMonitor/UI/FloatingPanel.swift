@@ -156,7 +156,15 @@ final class PanelController: NSObject, NSWindowDelegate {
                    buttonWindow.frame.contains(NSEvent.mouseLocation) {
                     return
                 }
-                self.dismiss()
+                // The new key window is only known a moment later. A popover
+                // opened from inside the panel (a row's "?") is a child
+                // window of it; focus moving there is not leaving the panel.
+                DispatchQueue.main.async {
+                    if let key = NSApp.keyWindow, self.panel.childWindows?.contains(key) == true {
+                        return
+                    }
+                    self.dismiss()
+                }
             }
         }
 

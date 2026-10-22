@@ -241,10 +241,11 @@ final class ClaudeQuotaClient: ObservableObject {
                 if let expiresAt = resolved.expiresAt,
                    expiresAt <= Int64(Date().timeIntervalSince1970) {
                     // Still expired even after attempting a CLI-delegated
-                    // refresh (no `claude` binary found, the probe couldn't
-                    // complete in time, or the login is genuinely gone).
+                    // refresh (no `claude` binary found, one Gatekeeper would
+                    // block, the probe couldn't complete in time, or the login
+                    // is genuinely gone).
                     self.inFlight = false
-                    self.state.error = "Claude login expired (run claude to refresh)"
+                    self.state.error = "Login expired — run claude in Terminal"
                     self.applyBackoff(retryAfterHeader: nil)
                     return
                 }

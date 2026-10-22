@@ -142,4 +142,21 @@ final class GrokQuotaTests: XCTestCase {
         XCTAssertEqual(GrokQuotaClient.message(for: .status(401)), "Grok login expired — run grok login")
         XCTAssertEqual(GrokQuotaClient.message(for: .status(500)), "Grok billing API HTTP 500")
     }
+
+    func testRecordedSubscriptionNamesThePlan() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        func sub(_ plan: String, end: Int64 = 0) -> Database.Subscription {
+            Database.Subscription(id: 1, name: "X Subscription Premium", plan: plan, startDate: 1_900_000_000,
+                                  endDate: end, cycle: "monthly", price: 30, currency: "USD")
+        }
+        XCTAssertEqual(GrokQuotaClient.plan(subscriptions: [sub("grok")], apiPlan: "SuperGrok", now: now),
+                       "X Subscription Premium")
+        // Not a Grok subscription, or one that has ended: the API's tier.
+        XCTAssertEqual(GrokQuotaClient.plan(subscriptions: [sub("claude")], apiPlan: "SuperGrok", now: now), "SuperGrok")
+        XCTAssertEqual(GrokQuotaClient.plan(subscriptions: [sub("grok", end: 1_950_000_000)], apiPlan: "SuperGrok",
+                                            now: now), "SuperGrok")
+        XCTAssertEqual(GrokQuotaClient.plan(subscriptions: [sub("grok", end: 2_100_000_000)], apiPlan: nil, now: now),
+                       "X Subscription Premium")
+        XCTAssertNil(GrokQuotaClient.plan(subscriptions: [], apiPlan: nil, now: now))
+    }
 }

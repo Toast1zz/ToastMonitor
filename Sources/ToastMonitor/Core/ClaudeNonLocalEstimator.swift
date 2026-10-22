@@ -61,7 +61,7 @@ enum ClaudeNonLocalEstimator {
     }
 
     /// Label of the synthetic per-tool row carrying the estimate.
-    static let estimateToolLabel = "Cowork & web (est.)"
+    static let estimateToolLabel = "Cowork & web"
     /// Quota points of local activity needed before a tokens-per-point rate
     /// is trusted.
     static let minCalibrationPoints = 5
