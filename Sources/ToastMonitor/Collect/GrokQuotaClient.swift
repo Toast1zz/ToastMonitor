@@ -68,6 +68,16 @@ final class GrokQuotaClient: ObservableObject {
     }
 
     @Published private(set) var state = State()
+
+    /// README screenshots only (`--demo`): shows made-up numbers instead of
+    /// fetching anything.
+    func showDemo(_ demo: State) {
+        isDemo = true
+        state = demo
+    }
+    /// Set by `showDemo`; a demo client never fetches, so nothing real can
+    /// replace the made-up numbers.
+    private var isDemo = false
     private var started = false
     private var inFlight = false
     private var refreshGeneration: UInt64 = 0
@@ -97,7 +107,7 @@ final class GrokQuotaClient: ObservableObject {
     // MARK: - Refresh
 
     func refresh() {
-        guard !inFlight else { return }
+        guard !inFlight, !isDemo else { return }
         // Backoff gate: skip attempts inside the backoff window.
         if backoff.isWaiting { return }
         inFlight = true
@@ -330,9 +340,9 @@ final class GrokQuotaClient: ObservableObject {
         return out.filter { $0.usedPercent > 0 }.sorted { $0.usedPercent > $1.usedPercent }
     }
 
-    /// The plan recorded in Settings › Subscriptions (plan "grok") wins over
-    /// the API's tier: the API still reports some X Subscription accounts as
-    /// "SuperGrok".
+    /// The plan recorded under Settings › Sources › Subscriptions (plan
+    /// "grok") wins over the API's tier: the API still reports some X
+    /// Subscription accounts as "SuperGrok".
     nonisolated static func plan(subscriptions: [Database.Subscription], apiPlan: String?,
                                  now: Date = Date()) -> String? {
         let nowSeconds = Int64(now.timeIntervalSince1970)

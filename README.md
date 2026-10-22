@@ -4,37 +4,40 @@
 [![Swift](https://img.shields.io/badge/Swift-5.10-orange)](Package.swift)
 [![License: MIT](https://img.shields.io/github/license/Toast1zz/ToastMonitor)](LICENSE)
 
-Native macOS menu-bar AI usage monitor (SwiftUI + system SQLite, zero third-party dependencies).
-
-Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness** local logs, plus **OpenRouter** cloud quota — everything rolls up into one "today" total, always visible in the menu bar.
+A native macOS menu-bar monitor for AI coding usage. It reads the local logs of **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and DeepSeek Harness**, checks your subscription quotas and prepaid balances, and keeps today's token total in the menu bar. SwiftUI and the system SQLite, no third-party dependencies.
 
 <p align="center">
-  <img src="docs/images/popover.png" width="800" alt="ToastMonitor menu-bar popover in light and dark appearance: token total, sources, subscription quota and account balances">
+  <img src="docs/images/popover.png" width="800" alt="ToastMonitor menu-bar panel in light and dark appearance: usage card with period switch, quota bars, balances and activity heatmap">
 </p>
 
-## Features
+<sub>Screenshots use made-up demo data.</sub>
 
-- **Live menu-bar total** — today's tokens only; click for the popover. It uses a template icon and system-colored count; the unread-quota dot is red
-- **Custom menu-bar font** — `Settings → Appearance → Font` opens the macOS font panel to pick any installed font for the menu-bar token count; defaults to System UI (SF Pro)
-- **Popover** — token total with Spent / Value, then cards for Sources, Quota, Balance and Activity. `Settings → Appearance → Customize…` chooses which cards and accounts appear; the total can be compact or full
-- **Subscription quotas** — one usage bar per window (Claude 5h / weekly, OpenCode Go rolling / weekly / monthly, Codex, Command Code, Grok weekly) that fills as the quota is used, with its reset countdown; bars turn orange past 80%
-- **Balances** — OpenRouter and DeepSeek prepaid balances in their own card, written with currency symbols
-- **Claude usage outside this Mac** — Cowork, claude.ai chat and Claude Code on other machines leave no local transcript; their usage is estimated from the shared quota and shown as its own Sources row
-- **Dashboard (4 pages)** — every page fits the window without scrolling
-  - **Overview** — period figures (tokens, calls, actual spend, API value), tool and model breakdowns, a year of activity
-  - **Analysis** — tokens or estimated cost per day by tool or model over 7 / 30 / 90 days, with a per-day breakdown on hover and CSV export
-  - **Plans** — one card per connected account: quota windows, balances and balance history
-  - **Sessions** — every session, newest first, grouped by day
-- **Settings window** — ⌘, or the popover's gear button; a standard macOS settings window with General, Appearance, Sources, Accounts, Data and Updates panes
-- **Cross-source aggregation** — one SQLite store for tokens, cost and per-project breakdown across all tools, by day/week/month
-- **Built-in quotas** — no opencode-quota dependency; see [Quotas](#quotas-built-in-no-opencode-quota-dependency)
-- **DeepSeek account billing** — official balance plus experimental Platform account spend in the popover, following the selected day/week/month period; includes usage from other devices ([connect guide](docs/connect-deepseek.md))
-- **Cost estimation** — built-in model price table; unknown models count tokens without a price
-- **Privacy-first** — data stays on this Mac, credentials live only in the macOS Keychain, no analytics or ad SDKs
+## What you get
+
+**The menu bar** shows today's tokens. Click it for the panel.
+
+**The panel** separates what you used from what you have left:
+
+- **Usage** — pick Today, 7 Days, 30 Days or All Time. You get the token total, what you actually spent, what the same calls would cost at API list prices, and the share of each tool. The period switch sits inside this card because it changes only these numbers.
+- **Quota** — one bar per subscription window (Claude 5h and weekly, OpenCode Go, Codex, Command Code, Grok) with its reset countdown. The darker part of each track shows how much of the window's time has passed, so a bar that runs past it means you are using the quota faster than time.
+- **Balance** — OpenRouter and DeepSeek prepaid credit, one short line each. An account gets its own highlighted line only when it will run out within about a week at your recent pace, is empty, or cannot be read.
+- **Activity** — the last 24 weeks as a heatmap, or the last 60 days as a trend line.
+
+When an account cannot refresh, a small question mark appears next to it; click it for what went wrong and how to fix it. `Settings → Appearance → Customize…` chooses which cards and accounts appear.
+
+**The dashboard** has five pages that each fit the window without scrolling:
+
+- **Overview** — period figures, tool and model breakdowns, a year of activity
+- **Analysis** — tokens or estimated cost per day by tool or model over 7, 30 or 90 days, with CSV export
+- **Performance** — output speed and time to first token per model, by day
+- **Plans** — one card per connected account with its quota windows, balance and history
+- **Sessions** — every session, newest first, grouped by day
 
 <p align="center">
-  <img src="docs/images/dashboard.png" width="800" alt="ToastMonitor dashboard Overview page in light and dark appearance: period figures, tool and model breakdowns and a year of activity">
+  <img src="docs/images/dashboard.png" width="800" alt="ToastMonitor dashboard Overview page in light and dark appearance">
 </p>
+
+**Settings** (⌘, or the panel's gear) is a standard macOS settings window: General, Appearance, Sources, Accounts, Data and Updates. Updates are signed and installed in place after you confirm.
 
 <p align="center">
   <img src="docs/images/settings.png" width="800" alt="ToastMonitor settings window in light and dark appearance">
@@ -42,144 +45,110 @@ Aggregates token usage from **Claude Code, Codex, OpenCode, Hermes, Oh My Pi and
 
 ## Data sources
 
-| Tool | Local (Mac) source | Remote |
+| Tool | Read from this Mac | Remote |
 |---|---|---|
-| Claude Code | `~/.claude/projects/*/*.jsonl`, plus Claude Desktop Cowork sessions that ran in local agent mode | VPS feed |
+| Claude Code | `~/.claude/projects/*/*.jsonl`, plus Claude Desktop Cowork sessions run in local agent mode | VPS feed |
 | Codex | `~/.codex/sessions/.../rollout-*.jsonl` + `state_5.sqlite` | VPS feed |
 | OpenCode | `~/.local/share/opencode/opencode.db` | VPS feed |
-| Hermes | `~/.hermes/state.db` (column introspection) | VPS feed |
-| Oh My Pi | `~/.omp/agent/sessions/**/*.jsonl` | — (local only) |
-| DeepSeek Harness | `$DSH_HOME` (default `~/.dsh`) session logs + projection cache | — (local only) |
-| OpenRouter | Cloud API (key + credits snapshots) | — |
-| DeepSeek account | Platform balance + account-wide billed usage; API-key balance-only mode | — |
+| Hermes | `~/.hermes/state.db` | VPS feed |
+| Oh My Pi | `~/.omp/agent/sessions/**/*.jsonl` | — |
+| DeepSeek Harness | `$DSH_HOME` (default `~/.dsh`) session logs and projection cache | — |
+| OpenRouter | Cloud API (key and credit snapshots) | — |
+| DeepSeek account | Platform balance and account-wide billing, or balance only with an API key | — |
 
-### Collector memory use
+Remote feeds are contacted only at addresses you add yourself in `Settings → Sources`; nothing is preconfigured. Local and remote sources can be turned off independently.
 
-Claude, Codex and Oh My Pi JSONL scans read in 64 KiB chunks and parse one complete line at a time, rather than loading and byte-copying an entire file suffix into JSON dictionaries. Codex and Oh My Pi make a metadata pass before their event pass. OpenCode rows are folded directly from SQLite instead of first collecting every session row, and the collector keeps cross-source row counts rather than retaining completed source batches. Each source still prepares its own turns/sessions for atomic commit, so memory can grow with that source's output rows.
+**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how the shared Claude quota moves while this Mac is idle, and shows the result as the "Cowork & web" row. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
 
-Claude's non-local quota estimate streams indexed turn rows into sample-interval totals, using O(number of samples) Swift storage instead of materializing and sorting all Claude turns.
+## Accounts and quotas
 
-DSH log scans seek through compressed input in bounded windows, then decompress and parse one frame at a time while folding pending-step state across frames. Peak scan memory therefore includes the largest compressed/decompressed frame and the source's output turn/session batch; neither frame size nor batch size is capped, and this is not an RSS guarantee. The Zstd result cache has a 16 MiB total-cost limit, caches only results no larger than 8 MiB per entry, and has an eight-entry limit; NSCache limits are advisory. Evicted or oversized frames may be decompressed again during a full-rescan pass.
+All quotas are built in; no opencode-quota install is needed.
 
-While visible, the dashboard prewarms all four page hosts; closing it or toggling it off releases those hosts. Settings pane hosts are released when Settings closes. This describes view-host lifetimes, not a process-wide RSS bound.
+- **Claude** (opt-in, off by default) — 5h, weekly and weekly-Opus windows from `api.anthropic.com/api/oauth/usage`, using the login Claude Code already saved on this Mac. Nothing to paste. The login is read from `~/.claude/.credentials.json` and the `Claude Code-credentials` Keychain item without ever prompting, and ToastMonitor never changes that item. When the login has expired, ToastMonitor starts `claude` once in the background to refresh it, unless macOS has quarantined that `claude` binary (for example right after a Homebrew update); then it asks you to run `claude` in Terminal instead of triggering a Gatekeeper dialog.
+- **Grok** (experimental) — the weekly pool your Grok plan shares across Grok Chat, Imagine, Build / CLI and Grok Bot, read with the token `grok login` stores in `~/.grok/auth.json` (never copied). The API still reports some X Subscription plans as "SuperGrok"; add the plan in `Settings → Sources → Subscriptions` to show its real name.
+- **OpenCode Go** — rolling, weekly and monthly usage from your OpenCode workspace. Paste the workspace and cookie in `Settings → Accounts`, or use `--provision-go`.
+- **Codex** — the ChatGPT plan's usage, read with the login Codex keeps in `~/.codex/auth.json` (never copied).
+- **Command Code** (experimental) — paste your Studio session cookie in `Settings → Accounts`; it is kept only in the Keychain. The billing endpoint is not a public API and may change.
+- **OpenRouter** — key and credit snapshots every 60 seconds while the panel is open, every 5 minutes otherwise. The key lives only in the Keychain.
+- **DeepSeek** — balance, plus account-wide spend for Platform logins, including other devices ([connect guide](docs/connect-deepseek.md)).
 
-### Remote feeds
+## Install and build
 
-- Only addresses you **explicitly configure** in Sources & Settings are contacted; the app ships no personal IPs or default remote hosts
-- Addresses are validated client-side; credential requests never follow redirects
-- Remote feed polling uses a 15s foreground timer and continues in background at no more than one request per 60s through the collector loop; local and remote sources can be disabled independently
-
-### DeepSeek Harness (DSH)
-
-DSH token accounting maps 1:1 onto ToastMonitor's columns:
-
-| DSH bucket | ToastMonitor field |
-|---|---|
-| uncached input | `input_tokens` |
-| output (reasoning included, never separate) | `output_tokens` |
-| cache read | `cache_read` |
-| cache write | `cache_write` |
-
-Parsing uses two **mutually exclusive, sticky** modes (`dsh_parse_mode`; the choice never flips when zstd is installed/uninstalled, so the two accounting paths can never double-count):
-
-- **Log mode (primary)** — incremental parse of `sessions/**/session.jsonl.zstd` (independent zstd frames + byte cursor), with exact timestamps and model per step; cost estimated from the price table
-- **Cache mode (fallback)** — delta over the cumulative buckets in `storages/session_projcache.json`; no model or per-step timing; web sessions visible, headless sessions not
-
-macOS ships no zstd support (Compression.framework covers LZ4/ZLIB/LZMA/LZFSE/BROTLI only), so the app looks for the `zstd` CLI on `PATH` and at standard install locations (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`); when absent it degrades to cache mode without errors or data loss.
-
-## Quotas (built-in, no opencode-quota dependency)
-
-- **OpenCode Go plan** (a separate entry from the OpenCode tool) — reads `opencode.ai/workspace/<id>/go` SolidJS SSR/data-slot data: 5h=$12 / week=$30 / month=$60 bars, reset countdown and history. Credentials: paste in `Settings → Accounts → OpenCode Go`, or `--provision-go <workspaceId>` reading the cookie from stdin (opencode-quota's opencode-go.json works)
-- **OpenRouter** — `/api/v1/key` + `/api/v1/credits` snapshotted every 60s while the UI is visible and every 5 minutes in background. Key: paste in the panel or `--provision-or-key` from stdin; the secret lives only in the macOS Keychain
-- **Claude subscription** (opt-in, off by default) — 5h / weekly / weekly-Opus rate-limit windows from `api.anthropic.com/api/oauth/usage`, using the login Claude Code already stored on this Mac. No credential to paste: the OAuth blob is read from `~/.claude/.credentials.json` and the `Claude Code-credentials` login-keychain item, newer expiry wins. **The read never prompts.** ToastMonitor's entry in that item's ACL is not durable (Claude Code rewrites the item several times a day as it refreshes the token); instead of surfacing a login-keychain password sheet from a background poll, an unauthorized read fails and is retried through `/usr/bin/security`, which Claude Code itself creates and updates the item through and which is therefore always trusted for it. ToastMonitor never modifies that item or its ACL
-- **Grok** (experimental) — the one weekly pool the Grok plan (SuperGrok, or a tier of The X Subscription) shares across Grok Chat, Imagine, Build / CLI and Grok Bot, from the Grok CLI billing proxy `cli-chat-proxy.grok.com/v1/billing?format=credits`, plus the plan name from `/v1/settings` and a per-product breakdown when the API reports one. Credentials: run `grok login` once; the token is read from `~/.grok/auth.json` (or `$GROK_HOME/auth.json`) and never written or copied. Grok Bot runs in xAI's cloud and leaves no local token log, so it appears only as its share of this quota, never as a Sources row
-- **Claude usage outside this Mac** — Cowork sessions that run server-side, claude.ai chat and Claude Code on other machines never write a local transcript, so their tokens cannot be counted. Instead, every successful Claude quota fetch is stored as a sample (5h and weekly percentages plus reset times). Within the current weekly window, a rise in weekly usage between two samples counts as non-local when this Mac recorded essentially no Claude Code activity in that interval (under 5,000 fresh tokens, with a 10-minute look-back for server aggregation lag). The popover shows `≈X% of weekly used outside this Mac` once the week has at least 4 intervals spanning 6 hours; hover it for details. It is a lower bound: the quota is only sampled while the popover or dashboard is open, and an interval with any local activity counts as local
-
-## Install & build
+Download the latest release from [Releases](https://github.com/Toast1zz/ToastMonitor/releases) (arm64 for Apple Silicon, universal for Intel), or build it:
 
 ```bash
-cd ~/Projects/ToastMonitor
-./scripts/build-app.sh        # release build → codesign → install to /Applications (skipped in CI)
+./scripts/build-app.sh        # release build → code sign → install to /Applications
 ```
 
-- After switching to Apple Development signing for the first time, run `./scripts/authorize-local-keychain.sh` once; later builds from the same Team ID never prompt again. It only ever touches ToastMonitor's own `-s ToastMonitor` items — never Claude Code's or any other app's
-- Versioning comes from `vMAJOR.MINOR[.PATCH]` git tags; `TM_VERSION` / `TM_BUILD_NUMBER` are for controlled CI/release injection. Untagged local builds are explicitly `1.0` (development), never a commit hash
-- Distribution requires a Developer ID certificate; `build-app.sh` refuses ad-hoc signing and accepts an explicit identity via `TM_SIGNING_IDENTITY`
-- Or run the build product directly: `open dist/ToastMonitor.app`
+- After switching to Apple Development signing for the first time, run `./scripts/authorize-local-keychain.sh` once. It only touches ToastMonitor's own Keychain items.
+- Versions come from `vMAJOR.MINOR.PATCH` git tags. Untagged local builds are `1.0`; `TM_VERSION` overrides it for release builds.
+- `build-app.sh` refuses ad-hoc signing; pass an identity with `TM_SIGNING_IDENTITY`.
 
-### Release artifacts
+### Releasing
 
-Every release ships the arm64 and universal zips plus a signed,
-architecture-aware update manifest (`appcast.json`) that powers in-app updates
-(Settings → Updates). Apple Silicon selects arm64;
-Intel selects the universal artifact. The legacy top-level fields remain a
-universal bootstrap for older clients. The manifest is Ed25519-signed with a
-key pair whose private half never leaves the maintainer's machine
-(`~/.config/toastmonitor/update-key.pem`, 0600); the app bakes in the public
-half.
+Each release ships an arm64 and a universal zip plus a signed, architecture-aware update manifest (`appcast.json`) that drives `Settings → Updates`. The manifest is Ed25519-signed with a key that never leaves the maintainer's machine (`~/.config/toastmonitor/update-key.pem`, 0600); the app carries the public half.
 
 ```bash
-./scripts/package-release.sh         # builds and zips both arm64 and universal apps
-# Sign an architecture-aware manifest directly into dist/release/.
-./scripts/sign-update-manifest.sh 1.2.3 \
-  dist/release/ToastMonitor-1.2.3-arm64.zip \
-  dist/release/ToastMonitor-1.2.3-universal.zip \
-  dist/release/appcast.json
-cp dist/release/appcast.json docs/appcast.json && cp dist/release/appcast.json appcast.json
-git add -A && git commit -m "Publish update manifest for v1.2.3" && git push
-gh release create vX.Y.Z dist/release/*.zip --title "..." --notes "..."
+git tag vX.Y.Z
+./scripts/package-release.sh
+gh release create vX.Y.Z dist/release/*.zip --title "ToastMonitor vX.Y.Z" --notes-file docs/release-vX.Y.Z.md
+./scripts/sign-update-manifest.sh X.Y.Z \
+  dist/release/ToastMonitor-X.Y.Z-arm64.zip \
+  dist/release/ToastMonitor-X.Y.Z-universal.zip
+cp appcast.json docs/appcast.json
+git commit -am "Publish update manifest for vX.Y.Z" && git push
 ```
 
-- The update feed is hosted on GitHub Pages (`https://toast1zz.github.io/ToastMonitor/appcast.json`, deployed from `docs/` on `main`); short cache headers make a new manifest visible to clients within a minute
-- Manifest `download_url` is tag-pinned (`/releases/download/vX.Y.Z/…`) — note the `v` prefix; `/releases/latest/...` lags fresh releases and raw.githubusercontent caches stale manifests for many minutes
-- Verify the live feed with `curl -s https://toast1zz.github.io/ToastMonitor/appcast.json`
-- The updater verifies the downloaded bundle before handing its staging directory to a detached installer. Installation waits for the running process to exit, preserves the old bundle as `ToastMonitor.app.tm-backup`, and removes that backup only after the replacement completes normal startup and acknowledges readiness. If installation fails, the next launch reports the failure in Settings → Updates. A read-only app location fails before the running app quits; move ToastMonitor to a writable folder before retrying. If the new app does not acknowledge launch, both bundles remain for manual recovery instead of deleting the backup on a timer.
+- The feed is served from GitHub Pages (`https://toast1zz.github.io/ToastMonitor/appcast.json`, deployed from `docs/`); check it with `curl -s` after publishing.
+- Download URLs are tag-pinned (`/releases/download/vX.Y.Z/…`), never `/releases/latest/`.
+- The updater verifies the download before installing, keeps the old app as `ToastMonitor.app.tm-backup` until the new one starts, and reports a failed install in `Settings → Updates`.
 
-## Command line (headless / development)
+## Command line
 
 ```bash
-# Credential provisioning — always from stdin, never in argv
-printf '%s\n' 'sk-or-...' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-or-key
-printf '%s\n' 'auth_cookie' | dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-go <workspaceId>
-dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>   # only explicitly configured addresses
-dist/ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key                 # clear
+# Credentials always come from stdin, never argv
+printf '%s\n' 'sk-or-...' | ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-or-key
+printf '%s\n' 'auth_cookie' | ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-go <workspaceId>
+ToastMonitor.app/Contents/MacOS/ToastMonitor --provision-hermes <feedURL>
+ToastMonitor.app/Contents/MacOS/ToastMonitor --clear-or-key
 ```
 
-- `TM_DEBUG=1`: per-file scan decision logging
-- `--render-dashboard <path> [height] [width] [tab]`: headless Dashboard PNG render (no window or keychain needed); `dark`/`light` in the path selects the appearance; tab is `overview / analysis / plans / sessions`
-- `--render-popover <path> [height]`: headless popover PNG render
-- `--render-settings <path> [general|appearance|sources|data|updates] [height]`: headless render of one settings pane
-- `--show-settings [pane] [--appearance light|dark] [--capture-settings <path>]`: opens the real settings window (no collectors, no keychain)
-- `--show-panel`: open the popover on screen for inspection (does not start the OpenRouter / Go clients, so no Keychain prompts)
-- `--show-dashboard`: launch with the panel open
-- `--verify-status-toggle`: automated status-button toggle self-check (CI)
+Development and screenshots:
 
-## Architecture
+- `TM_DEBUG=1` logs each file-scan decision.
+- `--show-panel`, `--show-dashboard` and `--show-settings [pane]` open the real windows without starting collectors or reading the Keychain; `--appearance light|dark` picks the look.
+- `--demo` fills them with made-up usage, quotas and balances. It requires `TM_DATABASE_PATH` pointing at a throwaway database, so it can never touch your real data. The README screenshots are made this way.
+- `--render-popover`, `--render-dashboard` and `--render-settings` write offscreen PNGs; native controls are not drawn there.
+- `--verify-status-toggle` and `--verify-quota-badge` are CI self-checks.
 
-- **Single collection loop** — scans every 1s while the panel is visible, every 5s while hidden (to keep the menu bar fresh); incremental per-file reads keyed on (size, nanosecond mtime, inode); steady state is stat-only
-- **Single SQLite store** — `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL)
-- **Cost estimation** — built-in price table for common models (Claude/GPT/DeepSeek, …); unknown models count tokens only; `backfillCosts()` corrects history idempotently
+## How it works
 
-## Data, privacy & security
+- **One collection loop** — scans every second while the panel is open and every 5 seconds otherwise. Files are read incrementally, keyed on size, nanosecond mtime and inode, so an idle scan is only `stat` calls. Large JSONL and DeepSeek Harness logs are streamed in bounded chunks rather than loaded whole.
+- **One SQLite store** — `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL).
+- **Cost estimates** — a built-in price table for common models; unknown models count tokens without a price, and OpenCode's own cost is used when present.
+- **DeepSeek Harness** — parses the zstd-compressed session logs when the `zstd` CLI is installed, otherwise falls back to the projection cache (no model or per-call timing). The mode never switches once chosen, so the two can't double-count.
 
-- **Updates** — callers must supply an HTTPS metadata URL plus an Ed25519 public key fixed to the artifact; `UpdateChecker` validates the metadata signature, version and SHA-256 of the download; the file is downloaded only after user confirmation and re-verified before use. Never auto-downloads, installs or executes updates
-- **Data maintenance** — `DataMaintenance.exportDatabase(to:)`, `clearAllData()`, local cleanup, protected backups and pre-restore validation; clearing forces a protected backup first; backups/exports land in the user directory restricted to the current user. Stop collection and keep the backup before clearing or restoring
-- **Privacy** — logs, usage, project paths and session metadata stay in the local SQLite by default; requests go out only to explicitly enabled remote feeds or quota services. Credentials are stored in the macOS Keychain, never in URLs, plists or diagnostic logs; no analytics or ad SDKs
+## Privacy and security
+
+- Logs, usage, project paths and session metadata stay in the local database. Requests go only to quota services and remote feeds you enabled.
+- Credentials live in the macOS Keychain, never in URLs, plists or logs. No analytics or ad SDKs.
+- Updates are downloaded only after you confirm, and the signature, version and SHA-256 are checked before anything is installed.
+- `Settings → Data` exports, backs up, restores and clears the database; clearing makes a protected backup first.
 
 ## Known limitations
 
-- The menu bar shows only today's tokens (user preference); cost and fixed subscriptions live in the tooltip/panel
-- Claude usage that leaves no local transcript (server-side Cowork, claude.ai chat, other machines) is estimated from the shared quota, never counted in tokens
-- The price table is approximate (official list prices); OpenCode's own cost field is used verbatim when present
-- DSH log mode depends on the `zstd` CLI (see lookup logic above); cache mode has no model, so cost is 0
+- The menu bar shows today's tokens only; cost and subscriptions live in the panel.
+- Claude usage outside this Mac is estimated from the shared quota, never counted in tokens.
+- Prices are approximate official list prices.
+- Without the `zstd` CLI, DeepSeek Harness usage has no model, so its cost is 0.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, test and PR workflow, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, test and pull-request workflow, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## Acknowledgements
 
-Thanks to [@yeyebbc](https://github.com/yeyebbc) for [#4](https://github.com/Toast1zz/ToastMonitor/pull/4), which releases transient read buffers during collector scans and cuts scan peak memory by more than 80% in the bundled benchmark.
+Thanks to [@yeyebbc](https://github.com/yeyebbc) for [#4](https://github.com/Toast1zz/ToastMonitor/pull/4), which releases transient read buffers during collector scans and cut scan peak memory by more than 80% in the bundled benchmark.
 
 ## License
 

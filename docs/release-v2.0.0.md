@@ -8,7 +8,7 @@
 
 ## X Subscription
 
-- If you have the new X Subscription, add it in Settings › Subscriptions and the panel shows its name. Grok's own service still reports some of these plans as SuperGrok.
+- If you have the new X Subscription, add it under Subscriptions in Settings › Sources and the panel shows its name. Grok's own service still reports some of these plans as SuperGrok.
 
 ## Fixed
 

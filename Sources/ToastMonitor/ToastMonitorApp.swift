@@ -23,8 +23,9 @@ UI verification:
   --render-popover PATH [HEIGHT] [--period today|week|month|all]
   --render-dashboard PATH [HEIGHT] [WIDTH] [overview|analysis|plans|sessions]
   --render-settings PATH [general|appearance|sources|data|updates] [HEIGHT]
-  --show-panel [--backdrop white|dark] [--appearance light|dark] [--capture PATH]
-  --show-dashboard [--appearance light|dark] [--capture-dashboard PATH]
+  --show-panel [--backdrop white|dark] [--appearance light|dark] [--demo] [--capture PATH]
+                                     --demo: made-up data; needs TM_DATABASE_PATH
+  --show-dashboard [--appearance light|dark] [--demo] [--capture-dashboard PATH]
   --show-settings [PANE] [--appearance light|dark] [--capture-settings PATH]
   --show-dashboard --benchmark-dashboard-switches
   --verify-status-toggle
@@ -421,6 +422,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // OpenRouter and OpenCode Go clients here would ask for three login
         // Keychain items while we're only inspecting toolbar/panel geometry.
         if isDashboardVerification || isPanelVerification {
+            if DemoMode.requested(args) {
+                guard DemoMode.install() else {
+                    print("--demo requires an isolated TM_DATABASE_PATH")
+                    exit(1)
+                }
+            }
             AppState.shared.start()
             NSApp.finishLaunching()
             if isPanelVerification {
