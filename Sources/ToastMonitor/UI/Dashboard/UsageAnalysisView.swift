@@ -92,6 +92,8 @@ struct UsageAnalysisView: View {
         let labels: [String]
         let colors: [Color]
         let aggregates: [AggregateRow]
+        /// What the CSV export writes: raw ids, not merged display names.
+        let csvRows: [AnalysisCSVRow]
         let dayCount: Int
         let totalTokens: Int64
         let totalCost: Double
@@ -167,7 +169,7 @@ struct UsageAnalysisView: View {
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var lines = ["range,grouping,name,tokens,calls,estimated_cost,share"]
-        for row in analysis.aggregates {
+        for row in analysis.csvRows {
             lines.append([
                 analysis.range.rawValue,
                 analysis.grouping.rawValue,
@@ -237,7 +239,7 @@ struct UsageAnalysisView: View {
     /// palette color — the top model gets the first color, no collisions.
     private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> [String: Color] {
         let totals: [String: Int64] = aggs.reduce(into: [:]) { acc, row in
-            acc[row.model, default: 0] += row.input + row.output + row.cacheRead
+            acc[ModelName.display(row.model), default: 0] += row.input + row.output + row.cacheRead
         }
         let ranked = totals.sorted { $0.value > $1.value }.map(\.key)
         var map: [String: Color] = [:]
@@ -293,7 +295,7 @@ struct UsageAnalysisView: View {
                               modelColors: [String: Color]) -> AnalysisData {
         let rows: [Row] = grouping == .byTool
             ? aggs.map { Row(day: $0.day, key: $0.tool, input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count) }
-            : modelAggs.map { Row(day: $0.day, key: $0.model, input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count) }
+            : modelAggs.map { Row(day: $0.day, key: ModelName.display($0.model), input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count) }
 
         var dayTokens: [Int64: [String: Int64]] = [:]
         var dayCost: [Int64: [String: Double]] = [:]
@@ -334,6 +336,21 @@ struct UsageAnalysisView: View {
             }
         }
 
+        // CSV keeps the raw ids, one row per id, so an export can be matched
+        // back to the logs and the price table.
+        let csvRows: [AnalysisCSVRow]
+        if grouping == .byTool {
+            csvRows = orderedNames.compactMap { name in
+                let tokens = tokensByName[name] ?? 0
+                guard tokens > 0 else { return nil }
+                return AnalysisCSVRow(name: name, tokens: tokens, calls: callsByName[name] ?? 0,
+                                      cost: costByName[name] ?? 0,
+                                      ratio: totalTokens > 0 ? Double(tokens) / Double(totalTokens) : 0)
+            }
+        } else {
+            csvRows = AnalysisCSVRow.perModelID(modelAggs)
+        }
+
         let aggregates: [AggregateRow] = orderedNames.compactMap { name in
             let tokens = tokensByName[name] ?? 0
             guard tokens > 0 else { return nil }
@@ -359,6 +376,7 @@ struct UsageAnalysisView: View {
                             labels: aggregates.map { label($0.name) },
                             colors: aggregates.map(\.color),
                             aggregates: aggregates,
+                            csvRows: csvRows,
                             dayCount: dayOrder.count,
                             totalTokens: totalTokens,
                             totalCost: costByName.values.reduce(0, +),
@@ -620,5 +638,34 @@ struct UsageAnalysisView: View {
                 }
             }
         }
+    }
+}
+
+/// One CSV line of the Analysis export.
+struct AnalysisCSVRow: Equatable {
+    let name: String
+    let tokens: Int64
+    let calls: Int64
+    let cost: Double
+    let ratio: Double
+
+    /// One row per raw model id (never merged by display name), most-used
+    /// first, so an export can be matched back to the logs and price table.
+    static func perModelID(
+        _ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]
+    ) -> [AnalysisCSVRow] {
+        var tokens: [String: Int64] = [:], calls: [String: Int64] = [:], cost: [String: Double] = [:]
+        for m in aggs {
+            tokens[m.model, default: 0] += m.input + m.output + m.cacheRead
+            calls[m.model, default: 0] += max(m.count, 0)
+            cost[m.model, default: 0] += max(m.cost, 0)
+        }
+        let total = tokens.values.reduce(0, +)
+        return tokens.filter { $0.value > 0 }
+            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .map { id, t in
+                AnalysisCSVRow(name: id, tokens: t, calls: calls[id] ?? 0, cost: cost[id] ?? 0,
+                               ratio: total > 0 ? Double(t) / Double(total) : 0)
+            }
     }
 }

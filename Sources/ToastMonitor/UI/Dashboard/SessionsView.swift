@@ -182,7 +182,7 @@ struct SessionRowView: View {
         let titled = row.title.map { !$0.isEmpty } ?? false
         var parts: [String] = []
         if titled, let p = row.project, !p.isEmpty { parts.append(p) }
-        if let m = row.model, !m.isEmpty { parts.append(m) }
+        if let m = row.model, !m.isEmpty { parts.append(ModelName.display(m)) }
         if parts.isEmpty { parts.append(tool?.displayName ?? row.tool) }
         return parts.joined(separator: " · ")
     }
@@ -293,7 +293,7 @@ struct SessionDetailView: View {
                                 if index > 0 { Divider().padding(.horizontal, 10) }
                                 HStack(spacing: 12) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(turn.model ?? "Unknown model")
+                                        Text(turn.model.map(ModelName.display) ?? "Unknown model")
                                             .font(TMType.regular(TMType.body))
                                         Text(Format.dateTime(turn.ts))
                                             .font(TMType.regular(TMType.caption))
