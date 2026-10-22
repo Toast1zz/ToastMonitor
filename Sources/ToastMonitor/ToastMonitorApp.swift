@@ -339,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tab: DashboardView.Tab? = {
                 switch tabName {
                 case "analysis": return .analysis
+                case "performance": return .performance
                 case "plans": return .plans
                 case "sessions": return .sessions
                 default: return .overview
