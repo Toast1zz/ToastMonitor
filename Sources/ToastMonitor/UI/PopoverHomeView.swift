@@ -1786,11 +1786,11 @@ struct PopoverHeatmap: View {
     let weeks: [[Int64?]]
     let heatmap: [Int64: Int64]
 
-    /// 24 weeks keeps cells large enough with a 4 pt gutter.
+    /// 24 weeks keeps cells large enough with a 2 pt gutter.
     static let weekCount = 24
     /// Vertical gap between the month labels and the grid.
     private static let labelGap: CGFloat = 16
-    private static let cellGutter: CGFloat = 4
+    private static let cellGutter: CGFloat = 2
     private var labelGap: CGFloat { Self.labelGap }
     private var cellGutter: CGFloat { Self.cellGutter }
 
