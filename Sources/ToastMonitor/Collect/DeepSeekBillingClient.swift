@@ -92,6 +92,10 @@ final class DeepSeekBillingClient: ObservableObject {
                     self.select(self.selectedSlot, configuration: UsagePeriodSettings.shared.configuration)
                     self.installTimer()
                     if self.popoverVisible || self.dashboardVisible { self.refresh() }
+                    // This month's spend sets the pace for the days-left line.
+                    if self.popoverVisible {
+                        self.loadSpendIfNeeded(for: .month, configuration: UsagePeriodSettings.shared.configuration)
+                    }
                 }
             })
         }
@@ -221,6 +225,12 @@ final class DeepSeekBillingClient: ObservableObject {
             switch balanceResult {
             case .success(let value):
                 self.state.balance = value; self.state.balanceUpdated = Date(); self.state.balanceError = nil
+                // History for the days-left line when no spend report exists.
+                for wallet in value.wallets {
+                    Database.shared.insertDeepSeekBalance(
+                        currency: wallet.currency,
+                        amount: NSDecimalNumber(decimal: wallet.total.amount).doubleValue)
+                }
             case .failure(let error):
                 failed = true
                 self.state.balanceError = error.localizedDescription

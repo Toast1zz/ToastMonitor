@@ -65,6 +65,26 @@ enum ClaudeCLIRefresher {
         return nil
     }
 
+    /// True when the file a path resolves to carries a quarantine flag the
+    /// user has not approved yet.
+    nonisolated static func isQuarantined(_ path: String) -> Bool {
+        let target = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        let name = "com.apple.quarantine"
+        let size = getxattr(target, name, nil, 0, 0, 0)
+        guard size > 0 else { return false }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard getxattr(target, name, &buffer, size, 0, 0) == size else { return false }
+        return quarantineBlocksLaunch(String(decoding: buffer, as: UTF8.self))
+    }
+
+    /// The xattr reads "flags;timestamp;agent;uuid" with hex flags; 0x40
+    /// marks a file the user already approved to open.
+    nonisolated static func quarantineBlocksLaunch(_ value: String) -> Bool {
+        guard let field = value.split(separator: ";", omittingEmptySubsequences: false).first,
+              let flags = UInt32(field, radix: 16) else { return true }
+        return flags & 0x40 == 0
+    }
+
     /// Runs the probe synchronously — this blocks for up to ~25s and must
     /// never be called on the main actor. Returns true only once `/status`
     /// visibly rendered account info, which is the signal Claude Code's own
@@ -78,6 +98,11 @@ enum ClaudeCLIRefresher {
         lock.unlock()
 
         guard let binary = binary ?? locateBinary() else { return false }
+        // A freshly installed or upgraded `claude` (e.g. a Homebrew cask)
+        // carries an unapproved quarantine flag. Launching it from this app
+        // makes Gatekeeper put up a "cannot verify" dialog on every attempt,
+        // while a Terminal run is exempt — so leave it to the user there.
+        guard !isQuarantined(binary) else { return false }
 
         var masterFD: Int32 = 0
         var slaveFD: Int32 = 0

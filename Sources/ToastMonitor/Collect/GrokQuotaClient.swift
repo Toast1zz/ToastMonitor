@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-/// Grok plan (Xpass, formerly SuperGrok) weekly quota via the Grok CLI
+/// Grok plan (SuperGrok, now sold as part of The X Subscription) weekly quota via the Grok CLI
 /// billing proxy (same approach as CodexBar): reads the bearer token `grok login` stores in
 /// ~/.grok/auth.json (never persisted anywhere in ToastMonitor) and GETs
 /// https://cli-chat-proxy.grok.com/v1/billing?format=credits, plus
@@ -328,6 +328,16 @@ final class GrokQuotaClient: ObservableObject {
         let sum = out.reduce(0) { $0 + $1.usedPercent }
         guard abs(sum - total) <= 1 else { return [] }
         return out.filter { $0.usedPercent > 0 }.sorted { $0.usedPercent > $1.usedPercent }
+    }
+
+    /// The plan recorded in Settings › Subscriptions (plan "grok") wins over
+    /// the API's tier: the API still reports some X Subscription accounts as
+    /// "SuperGrok".
+    nonisolated static func plan(subscriptions: [Database.Subscription], apiPlan: String?,
+                                 now: Date = Date()) -> String? {
+        let nowSeconds = Int64(now.timeIntervalSince1970)
+        return subscriptions.first { $0.plan == "grok" && ($0.endDate == 0 || $0.endDate > nowSeconds) }?.name
+            ?? apiPlan
     }
 
     /// `/v1/settings` → `subscription_tier_display`.

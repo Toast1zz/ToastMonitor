@@ -143,7 +143,6 @@ struct PopoverRootView: View {
 
 enum PopoverHeightSlice: Hashable, Sendable {
     case header
-    case pinned
     case body
     case footer
 }
@@ -154,9 +153,8 @@ struct PopoverHeightMeasurements: Equatable, Sendable {
     var naturalHeight: CGFloat? {
         guard let header = values[.header], header > 0,
               let body = values[.body], body > 0,
-              let footer = values[.footer], footer > 0,
-              let pinned = values[.pinned], pinned > 0 else { return nil }
-        return header + pinned + body + footer
+              let footer = values[.footer], footer > 0 else { return nil }
+        return header + body + footer
     }
 }
 

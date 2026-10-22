@@ -266,7 +266,7 @@ struct AccountsSettingsSection: View {
         let state = grokQuota.state
         if state.error != nil && state.configured { return "Error" }
         guard state.configured else { return "Not signed in" }
-        return state.planName ?? "Connected"
+        return GrokQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: state.planName) ?? "Connected"
     }
 
     private var keyCountText: String {
