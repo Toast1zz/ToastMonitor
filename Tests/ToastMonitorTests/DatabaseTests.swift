@@ -653,7 +653,7 @@ extension DatabaseTests {
         XCTAssertTrue(db.setScanState("src", size: 1, mtime: 2, identity: 3),
                       "restored schema must be re-migrated so scan_state.identity exists (DB-3)")
         XCTAssertEqual(db.scanState("src").identity, 3)
-        XCTAssertEqual(db.diagnosticsSummary()["user_version"] as? Int32, 4,
+        XCTAssertEqual(db.diagnosticsSummary()["user_version"] as? Int32, Database.schemaVersion,
                        "restore must re-run migrations against the restored file (DB-3)")
         XCTAssertTrue(db.upsertSubscription(Database.Subscription(id: 0, name: "X", plan: "",
                                                                   startDate: 1_700_000_000, cycle: "monthly",

@@ -75,12 +75,13 @@ enum ClaudeNonLocalEstimator {
     /// aggregated in SQLite rather than retaining every local turn.
     static func tokenEstimate(samples: [Sample], localIntervalTotals: [LocalIntervalTotals],
                               now: Int64) -> TokenEstimate? {
-        let series: [(Sample) -> (pct: Int, reset: Int64)?] = [
-            { s in s.fiveHourPct.flatMap { p in s.fiveHourReset.map { (p, $0) } } },
-            { s in s.weeklyReset.map { (s.weeklyPct, $0) } },
+        let series: [(length: Int64, extract: (Sample) -> (pct: Int, reset: Int64)?)] = [
+            (5 * 3600, { s in s.fiveHourPct.flatMap { p in s.fiveHourReset.map { (p, $0) } } }),
+            (7 * 86400, { s in s.weeklyReset.map { (s.weeklyPct, $0) } }),
         ]
-        for extract in series {
-            if let estimate = tokenEstimate(samples, localIntervalTotals, now: now, series: extract) {
+        for (length, extract) in series {
+            if let estimate = tokenEstimate(samples, localIntervalTotals, now: now,
+                                            windowLength: length, series: extract) {
                 return estimate
             }
         }
@@ -89,22 +90,35 @@ enum ClaudeNonLocalEstimator {
 
 
     private static func tokenEstimate(_ samples: [Sample], _ totals: [LocalIntervalTotals], now: Int64,
+                                      windowLength: Int64,
                                       series: (Sample) -> (pct: Int, reset: Int64)?) -> TokenEstimate? {
         guard totals.count == max(samples.count - 1, 0) else { return nil }
         var calibrationTokens: Int64 = 0
         var calibrationPoints = 0
-        var idle: [(mid: Int64, points: Int)] = []
+        var idleRises: [(mid: Int64, points: Int)] = []
         for index in totals.indices {
             let a = samples[index]
             let b = samples[index + 1]
             let intervalTotals = totals[index]
             guard b.ts <= now - ingestMarginSeconds,
-                  let wa = series(a), let wb = series(b),
-                  abs(wa.reset - wb.reset) <= sameWindowTolerance else { continue }
-            let delta = wb.pct - wa.pct
-            guard delta >= 0 else { continue }
-            if intervalTotals.freshTokens < idleTokenThreshold {
-                if delta > 0 { idle.append((a.ts + (b.ts - a.ts) / 2, delta)) }
+                  let wa = series(a), let wb = series(b) else { continue }
+            let idle = intervalTotals.freshTokens < idleTokenThreshold
+            let delta: Int
+            if abs(wa.reset - wb.reset) <= sameWindowTolerance {
+                delta = wb.pct - wa.pct
+                guard delta >= 0 else { continue }
+            } else {
+                // A new window opened inside an idle interval: everything it
+                // shows was used in the interval (the old window's tail is
+                // unknown, so this stays a lower bound). Mixed intervals are
+                // skipped — their local tokens straddle two windows.
+                let opened = wb.reset - windowLength
+                guard idle, opened >= a.ts, opened <= b.ts,
+                      opened >= wa.reset - sameWindowTolerance else { continue }
+                delta = wb.pct
+            }
+            if idle {
+                if delta > 0 { idleRises.append((a.ts + (b.ts - a.ts) / 2, delta)) }
             } else {
                 calibrationTokens += intervalTotals.totalTokens
                 calibrationPoints += delta
@@ -114,7 +128,7 @@ enum ClaudeNonLocalEstimator {
         let rate = Double(calibrationTokens) / Double(calibrationPoints)
         return TokenEstimate(
             tokensPerPoint: rate,
-            events: idle.map { TokenEvent(ts: $0.mid, tokens: Int64((Double($0.points) * rate).rounded())) })
+            events: idleRises.map { TokenEvent(ts: $0.mid, tokens: Int64((Double($0.points) * rate).rounded())) })
     }
 
 }

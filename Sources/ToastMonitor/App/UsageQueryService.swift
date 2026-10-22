@@ -181,6 +181,13 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
+    func loadPerfPoints(days: Int, completion: @escaping @MainActor @Sendable ([PerfPoint]) -> Void) {
+        queue.async {
+            let points = self.database.perfPoints(days: days)
+            DispatchQueue.main.async { completion(points) }
+        }
+    }
+
     func loadDailyAggsByModel(days: Int, completion: @escaping @MainActor @Sendable ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> Void) {
         queue.async {
             let aggs = self.database.dailyAggregatesByModel(days: days)

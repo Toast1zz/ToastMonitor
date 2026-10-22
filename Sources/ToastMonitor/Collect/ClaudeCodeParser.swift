@@ -9,6 +9,9 @@ import Foundation
 /// Anthropic's cloud), writes one under Desktop's own data directory. Chat
 /// and cloud-executed Cowork tasks leave no local file at all — this only
 /// ever covers the subset that actually ran locally. See coworkLocalAgentRoot.
+/// Since mid-2026 Desktop runs Cowork as cloud sessions (this Mac only hosts
+/// their tool VM), so this tree holds history only; current Cowork use shows
+/// up solely through ClaudeNonLocalEstimator.
 enum ClaudeCodeParser {
 
     static var root: String {

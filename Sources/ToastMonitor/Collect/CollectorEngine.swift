@@ -271,6 +271,7 @@ final class CollectorEngine: @unchecked Sendable {
                    signaturePath: DSHParser.projCachePath)
         }
 
+        PerfCollector.maybeRun(claudeFiles: claudeFiles)
         HermesRemoteClient.shared.maybePoll()
         // Unconditional (not gated on new turns/sessions): a week with zero
         // new usage still deserves a backup, since settings/subscriptions

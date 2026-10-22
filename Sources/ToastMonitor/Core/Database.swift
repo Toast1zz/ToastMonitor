@@ -572,7 +572,39 @@ final class Database: @unchecked Sendable {
                 transactionWriteError = false
             }
         }
+        // v5: per-call timing (time to first token, output speed). Kept apart
+        // from `turns` so its merge-by-request upserts never touch usage rows,
+        // with its own cursors so a first run backfills existing transcripts.
+        if previousVersion < 5 {
+            guard let db else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            let ok = execChecked("""
+            CREATE TABLE IF NOT EXISTS perf_samples (
+              tool TEXT NOT NULL,
+              key TEXT NOT NULL,
+              model TEXT,
+              request_ms INTEGER,
+              first_ms INTEGER,
+              last_ms INTEGER,
+              output_tokens INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY (tool, key)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS idx_perf_first ON perf_samples(first_ms) WHERE first_ms IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS perf_cursors (
+              source TEXT PRIMARY KEY,
+              size INTEGER NOT NULL,
+              identity INTEGER NOT NULL DEFAULT 0
+            );
+            """) && setUserVersion(5)
+            if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
+                rollbackOrPoison()
+                setUserVersion(previousVersion)
+            }
+        }
     }
+
+    /// The user_version the last migration step sets.
+    static let schemaVersion: Int32 = 5
 
     private func userVersion() -> Int32 {
         guard let db else { return 0 }
@@ -2025,7 +2057,7 @@ final class Database: @unchecked Sendable {
             var ok = true
             for spec in tools {
                 let raw = spec.tool.rawValue
-                for table in ["turns", "sessions", "session_totals"] {
+                for table in ["turns", "sessions", "session_totals", "perf_samples"] {
                     var stmt: OpaquePointer?
                     let sql = "DELETE FROM \(table) WHERE tool=?;"
                     if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) != SQLITE_OK {
@@ -2041,20 +2073,22 @@ final class Database: @unchecked Sendable {
                     sqlite3_finalize(stmt)
                 }
                 for root in spec.roots {
-                    var stmt: OpaquePointer?
-                    let sql = "DELETE FROM scan_state WHERE substr(source,1,length(?))=?;"
-                    if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) != SQLITE_OK {
-                        ok = false
-                        markTransactionWriteFailure()
-                    } else {
-                        sqlite3_bind_text(stmt, 1, (root as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                        sqlite3_bind_text(stmt, 2, (root as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                        if sqlite3_step(stmt) != SQLITE_DONE {
+                    for cursorTable in ["scan_state", "perf_cursors"] {
+                        var stmt: OpaquePointer?
+                        let sql = "DELETE FROM \(cursorTable) WHERE substr(source,1,length(?))=?;"
+                        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) != SQLITE_OK {
                             ok = false
                             markTransactionWriteFailure()
+                        } else {
+                            sqlite3_bind_text(stmt, 1, (root as NSString).utf8String, -1, SQLITE_TRANSIENT)
+                            sqlite3_bind_text(stmt, 2, (root as NSString).utf8String, -1, SQLITE_TRANSIENT)
+                            if sqlite3_step(stmt) != SQLITE_DONE {
+                                ok = false
+                                markTransactionWriteFailure()
+                            }
                         }
+                        sqlite3_finalize(stmt)
                     }
-                    sqlite3_finalize(stmt)
                 }
             }
             // Deletes do not grow MAX(id); bump the version stamp so the
@@ -2078,7 +2112,7 @@ final class Database: @unchecked Sendable {
         let tables = [
             "turns", "sessions", "scan_state", "session_totals",
             "openrouter_snapshots", "opencodego_snapshots", "subscriptions",
-            "claude_quota_samples",
+            "claude_quota_samples", "perf_samples", "perf_cursors",
             // Resets the AUTOINCREMENT counters for turns/subscriptions so
             // re-imported ids start from 1 again.
             "sqlite_sequence"
@@ -2203,7 +2237,7 @@ final class Database: @unchecked Sendable {
         let version = candidate.userVersion()
         let tablesExist = Self.restoreTables.allSatisfy { !candidate.columnTypes(in: $0).isEmpty }
         candidate.close()
-        guard (0...4).contains(version), tablesExist else {
+        guard (0...Self.schemaVersion).contains(version), tablesExist else {
             NSLog("[ToastMonitor] restore source rejected: schema=%d tables=%d", version, tablesExist)
             return false
         }
@@ -2254,7 +2288,7 @@ final class Database: @unchecked Sendable {
     }
 
     private func isUsable(comparedTo reference: Database) -> Bool {
-        guard db != nil, !startupHadError, userVersion() == 4 else {
+        guard db != nil, !startupHadError, userVersion() == Self.schemaVersion else {
             NSLog("[ToastMonitor] restore readiness failed: open=%d startupError=%d schema=%d", db != nil, startupHadError, userVersion())
             return false
         }
@@ -2660,6 +2694,136 @@ final class Database: @unchecked Sendable {
         let hi = floorBucket(to + 1)
         guard useRollup, lo < hi else { return (to + 1, to + 1) }
         return (lo, hi)
+    }
+
+    // MARK: - Performance samples
+
+    /// Merges samples into perf_samples: the first non-null request/first-token
+    /// time wins, the last-token time and token count only grow.
+    @discardableResult
+    func upsertPerfSamples(_ samples: [PerfSample]) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !samples.isEmpty else { return true }
+        guard let db else { return false }
+        let sql = """
+        INSERT INTO perf_samples (tool, key, model, request_ms, first_ms, last_ms, output_tokens)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(tool, key) DO UPDATE SET
+          model = COALESCE(model, excluded.model),
+          request_ms = COALESCE(request_ms, excluded.request_ms),
+          first_ms = COALESCE(first_ms, excluded.first_ms),
+          last_ms = CASE WHEN last_ms IS NULL THEN excluded.last_ms
+                         WHEN excluded.last_ms IS NULL THEN last_ms
+                         ELSE MAX(last_ms, excluded.last_ms) END,
+          output_tokens = MAX(output_tokens, excluded.output_tokens);
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            markTransactionWriteFailure()
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        func bind(_ index: Int32, _ value: Int64?) {
+            if let value { sqlite3_bind_int64(stmt, index, value) } else { sqlite3_bind_null(stmt, index) }
+        }
+        var ok = true
+        for s in samples {
+            sqlite3_bind_text(stmt, 1, (s.tool.rawValue as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, (s.key as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, (s.model as NSString?)?.utf8String ?? nil, -1, SQLITE_TRANSIENT)
+            bind(4, s.requestMs)
+            bind(5, s.firstTokenMs)
+            bind(6, s.lastMs)
+            sqlite3_bind_int64(stmt, 7, s.outputTokens)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                ok = false
+                markTransactionWriteFailure()
+            }
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+        return ok
+    }
+
+    /// Calls whose first token was never seen (no streamed timing) can never
+    /// become measurable once their response has been fully read.
+    func pruneIncompletePerfSamples(before cutoffMs: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return }
+        var stmt: OpaquePointer?
+        let sql = "DELETE FROM perf_samples WHERE first_ms IS NULL AND COALESCE(last_ms, request_ms, 0) < ?;"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        sqlite3_bind_int64(stmt, 1, cutoffMs)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
+
+    func perfCursor(_ source: String) -> (size: Int64, identity: Int64)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return nil }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT size, identity FROM perf_cursors WHERE source=?;", -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (source as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return (sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1))
+    }
+
+    @discardableResult
+    func setPerfCursor(_ source: String, size: Int64, identity: Int64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return false }
+        var stmt: OpaquePointer?
+        let sql = "INSERT INTO perf_cursors (source, size, identity) VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET size=excluded.size, identity=excluded.identity;"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            markTransactionWriteFailure()
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (source as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, size)
+        sqlite3_bind_int64(stmt, 3, identity)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            markTransactionWriteFailure()
+            return false
+        }
+        return true
+    }
+
+    /// Measured calls of the last `days` days. Time to first token needs the
+    /// request time; speed needs enough output to outweigh timing granularity.
+    func perfPoints(days: Int) -> [PerfPoint] {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return [] }
+        let sinceMs = startOfDay(daysAgo: max(days - 1, 0)) * 1000
+        let sql = """
+        SELECT CAST(strftime('%Y%m%d', first_ms / 1000, 'unixepoch', 'localtime') AS INTEGER),
+               tool, COALESCE(NULLIF(model, ''), '(unknown)'),
+               CASE WHEN request_ms IS NOT NULL AND first_ms > request_ms
+                         AND first_ms - request_ms < 300000
+                    THEN first_ms - request_ms END,
+               CASE WHEN output_tokens >= ? AND last_ms - first_ms >= ?
+                    THEN output_tokens * 1000.0 / (last_ms - first_ms) END
+        FROM perf_samples
+        WHERE first_ms >= ? AND COALESCE(model, '') <> '<synthetic>';
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, PerfStats.minOutputTokens)
+        sqlite3_bind_int64(stmt, 2, PerfStats.minGenerationMs)
+        sqlite3_bind_int64(stmt, 3, sinceMs)
+        var out: [PerfPoint] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let ttft = sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 3)
+            let tps = sqlite3_column_type(stmt, 4) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 4)
+            guard ttft != nil || tps != nil else { continue }
+            out.append(PerfPoint(day: sqlite3_column_int64(stmt, 0),
+                                 tool: String(cString: sqlite3_column_text(stmt, 1)),
+                                 model: String(cString: sqlite3_column_text(stmt, 2)),
+                                 ttftMs: ttft, tokensPerSecond: tps))
+        }
+        return out
     }
 
     private func bindUsageRange(_ stmt: OpaquePointer?, from: Int64, to: Int64) {

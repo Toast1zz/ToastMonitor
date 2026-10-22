@@ -108,6 +108,22 @@ final class ClaudeNonLocalEstimatorTests: XCTestCase {
         XCTAssertEqual(actual, intervalTotals(samples: s, turns: referenceTurns))
     }
 
+    func testIdleIntervalSpanningResetCountsTheNewWindow() {
+        let oldReset = start + 2 * hour + 300
+        var s = samples(fiveHour: [10, 15, 20]).map {
+            E.Sample(ts: $0.ts, weeklyPct: $0.weeklyPct, weeklyReset: $0.weeklyReset,
+                     fiveHourPct: $0.fiveHourPct, fiveHourReset: oldReset)
+        }
+        // Nothing local; the old window expired and a new one opened inside
+        // the interval and reached 7% — all of it used during the interval.
+        s.append(E.Sample(ts: start + 3 * hour, weeklyPct: 40, weeklyReset: weeklyReset,
+                          fiveHourPct: 7, fiveHourReset: oldReset + 600 + 5 * hour))
+        let events = [localWork(in: 0, total: 5_000_000), localWork(in: 1, total: 5_000_000)]
+        let estimate = E.tokenEstimate(samples: s, localIntervalTotals: intervalTotals(samples: s, turns: events),
+                                       now: farFuture)
+        XCTAssertEqual(estimate?.events, [E.TokenEvent(ts: s[2].ts + hour / 2, tokens: 7_000_000)])
+    }
+
     func testWindowResetIsNotAnInterval() {
         var s = samples(fiveHour: [10, 15, 20])
         // Next sample belongs to a new 5h window: 20 → 3 is a reset, not use.

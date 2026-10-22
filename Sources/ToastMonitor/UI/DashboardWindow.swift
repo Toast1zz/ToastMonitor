@@ -565,6 +565,8 @@ final class DashboardPageController: NSViewController {
             page = AnyView(UsageAnalysisView(readinessChanged: { [weak self] ready in
                 self?.analysisReadyForCapture = ready
             }).environmentObject(AppState.shared))
+        case .performance:
+            page = AnyView(PerformanceView())
         case .plans:
             page = AnyView(PlansView().environmentObject(AppState.shared))
         case .sessions:
@@ -607,6 +609,7 @@ enum DashboardView {
     enum Tab: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case analysis = "Analysis"
+        case performance = "Performance"
         case plans = "Plans"
         case sessions = "Sessions"
 
