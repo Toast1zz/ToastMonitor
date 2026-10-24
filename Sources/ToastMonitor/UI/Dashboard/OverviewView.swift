@@ -5,6 +5,7 @@ import SwiftUI
 /// the top drives the figures and both breakdowns; the heatmap always shows
 /// the trailing year.
 struct OverviewView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
@@ -43,7 +44,7 @@ struct OverviewView: View {
             DashMetricRow {
                 DashMetric(label: "Tokens", value: Format.compact(periodTokens))
                     .tmNumericTextTransition(value: Double(periodTokens))
-                    .animation(.easeOut(duration: 0.35), value: periodTokens)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: periodTokens)
                 DashMetric(label: "Calls", value: Format.count(periodCalls))
                 DashMetric(label: actualSpendLabel, value: actualSpendText,
                            help: actualSpendHelp)

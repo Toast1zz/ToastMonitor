@@ -71,6 +71,7 @@ struct PopoverHomeView: View {
         }
     }
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var app = AppState.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
@@ -308,7 +309,7 @@ struct PopoverHomeView: View {
                     // Both the token count and the display format drive the
                     // transition, so toggling compact/full numbers animates the same way
                     // as a live token update.
-                    .animation(.easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
                     .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
                     .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
@@ -1685,6 +1686,7 @@ private struct QuotaWindowLine: View {
 /// (using the window faster than it passes). Either way the solid edge is
 /// the time mark, so it never disappears under the fill.
 private struct UsageBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let usedPercent: Double
     let tint: Color
     /// 0…1 share of the window's time already passed.
@@ -1715,7 +1717,7 @@ private struct UsageBar: View {
                         .frame(width: usedWidth)
                 }
             }
-            .animation(.easeOut(duration: 0.35), value: used)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: used)
         }
         .frame(height: 4)
         .accessibilityHidden(true)
