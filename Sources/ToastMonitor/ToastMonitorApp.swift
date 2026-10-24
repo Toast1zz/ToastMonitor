@@ -716,7 +716,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Defaults to the system UI font (SF Pro, tabular digits); a
         // user-picked font comes from the Appearance settings section.
         let font = MenuBarFontSettings.shared.selection.resolvedFont
-        let attr = NSMutableAttributedString(string: "\(text)", attributes: [
+        // Give the leading icon breathing room; the gap scales with the chosen font.
+        let attr = NSMutableAttributedString(string: " \(text)", attributes: [
             .font: font,
         ])
         if quotaAlerts.unreadCount > 0 {
