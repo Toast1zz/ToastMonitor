@@ -190,7 +190,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        panel.animator().alphaValue = 1
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.alphaValue = 1
+        } else {
+            panel.animator().alphaValue = 1
+        }
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
     }
 
@@ -238,7 +242,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         frame.size = NSSize(width: Self.panelWidth, height: target)
         frame.origin.y = top - target
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().setFrame(frame, display: true)
         }
