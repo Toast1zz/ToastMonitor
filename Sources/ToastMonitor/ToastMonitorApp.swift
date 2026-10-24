@@ -577,13 +577,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item
         if let button = item.button {
-            // Keep the SF Symbol on the native status button so macOS can
-            // apply menu-bar template rendering on inactive displays.
-            if let image = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil) {
-                image.isTemplate = true
-                button.image = image
-                button.imagePosition = .imageLeading
-            }
+            // Keep template rendering on the native status button so macOS
+            // controls the icon color, including on inactive displays.
+            button.image = MenuBarIcon.makeImage()
+            button.imagePosition = .imageLeading
             button.target = self
             button.action = #selector(togglePanel(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -719,7 +716,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Defaults to the system UI font (SF Pro, tabular digits); a
         // user-picked font comes from the Appearance settings section.
         let font = MenuBarFontSettings.shared.selection.resolvedFont
-        let attr = NSMutableAttributedString(string: "\(text)", attributes: [
+        // Give the leading icon breathing room; the gap scales with the chosen font.
+        let attr = NSMutableAttributedString(string: " \(text)", attributes: [
             .font: font,
         ])
         if quotaAlerts.unreadCount > 0 {
