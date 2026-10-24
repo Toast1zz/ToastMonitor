@@ -150,6 +150,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, test and pull-request work
 
 Thanks to [@yeyebbc](https://github.com/yeyebbc) for [#4](https://github.com/Toast1zz/ToastMonitor/pull/4), which releases transient read buffers during collector scans and cut scan peak memory by more than 80% in the bundled benchmark.
 
+The menu bar icon was contributed by [@yeyebbc](https://github.com/yeyebbc) in [#6](https://github.com/Toast1zz/ToastMonitor/pull/6).
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party system components remain under their own licenses.
