@@ -63,7 +63,9 @@ enum SettingsPane: String, CaseIterable {
 final class SettingsWindowController: NSObject, NSToolbarDelegate {
     static let shared = SettingsWindowController()
     private static let lastPaneKey = "settingsLastPane"
-    private static let switchDuration: TimeInterval = 0.25
+    private static var switchDuration: TimeInterval {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.25
+    }
 
     private var window: NSWindow?
     private var root: NSView?
