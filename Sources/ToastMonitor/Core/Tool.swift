@@ -167,10 +167,12 @@ enum ToolKind: String, CaseIterable, Identifiable {
         }
 
         /// Field-wise maximum. Time and model follow the snapshot with the
-        /// larger token sum. Cost is repriced from the merged tokens when
-        /// the model has a rate; otherwise the winner's cost is kept.
-        /// One-hour cache writes are not stored on the row, so a reprice
-        /// uses the five-minute write rate.
+        /// larger token sum. When those merged tokens are exactly the
+        /// winner's, its cost is already consistent and is kept, including a
+        /// one-hour cache write the price table cannot reconstruct. A mix
+        /// of the two snapshots is repriced from the merged tokens. That
+        /// reprice uses the five-minute write rate, because one-hour writes
+        /// are not stored on the row. An unknown model keeps the winner's cost.
         static func keepingGreater(_ older: TurnRecord, _ newer: TurnRecord) -> TurnRecord {
             let olderSum = older.inputTokens + older.outputTokens + older.reasoningTokens
                 + older.cacheRead + older.cacheWrite
@@ -183,9 +185,14 @@ enum ToolKind: String, CaseIterable, Identifiable {
             let reasoning = max(older.reasoningTokens, newer.reasoningTokens)
             let cacheRead = max(older.cacheRead, newer.cacheRead)
             let cacheWrite = max(older.cacheWrite, newer.cacheWrite)
-            let repriced = Pricing.estimate(model: model, input: input, output: output,
-                                            cacheRead: cacheRead, cacheWrite: cacheWrite,
-                                            inputIncludesCache: winner.tool == .codex)
+            let tokensMatchWinner = model == winner.model
+                && input == winner.inputTokens && output == winner.outputTokens
+                && reasoning == winner.reasoningTokens && cacheRead == winner.cacheRead
+                && cacheWrite == winner.cacheWrite
+            let repriced = tokensMatchWinner ? nil : Pricing.estimate(
+                model: model, input: input, output: output,
+                cacheRead: cacheRead, cacheWrite: cacheWrite,
+                inputIncludesCache: winner.tool == .codex)
             return TurnRecord(tool: winner.tool, sessionID: winner.sessionID,
                               project: winner.project ?? older.project ?? newer.project,
                               model: model,

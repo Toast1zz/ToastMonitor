@@ -163,6 +163,17 @@ final class ClaudeCodeParserTests: XCTestCase {
         XCTAssertEqual(unknown.cost, 1.5, accuracy: 0.0001)
         XCTAssertEqual(unknown.costQuality, "actual")
         XCTAssertEqual(unknown.outputTokens, 50)
+
+        // The complete snapshot already holds every max field, so its cost
+        // (including a one-hour cache write) is kept rather than repriced
+        // at the five-minute write rate.
+        let partialWrite = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-sonnet-4-6",
+                                      ts: 1, inputTokens: 100, outputTokens: 5, cacheRead: 0, cacheWrite: 10,
+                                      cost: 0.001, eventID: "claude:s:h", usageMerge: .keepGreater)
+        let withOneHour = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-sonnet-4-6",
+                                     ts: 2, inputTokens: 100, outputTokens: 40, cacheRead: 0, cacheWrite: 14,
+                                     cost: 0.0009615, eventID: "claude:s:h", usageMerge: .keepGreater)
+        XCTAssertEqual(TurnRecord.keepingGreater(partialWrite, withOneHour).cost, 0.0009615, accuracy: 0.0000001)
     }
 
     func testStoredPartialMessageIsUpgraded() throws {
