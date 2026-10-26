@@ -55,11 +55,11 @@ enum OpenCodeParser {
                      provider: normalizeProvider(model),
                      cost: sqlite3_column_double(stmt, 4),
                      hasActualCost: sqlite3_column_type(stmt, 4) != SQLITE_NULL,
-                     input: sqlite3_column_int64(stmt, 5),
-                     output: sqlite3_column_int64(stmt, 6),
-                     reasoning: sqlite3_column_int64(stmt, 7),
-                     cacheRead: sqlite3_column_int64(stmt, 8),
-                     cacheWrite: sqlite3_column_int64(stmt, 9),
+                     input: FileScanner.tokenCount(sqlite3_column_int64(stmt, 5)),
+                     output: FileScanner.tokenCount(sqlite3_column_int64(stmt, 6)),
+                     reasoning: FileScanner.tokenCount(sqlite3_column_int64(stmt, 7)),
+                     cacheRead: FileScanner.tokenCount(sqlite3_column_int64(stmt, 8)),
+                     cacheWrite: FileScanner.tokenCount(sqlite3_column_int64(stmt, 9)),
                      timeCreated: sqlite3_column_int64(stmt, 10),
                      timeUpdated: sqlite3_column_int64(stmt, 11)))
             count += 1
@@ -103,13 +103,13 @@ enum OpenCodeParser {
 
             let totalInput = row.input
             if let prev = prevTotals[key] {
-                let legacyCombinedInput = prev.reasoning == 0
-                    && row.reasoning > 0 && prev.input == row.input + row.reasoning
-                let dInput = (legacyCombinedInput ? row.input + row.reasoning : totalInput) - prev.input
-                let dOutput = row.output - prev.output
-                let dReasoning = legacyCombinedInput ? 0 : row.reasoning - prev.reasoning
-                let dCacheRead = row.cacheRead - prev.cacheRead
-                let dCacheWrite = row.cacheWrite - prev.cacheWrite
+                let legacyCombinedInput = FileScanner.tokenCount(prev.reasoning) == 0
+                    && row.reasoning > 0 && FileScanner.tokenCount(prev.input) == row.input + row.reasoning
+                let dInput = (legacyCombinedInput ? row.input + row.reasoning : totalInput) - FileScanner.tokenCount(prev.input)
+                let dOutput = row.output - FileScanner.tokenCount(prev.output)
+                let dReasoning = legacyCombinedInput ? 0 : row.reasoning - FileScanner.tokenCount(prev.reasoning)
+                let dCacheRead = row.cacheRead - FileScanner.tokenCount(prev.cacheRead)
+                let dCacheWrite = row.cacheWrite - FileScanner.tokenCount(prev.cacheWrite)
                 let dCost = row.cost - prev.cost
                 let turn = TurnRecord(tool: .opencode, sessionID: row.id, project: project,
                                       model: row.model, ts: sec(row.timeUpdated),
@@ -140,8 +140,8 @@ enum OpenCodeParser {
             // current value: a source rollback (totals dropping) must not
             // reset the origin, or the later regrowth would be re-counted
             // from the rolled-back value. max() also absorbs the legacy
-            // combined-input transition (prev.input == input + reasoning),
-            // where prev.input exceeds the split current values.
+            // combined-input transition (FileScanner.tokenCount(prev.input) == input + reasoning),
+            // where FileScanner.tokenCount(prev.input) exceeds the split current values.
             let prev = prevTotals[key]
             database.setSessionTotals(key, tool: "opencode",
                                      input: max(prev?.input ?? 0, totalInput),

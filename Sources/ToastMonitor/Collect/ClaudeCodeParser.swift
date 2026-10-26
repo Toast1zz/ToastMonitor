@@ -108,10 +108,10 @@ enum ClaudeCodeParser {
                     if ts == 0 { ts = Int64(Date().timeIntervalSince1970) }
                     let model = obj["model"] as? String
                         ?? (obj["message"] as? [String: Any])?["model"] as? String
-                    let input = (usage["input_tokens"] as? NSNumber)?.int64Value ?? 0
-                    let output = (usage["output_tokens"] as? NSNumber)?.int64Value ?? 0
-                    let cacheRead = (usage["cache_read_input_tokens"] as? NSNumber)?.int64Value ?? 0
-                    let cacheWrite = (usage["cache_creation_input_tokens"] as? NSNumber)?.int64Value ?? 0
+                    let input = FileScanner.tokenCount(usage["input_tokens"])
+                    let output = FileScanner.tokenCount(usage["output_tokens"])
+                    let cacheRead = FileScanner.tokenCount(usage["cache_read_input_tokens"])
+                    let cacheWrite = FileScanner.tokenCount(usage["cache_creation_input_tokens"])
                     guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { return }
                     let est = Pricing.estimate(model: model, input: input, output: output,
                                                cacheRead: cacheRead, cacheWrite: cacheWrite)

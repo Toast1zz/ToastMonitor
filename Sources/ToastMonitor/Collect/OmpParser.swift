@@ -74,11 +74,11 @@ enum OmpParser {
                       let msg = obj["message"] as? [String: Any],
                       msg["role"] as? String == "assistant",
                       let usage = msg["usage"] as? [String: Any] else { return }
-                let input = (usage["input"] as? NSNumber)?.int64Value ?? 0
-                let output = (usage["output"] as? NSNumber)?.int64Value ?? 0
-                let cacheRead = (usage["cacheRead"] as? NSNumber)?.int64Value ?? 0
-                let cacheWrite = (usage["cacheWrite"] as? NSNumber)?.int64Value ?? 0
-                guard input + output + cacheRead + cacheWrite > 0 else { return }
+                let input = FileScanner.tokenCount(usage["input"])
+                let output = FileScanner.tokenCount(usage["output"])
+                let cacheRead = FileScanner.tokenCount(usage["cacheRead"])
+                let cacheWrite = FileScanner.tokenCount(usage["cacheWrite"])
+                guard [input, output, cacheRead, cacheWrite].contains(where: { $0 > 0 }) else { return }
                 let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
                     ?? Int64(Date().timeIntervalSince1970)
                 let model = msg["model"] as? String

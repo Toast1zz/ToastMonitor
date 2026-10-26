@@ -3,6 +3,16 @@ import Darwin
 
 /// Incremental JSONL utilities: tracks byte offsets so we only parse appended data.
 enum FileScanner {
+    /// Reject malformed counters before arithmetic, rather than after constructing a turn.
+    static func tokenCount(_ value: Any?) -> Int64 {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !["f", "d"].contains(String(cString: number.objCType)),
+              number.compare(NSNumber(value: 0)) != .orderedAscending,
+              number.compare(NSNumber(value: TurnRecord.maxTokens)) != .orderedDescending else { return 0 }
+        return number.int64Value
+    }
+
 
     private struct FileListCache {
         let files: [String]

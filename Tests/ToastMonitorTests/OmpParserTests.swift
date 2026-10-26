@@ -217,4 +217,20 @@ final class OmpParserTests: XCTestCase {
         XCTAssertNotEqual(turns[0].eventID, turns[1].eventID)
         XCTAssertTrue(turns.allSatisfy { $0.eventID?.contains(":fallback:") == true })
     }
+    func testRejectsInvalidTokenCountsBeforeSumming() throws {
+        let invalid: [Any] = [Int64.max, UInt64.max, -1, "123", 1.5, true]
+        for value in invalid {
+            let path = FileManager.default.temporaryDirectory.appendingPathComponent("omp-invalid-\(UUID().uuidString).jsonl")
+            defer { try? FileManager.default.removeItem(at: path) }
+            let row: [String: Any] = ["type": "message", "id": "test", "message": ["role": "assistant", "usage": ["input": value, "output": 1]]]
+            var bytes = try JSONSerialization.data(withJSONObject: row)
+            bytes.append(0x0a)
+            try bytes.write(to: path)
+            let turns = OmpParser.scan(knownPaths: [path.path], database: db).turns
+            XCTAssertEqual(turns.count, 1)
+            XCTAssertEqual(turns.first?.inputTokens, 0, "Invalid count: \(value)")
+            XCTAssertEqual(turns.first?.outputTokens, 1)
+        }
+    }
+
 }

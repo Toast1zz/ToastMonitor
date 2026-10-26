@@ -454,11 +454,11 @@ enum DSHParser {
 
         func emit(usage: [String: Any], seq: Int64, time: Int64,
                   provider: String?, model: String?) {
-            let input = (usage["inputTokens"] as? NSNumber)?.int64Value ?? 0
-            let output = (usage["outputTokens"] as? NSNumber)?.int64Value ?? 0
-            let cacheRead = (usage["cacheReadTokens"] as? NSNumber)?.int64Value ?? 0
-            let cacheWrite = (usage["cacheWriteTokens"] as? NSNumber)?.int64Value ?? 0
-            guard input + output + cacheRead + cacheWrite > 0 else { return }
+            let input = FileScanner.tokenCount(usage["inputTokens"])
+            let output = FileScanner.tokenCount(usage["outputTokens"])
+            let cacheRead = FileScanner.tokenCount(usage["cacheReadTokens"])
+            let cacheWrite = FileScanner.tokenCount(usage["cacheWriteTokens"])
+            guard [input, output, cacheRead, cacheWrite].contains(where: { $0 > 0 }) else { return }
             let ts = sec(time > 0 ? time : Int64(Date().timeIntervalSince1970 * 1000))
             let cost = Pricing.estimate(model: model, input: input, output: output,
                                         cacheRead: cacheRead, cacheWrite: cacheWrite)
@@ -566,10 +566,10 @@ enum DSHParser {
                   let tu = rows["tokenUsage"] as? [String: Any],
                   let tuVal = tu["val"] as? [String: Any],
                   let totals = tuVal["totals"] as? [String: Any] else { continue }
-            let input = (totals["uncachedInputTokens"] as? NSNumber)?.int64Value ?? 0
-            let output = (totals["outputTokens"] as? NSNumber)?.int64Value ?? 0
-            let cacheRead = (totals["cacheReadTokens"] as? NSNumber)?.int64Value ?? 0
-            let cacheWrite = (totals["cacheWriteTokens"] as? NSNumber)?.int64Value ?? 0
+            let input = FileScanner.tokenCount(totals["uncachedInputTokens"])
+            let output = FileScanner.tokenCount(totals["outputTokens"])
+            let cacheRead = FileScanner.tokenCount(totals["cacheReadTokens"])
+            let cacheWrite = FileScanner.tokenCount(totals["cacheWriteTokens"])
             let seq = (tu["seq"] as? NSNumber)?.int64Value ?? 0
             let createdAt = sec((identity["createdAt"] as? NSNumber)?.int64Value ?? 0)
             let project = identity["cwd"] as? String
@@ -587,10 +587,10 @@ enum DSHParser {
             let prev = prevTotals[key]
             var dIn = input, dOut = output, dCR = cacheRead, dCW = cacheWrite
             if let prev {
-                dIn = max(input - prev.input, 0)
-                dOut = max(output - prev.output, 0)
-                dCR = max(cacheRead - prev.cacheRead, 0)
-                dCW = max(cacheWrite - prev.cacheWrite, 0)
+                dIn = max(input - FileScanner.tokenCount(prev.input), 0)
+                dOut = max(output - FileScanner.tokenCount(prev.output), 0)
+                dCR = max(cacheRead - FileScanner.tokenCount(prev.cacheRead), 0)
+                dCW = max(cacheWrite - FileScanner.tokenCount(prev.cacheWrite), 0)
             }
             // Baseline is the HIGH-WATER MARK per counter: a source rollback
             // must not lower the origin, or the regrowth beyond the old peak

@@ -14,6 +14,26 @@ final class FileScannerTests: XCTestCase {
         super.tearDown()
     }
 
+    func testTokenCountRejectsMalformedValuesAndAcceptsCeiling() {
+        for value: Any in [Int64.max, UInt64.max, Int64.min, "12", 1.5, Double.infinity, Double.nan, true] {
+            XCTAssertEqual(FileScanner.tokenCount(value), 0)
+        }
+        XCTAssertEqual(FileScanner.tokenCount(nil), 0)
+        XCTAssertEqual(FileScanner.tokenCount(42), 42)
+        XCTAssertEqual(FileScanner.tokenCount(TurnRecord.maxTokens), TurnRecord.maxTokens)
+        XCTAssertEqual(FileScanner.tokenCount(TurnRecord.maxTokens + 1), 0)
+    }
+
+    func testCodexAndHermesRejectInvalidCountersBeforeArithmetic() throws {
+        let counts = try XCTUnwrap(CodexParser.tokenCounts(from: ["last_token_usage": ["input_tokens": Int64.max, "output_tokens": 1]]))
+        XCTAssertEqual(counts.input, 0)
+        XCTAssertEqual(counts.output, 1)
+        let current = HermesUsageBaseline.Counters(input: Int64.max, output: 1, reasoning: 2, cacheRead: 0, cacheWrite: 0)
+        let step = HermesUsageBaseline.advance(current: current, prev: [Int64.min, 0, 0, 0, 0])
+        XCTAssertEqual(step.delta.input, 2)
+        XCTAssertEqual(step.delta.output, 1)
+    }
+
     func testMalformedUTF8DoesNotShiftCursor() throws {
         let valid = Data("{\"type\":\"valid\"}\n".utf8)
         var bytes = Data([0xff, 0xfe, 0x0a])

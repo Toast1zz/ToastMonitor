@@ -35,11 +35,11 @@ enum CodexParser {
     static func tokenCounts(from info: [String: Any]) -> (input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64)? {
         guard let last = info["last_token_usage"] as? [String: Any] else { return nil }
         return (
-            input: (last["input_tokens"] as? NSNumber)?.int64Value ?? 0,
-            output: (last["output_tokens"] as? NSNumber)?.int64Value ?? 0,
-            reasoning: (last["reasoning_output_tokens"] as? NSNumber)?.int64Value ?? 0,
-            cacheRead: (last["cached_input_tokens"] as? NSNumber)?.int64Value ?? 0,
-            cacheWrite: (last["cache_write_input_tokens"] as? NSNumber)?.int64Value ?? 0
+            input: FileScanner.tokenCount(last["input_tokens"]),
+            output: FileScanner.tokenCount(last["output_tokens"]),
+            reasoning: FileScanner.tokenCount(last["reasoning_output_tokens"]),
+            cacheRead: FileScanner.tokenCount(last["cached_input_tokens"]),
+            cacheWrite: FileScanner.tokenCount(last["cache_write_input_tokens"])
         )
     }
 
@@ -162,7 +162,7 @@ enum CodexParser {
                     let est = Pricing.estimate(model: eventModel, input: input, output: output,
                                                 cacheRead: cacheRead, cacheWrite: cacheWrite,
                                                 inputIncludesCache: true)
-                    if input + output + reasoning + cacheRead + cacheWrite > 0,
+                    if [input, output, reasoning, cacheRead, cacheWrite].contains(where: { $0 > 0 }),
                        let lastUsage = info["last_token_usage"] as? [String: Any] {
                         let eventID = EventIdentity.codex(
                             sessionID: sid, timestamp: ts, model: eventModel,
