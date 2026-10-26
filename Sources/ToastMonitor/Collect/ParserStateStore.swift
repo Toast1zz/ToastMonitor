@@ -27,6 +27,13 @@ protocol ParserStateStore: AnyObject {
     func setting(_ key: String) -> String?
     @discardableResult
     func setSetting(_ key: String, _ value: String?) -> Bool
+    /// A source could not be read. The default does nothing; the staged store
+    /// keeps the message so the collector can show it instead of an idle scan.
+    func noteScanProblem(_ message: String)
+}
+
+extension ParserStateStore {
+    func noteScanProblem(_ message: String) {}
 }
 
 extension Database: ParserStateStore {}
@@ -62,18 +69,23 @@ final class StagedParserStateStore: ParserStateStore {
     }
 
     private let database: Database
-    private let sourceSnapshots: [String: FileScanner.Stat?]
     private var originalScanStates: [String: (size: Int64, mtime: Int64, identity: Int64, context: String?)] = [:]
     private var originalTotals: ParserSessionTotals?
     private var scanUpdates: [String: ScanUpdate] = [:]
     private var totalsUpdates: [String: TotalsUpdate] = [:]
     private(set) var preparationIsConsistent = true
+    private(set) var problem: String?
 
     init(database: Database, sourcePaths: [String]) {
         self.database = database
-        sourceSnapshots = Dictionary(uniqueKeysWithValues: Set(sourcePaths).map {
-            ($0, FileScanner.fileStat($0))
-        })
+        // `sourcePaths` is the candidate list. Snapshotting every file made
+        // one unrelated mtime change reject the whole source, including files
+        // this scan did not parse.
+        _ = sourcePaths
+    }
+
+    func noteScanProblem(_ message: String) {
+        if problem == nil { problem = message }
     }
 
     func scanState(_ source: String) -> (size: Int64, mtime: Int64, identity: Int64, context: String?) {
@@ -93,9 +105,7 @@ final class StagedParserStateStore: ParserStateStore {
             originalScanStates[source] = database.scanState(source)
         }
         guard let current = FileScanner.fileStat(source),
-              current.mtime == mtime,
-              current.identity == identity,
-              current.size >= size else {
+              Self.acceptsChange(path: source, current: current, cursor: size, observedMtime: mtime, identity: identity) else {
             preparationIsConsistent = false
             return false
         }
@@ -148,11 +158,10 @@ final class StagedParserStateStore: ParserStateStore {
         for (key, original) in originalSettings {
             guard database.setting(key) == original.value else { return false }
         }
-        for (path, snapshot) in sourceSnapshots {
-            guard Self.sameStat(FileScanner.fileStat(path), snapshot) else { return false }
-        }
         for update in scanUpdates.values {
-            guard Self.sameStat(FileScanner.fileStat(update.source), update.sourceStat),
+            guard let now = FileScanner.fileStat(update.source),
+                  Self.acceptsChange(path: update.source, current: now, cursor: update.size,
+                                     observedMtime: update.mtime, identity: update.identity),
                   Self.sameScanState(database.scanState(update.source), originalScanStates[update.source])
             else { return false }
         }
@@ -197,13 +206,20 @@ final class StagedParserStateStore: ParserStateStore {
         return result
     }
 
-    private static func sameStat(_ lhs: FileScanner.Stat?, _ rhs: FileScanner.Stat?) -> Bool {
-        switch (lhs, rhs) {
-        case (nil, nil): return true
-        case let (l?, r?):
-            return l.size == r.size && l.mtime == r.mtime && l.identity == r.identity
-        default: return false
+    /// JSONL and zstd logs may grow while a scan is in flight. A same-size
+    /// mtime change is a rewrite and is rejected. Other files (SQLite) keep
+    /// the strict mtime match.
+    private static func acceptsChange(path: String, current: FileScanner.Stat, cursor: Int64,
+                                      observedMtime: Int64, identity: Int64) -> Bool {
+        guard current.identity == identity, current.size >= cursor else { return false }
+        let rewritten = current.size == cursor && current.mtime != observedMtime
+        if path.hasSuffix(".jsonl") {
+            return !rewritten && FileScanner.isLineBoundary(path: path, offset: cursor)
         }
+        if path.hasSuffix(".zstd") {
+            return !rewritten
+        }
+        return current.mtime == observedMtime
     }
 
     private static func sameScanState(

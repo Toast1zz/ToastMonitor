@@ -6,8 +6,7 @@ This app processes AI usage data and stores API credentials (OpenRouter keys, Op
 
 **Do not open a public issue for security problems.** Use GitHub's private security advisory flow:
 
-- Go to https://github.com/neko1chau/ToastMonitor/security/advisories and click **New draft security advisory**
-- Or email the maintainer directly if the advisory form is not available
+- Go to https://github.com/Toast1zz/ToastMonitor/security/advisories and click **New draft security advisory**
 
 Please include:
 

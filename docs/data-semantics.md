@@ -53,3 +53,10 @@ Rules:
 - **Clear All Data** removes local usage/history, including `claude_quota_samples`, cached session totals, and quota snapshots. It resets query/estimation cache markers and bumps the data version so displayed usage is recomputed.
 - Settings, user preferences, and Keychain credentials are preserved. Hermes remote `hm_d|...` cumulative baselines are also retained as historical high-water marks: a later feed poll imports only usage accumulated since the retained baseline, rather than replaying the cleared historical total as new usage. Clear therefore does not reset remote cumulative counters or their deduplication state.
 - Local Claude/Codex rebuild affects only local turns/sessions and does not reset quota samples or remote Hermes baselines.
+
+## 6. Event identity
+
+- Claude rows use `claude:<sessionId>:<message.id>` and keep the greater usage for that id. A row with no message id uses a byte-offset fallback and is not upgraded.
+- Codex event ids stay offset-based, so two real turns with the same usage stay distinct. `total_token_usage` is cumulative: only growth is stored, and an unchanged total is skipped. Without a total, `last_token_usage` is the turn.
+- DeepSeek Harness log rows use `dsh-log:<session>:<turn>:<step>`. A later message for that step replaces the stored row.
+- Schema v7 sets `usage_recount_v7` to `pending`. The next local scan deletes `claude:%`, `codex:%`, and `dsh-log:%` turns only when that source still has files, zeroes those files' cursors, and rebuilds from the logs. Source logs are never deleted. Rows with a NULL event id, cache-mode rows, remote rows, and any other prefix stay. A remote source, or DeepSeek Harness in cache mode, is not wiped. Turns whose source file is already gone cannot be rebuilt.

@@ -458,6 +458,64 @@ final class DatabaseTests: XCTestCase {
                                   eventID: "second-event", costQuality: "estimated")
         XCTAssertTrue(migrated.insertTurns([distinct]))
         XCTAssertEqual(migrated.turnCount(), 2, "legacy compound UNIQUE 仍吞掉同秒同 token 事件")
+        XCTAssertEqual(migrated.setting("usage_recount_v7"), "pending")
+    }
+
+    func testUsageRecountRemovesPrefixedRowsWithoutTouchingOtherHistory() throws {
+        XCTAssertEqual(db.setting("usage_recount_v7"), "pending")
+        XCTAssertTrue(db.insertTurns([
+            TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "claude:s:msg"),
+            TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 2, outputTokens: 2, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "codex:s:evt"),
+            TurnRecord(tool: .dsh, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 3, outputTokens: 3, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "dsh-log:s:1:1"),
+            TurnRecord(tool: .omp, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 4, outputTokens: 4, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "omp:keep"),
+        ]))
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(tmpPath, &raw, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw, """
+        INSERT INTO turns (tool, session_id, ts, input_tokens, output_tokens, event_id)
+        VALUES ('codex', 'legacy-null', 1, 9, 8, NULL);
+        """, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+        XCTAssertTrue(db.setScanState("/tmp/claude.jsonl", size: 20, mtime: 20, identity: 3, context: "{\"sid\":\"s\"}"))
+        XCTAssertTrue(db.setScanState("/tmp/dsh.jsonl", size: 8, mtime: 8, identity: 4, context: "{}"))
+
+        db.recountMiscountedUsage(claudePaths: ["/tmp/claude.jsonl"], codexPaths: [],
+                                  dshPaths: ["/tmp/dsh.jsonl"])
+        XCTAssertEqual(db.setting("usage_recount_v7"), "done")
+        XCTAssertEqual(db.turns(sessionTool: "claude", sessionID: "s").count, 0)
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").count, 1)
+        XCTAssertEqual(db.turns(sessionTool: "dsh", sessionID: "s").count, 0)
+        XCTAssertEqual(db.turns(sessionTool: "omp", sessionID: "s").count, 1)
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "legacy-null").count, 1)
+        XCTAssertEqual(db.scanState("/tmp/claude.jsonl").size, 0)
+        XCTAssertEqual(db.scanState("/tmp/claude.jsonl").mtime, 0)
+        XCTAssertNil(db.scanState("/tmp/claude.jsonl").context)
+        XCTAssertEqual(db.scanState("/tmp/dsh.jsonl").size, 0)
+
+        db.recountMiscountedUsage(claudePaths: ["/tmp/claude.jsonl"], codexPaths: ["/tmp/codex.jsonl"],
+                                  dshPaths: ["/tmp/dsh.jsonl"])
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").count, 1,
+                       "a finished recount must not run again")
+    }
+
+    func testBackfillRepricesAStaleEstimate() {
+        let stale = TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "gpt-5-mini", ts: 10,
+                               inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                               cost: 9, pricingVersion: "1999-01-01", eventID: "codex:s:old")
+        XCTAssertTrue(db.insertTurns([stale]))
+        db.setSetting("backfill_costs_last", nil)
+        db.backfillCosts()
+        let stored = db.turns(sessionTool: "codex", sessionID: "s")
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored[0].cost, 0.25, accuracy: 0.0001)
     }
 
     func testOpenRouterCycleSpendSubtractsMiddayBaseline() {

@@ -227,11 +227,17 @@ enum DSHParser {
                 continue
             }
 
+            var initialPending: [PendingStep] = []
+            if offset > 0, let rows = persisted?["pending"] as? [[String: Any]] {
+                initialPending = rows.compactMap(PendingStep.from)
+            }
             var foldPass = (count: 0, newOffset: offset)
             let parsed = parseLogEvents({ consume in
                 foldPass = forEachObject(path: file, fromOffset: offset,
                                          decompress: decompress, consume)
-            }, sessionID: sid, project: project)
+            }, sessionID: sid, project: project,
+               pending: initialPending,
+               fallbackTs: st.mtime / 1_000_000_000)
             newOffset = foldPass.newOffset
             if parsed.objectCount == 0 {
                 recordEmptyScan()
@@ -246,6 +252,9 @@ enum DSHParser {
             var ctx: [String: Any] = ["sid": sid]
             if let project { ctx["cwd"] = project }
             if st.size < prev.size { ctx["_full_rescan"] = true }
+            if !parsed.pending.isEmpty {
+                ctx["pending"] = parsed.pending.map(\.json)
+            }
             let ctxJSON = (try? JSONSerialization.data(withJSONObject: ctx))
                 .flatMap { String(data: $0, encoding: .utf8) }
             database.setScanState(file, size: newOffset, mtime: st.mtime,
@@ -451,21 +460,46 @@ enum DSHParser {
         }
         return count
     }
-    /// Folds a streamed event slice into per-step turns. Pending step state
-    /// survives frame boundaries and is finalized once the requested slice ends.
-    /// An assistant/message usage replaces an earlier chunk sample for the
-    /// same turn/step, matching the harness's own token-meter fold.
+    /// One in-flight model step. `emitted` means a row was already stored;
+    /// a later scan reloads it only to replace it when the final message arrives.
+    private struct PendingStep {
+        var usage: [String: Any]
+        var turn: Int
+        var step: Int
+        var time: Int64
+        var emitted: Bool
+
+        var json: [String: Any] {
+            ["usage": usage, "turn": turn, "step": step, "time": time, "emitted": emitted]
+        }
+
+        static func from(_ row: [String: Any]) -> PendingStep? {
+            guard let usage = row["usage"] as? [String: Any] else { return nil }
+            let emitted = (row["emitted"] as? Bool) ?? (row["emitted"] as? NSNumber)?.boolValue ?? true
+            return PendingStep(usage: usage,
+                               turn: (row["turn"] as? NSNumber)?.intValue ?? 0,
+                               step: (row["step"] as? NSNumber)?.intValue ?? 0,
+                               time: (row["time"] as? NSNumber)?.int64Value ?? 0,
+                               emitted: emitted)
+        }
+    }
+
+    /// Folds a streamed event slice into per-step turns. A step's identity is
+    /// `session:turn:step`, so a usage sample and the later assistant/message
+    /// for that step are the same row. In-flight steps are returned in
+    /// `pending` and persisted by the caller; they are emitted once, then
+    /// replaced when the step finishes on a later scan.
     private static func parseLogEvents(
         _ stream: (_ consume: ((offset: Int64, obj: [String: Any])) -> Void) -> Void,
-        sessionID: String, project: String?
-    ) -> (turns: [TurnRecord], firstTs: Int64, lastTs: Int64, model: String?, objectCount: Int) {
-        struct PendingStep {
-            let usage: [String: Any]
-            let seq: Int64
-            let time: Int64
-        }
+        sessionID: String, project: String?,
+        pending initialPending: [PendingStep] = [],
+        fallbackTs: Int64 = 0
+    ) -> (turns: [TurnRecord], firstTs: Int64, lastTs: Int64, model: String?, objectCount: Int, pending: [PendingStep]) {
         var turns: [TurnRecord] = []
         var pending: [String: PendingStep] = [:]
+        for step in initialPending {
+            pending["\(step.turn):\(step.step)"] = step
+        }
         var headerProvider: String?
         var headerModel: String?
         var firstTs: Int64 = 0
@@ -473,14 +507,20 @@ enum DSHParser {
         var firstModel: String?
         var objectCount = 0
 
-        func emit(usage: [String: Any], seq: Int64, time: Int64,
+        func emit(usage: [String: Any], turn: Int, step: Int, time: Int64,
                   provider: String?, model: String?) {
             let input = FileScanner.tokenCount(usage["inputTokens"])
             let output = FileScanner.tokenCount(usage["outputTokens"])
             let cacheRead = FileScanner.tokenCount(usage["cacheReadTokens"])
             let cacheWrite = FileScanner.tokenCount(usage["cacheWriteTokens"])
             guard [input, output, cacheRead, cacheWrite].contains(where: { $0 > 0 }) else { return }
-            let ts = sec(time > 0 ? time : Int64(Date().timeIntervalSince1970 * 1000))
+            let ts: Int64
+            if time > 0 {
+                ts = sec(time)
+            } else {
+                guard fallbackTs > 0 else { return }
+                ts = fallbackTs
+            }
             let cost = Pricing.estimate(model: model, input: input, output: output,
                                         cacheRead: cacheRead, cacheWrite: cacheWrite)
             turns.append(TurnRecord(tool: .dsh, sessionID: sessionID, project: project,
@@ -488,8 +528,9 @@ enum DSHParser {
                                     inputTokens: input, outputTokens: output,
                                     cacheRead: cacheRead, cacheWrite: cacheWrite,
                                     cost: cost ?? 0, provider: provider,
-                                    eventID: "dsh-log:\(sessionID):\(seq)",
-                                    costQuality: cost == nil ? "unknown" : "estimated"))
+                                    eventID: "dsh-log:\(sessionID):\(turn):\(step)",
+                                    costQuality: cost == nil ? "unknown" : "estimated",
+                                    usageMerge: .replace))
             if firstTs == 0 || time < firstTs { firstTs = time }
             if time > lastTs { lastTs = time }
             if firstModel == nil, let model, !model.isEmpty { firstModel = model }
@@ -510,58 +551,55 @@ enum DSHParser {
             case "assistant/chunk":
                 guard let d = obj["data"] as? [String: Any],
                       let chunk = d["chunk"] as? [String: Any] else { return }
-                let key = "\(d["turn"] as? Int ?? 0):\(d["step"] as? Int ?? 0)"
+                let turn = d["turn"] as? Int ?? 0
+                let step = d["step"] as? Int ?? 0
+                let key = "\(turn):\(step)"
                 switch chunk["type"] as? String {
                 case "usage":
                     if let usage = chunk["usage"] as? [String: Any] {
-                        pending[key] = PendingStep(usage: usage,
-                                                   seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0,
-                                                   time: (obj["time"] as? NSNumber)?.int64Value ?? 0)
+                        pending[key] = PendingStep(usage: usage, turn: turn, step: step,
+                                                   time: (obj["time"] as? NSNumber)?.int64Value ?? 0,
+                                                   emitted: false)
                     }
                 case "finish":
                     let rs = chunk["replayState"] as? [String: Any]
                     let provider = rs?["provider"] as? String ?? headerProvider
                     let model = rs?["model"] as? String ?? headerModel
                     if let p = pending.removeValue(forKey: key) {
-                        emit(usage: p.usage, seq: p.seq, time: p.time,
+                        emit(usage: p.usage, turn: p.turn, step: p.step, time: p.time,
                              provider: provider, model: model)
                     }
                 default:
                     break
                 }
             case "assistant/message":
-                // Versioned logs keep usage beside the message and the
-                // route under message.source.
                 guard let d = obj["data"] as? [String: Any],
                       let msg = d["message"] as? [String: Any],
                       let usage = (d["usage"] ?? msg["usage"]) as? [String: Any] else { return }
-                let key = "\(d["turn"] as? Int ?? 0):\(d["step"] as? Int ?? 0)"
+                let turn = d["turn"] as? Int ?? 0
+                let step = d["step"] as? Int ?? 0
+                let key = "\(turn):\(step)"
                 let source = msg["source"] as? [String: Any]
                 let provider = msg["provider"] as? String ?? source?["provider"] as? String ?? headerProvider
                 let model = msg["model"] as? String ?? source?["model"] as? String ?? headerModel
-                if let p = pending.removeValue(forKey: key) {
-                    // The message usage is the final sample: it replaces the
-                    // early chunk sample instead of double-counting it.
-                    emit(usage: usage, seq: (obj["seq"] as? NSNumber)?.int64Value ?? p.seq,
-                         time: (obj["time"] as? NSNumber)?.int64Value ?? p.time,
-                         provider: provider, model: model)
-                } else {
-                    emit(usage: usage, seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0,
-                         time: (obj["time"] as? NSNumber)?.int64Value ?? 0,
-                         provider: provider, model: model)
-                }
+                let previous = pending.removeValue(forKey: key)
+                emit(usage: usage, turn: turn, step: step,
+                     time: (obj["time"] as? NSNumber)?.int64Value ?? previous?.time ?? 0,
+                     provider: provider, model: model)
             default:
                 break
             }
         }
-        // Steps still in flight at the end of the batch (no finish chunk yet):
-        // finalize with the latest request header so a scan never drops the
-        // newest step; a later scan's finish chunk is deduped by event_id.
-        for (_, p) in pending {
-            emit(usage: p.usage, seq: p.seq, time: p.time,
+        // Steps still in flight: emit once. The pending entry stays so the
+        // next scan can replace this row when the message or finish arrives.
+        for key in pending.keys {
+            guard var step = pending[key], !step.emitted else { continue }
+            emit(usage: step.usage, turn: step.turn, step: step.step, time: step.time,
                  provider: headerProvider, model: headerModel)
+            step.emitted = true
+            pending[key] = step
         }
-        return (turns, firstTs, lastTs, firstModel, objectCount)
+        return (turns, firstTs, lastTs, firstModel, objectCount, Array(pending.values))
     }
 
     // MARK: - Cache mode

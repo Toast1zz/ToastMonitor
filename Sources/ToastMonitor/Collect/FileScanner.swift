@@ -288,9 +288,21 @@ enum FileScanner {
     }
 
     /// "…-Users-me-Projects-App" -> "App" (last path component, "-" = "/").
+    /// Hyphens inside a directory name are indistinguishable from the path
+    /// separator, so callers that have the real `cwd` should use `projectName`.
     static func lastComponentOfEncodedPath(_ s: String) -> String {
         let parts = s.split(separator: "-").map(String.init)
         guard let last = parts.last, !last.isEmpty else { return s }
         return last
+    }
+
+    /// Project label: the last path component of `cwd` when the transcript
+    /// recorded one, otherwise the encoded directory name.
+    static func projectName(cwd: String?, encodedDirectory: String) -> String {
+        if let cwd {
+            let last = (cwd as NSString).lastPathComponent
+            if !last.isEmpty && last != "/" && last != "." { return last }
+        }
+        return lastComponentOfEncodedPath(encodedDirectory)
     }
 }

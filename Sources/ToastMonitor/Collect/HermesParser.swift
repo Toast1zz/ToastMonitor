@@ -213,6 +213,7 @@ enum HermesParser {
             return Int64(v > 1_000_000_000_000 ? v / 1000 : v)
         }
         var turns: [TurnRecord] = []
+        var totals = database.sessionTotals()
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let sid = text(0), !sid.isEmpty else { continue }
             let model = text(1)
@@ -228,7 +229,7 @@ enum HermesParser {
             let key = HermesUsageBaseline.key(session: sid, model: model, provider: provider,
                                               baseURL: text(3))
             let localKey = HermesUsageBaseline.localTotalsKey(key)
-            let local: [Int64] = database.sessionTotals()[localKey].map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] } ?? []
+            let local: [Int64] = totals[localKey].map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] } ?? []
             let prev = HermesUsageBaseline.merge(current: current, baselines: [local,
                 HermesUsageBaseline.parse(database.setting(key))])
             let step = HermesUsageBaseline.advance(current: current, prev: prev)
@@ -252,10 +253,18 @@ enum HermesParser {
                                         costQuality: "unknown"))
             }
             let b = step.base
-            database.setSetting(key, HermesUsageBaseline.encode(b))
-            database.setSessionTotals(localKey, tool: "hermes", input: b.input, output: b.output,
-                                      reasoning: b.reasoning, cacheRead: b.cacheRead,
-                                      cacheWrite: b.cacheWrite, cost: 0, updated: lastSeen)
+            let encoded = HermesUsageBaseline.encode(b)
+            if database.setting(key) != encoded {
+                database.setSetting(key, encoded)
+            }
+            let stored = totals[localKey]
+            if stored?.input != b.input || stored?.output != b.output || stored?.reasoning != b.reasoning
+                || stored?.cacheRead != b.cacheRead || stored?.cacheWrite != b.cacheWrite {
+                database.setSessionTotals(localKey, tool: "hermes", input: b.input, output: b.output,
+                                          reasoning: b.reasoning, cacheRead: b.cacheRead,
+                                          cacheWrite: b.cacheWrite, cost: 0, updated: lastSeen)
+                totals[localKey] = ("hermes", b.input, b.output, b.reasoning, b.cacheRead, b.cacheWrite, 0)
+            }
         }
         return turns
     }

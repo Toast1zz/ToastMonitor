@@ -137,7 +137,13 @@ struct AccountsSettingsSection: View {
                             change: { showGoForm = true }, clear: { pendingClear = .openCodeGo })
             }
             account("codex", "Codex", symbol: ToolKind.codex.symbol, color: ToolKind.codex.color,
-                    status: codexQuota.state.lastSync > 0 ? "Connected" : "Not connected") {
+                    status: codexQuota.enabled
+                        ? (codexQuota.state.lastSync > 0 ? "Connected" : "Not connected")
+                        : "Off") {
+                Toggle("Read Codex quota", isOn: Binding(
+                    get: { codexQuota.enabled },
+                    set: { codexQuota.setEnabled($0) }
+                ))
                 LabeledContent("Billing") {
                     Picker("Billing", selection: $codexBilling) {
                         Text("Subscription").tag("subscription")
@@ -156,6 +162,10 @@ struct AccountsSettingsSection: View {
             }
             account("grok", "Grok", symbol: "x.circle.fill", color: TMDesign.grok,
                     status: grokStatus) {
+                Toggle("Read Grok quota", isOn: Binding(
+                    get: { grokQuota.enabled },
+                    set: { grokQuota.setEnabled($0) }
+                ))
                 LabeledContent("Login") {
                     if grokQuota.state.configured {
                         Text("Grok CLI")
@@ -263,6 +273,7 @@ struct AccountsSettingsSection: View {
     }
 
     private var grokStatus: String {
+        guard grokQuota.enabled else { return "Off" }
         let state = grokQuota.state
         if state.error != nil && state.configured { return "Error" }
         guard state.configured else { return "Not signed in" }

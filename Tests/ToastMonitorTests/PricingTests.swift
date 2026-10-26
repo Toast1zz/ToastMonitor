@@ -92,6 +92,36 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(try cost("claude-3-5-haiku", cacheWrite: 1_000_000), 1, accuracy: 0.0001)
     }
 
+    func testMiniNanoFlashDoNotInheritTheFullModelRate() throws {
+        XCTAssertEqual(try cost("gpt-5-mini", input: 1_000_000), 0.25, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5-nano", input: 1_000_000), 0.05, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5.1-codex-mini", input: 1_000_000), 0.25, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-4.1-nano", input: 1_000_000), 0.1, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gemini-2.5-flash", input: 1_000_000), 0.3, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gemini-2.0-flash", output: 1_000_000), 0.4, accuracy: 0.0001)
+        XCTAssertEqual(try cost("o4-mini", input: 1_000_000), 1.1, accuracy: 0.0001)
+        XCTAssertNotEqual(try cost("gpt-5-mini", input: 1_000_000), try cost("gpt-5", input: 1_000_000))
+        XCTAssertNotEqual(try cost("gemini-2.5-flash", input: 1_000_000), try cost("gemini-2.5", input: 1_000_000))
+        XCTAssertNotEqual(try cost("o4-mini", input: 1_000_000), try cost("o4", input: 1_000_000))
+    }
+
+    func testSubstringIsNotAModelMatch() {
+        XCTAssertNil(Pricing.estimate(model: "not-gpt-5", input: 1, output: 0, cacheRead: 0, cacheWrite: 0))
+        XCTAssertNil(Pricing.estimate(model: "mygpt-5-mini", input: 1, output: 0, cacheRead: 0, cacheWrite: 0))
+        XCTAssertNil(Pricing.estimate(model: "claude-sonnet-4-extra", input: 1, output: 0, cacheRead: 0, cacheWrite: 0))
+    }
+
+    func testOneHourCacheWritesCostTwiceInput() throws {
+        let cost = try XCTUnwrap(Pricing.estimate(model: "claude-sonnet-4-6", input: 0, output: 0,
+                                                  cacheRead: 0, cacheWrite: 0, cacheWrite1h: 1_000_000))
+        XCTAssertEqual(cost, 6, accuracy: 0.0001)
+    }
+
+    func testProviderPrefixedModelUsesTheLeaf() throws {
+        XCTAssertEqual(try cost("openai/gpt-5-mini", input: 1_000_000), 0.25, accuracy: 0.0001)
+        XCTAssertEqual(try cost("anthropic/claude-sonnet-4-6", input: 1_000_000), 3, accuracy: 0.0001)
+    }
+
     func testUnknownModelReturnsNil() {
         XCTAssertNil(Pricing.estimate(model: "not-a-model-xyz", input: 1000, output: 1000,
                                       cacheRead: 0, cacheWrite: 0))

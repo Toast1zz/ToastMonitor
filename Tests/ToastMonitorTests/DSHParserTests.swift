@@ -67,7 +67,7 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(first.model, "deepseek-v4-flash")
         XCTAssertEqual(first.provider, "opencodego")
         XCTAssertEqual(first.ts, 1786628706, "usage chunk ms timestamp → seconds")
-        XCTAssertEqual(first.eventID, "dsh-log:session-test-0001:13")
+        XCTAssertEqual(first.eventID, "dsh-log:session-test-0001:1:1")
         XCTAssertEqual(first.costQuality, "estimated")
         XCTAssertEqual(first.cost, 0.0024, accuracy: 0.0001)
 
@@ -81,11 +81,11 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(turns[2].inputTokens, 2600)
         XCTAssertEqual(turns[2].outputTokens, 420)
         XCTAssertEqual(turns[2].cacheRead, 9400)
-        XCTAssertEqual(turns[2].eventID, "dsh-log:session-test-0001:21")
+        XCTAssertEqual(turns[2].eventID, "dsh-log:session-test-0001:1:4")
 
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(sessions[0].sessionID, "session-test-0001")
-        XCTAssertEqual(sessions[0].project, "/Users/toast1/Projects/ToastMonitor")
+        XCTAssertEqual(sessions[0].project, "/Users/demo/Projects/ToastMonitor")
         XCTAssertEqual(sessions[0].model, "deepseek-v4-flash")
         XCTAssertEqual(sessions[0].created, 1786628702)
         XCTAssertEqual(sessions[0].updated, 1786628709)
@@ -115,7 +115,7 @@ final class DSHParserTests: XCTestCase {
         let (second, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
         XCTAssertEqual(second.count, 1, "only the appended step is parsed")
         // Session id comes from the persisted scan_state context, not a re-read header.
-        XCTAssertEqual(second[0].eventID, "dsh-log:session-test-0001:30")
+        XCTAssertEqual(second[0].eventID, "dsh-log:session-test-0001:1:5")
         XCTAssertEqual(second[0].ts, 1786628800)
         XCTAssertTrue(db.insertTurns(second))
         XCTAssertEqual(dshTurnCount(), 4)
@@ -172,6 +172,42 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(turns[0].costQuality, "unknown")
         XCTAssertEqual(turns[0].model, "mystery-model")
     }
+
+    /// A usage chunk written on one scan and the step's assistant/message on
+    /// the next must become one row. The first scan used to keep the chunk
+    /// under its seq, and the next scan inserted the message under a new seq.
+    func testLogModeUsageThenMessageAcrossScansIsOneRow() throws {
+        let path = (tempDir as NSString).appendingPathComponent("cross-scan.jsonl")
+        let usage = """
+        {"type":"session","id":"session-cross-scan","createdAt":1786628702000,"cwd":"/tmp/x"}
+        {"type":"assistant/chunk","seq":1,"time":1786628706000,"data":{"turn":2,"step":3,"chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":1}}}}
+        """
+        try Data(usage.utf8).write(to: URL(fileURLWithPath: path))
+        let (first, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first[0].inputTokens, 10)
+        XCTAssertEqual(first[0].eventID, "dsh-log:session-cross-scan:2:3")
+        XCTAssertEqual(first[0].usageMerge, .replace)
+        XCTAssertTrue(db.insertTurns(first))
+
+        let message = #"{"type":"assistant/message","seq":9,"time":1786628707000,"data":{"turn":2,"step":3,"message":{"model":"deepseek-v4-flash","usage":{"inputTokens":80,"outputTokens":20}}}}"#
+        let fh = try XCTUnwrap(FileHandle(forWritingAtPath: path))
+        fh.seekToEndOfFile()
+        fh.write(Data(("\n" + message + "\n").utf8))
+        fh.closeFile()
+
+        let (second, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertEqual(second[0].inputTokens, 80)
+        XCTAssertEqual(second[0].outputTokens, 20)
+        XCTAssertEqual(second[0].eventID, first[0].eventID)
+        XCTAssertTrue(db.insertTurns(second))
+        XCTAssertEqual(dshTurnCount(), 1)
+        let stored = db.turns(sessionTool: "dsh", sessionID: "session-cross-scan")
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored[0].input, 80)
+        XCTAssertEqual(stored[0].output, 20)
+    }
     func testLogModeFullScanDoesNotCommitCursorWhenFoldPassFails() throws {
         let transcript = """
         {"type":"session","version":0,"id":"session-fold-failure","createdAt":1786628702000,"cwd":"/tmp/z"}
@@ -195,7 +231,7 @@ final class DSHParserTests: XCTestCase {
         let (replayed, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
                                               decompress: failFoldOnce)
         XCTAssertEqual(replayed.count, 1)
-        XCTAssertEqual(replayed.first?.eventID, "dsh-log:session-fold-failure:55")
+        XCTAssertEqual(replayed.first?.eventID, "dsh-log:session-fold-failure:1:1")
         XCTAssertEqual(db.scanState(path).size, FileScanner.fileStat(path)?.size ?? -1)
     }
 
@@ -236,7 +272,7 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(turns[0].inputTokens, 100)
         XCTAssertEqual(turns[0].cacheRead, 1000)
         XCTAssertEqual(turns[0].model, "deepseek-v4-flash")
-        XCTAssertEqual(turns[0].eventID, "dsh-log:session-zstd-1:3")
+        XCTAssertEqual(turns[0].eventID, "dsh-log:session-zstd-1:1:1")
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(db.scanState(path).size, FileScanner.fileStat(path)?.size ?? -1,
                        "initial frame cursor reaches its absolute file boundary")
@@ -259,7 +295,7 @@ final class DSHParserTests: XCTestCase {
         XCTAssertEqual(db.scanState(path).size, FileScanner.fileStat(path)?.size ?? -1,
                        "appended frame cursor advances from the prior absolute offset")
         if more.count == 1 {
-            XCTAssertEqual(more[0].eventID, "dsh-log:session-zstd-1:9")
+            XCTAssertEqual(more[0].eventID, "dsh-log:session-zstd-1:1:2")
             XCTAssertEqual(more[0].ts, 1786628800)
         }
     }
@@ -277,7 +313,7 @@ final class DSHParserTests: XCTestCase {
         let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: identity)
 
         XCTAssertEqual(turns.count, 1, "the pending usage from frame one is replaced, not emitted separately")
-        XCTAssertEqual(turns.first?.eventID, "dsh-log:session-cross-frame:31")
+        XCTAssertEqual(turns.first?.eventID, "dsh-log:session-cross-frame:2:1")
         XCTAssertEqual(turns.first?.inputTokens, 240)
         XCTAssertEqual(turns.first?.outputTokens, 90)
         XCTAssertEqual(turns.first?.cacheRead, 10)
@@ -298,7 +334,7 @@ final class DSHParserTests: XCTestCase {
 
         XCTAssertEqual(turns.count, 1)
         XCTAssertEqual(turns.first?.model, "deepseek-v4-flash")
-        XCTAssertEqual(turns.first?.eventID, "dsh-log:session-finish-cross-frame:20")
+        XCTAssertEqual(turns.first?.eventID, "dsh-log:session-finish-cross-frame:3:4")
         XCTAssertEqual(turns.first?.inputTokens, 500)
         XCTAssertEqual(turns.first?.cacheRead, 20)
     }
@@ -366,16 +402,16 @@ final class DSHParserTests: XCTestCase {
                                             decompress: decompressFakeFrame)
         XCTAssertEqual(turns.count, 2, "the valid frame continues past an embedded false magic")
         let expectedIDs: Set<String> = [
-            "dsh-log:session-false-magic:40", "dsh-log:session-false-magic:42"
+            "dsh-log:session-false-magic:4:1", "dsh-log:session-false-magic:4:2"
         ]
         XCTAssertEqual(Set(turns.map(\.eventID)), expectedIDs)
-        let event40 = turns.first { $0.eventID == "dsh-log:session-false-magic:40" }
+        let event40 = turns.first { $0.eventID == "dsh-log:session-false-magic:4:1" }
         XCTAssertEqual(event40?.model, "deepseek-v4-flash",
                        "the finish after the embedded magic must be processed")
         XCTAssertEqual(event40?.provider, "opencodego")
         XCTAssertEqual(event40?.inputTokens, 40)
         XCTAssertEqual(event40?.outputTokens, 10)
-        let event42 = turns.first { $0.eventID == "dsh-log:session-false-magic:42" }
+        let event42 = turns.first { $0.eventID == "dsh-log:session-false-magic:4:2" }
         XCTAssertEqual(event42?.model, "deepseek-v4-flash")
         XCTAssertEqual(event42?.provider, "opencodego")
         XCTAssertEqual(event42?.inputTokens, 80)
@@ -431,7 +467,7 @@ final class DSHParserTests: XCTestCase {
         let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
                                             decompress: rejectsTruncatedFrame)
         XCTAssertEqual(turns.count, 1, "the good frame before the truncated tail is kept")
-        XCTAssertEqual(turns[0].eventID, "dsh-log:session-recover-1:3")
+        XCTAssertEqual(turns[0].eventID, "dsh-log:session-recover-1:1:1")
         XCTAssertEqual(db.scanState(path).size, Int64(goodFrame.count),
                        "the cursor stays at the corrupt frame start")
 
@@ -450,7 +486,7 @@ final class DSHParserTests: XCTestCase {
         let (replayed, _) = DSHParser.scanLogs(knownPaths: [path], database: db,
                                               decompress: rejectsTruncatedFrame)
         XCTAssertEqual(replayed.count, 1)
-        XCTAssertEqual(replayed.first?.eventID, "dsh-log:session-recover-1:9")
+        XCTAssertEqual(replayed.first?.eventID, "dsh-log:session-recover-1:1:2")
         XCTAssertEqual(replayed.first?.inputTokens, 200)
         XCTAssertEqual(db.scanState(path).size, Int64(goodFrame.count + repairedFrame.count))
     }
@@ -736,7 +772,7 @@ final class DSHParserTests: XCTestCase {
         try fh.close()
         let (again, _) = DSHParser.scanLogs(knownPaths: [path], database: db, decompress: strict)
         XCTAssertEqual(again.count, 1, "full rescan re-recovers the good frame")
-        XCTAssertEqual(again[0].eventID, "dsh-log:session-stall-1:3")
+        XCTAssertEqual(again[0].eventID, "dsh-log:session-stall-1:1:1")
         XCTAssertEqual(FileScanner.contextStallCount(db.scanState(path).context), 0,
                        "progress resets the stall counter")
     }

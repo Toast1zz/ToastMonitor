@@ -51,7 +51,9 @@ enum ClaudeCodeParser {
                         .appending("/.claude/projects")
                     var isDir: ObjCBool = false
                     guard fm.fileExists(atPath: claudeProjectsPath, isDirectory: &isDir), isDir.boolValue else { continue }
-                    out.append(contentsOf: FileScanner.listFiles(claudeProjectsPath, maxDepth: 2))
+                    // Depth 4 reaches <project>/<session>/subagents/*.jsonl.
+                    // Depth 2 stops at the session directory and misses them.
+                    out.append(contentsOf: FileScanner.listFiles(claudeProjectsPath, maxDepth: 4))
                 }
             }
         }
@@ -63,7 +65,21 @@ enum ClaudeCodeParser {
         guard !ToolKind.claude.sourceIsRemote else { return ([], []) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
+        var indexByEvent: [String: Int] = [:]
         let fm = FileManager.default
+
+        func appendTurn(_ record: TurnRecord) {
+            guard let id = record.eventID else {
+                turns.append(record)
+                return
+            }
+            if let idx = indexByEvent[id] {
+                turns[idx] = TurnRecord.keepingGreater(turns[idx], record)
+            } else {
+                indexByEvent[id] = turns.count
+                turns.append(record)
+            }
+        }
         // Either tree is enough: a Cowork-only user has no ~/.claude/projects.
         // Explicit paths are scanned even when neither tree exists.
         guard !knownPaths.isEmpty
@@ -81,11 +97,12 @@ enum ClaudeCodeParser {
             let offset = sameAppendOnlyFile ? prev.size : 0
             var objectCount = 0
             var sessionID = (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
-            let project = FileScanner.lastComponentOfEncodedPath(
-                ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+            let encodedDir = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            var cwd: String?
             var lastTs: Int64 = 0
             var firstTs: Int64 = 0
             var sessionModel: String?
+            let fallbackTs = st.mtime / 1_000_000_000
             let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
                 objectCount += 1
                 let obj = item.obj
@@ -93,40 +110,60 @@ enum ClaudeCodeParser {
                 if let recordSessionID = obj["sessionId"] as? String, !recordSessionID.isEmpty {
                     sessionID = recordSessionID
                 }
+                if let recorded = obj["cwd"] as? String, !recorded.isEmpty {
+                    cwd = recorded
+                }
                 if type == "assistant" {
-                    let usage = (obj["usage"] as? [String: Any])
-                        ?? (obj["message"] as? [String: Any])?["usage"] as? [String: Any]
+                    let message = obj["message"] as? [String: Any]
+                    let usage = (obj["usage"] as? [String: Any]) ?? message?["usage"] as? [String: Any]
                     guard let usage else { return }
                     var ts: Int64 = 0
                     if let tstr = obj["timestamp"] as? String {
                         ts = FileScanner.parseISO(tstr) ?? 0
                     }
-                    if ts == 0, let msg = obj["message"] as? [String: Any],
-                       let tstr = msg["timestamp"] as? String {
+                    if ts == 0, let tstr = message?["timestamp"] as? String {
                         ts = FileScanner.parseISO(tstr) ?? 0
                     }
-                    if ts == 0 { ts = Int64(Date().timeIntervalSince1970) }
-                    let model = obj["model"] as? String
-                        ?? (obj["message"] as? [String: Any])?["model"] as? String
+                    if ts == 0 { ts = fallbackTs }
+                    guard ts > 0 else { return }
+                    let model = obj["model"] as? String ?? message?["model"] as? String
                     let input = FileScanner.tokenCount(usage["input_tokens"])
                     let output = FileScanner.tokenCount(usage["output_tokens"])
                     let cacheRead = FileScanner.tokenCount(usage["cache_read_input_tokens"])
-                    let cacheWrite = FileScanner.tokenCount(usage["cache_creation_input_tokens"])
+                    let creation = usage["cache_creation"] as? [String: Any]
+                    let write5m: Int64
+                    let write1h: Int64
+                    if let creation,
+                       creation["ephemeral_5m_input_tokens"] != nil || creation["ephemeral_1h_input_tokens"] != nil {
+                        write5m = FileScanner.tokenCount(creation["ephemeral_5m_input_tokens"])
+                        write1h = FileScanner.tokenCount(creation["ephemeral_1h_input_tokens"])
+                    } else {
+                        write5m = FileScanner.tokenCount(usage["cache_creation_input_tokens"])
+                        write1h = 0
+                    }
+                    let cacheWrite = write5m + write1h
                     guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { return }
                     let est = Pricing.estimate(model: model, input: input, output: output,
-                                               cacheRead: cacheRead, cacheWrite: cacheWrite)
+                                               cacheRead: cacheRead, cacheWrite: write5m,
+                                               cacheWrite1h: write1h)
                     let eventID = EventIdentity.claude(
                         sessionID: sessionID, object: obj, usage: usage,
                         model: model, timestamp: ts, offset: item.offset)
-                    turns.append(TurnRecord(tool: .claude, sessionID: sessionID, project: project,
-                                            model: model, ts: ts, inputTokens: input, outputTokens: output,
-                                            cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,
-                                            eventID: eventID, costQuality: est == nil ? "unknown" : "estimated"))
+                    let messageID = (message?["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                        ?? (obj["messageId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    let project = FileScanner.projectName(cwd: cwd, encodedDirectory: encodedDir)
+                    appendTurn(TurnRecord(tool: .claude, sessionID: sessionID, project: project,
+                                          model: model, ts: ts, inputTokens: input, outputTokens: output,
+                                          cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,
+                                          eventID: eventID,
+                                          costQuality: est == nil ? "unknown" : "estimated",
+                                          usageMerge: messageID == nil ? .ignore : .keepGreater))
                     sessionModel = sessionModel ?? model
                     if firstTs == 0 || ts < firstTs { firstTs = ts }
                     if ts > lastTs { lastTs = ts }
                 }
             }
+            let project = FileScanner.projectName(cwd: cwd, encodedDirectory: encodedDir)
             if DebugLog.enabled {
                 NSLog("[ToastMonitor][claude] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objectCount)
             }

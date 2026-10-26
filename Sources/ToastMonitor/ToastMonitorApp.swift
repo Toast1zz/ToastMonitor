@@ -727,18 +727,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ]))
         }
         button.attributedTitle = attr
-        button.setAccessibilityValue("Today: \(text) tokens")
+        var access = "Today: \(text) tokens"
+        if quotaAlerts.unreadCount > 0 {
+            access += ", \(quotaAlerts.unreadCount) unread"
+        }
+        button.setAccessibilityValue(access)
 
         let or = OpenRouterClient.shared
-        let todayActual = app.costToday.actual + or.state.usageDaily
-        let tooltip = """
+        let todayActual = app.costToday.actual
+        var tooltip = """
         ToastMonitor
         今日 \(Format.compact(app.todayTokens)) tokens（输入 + 输出 + 缓存命中）
         今日已确认变量支出 \(Format.money(todayActual))
         今日估算变量支出 \(Format.money(app.costToday.estimated))
         · 订阅摊销 \(Format.money(subAmortized()))
-        · OpenRouter 实际 \(Format.money(or.state.usageDaily))
         """
+        if or.state.usageDaily > 0 {
+            tooltip += "\n· OpenRouter 今日（UTC）实际 \(Format.money(or.state.usageDaily))"
+        }
         button.toolTip = tooltip
     }
 

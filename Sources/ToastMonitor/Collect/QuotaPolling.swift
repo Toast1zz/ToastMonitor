@@ -60,8 +60,16 @@ final class ForegroundPoller {
         let t = Timer(timeInterval: TMRefreshPolicy.quotaInterval(foreground: fg), repeats: true) { [weak self] _ in
             self?.tick?()
         }
+        t.tolerance = TMRefreshPolicy.quotaInterval(foreground: fg) * 0.1
         RunLoop.main.add(t, forMode: .common)
         timer = t
         if fg { tick() }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        tick = nil
+        foreground = false
     }
 }

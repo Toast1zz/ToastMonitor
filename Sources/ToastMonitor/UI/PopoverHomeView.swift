@@ -918,8 +918,9 @@ struct PopoverHomeView: View {
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         // Keep the last result while refreshing; Loading only before the first sync.
-        var status = sub == nil ? "Not configured"
-                    : (state.lastSync <= 0 ? "Loading" : "Idle")
+        var status = sub == nil
+                    ? (codexQuota.enabled ? "Not configured" : "Off")
+                    : (codexQuota.enabled && state.lastSync <= 0 ? "Loading" : "Idle")
         var resetSuffix: String?
         var staleBadge: String?
         if let remaining {
@@ -1004,7 +1005,7 @@ struct PopoverHomeView: View {
         let name = plan
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
-        var status = state.configured ? "Loading" : "Not configured"
+        var status = state.configured ? "Loading" : (grokQuota.enabled ? "Not configured" : "Off")
         var resetSuffix: String?
         var staleBadge: String?
         if let used = state.usedPercent {
@@ -1036,7 +1037,6 @@ struct PopoverHomeView: View {
             && now.timeIntervalSince1970 - TimeInterval(state.lastOK) > 120
         var status: String
         var staleBadge: String?
-        var resetSuffix: String?
         var runway: String?
         if !orClient.hasKey {
             status = "Not configured"
@@ -1065,7 +1065,6 @@ struct PopoverHomeView: View {
         return statusRow(name: "OpenRouter", status: status,
                          statusColor: orClient.hasKey ? .primary : TMDesign.quiet,
                          critical: runway != nil || state.accountBalance.map { $0 <= 0 } == true,
-                         resetSuffix: resetSuffix,
                          staleBadge: staleBadge,
                          nameDetail: runway,
                          problem: routerProblem(state))

@@ -38,12 +38,6 @@ final class WindowManager {
         applyPolicy(showDock: (window?.isVisible ?? false) && enabled)
     }
 
-    /// Re-applies the Dock policy from the current window state and setting;
-    /// called when the setting changes while the dashboard is open.
-    func refreshDockPresence() {
-        applyPolicy(showDock: (window?.isVisible ?? false) && Self.dockIconEnabled)
-    }
-
     private func applyPolicy(showDock: Bool) {
         // The main menu is built once and keeps Cmd+W/Cmd+Q/Edit working even
         // when the Dock icon is disabled (accessory apps get no menu bar, but

@@ -7,6 +7,9 @@ final class NetworkBoundaryTests: XCTestCase {
         XCTAssertTrue(HermesRemoteClient.isAllowedFeedURL(URL(string: "http://100.116.140.74/usage.json")!))
         XCTAssertTrue(HermesRemoteClient.isAllowedFeedURL(URL(string: "http://127.0.0.1:8080/usage.json")!))
         XCTAssertFalse(HermesRemoteClient.isAllowedFeedURL(URL(string: "http://8.8.8.8/usage.json")!))
+        XCTAssertFalse(HermesRemoteClient.isAllowedFeedURL(URL(string: "http://192.168.1.1/usage.json")!))
+        XCTAssertFalse(HermesRemoteClient.isAllowedFeedURL(URL(string: "http://10.1.2.3/usage.json")!))
+        XCTAssertTrue(HermesRemoteClient.isAllowedFeedURL(URL(string: "http://localhost/usage.json")!))
         XCTAssertFalse(HermesRemoteClient.isAllowedFeedURL(URL(string: "https://user:secret@feed.example.test/usage.json")!))
         XCTAssertFalse(HermesRemoteClient.isAllowedFeedURL(URL(string: "file:///tmp/usage.json")!))
     }

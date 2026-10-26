@@ -64,8 +64,15 @@ final class SourceHealthHub: ObservableObject {
     /// An unchanged scan is still a successful parse. Clear an old error so a
     /// transient failure cannot remain visible forever after recovery.
     func recordIdle(tool: String, durationMs: Double) {
+        let mode = (ToolKind(rawValue: tool)?.sourceIsRemote ?? false) ? "remote" : "local"
+        if let existing = sources.first(where: { $0.tool == tool }),
+           existing.error == nil, existing.failedRows == 0, existing.lastRows == 0,
+           existing.mode == mode, existing.lastScan > 0,
+           Date().timeIntervalSince1970 - TimeInterval(existing.lastScan) < 30 {
+            return
+        }
         var h = sources.first { $0.tool == tool }
-            ?? SourceHealth(tool: tool, mode: (ToolKind(rawValue: tool)?.sourceIsRemote ?? false) ? "remote" : "local")
+            ?? SourceHealth(tool: tool, mode: mode)
         h.lastScan = Int64(Date().timeIntervalSince1970)
         h.lastRows = 0
         h.failedRows = 0

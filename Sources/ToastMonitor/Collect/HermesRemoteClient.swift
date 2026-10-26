@@ -147,9 +147,9 @@ final class HermesRemoteClient: ObservableObject {
               url.password == nil else { return false }
         if scheme == "https" { return true }
         guard scheme == "http", let host = url.host else { return false }
-        // Tailscale CGNAT range 100.64.0.0/10, private ranges, localhost.
+        // HTTP is limited to the Tailscale CGNAT range 100.64.0.0/10 and loopback.
         if let ip = IPv4Address(host) {
-            if ip.isTailscale || ip.isPrivate || ip.isLoopback { return true }
+            if ip.isTailscale || ip.isLoopback { return true }
             return false
         }
         return host == "localhost"
@@ -173,9 +173,6 @@ final class HermesRemoteClient: ObservableObject {
             (a, b, c, d) = (parts[0], parts[1], parts[2], parts[3])
         }
         var isTailscale: Bool { a == 100 && b >= 64 && b <= 127 }
-        var isPrivate: Bool {
-            a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168)
-        }
         var isLoopback: Bool { a == 127 }
     }
 
@@ -386,7 +383,7 @@ final class HermesRemoteClient: ObservableObject {
                 guard let n = row[key] as? NSNumber else { return 0 }
                 let d = n.doubleValue
                 guard d.isFinite else { return 0 }
-                return Int64(min(max(d, 0), 9_000_000_000_000_000))
+                return Int64(min(max(d, 0), Double(TurnRecord.maxTokens)))
             }
             let input = count("input_tokens")
             let output = count("output_tokens")

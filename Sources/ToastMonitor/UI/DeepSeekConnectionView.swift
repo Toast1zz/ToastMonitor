@@ -71,6 +71,7 @@ struct DeepSeekConnectionView: View {
     @State private var webError: String?
     @State private var webToken: String?
     @State private var reloadID = UUID()
+    @State private var browserConnected = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -132,6 +133,10 @@ struct DeepSeekConnectionView: View {
             if let error = client.connectionError ?? webError {
                 Text(error).font(TMType.regular(TMType.caption)).foregroundStyle(TMDesign.danger)
             }
+            if browserConnected, client.state.kind != nil, !client.connecting {
+                Text("Connected. Allow JavaScript from Apple Events can be turned off. An API key does not need it.")
+                    .font(TMType.regular(TMType.caption)).foregroundStyle(.secondary)
+            }
             HStack {
                 if mode == .signIn {
                     Button {
@@ -150,6 +155,9 @@ struct DeepSeekConnectionView: View {
                     Text(importing ? "Reading DeepSeek session..." : "Verifying account...").font(TMType.regular(TMType.caption))
                 }
                 Spacer()
+                if browserConnected, client.state.kind != nil, !client.connecting {
+                    Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                }
                 Button("Cancel") { secret = ""; dismiss() }
                     .keyboardShortcut(.cancelAction).disabled(client.connecting)
                 if mode == .session || mode == .apiKey {
@@ -167,9 +175,15 @@ struct DeepSeekConnectionView: View {
         .onAppear {
             if NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID) == nil { browser = .safari }
         }
-        .onChange(of: mode) { _ in secret = ""; webToken = nil; webError = nil; client.clearConnectionError() }
+        .onChange(of: mode) { _ in
+            secret = ""; webToken = nil; webError = nil; browserConnected = false
+            client.clearConnectionError()
+        }
         .onChange(of: client.connecting) { connecting in
-            if !connecting, client.connectionError == nil, client.state.kind != nil { secret = ""; dismiss() }
+            if !connecting, client.connectionError == nil, client.state.kind != nil {
+                secret = ""
+                if !browserConnected { dismiss() }
+            }
         }
         .onDisappear { secret = ""; webToken = nil; importTask?.cancel() }
     }
@@ -195,6 +209,7 @@ struct DeepSeekConnectionView: View {
             do {
                 let credential = try await DeepSeekBrowserSession.read(selected)
                 guard !Task.isCancelled else { return }
+                browserConnected = true
                 client.connect(credential.secret, kind: .platform)
             } catch {
                 guard !Task.isCancelled else { return }

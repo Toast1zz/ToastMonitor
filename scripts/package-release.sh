@@ -14,6 +14,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "error: working tree is dirty; package from a clean checkout" >&2
+    exit 1
+fi
 
 # Only an exact tag hit is a release version (see build-app.sh); untagged
 # commits package as 1.0 rather than impersonating the last release.
@@ -59,11 +63,17 @@ for arch in $ARCHS; do
 done
 
 echo ""
+echo "== checksums =="
+(
+    cd "$RELEASE_DIR"
+    shasum -a 256 ToastMonitor-${VERSION}-*.zip > "SHA256SUMS-${VERSION}.txt"
+)
+echo ""
 echo "== artifacts =="
 ls -la "$RELEASE_DIR/"
 echo ""
-echo "上传到 GitHub Release："
-echo "  gh release create v$VERSION dist/release/*.zip --title 'ToastMonitor v$VERSION' --generate-notes"
+echo "Upload to the GitHub release:"
+echo "  gh release create v$VERSION dist/release/*.zip --title \"ToastMonitor v$VERSION\" --notes-file docs/release-v$VERSION.md"
 echo ""
 echo "生成架构感知签名更新清单："
 echo "  ./scripts/sign-update-manifest.sh $VERSION dist/release/ToastMonitor-${VERSION}-arm64.zip dist/release/ToastMonitor-${VERSION}-universal.zip"
