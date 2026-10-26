@@ -88,4 +88,45 @@ final class SubscriptionMathTests: XCTestCase {
         XCTAssertNil(SubscriptionMath.cycleInfo(start: start, end: 0, cycle: "Weekly", now: now),
                      "cycle matching is exact, not case-insensitive")
     }
+    private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        Calendar.current.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
+    private func subscription(start: Date, end: Date? = nil, cycle: String = "monthly", price: Double = 20) -> Database.Subscription {
+        Database.Subscription(id: 99, name: "Test", plan: "", startDate: Int64(start.timeIntervalSince1970),
+                              endDate: end.map { Int64($0.timeIntervalSince1970) } ?? 0,
+                              cycle: cycle, price: price, currency: "USD")
+    }
+
+    func testMonthEndRenewalRestoresOriginalBillingDay() throws {
+        let start = Int64(date(2026, 1, 31).timeIntervalSince1970)
+        XCTAssertEqual(try XCTUnwrap(SubscriptionMath.cycleInfo(start: start, cycle: "monthly", now: date(2026, 2, 15))).end, date(2026, 2, 28))
+        XCTAssertEqual(try XCTUnwrap(SubscriptionMath.cycleInfo(start: start, cycle: "monthly", now: date(2026, 3, 1))).end, date(2026, 3, 31))
+    }
+
+    func testLeapYearRenewalRestoresFebruary29() throws {
+        let start = Int64(date(2024, 2, 29).timeIntervalSince1970)
+        XCTAssertEqual(try XCTUnwrap(SubscriptionMath.cycleInfo(start: start, cycle: "yearly", now: date(2025, 2, 15))).end, date(2025, 2, 28))
+        XCTAssertEqual(try XCTUnwrap(SubscriptionMath.cycleInfo(start: start, cycle: "yearly", now: date(2028, 2, 1))).end, date(2028, 2, 29))
+    }
+
+    func testEndedSubscriptionChargesEachStartedCycle() {
+        let sub = subscription(start: date(2026, 1, 1), end: date(2026, 4, 1))
+        XCTAssertEqual(SubscriptionMath.amortized(days: 90, subscriptions: [sub], now: date(2026, 4, 1)), 60, accuracy: 0.0001)
+        XCTAssertEqual(SubscriptionMath.amortized(days: 28, subscriptions: [sub], now: date(2026, 3, 1)), 20, accuracy: 0.0001)
+    }
+
+    func testActiveWindowUsesEachCyclesActualDailyRate() {
+        let sub = subscription(start: date(2026, 1, 1))
+        XCTAssertEqual(SubscriptionMath.amortized(days: 42, subscriptions: [sub], now: date(2026, 3, 15)), 20 + 20 * 14 / 31, accuracy: 0.0001)
+    }
+
+    func testTruncatedFinalCyclesChargeFullPriceAcrossYearBoundary() {
+        let weekly = subscription(start: date(2025, 12, 29), end: date(2026, 1, 8), cycle: "weekly", price: 7)
+        XCTAssertEqual(SubscriptionMath.amortized(days: 10, subscriptions: [weekly], now: date(2026, 1, 8)), 14, accuracy: 0.0001)
+        let monthly = subscription(start: date(2026, 1, 1), end: date(2026, 2, 10))
+        XCTAssertEqual(SubscriptionMath.amortized(days: 40, subscriptions: [monthly], now: date(2026, 2, 10)), 40, accuracy: 0.0001)
+        XCTAssertEqual(SubscriptionMath.amortized(days: 9, subscriptions: [monthly], now: date(2026, 2, 10)), 20, accuracy: 0.0001)
+    }
+
 }
