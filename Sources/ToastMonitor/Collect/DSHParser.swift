@@ -84,9 +84,18 @@ enum DSHParser {
     private static var listCache: SessionListCache?
 
     /// Lists session transcripts under `sessions/`: depth ≤ 3
-    /// (`sessions/--<cwd>--/session-<id>/session.jsonl[.zstd]`). The
-    /// traversal reuses any cached result until a visited directory changes,
-    /// so new sessions appear promptly without re-walking every scan.
+    /// (`sessions/--<cwd>--/session-<id>/session[.vN].jsonl[.zstd]`), one
+    /// per session directory. The traversal reuses any cached result until a
+    /// visited directory changes, so new sessions appear promptly without
+    /// re-walking every scan.
+    ///
+    /// Newer harness versions write `session.v<N>.jsonl.zstd`; migrating a
+    /// session copies its history into the new file with renumbered `seq`s.
+    /// An unversioned log, when present, stays the session's source because
+    /// its events are what earlier scans recorded; otherwise the highest
+    /// version wins.
+    /// shortcut: steps appended to a migrated session's versioned log are not
+    /// counted; that needs event identity that survives the renumbering.
     static func listSessionFiles() -> [String] {
         let root = sessionsRoot
         let fm = FileManager.default
@@ -101,7 +110,7 @@ enum DSHParser {
         }
         listLock.unlock()
 
-        var out: [String] = []
+        var bySessionDir: [String: (rank: Int, path: String)] = [:]
         var directories: [String: Int64] = [:]
         var stack: [(String, Int)] = [(root, 0)]
         while let (dir, depth) = stack.popLast() {
@@ -114,15 +123,27 @@ enum DSHParser {
                 guard fm.fileExists(atPath: full, isDirectory: &isDir) else { continue }
                 if isDir.boolValue {
                     stack.append((full, depth + 1))
-                } else if e == "session.jsonl.zstd" || e == "session.jsonl" {
-                    out.append(full)
+                } else if let rank = logRank(e), rank > (bySessionDir[dir]?.rank ?? -1) {
+                    bySessionDir[dir] = (rank, full)
                 }
             }
         }
+        let out = bySessionDir.values.map(\.path).sorted()
         listLock.lock()
         listCache = SessionListCache(files: out, dirMTimes: directories)
         listLock.unlock()
         return out
+    }
+
+    /// Preference among one session directory's logs, nil for other files.
+    /// The unversioned log outranks every `session.v<N>` copy.
+    static func logRank(_ name: String) -> Int? {
+        let stem = name.hasSuffix(".zstd") ? String(name.dropLast(5)) : name
+        if stem == "session.jsonl" { return Int.max }
+        guard stem.hasPrefix("session.v"), stem.hasSuffix(".jsonl"),
+              let version = Int(stem.dropFirst(9).dropLast(6)), version >= 0
+        else { return nil }
+        return version
     }
 
     // MARK: - Log mode
@@ -238,7 +259,7 @@ enum DSHParser {
     /// Peak memory also includes the largest decoded frame, output rows,
     /// and bounded-cache retention (subject to NSCache's advisory limits).
     @discardableResult
-    private static func forEachObject(path: String, fromOffset: Int64,
+    static func forEachObject(path: String, fromOffset: Int64,
                                       decompress: (Data) -> Data?,
                                       _ body: ((offset: Int64, obj: [String: Any])) -> Void)
         -> (count: Int, newOffset: Int64) {
@@ -509,12 +530,15 @@ enum DSHParser {
                     break
                 }
             case "assistant/message":
+                // Versioned logs keep usage beside the message and the
+                // route under message.source.
                 guard let d = obj["data"] as? [String: Any],
                       let msg = d["message"] as? [String: Any],
-                      let usage = msg["usage"] as? [String: Any] else { return }
+                      let usage = (d["usage"] ?? msg["usage"]) as? [String: Any] else { return }
                 let key = "\(d["turn"] as? Int ?? 0):\(d["step"] as? Int ?? 0)"
-                let provider = msg["provider"] as? String ?? headerProvider
-                let model = msg["model"] as? String ?? headerModel
+                let source = msg["source"] as? [String: Any]
+                let provider = msg["provider"] as? String ?? source?["provider"] as? String ?? headerProvider
+                let model = msg["model"] as? String ?? source?["model"] as? String ?? headerModel
                 if let p = pending.removeValue(forKey: key) {
                     // The message usage is the final sample: it replaces the
                     // early chunk sample instead of double-counting it.

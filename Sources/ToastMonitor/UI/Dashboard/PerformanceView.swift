@@ -18,6 +18,20 @@ struct PerformanceView: View {
     @State private var isLoading = true
     @State private var loadID = UUID()
     @State private var hoveredDay: Int64?
+    /// Nil keeps the default ranking by calls.
+    @State private var sort: TableSort?
+
+    enum SortColumn {
+        case speed, firstToken, calls
+
+        /// Best first: fastest speed, shortest wait, most calls.
+        var startsAscending: Bool { self == .firstToken }
+    }
+
+    struct TableSort: Equatable {
+        var column: SortColumn
+        var ascending: Bool
+    }
 
     /// Lines beyond this many models turn the chart into noise; the table
     /// still lists every model.
@@ -365,20 +379,68 @@ struct PerformanceView: View {
     private static let headerHeight: CGFloat = 26
     private static let rowHeight: CGFloat = 38
 
+    /// Rows in the chosen order. Models without a figure for the sorted
+    /// column go last either way; ties keep the call ranking.
+    private static func sorted(_ rows: [ModelRow], by sort: TableSort?) -> [ModelRow] {
+        guard let sort else { return rows }
+        func value(_ r: ModelRow) -> Double? {
+            switch sort.column {
+            case .speed: return r.tokensPerSecond
+            case .firstToken: return r.ttftMs
+            case .calls: return Double(r.calls)
+            }
+        }
+        return rows.enumerated().sorted { a, b in
+            switch (value(a.element), value(b.element)) {
+            case let (x?, y?) where x != y: return sort.ascending ? x < y : x > y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+
+    private func sortHeader(_ title: String, _ column: SortColumn) -> some View {
+        let active = sort?.column == column
+        let ascending = sort?.ascending ?? false
+        return Button {
+            sort = active
+                ? TableSort(column: column, ascending: !ascending)
+                : TableSort(column: column, ascending: column.startsAscending)
+        } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                // Always laid out so switching columns never shifts the header.
+                Image(systemName: active && ascending ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(active ? 1 : 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(active ? (ascending ? "Ascending" : "Descending") : "")
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
     private func table(_ rows: [ModelRow]) -> some View {
         ScrollView(.vertical) {
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 0) {
                 GridRow {
-                    Text("Model").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Speed").gridColumnAlignment(.trailing)
-                    Text("First Token").gridColumnAlignment(.trailing)
-                    Text("Calls").gridColumnAlignment(.trailing)
+                    // Back to the default ranking.
+                    Button { sort = nil } label: {
+                        Text("Model").contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    sortHeader("Speed", .speed).gridColumnAlignment(.trailing)
+                    sortHeader("First Token", .firstToken).gridColumnAlignment(.trailing)
+                    sortHeader("Calls", .calls).gridColumnAlignment(.trailing)
                 }
                 .font(TMType.medium(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
                 .frame(height: Self.headerHeight, alignment: .top)
 
-                ForEach(rows, id: \.model) { r in
+                ForEach(Self.sorted(rows, by: sort), id: \.model) { r in
                     Divider().gridCellUnsizedAxes(.horizontal)
                     GridRow {
                         HStack(spacing: 8) {
@@ -400,8 +462,11 @@ struct PerformanceView: View {
                     .frame(height: Self.rowHeight - 1)
                 }
             }
-            .padding(.trailing, 4)
+            // The scroller runs in the card's margin, clear of the figures.
+            .padding(.trailing, DashLayout.cardPadding)
+            .overlayScrollers()
         }
+        .padding(.trailing, -DashLayout.cardPadding)
         .frame(height: Self.headerHeight + CGFloat(min(rows.count, 4)) * Self.rowHeight)
     }
 }

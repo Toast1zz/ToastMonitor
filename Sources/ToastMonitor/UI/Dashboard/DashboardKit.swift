@@ -358,3 +358,44 @@ private struct SegmentedControl<Value: Hashable & Identifiable>: NSViewRepresent
         }
     }
 }
+
+extension View {
+    /// Scrollers that appear only while scrolling, whatever the system
+    /// scroll bar setting. For short lists inside a card, whose clipped last
+    /// row already shows that more follow. Apply inside the ScrollView.
+    func overlayScrollers() -> some View {
+        background(OverlayScrollerStyle())
+    }
+}
+
+private struct OverlayScrollerStyle: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+            // AppKit restores the preferred style when the setting or the
+            // attached pointing devices change.
+            if observer == nil {
+                observer = NotificationCenter.default.addObserver(
+                    forName: NSScroller.preferredScrollerStyleDidChangeNotification,
+                    object: nil, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.apply() }
+                }
+            }
+        }
+
+        private func apply() {
+            enclosingScrollView?.scrollerStyle = .overlay
+        }
+
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+    }
+}

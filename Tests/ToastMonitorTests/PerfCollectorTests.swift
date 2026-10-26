@@ -123,6 +123,147 @@ final class PerfCollectorTests: XCTestCase {
         XCTAssertEqual(db.perfCursor(path)?.size, base + 9_000)
     }
 
+    private func append(_ text: String, to file: String) throws {
+        let handle = try XCTUnwrap(FileHandle(forWritingAtPath: file))
+        handle.seekToEndOfFile()
+        handle.write(text.data(using: .utf8)!)
+        handle.closeFile()
+    }
+
+    private func codex(_ type: String, at ms: Int64, _ payload: [String: Any]) -> String {
+        line(["timestamp": iso(ms), "type": type, "payload": payload])
+    }
+
+    private func codexItem(_ kind: String, start: Int64, end: Int64) -> String {
+        codex("event_msg", at: end, ["type": "item_completed", "started_at_ms": start,
+                                     "completed_at_ms": end, "item": ["type": kind, "id": UUID().uuidString]])
+    }
+
+    private func codexUsage(_ id: String, at ms: Int64, output: Int) -> String {
+        codex("token_usage_record", at: ms, ["response_id": id, "usage": ["output_tokens": output]])
+    }
+
+    func testCodexMeasuresEachResponseAcrossAppends() throws {
+        let file = dir + "/rollout.jsonl"
+        // Prompt at 0. Response 1: reasoning 2.0–3.0s, tool call done at 4.0s.
+        // The read stops mid-turn, before response 2 has its usage record.
+        try (codex("event_msg", at: base, ["type": "task_started"])
+             + codex("turn_context", at: base, ["model": "gpt-6.1-sol"])
+             + codexItem("UserMessage", start: base, end: base)
+             + codexItem("Reasoning", start: base + 2_000, end: base + 3_000)
+             + codex("response_item", at: base + 4_000, ["type": "custom_tool_call"])
+             + codexItem("CommandExecution", start: base + 4_100, end: base + 4_200)
+             + codexUsage("resp_1", at: base + 4_500, output: 300)
+             + codex("response_item", at: base + 5_000, ["type": "custom_tool_call_output"])
+             + codexItem("Reasoning", start: base + 7_000, end: base + 7_500))
+            .write(toFile: file, atomically: true, encoding: .utf8)
+        PerfCollector.scanCodex(file: file, database: db, nowMs: base + 8_000)
+        XCTAssertEqual(db.perfPoints(days: 1).count, 1)
+
+        // The usage parser has recorded the file's model by the next run.
+        db.setScanState(file, size: 0, mtime: 0, identity: 0, context: #"{"model":"gpt-6.1-sol"}"#)
+        // Response 2 ends with a message at 9.0s; the turn completes.
+        try append(codexItem("AgentMessage", start: base + 8_000, end: base + 9_000)
+                   + codexUsage("resp_2", at: base + 9_100, output: 400)
+                   + codex("event_msg", at: base + 9_200, ["type": "task_complete"]), to: file)
+        PerfCollector.scanCodex(file: file, database: db, nowMs: base + 10_000)
+
+        let points = db.perfPoints(days: 1).sorted { ($0.ttftMs ?? 0) < ($1.ttftMs ?? 0) }
+        XCTAssertEqual(points.count, 2)
+        XCTAssertEqual(points.map(\.model), ["gpt-6.1-sol", "gpt-6.1-sol"])
+        // Response 1: sent at 0, first token at 2.0s, 300 tokens over 2.0s.
+        XCTAssertEqual(points[0].ttftMs, 2_000)
+        XCTAssertEqual(try XCTUnwrap(points[0].tokensPerSecond), 150, accuracy: 0.001)
+        // Response 2: sent with the tool output at 5.0s, 400 tokens over 2.0s.
+        XCTAssertEqual(points[1].ttftMs, 2_000)
+        XCTAssertEqual(try XCTUnwrap(points[1].tokensPerSecond), 200, accuracy: 0.001)
+        let size = try XCTUnwrap(FileScanner.fileStat(file)).size
+        XCTAssertEqual(db.perfCursor(file)?.size, size, "a closed turn leaves nothing to re-read")
+    }
+
+    func testCodexResponseWithoutStreamedItemIsNotMeasured() throws {
+        let file = dir + "/rollout-tools.jsonl"
+        try (codexItem("UserMessage", start: base, end: base)
+             + codex("response_item", at: base + 3_000, ["type": "function_call"])
+             + codexUsage("resp_3", at: base + 3_100, output: 200))
+            .write(toFile: file, atomically: true, encoding: .utf8)
+        PerfCollector.scanCodex(file: file, database: db, nowMs: base + 4_000)
+        XCTAssertTrue(db.perfPoints(days: 1).isEmpty)
+    }
+
+    private func dsh(_ type: String, seq: Int, at ms: Int64, _ data: [String: Any]) -> String {
+        line(["type": type, "seq": seq, "time": ms, "data": data])
+    }
+
+    func testDSHVersionedLogUsesStreamTimes() throws {
+        let sessionDir = dir + "/session-abc"
+        try FileManager.default.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
+        let file = sessionDir + "/session.v4.jsonl"
+        // Step sent at 0; reasoning block 1.0s, text chunks 2.0s + 0.5s + 0.5s,
+        // block end at 3.0s, usage chunk late at 3.4s.
+        let stream: [[String: Any]] = [
+            ["type": "chunk", "time": base + 1_000, "chunk": ["type": "block-start", "index": 0]],
+            ["type": "text-chunks", "time0": base + 2_000, "index": 1, "dt": [500, 500]],
+            ["type": "chunk", "time": base + 3_000, "chunk": ["type": "block-end", "index": 1]],
+            ["type": "chunk", "time": base + 3_400, "chunk": ["type": "usage"]],
+        ]
+        try (dsh("step/start", seq: 1, at: base, ["turn": 1, "step": 1])
+             + dsh("assistant/message", seq: 2, at: base + 3_500, [
+                "turn": 1, "step": 1, "usage": ["outputTokens": 400],
+                "message": ["role": "assistant", "source": ["model": "deepseek-v4-flash"]],
+                "stream": stream]))
+            .write(toFile: file, atomically: true, encoding: .utf8)
+        PerfCollector.scanDSH(file: file, database: db)
+
+        let point = try XCTUnwrap(db.perfPoints(days: 1).first)
+        XCTAssertEqual(point.model, "deepseek-v4-flash")
+        XCTAssertEqual(point.ttftMs, 1_000)
+        XCTAssertEqual(try XCTUnwrap(point.tokensPerSecond), 200, accuracy: 0.001)
+    }
+
+    func testDSHChunkLinesMergeAcrossAppends() throws {
+        let sessionDir = dir + "/session-old"
+        try FileManager.default.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
+        let file = sessionDir + "/session.jsonl"
+        try (dsh("step/start", seq: 1, at: base, ["turn": 2, "step": 3])
+             + dsh("assistant/chunk", seq: 2, at: base + 1_500,
+                   ["turn": 2, "step": 3, "chunk": ["type": "block-start", "index": 0]]))
+            .write(toFile: file, atomically: true, encoding: .utf8)
+        PerfCollector.scanDSH(file: file, database: db)
+        try append(dsh("assistant/chunk", seq: 3, at: base + 4_000,
+                       ["turn": 2, "step": 3, "chunk": ["type": "block-end", "index": 0]])
+                   + dsh("assistant/chunk", seq: 4, at: base + 4_000,
+                         ["turn": 2, "step": 3, "chunk": ["type": "usage", "usage": ["outputTokens": 250]]])
+                   + dsh("assistant/chunk", seq: 5, at: base + 4_000,
+                         ["turn": 2, "step": 3, "chunk": ["type": "finish", "replayState":
+                            ["response": ["model": "deepseek-v4-pro"]]]]), to: file)
+        PerfCollector.scanDSH(file: file, database: db)
+
+        let point = try XCTUnwrap(db.perfPoints(days: 1).first)
+        XCTAssertEqual(point.model, "deepseek-v4-pro")
+        XCTAssertEqual(point.ttftMs, 1_500)
+        XCTAssertEqual(try XCTUnwrap(point.tokensPerSecond), 100, accuracy: 0.001)
+    }
+
+    func testOmpUsesRecordedFirstTokenAndDuration() throws {
+        let file = dir + "/omp.jsonl"
+        func message(_ id: String, extra: [String: Any]) -> String {
+            var m: [String: Any] = ["role": "assistant", "model": "gpt-6-sol", "timestamp": base,
+                                    "responseId": id, "usage": ["output": 300]]
+            m.merge(extra) { $1 }
+            return line(["type": "message", "id": "e_\(id)", "timestamp": iso(base), "message": m])
+        }
+        try (message("r1", extra: ["ttft": 1_200.4, "duration": 3_200.2])
+             + message("r2", extra: ["duration": 3_000]))
+            .write(toFile: file, atomically: true, encoding: .utf8)
+        PerfCollector.scanOmp(file: file, database: db)
+
+        let points = db.perfPoints(days: 1)
+        XCTAssertEqual(points.count, 1, "a message without ttft is not measured")
+        XCTAssertEqual(points.first?.ttftMs, 1_200)
+        XCTAssertEqual(try XCTUnwrap(points.first?.tokensPerSecond), 150, accuracy: 0.001)
+    }
+
     func testMedian() {
         XCTAssertNil(PerfStats.median([]))
         XCTAssertEqual(PerfStats.median([3, 1, 2]), 2)

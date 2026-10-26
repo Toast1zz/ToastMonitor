@@ -532,6 +532,42 @@ final class DSHParserTests: XCTestCase {
 
     // MARK: - Frame helper
 
+    func testListSessionFilesPicksOneLogPerSession() throws {
+        let fm = FileManager.default
+        func touch(_ path: String) throws {
+            let full = (tempDir as NSString).appendingPathComponent("sessions/" + path)
+            try fm.createDirectory(atPath: (full as NSString).deletingLastPathComponent,
+                                   withIntermediateDirectories: true)
+            fm.createFile(atPath: full, contents: Data())
+        }
+        try touch("--a--/session-old/session.jsonl.zstd")
+        try touch("--a--/session-old/session.v4.jsonl.zstd")
+        try touch("--a--/session-new/session.v3.jsonl.zstd")
+        try touch("--a--/session-new/session.v4.jsonl.zstd")
+        try touch("--a--/session-new/session.lock")
+        let names = DSHParser.listSessionFiles().map {
+            (($0 as NSString).deletingLastPathComponent as NSString).lastPathComponent
+                + "/" + ($0 as NSString).lastPathComponent
+        }
+        XCTAssertEqual(names, ["session-new/session.v4.jsonl.zstd", "session-old/session.jsonl.zstd"])
+    }
+
+    func testLogModeReadsVersionedMessageUsage() throws {
+        let path = (tempDir as NSString).appendingPathComponent("session.v4.jsonl")
+        let lines = [
+            #"{"type":"session","version":4,"id":"session-v4","createdAt":1793012227102,"cwd":"/tmp/p"}"#,
+            #"{"type":"assistant/message","seq":18,"time":1793012262429,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[],"source":{"kind":"model","provider":"kiliproxy","model":"gpt-6.1-sol"}},"usage":{"inputTokens":1200,"outputTokens":13,"cacheReadTokens":10045}}}"#,
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        let (turns, _) = DSHParser.scanLogs(knownPaths: [path], database: db)
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns.first?.inputTokens, 1200)
+        XCTAssertEqual(turns.first?.outputTokens, 13)
+        XCTAssertEqual(turns.first?.cacheRead, 10045)
+        XCTAssertEqual(turns.first?.model, "gpt-6.1-sol")
+        XCTAssertEqual(turns.first?.provider, "kiliproxy")
+    }
+
     func testNextFrameOffset() {
         var data = Data([0x00, 0x01, 0x02])
         XCTAssertNil(Zstd.nextFrameOffset(in: data, fromOffset: 0))
