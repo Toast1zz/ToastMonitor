@@ -139,7 +139,7 @@ final class GrokQuotaTests: XCTestCase {
     }
 
     func testUnauthorizedMessagePointsToLogin() {
-        XCTAssertEqual(GrokQuotaClient.message(for: .status(401)), "Grok login expired — run grok login")
+        XCTAssertEqual(GrokQuotaClient.message(for: .status(401)), "Grok login expired — run grok once")
         XCTAssertEqual(GrokQuotaClient.message(for: .status(500)), "Grok billing API HTTP 500")
     }
 

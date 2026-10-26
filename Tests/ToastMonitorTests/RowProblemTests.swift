@@ -16,6 +16,13 @@ final class RowProblemTests: XCTestCase {
         XCTAssertFalse(p.opensSettings)
     }
 
+    func testGrokExpiredPointsToTerminal() {
+        let p = RowProblem.from(service: "X Subscription Premium", error: GrokQuotaClient.expired)
+        XCTAssertEqual(p.title, "Grok login expired")
+        XCTAssertTrue(p.detail.contains("run grok"))
+        XCTAssertFalse(p.opensSettings)
+    }
+
     func testRejectedLoginOffersSettings() {
         let p = RowProblem.from(service: "OpenCode Go", error: "HTTP 401")
         XCTAssertTrue(p.opensSettings)

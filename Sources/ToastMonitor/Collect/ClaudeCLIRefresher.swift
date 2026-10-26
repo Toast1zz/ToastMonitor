@@ -50,16 +50,18 @@ enum ClaudeCLIRefresher {
     /// `fixedCandidates` covers the two common non-Homebrew-variable install
     /// roots; overridable so tests can run hermetically instead of picking
     /// up whatever happens to be installed on the machine running them.
-    nonisolated static func locateBinary(env: [String: String] = ProcessInfo.processInfo.environment,
+    nonisolated static func locateBinary(named name: String = "claude",
+                                         env: [String: String] = ProcessInfo.processInfo.environment,
                                          home: String = NSHomeDirectory(),
-                                         fixedCandidates: [String] = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"]) -> String? {
-        let candidates = ["\(home)/.local/bin/claude"] + fixedCandidates
+                                         fixedCandidates: [String]? = nil) -> String? {
+        let fixed = fixedCandidates ?? ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"]
+        let candidates = ["\(home)/.local/bin/\(name)"] + fixed
         for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
             return path
         }
         guard let pathVar = env["PATH"] else { return nil }
         for dir in pathVar.split(separator: ":") {
-            let candidate = "\(dir)/claude"
+            let candidate = "\(dir)/\(name)"
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
         return nil

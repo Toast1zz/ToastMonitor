@@ -35,6 +35,18 @@ final class ClaudeCLIRefresherTests: XCTestCase {
         XCTAssertEqual(found, "\(binDir)/claude")
     }
 
+    func testLocateBinaryFindsOtherCLIByName() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cli-refresher-home-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: "\(home)/.local/bin", withIntermediateDirectories: true)
+        makeExecutable(at: "\(home)/.local/bin/claude")
+        makeExecutable(at: "\(home)/.local/bin/grok")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let found = ClaudeCLIRefresher.locateBinary(named: "grok", env: [:], home: home, fixedCandidates: [])
+        XCTAssertEqual(found, "\(home)/.local/bin/grok")
+    }
+
     func testLocateBinaryReturnsNilWhenNothingFound() throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("cli-refresher-home-\(UUID().uuidString)").path

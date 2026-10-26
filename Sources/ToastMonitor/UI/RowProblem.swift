@@ -38,6 +38,12 @@ struct RowProblem: Equatable {
                     detail: "Open Terminal and run claude /login, then refresh ToastMonitor.")
             }
         }
+        if text.contains("grok login expired") {
+            return RowProblem(
+                title: "Grok login expired",
+                detail: "Open Terminal and run grok. It renews the login as it starts, or asks "
+                    + "you to sign in again if it can’t.")
+        }
         if text.contains("expired") || text.contains("401") || text.contains("403")
             || text.contains("rejected") || text.contains("unauthorized") {
             return RowProblem(
