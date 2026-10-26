@@ -16,6 +16,9 @@ import Security
 /// file-based login keychain.
 enum KeychainStore {
     static let service = "ToastMonitor"
+    static var readImpl: ((String, Bool) -> (OSStatus, String?))?
+    static var writeImpl: ((String, String, Bool) -> OSStatus)?
+    static var deleteImpl: ((String, Bool) -> OSStatus)?
 
     // Most recent SecItem result, thread-safe, so clients can tell "not
     // configured" (errSecItemNotFound) apart from "there but unreadable
@@ -105,6 +108,11 @@ enum KeychainStore {
     }
 
     static func set(_ value: String, account: String, allowPrompt: Bool = false) -> Bool {
+        if let writeImpl {
+            let status = writeImpl(value, account, allowPrompt)
+            recordStatus(status)
+            return status == errSecSuccess
+        }
         guard let data = value.data(using: .utf8) else { return false }
         guard allowPrompt else {
             return withoutUserInteraction { setLocked(data, account: account, allowPrompt: false) }
@@ -141,6 +149,11 @@ enum KeychainStore {
     }
 
     static func get(account: String, allowPrompt: Bool = false) -> String? {
+        if let readImpl {
+            let (status, value) = readImpl(account, allowPrompt)
+            recordStatus(status)
+            return status == errSecSuccess ? value : nil
+        }
         var query = query(account: account, allowPrompt: allowPrompt)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -155,11 +168,13 @@ enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func delete(account: String, allowPrompt: Bool = false) {
+    @discardableResult
+    static func delete(account: String, allowPrompt: Bool = false) -> Bool {
         let query = query(account: account, allowPrompt: allowPrompt)
-        let remove = { SecItemDelete(query as CFDictionary) }
+        let remove = { deleteImpl?(account, allowPrompt) ?? SecItemDelete(query as CFDictionary) }
         let status = allowPrompt ? remove() : withoutUserInteraction(remove)
         recordStatus(status)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // MARK: - Legacy vault migration (one-time)

@@ -82,6 +82,7 @@ final class OpenRouterClient: ObservableObject {
     /// replace the made-up numbers.
     private var isDemo = false
 
+    private let database: Database
     private let session: URLSession
     /// Retained: URLSession holds its delegate weakly.
     private let redirectBlocker = NoRedirectDelegate()
@@ -105,8 +106,9 @@ final class OpenRouterClient: ObservableObject {
 
     /// Background polling continues at a slower cadence; foregrounding
     /// restores the existing cadence and refreshes immediately.
-    private init() {
-        let cfg = URLSessionConfiguration.ephemeral
+    init(configuration: URLSessionConfiguration? = nil, database: Database = .shared) {
+        self.database = database
+        let cfg = configuration ?? URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
         // Credential-bearing requests must never be redirected: a downgrade
@@ -151,7 +153,7 @@ final class OpenRouterClient: ObservableObject {
         // serving plaintext values to live API calls. The plaintext stays on
         // disk (0600) as a recovery copy, marked unavailable.
         var migrated: [String] = []
-        if let raw = Database.shared.setting("or_keys"),
+        if let raw = database.setting("or_keys"),
            raw.utf8.count <= Self.maxKeyPayloadLength,
            let data = raw.data(using: .utf8),
            let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
@@ -159,15 +161,15 @@ final class OpenRouterClient: ObservableObject {
         }
         var legacy: [String] = migrated
         if let k = KeychainStore.get(account: "openrouter-key"), !k.isEmpty { legacy.append(k) }
-        if let k = Database.shared.setting("openrouter_key"), !k.isEmpty { legacy.append(k) }
+        if let k = database.setting("openrouter_key"), !k.isEmpty { legacy.append(k) }
         if !legacy.isEmpty {
             let arr = normalizedKeys(legacy)
             if saveToKeychain(arr) {
                 clearLegacyOpenRouterValuesOnce()
-                Database.shared.setSetting("or_cred_storage", "keychain")
+                database.setSetting("or_cred_storage", "keychain")
                 return arr
             }
-            Database.shared.setSetting("or_cred_storage", "keychain-unavailable")
+            database.setSetting("or_cred_storage", "keychain-unavailable")
             return []
         }
         return []
@@ -197,22 +199,22 @@ final class OpenRouterClient: ObservableObject {
         let arr = normalizedKeys(keys)
         guard !arr.isEmpty else { return false }
         if saveToKeychain(arr, allowPrompt: allowPrompt) {
-            Database.shared.setSetting("or_keys", nil)
-            Database.shared.setSetting("or_cred_storage", "keychain")
+            database.setSetting("or_keys", nil)
+            database.setSetting("or_cred_storage", "keychain")
             return true
         }
         // Never create a new plaintext SQLite copy when Keychain is locked or
         // unavailable. The caller keeps the previous value and surfaces an
         // actionable error instead.
-        Database.shared.setSetting("or_cred_storage", "keychain-unavailable")
+        database.setSetting("or_cred_storage", "keychain-unavailable")
         return false
     }
 
     private func clearLegacyOpenRouterValuesOnce() {
         guard !legacyCleanupDone else { return }
         legacyCleanupDone = true
-        Database.shared.setSetting("or_keys", nil)
-        Database.shared.setSetting("openrouter_key", nil)
+        database.setSetting("or_keys", nil)
+        database.setSetting("openrouter_key", nil)
         KeychainStore.delete(account: "openrouter-key")
     }
     /// Replace all keys (provisioning path).
@@ -224,24 +226,30 @@ final class OpenRouterClient: ObservableObject {
             cachedKeys = [normalized]
             hasKey = true
             state.authInvalid = false
-            Database.shared.setSetting("or_auth_invalid", nil)
+            database.setSetting("or_auth_invalid", nil)
         } else if key != nil {
             state.error = KeychainStore.lastWasInteractionNotAllowed
                 ? "Keychain locked or access denied; API key was not saved"
                 : "Keychain write failed — API key not saved"
             return false
         } else {
-            KeychainStore.delete(account: "or-keys", allowPrompt: true)
-            KeychainStore.delete(account: "openrouter-key", allowPrompt: true)
-            Database.shared.setSetting("or_keys", nil)
-            Database.shared.setSetting("openrouter_key", nil)
-            Database.shared.setSetting("or_cred_storage", nil)
+            invalidateInFlight()
+            let deletedKeys = KeychainStore.delete(account: "or-keys", allowPrompt: true)
+            let deletedLegacy = KeychainStore.delete(account: "openrouter-key", allowPrompt: true)
+            guard deletedKeys && deletedLegacy else {
+                state.error = "Keychain delete failed — API key still stored"
+                return false
+            }
+            database.setSetting("or_keys", nil)
+            database.setSetting("openrouter_key", nil)
+            database.setSetting("or_cred_storage", nil)
             cachedKeys = []
             hasKey = false
             var cleared = State()
             cleared.error = "API key not configured"
             state = cleared
         }
+        invalidateInFlight()
         refresh()
         return true
     }
@@ -265,7 +273,8 @@ final class OpenRouterClient: ObservableObject {
         cachedKeys = normalizedKeys(keys)
         hasKey = true
         state.authInvalid = false
-        Database.shared.setSetting("or_auth_invalid", nil)
+        database.setSetting("or_auth_invalid", nil)
+        invalidateInFlight()
         refresh()
         return true
     }
@@ -276,12 +285,21 @@ final class OpenRouterClient: ObservableObject {
         return setKey(key)
     }
 
+    private func invalidateInFlight() {
+        refreshGeneration &+= 1
+        refreshInFlight = false
+        keyLoadInFlight = false
+        pendingKeyRefresh = false
+        state.isLoading = false
+        backoff.succeeded()
+    }
+
     // MARK: - Polling
 
     func start() {
         guard !started else { return }
         started = true
-        state.authInvalid = Database.shared.setting("or_auth_invalid") == "1"
+        state.authInvalid = database.setting("or_auth_invalid") == "1"
         refresh()
         poller.start { [weak self] in self?.refresh() }
     }
@@ -304,13 +322,14 @@ final class OpenRouterClient: ObservableObject {
             return
         }
         keyLoadInFlight = true
+        let generation = refreshGeneration
         // Standard SecItemCopyMatching is thread-safe. It can still wait for
         // securityd / login-keychain decryption, so it must not run on the
         // main actor where it would freeze the toolbar selection animation.
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let keys = self?.storedKeys() ?? []
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.refreshGeneration == generation else { return }
                 self.keyLoadInFlight = false
                 self.cachedKeys = keys
                 self.refresh(with: keys)
@@ -331,6 +350,7 @@ final class OpenRouterClient: ObservableObject {
         hasKey = !keys.isEmpty
         state.keyCount = keys.count
         guard !keys.isEmpty else {
+            refreshInFlight = false
             var cleared = State()
             // A locked login keychain reads as "no keys" (errSecItemNotFound
             // vs errSecInteractionNotAllowed); say so instead of reporting
@@ -445,13 +465,13 @@ final class OpenRouterClient: ObservableObject {
         let authInvalid = results.isEmpty && !failures.isEmpty
             && failures.allSatisfy { $0.contains("(401)") || $0.contains("(403)") }
         state.authInvalid = authInvalid
-        Database.shared.setSetting("or_auth_invalid", authInvalid ? "1" : nil)
+        database.setSetting("or_auth_invalid", authInvalid ? "1" : nil)
         if results.isEmpty || rateLimited {
             backoff.failed()
         } else {
             backoff.succeeded()
             state.authInvalid = false
-            Database.shared.setSetting("or_auth_invalid", nil)
+            database.setSetting("or_auth_invalid", nil)
         }
         state.isLoading = false
         if results.isEmpty {
@@ -512,8 +532,8 @@ final class OpenRouterClient: ObservableObject {
             isManagementKey: s.isManagementKey)
         // DB write off the main actor: the shared lock may be held by the
         // collector or the hourly prune.
-        DispatchQueue.global(qos: .utility).async {
-            Database.shared.insertORSnapshot(snap)
+        DispatchQueue.global(qos: .utility).async { [database] in
+            database.insertORSnapshot(snap)
         }
     }
 
