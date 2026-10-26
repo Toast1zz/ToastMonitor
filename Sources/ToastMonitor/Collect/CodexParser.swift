@@ -93,7 +93,7 @@ enum CodexParser {
 
     /// Reads threads table into [sessionID: model] plus session metadata.
     /// The result is reused until the database inode or mtime changes.
-    static func readThreads() -> [String: ThreadMeta] {
+    private static func readThreads() -> [String: ThreadMeta] {
         if let st = FileScanner.fileStat(stateDBPath) {
             threadsLock.lock()
             if let cache = threadsCache, cache.identity == st.identity, cache.mtime == st.mtime {
