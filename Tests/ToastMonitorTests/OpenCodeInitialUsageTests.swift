@@ -34,11 +34,16 @@ final class OpenCodeInitialUsageTests: XCTestCase {
         XCTAssertEqual(sqlite3_exec(handle, sql, nil, nil, nil), SQLITE_OK)
     }
 
-    private func scan() {
+    @discardableResult
+    private func scan() -> [TurnRecord] {
+        var turns: [TurnRecord] = []
         let result = CollectorEngine.prepareAndCommit(database: database, sourcePaths: [directory + "/opencode.db"]) {
-            OpenCodeParser.scan(database: $0)
+            let result = OpenCodeParser.scan(database: $0)
+            turns = result.turns
+            return result
         }
         XCTAssertTrue(result.committed)
+        return turns
     }
 
     func testReadOnlyInitialUsageImportsOnceAndContinuesGrowing() {
@@ -70,4 +75,32 @@ final class OpenCodeInitialUsageTests: XCTestCase {
         XCTAssertEqual(database.costBreakdown(from: 0, to: 2_000_000_000).actual, 0)
         XCTAssertEqual(database.costBreakdown(from: 0, to: 2_000_000_000).estimated, 2.5)
     }
+    func testLegacyCombinedBaselineMigratesOnceAndKeepsFutureGrowth() {
+        XCTAssertTrue(database.setSessionTotals("opencode|legacy", tool: "opencode", input: 120, output: 0,
+                                                reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, updated: 1790000000))
+        execute("INSERT INTO session VALUES('legacy', '', '', 'gpt-4o', 0, 100,0,20,0,0,1790000000,1790000001);")
+        scan()
+        XCTAssertEqual(database.turnCount(), 0)
+        XCTAssertEqual(database.sessionTotals()["opencode|legacy"]?.input, 100)
+        XCTAssertEqual(database.sessionTotals()["opencode|legacy"]?.reasoning, 20)
+        execute("UPDATE session SET tokens_input=110, tokens_reasoning=22, time_updated=1790000002 WHERE id='legacy';")
+        let delta = scan()
+        XCTAssertTrue(scan().isEmpty)
+        var rows = database.turns(sessionTool: "opencode", sessionID: "legacy")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(delta.first?.inputTokens, 10)
+        XCTAssertEqual(delta.first?.reasoningTokens, 2)
+        execute("UPDATE session SET tokens_input=105, tokens_reasoning=21, time_updated=1790000003 WHERE id='legacy';")
+        scan()
+        XCTAssertEqual(database.turnCount(), 1)
+        execute("UPDATE session SET tokens_input=112, tokens_reasoning=24, time_updated=1790000004 WHERE id='legacy';")
+        let regrowth = scan()
+        XCTAssertEqual(regrowth.first?.inputTokens, 2)
+        XCTAssertEqual(regrowth.first?.reasoningTokens, 2)
+        rows = database.turns(sessionTool: "opencode", sessionID: "legacy")
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.reduce(0) { $0 + $1.input }, 12)
+        XCTAssertEqual(database.sessionTotals()["opencode|legacy"]?.reasoning, 24)
+    }
+
 }

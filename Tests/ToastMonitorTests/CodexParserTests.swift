@@ -269,7 +269,7 @@ final class OpenCodeParserDeltaTests: XCTestCase {
         XCTAssertEqual(third[0].cost, 2.5, accuracy: 0.0001, "7.5 - max(5.0, 2.0) = 2.5, not 5.5")
     }
 
-    func testLegacyCombinedInputTransitionProducesNoDeltaAndRaisesBaseline() {
+    func testLegacyCombinedInputTransitionAdoptsSplitBaseline() {
         // Older opencode versions folded reasoning into input: the baseline
         // is input = 1000 (combined), reasoning = 0.
         writeRow(cost: 5.0, input: 1000, output: 500, timeUpdated: 1786628700000)
@@ -280,11 +280,11 @@ final class OpenCodeParserDeltaTests: XCTestCase {
         let (transition, _) = OpenCodeParser.scan(database: db)
         XCTAssertTrue(transition.isEmpty, "re-labeling input → reasoning is not new usage")
 
-        // Later growth is measured from the max baseline (input 1000).
+        // Later growth is measured from the migrated split baseline (input 900).
         writeRow(cost: 6.0, input: 1200, output: 500, reasoning: 150, timeUpdated: 1786628900000)
         let (grown, _) = OpenCodeParser.scan(database: db)
         XCTAssertEqual(grown.count, 1)
-        XCTAssertEqual(grown[0].inputTokens, 200)
+        XCTAssertEqual(grown[0].inputTokens, 300)
         XCTAssertEqual(grown[0].reasoningTokens, 50, "150 - max(0, 100) = 50")
     }
 }

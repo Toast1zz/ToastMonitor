@@ -102,9 +102,11 @@ enum OpenCodeParser {
                                         project: project, model: row.model, created: sec(row.timeCreated), updated: sec(row.timeUpdated)))
 
             let totalInput = row.input
+            let legacyCombinedInput = prevTotals[key].map {
+                FileScanner.tokenCount($0.reasoning) == 0 && row.reasoning > 0
+                    && FileScanner.tokenCount($0.input) == row.input + row.reasoning
+            } ?? false
             if let prev = prevTotals[key] {
-                let legacyCombinedInput = FileScanner.tokenCount(prev.reasoning) == 0
-                    && row.reasoning > 0 && FileScanner.tokenCount(prev.input) == row.input + row.reasoning
                 let dInput = (legacyCombinedInput ? row.input + row.reasoning : totalInput) - FileScanner.tokenCount(prev.input)
                 let dOutput = row.output - FileScanner.tokenCount(prev.output)
                 let dReasoning = legacyCombinedInput ? 0 : row.reasoning - FileScanner.tokenCount(prev.reasoning)
@@ -136,17 +138,14 @@ enum OpenCodeParser {
                                         costQuality: row.hasActualCost ? "actual" : "unknown"))
             }
             // Cost-only changes without token growth are intentionally not imported.
-            // The baseline is the HIGH-WATER MARK per counter, never the raw
-            // current value: a source rollback (totals dropping) must not
-            // reset the origin, or the later regrowth would be re-counted
-            // from the rolled-back value. max() also absorbs the legacy
-            // combined-input transition (FileScanner.tokenCount(prev.input) == input + reasoning),
-            // where FileScanner.tokenCount(prev.input) exceeds the split current values.
+            // Keep high-water counters across rollbacks. On the legacy transition,
+            // adopt the split input/reasoning baseline once so future input growth
+            // is not consumed by the old combined value.
             let prev = prevTotals[key]
             database.setSessionTotals(key, tool: "opencode",
-                                     input: max(prev?.input ?? 0, totalInput),
+                                     input: legacyCombinedInput ? row.input : max(prev?.input ?? 0, totalInput),
                                      output: max(prev?.output ?? 0, row.output),
-                                     reasoning: max(prev?.reasoning ?? 0, row.reasoning),
+                                     reasoning: legacyCombinedInput ? row.reasoning : max(prev?.reasoning ?? 0, row.reasoning),
                                      cacheRead: max(prev?.cacheRead ?? 0, row.cacheRead),
                                      cacheWrite: max(prev?.cacheWrite ?? 0, row.cacheWrite),
                                      cost: max(prev?.cost ?? 0, row.cost),
