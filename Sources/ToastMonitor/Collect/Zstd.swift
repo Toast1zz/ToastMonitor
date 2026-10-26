@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Best-effort zstd decompression without third-party libraries.
 ///
@@ -82,22 +83,38 @@ enum Zstd {
         return out
     }
 
-    private static func decompressUncached(_ data: Data) -> Data? {
-        guard let executable = executablePath() else { return nil }
+    static func decompressUncached(_ data: Data, executable: String? = nil, timeout: TimeInterval = 30) -> Data? {
+        guard let executable = executable ?? executablePath() else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["-d", "-c"]
         let stdin = Pipe()
         let stdout = Pipe()
-        let stderr = Pipe()
+        // Killing a decoder can close its input during a blocked write. Keep
+        // that failure local to this descriptor instead of raising SIGPIPE.
+        guard fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { return nil }
         process.standardInput = stdin
         process.standardOutput = stdout
-        process.standardError = stderr
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return nil
         }
+
+        let timedOut = DispatchSemaphore(value: 0)
+        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        watchdog.schedule(deadline: .now() + timeout)
+        watchdog.setEventHandler { [weak process] in
+            timedOut.signal()
+            guard let process, process.isRunning else { return }
+            process.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak process] in
+                if let process, process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
+            }
+        }
+        watchdog.resume()
+        defer { watchdog.cancel() }
 
         var outData = Data()
         let drainDone = DispatchGroup()
@@ -106,21 +123,19 @@ enum Zstd {
             outData = stdout.fileHandleForReading.readDataToEndOfFile()
             drainDone.leave()
         }
-        // write(contentsOf:) throws on EPIPE (zstd died early) instead of
-        // taking the process down with SIGPIPE.
-        try? stdin.fileHandleForWriting.write(contentsOf: data)
-        try? stdin.fileHandleForWriting.close()
-
-        let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        watchdog.schedule(deadline: .now() + 30)
-        watchdog.setEventHandler { [weak process] in
-            process?.terminate()
+        let writeDone = DispatchGroup()
+        writeDone.enter()
+        DispatchQueue.global(qos: .utility).async {
+            // The deadline covers a decoder that never consumes this input.
+            try? stdin.fileHandleForWriting.write(contentsOf: data)
+            try? stdin.fileHandleForWriting.close()
+            writeDone.leave()
         }
-        watchdog.resume()
         drainDone.wait()
         process.waitUntilExit()
-        watchdog.cancel()
-        guard process.terminationStatus == 0 else { return nil }
+        writeDone.wait()
+        guard timedOut.wait(timeout: .now()) == .timedOut,
+              process.terminationStatus == 0 else { return nil }
         return outData
     }
 
