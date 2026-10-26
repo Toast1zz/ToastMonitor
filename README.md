@@ -74,7 +74,12 @@ All quotas are built in; no opencode-quota install is needed.
 
 ## Install and build
 
-Download the latest release from [Releases](https://github.com/Toast1zz/ToastMonitor/releases) (arm64 for Apple Silicon, universal for Intel), or build it:
+Download the latest release from [Releases](https://github.com/Toast1zz/ToastMonitor/releases) (arm64 for Apple Silicon, universal for Intel).
+
+macOS blocks the first launch. Try opening the app once, then go to System Settings → Privacy & Security and click Open Anyway.
+The app is not notarized. To verify your download, run `shasum -a 256 <downloaded-file>` and compare the result with the checksum on the release page.
+
+Or build it:
 
 ```bash
 ./scripts/build-app.sh        # release build → code sign → install to /Applications
