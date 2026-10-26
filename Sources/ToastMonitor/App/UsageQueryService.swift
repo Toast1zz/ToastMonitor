@@ -188,7 +188,7 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
-    func loadDailyAggsByModel(days: Int, completion: @escaping @MainActor @Sendable ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> Void) {
+    func loadDailyAggsByModel(days: Int, completion: @escaping @MainActor @Sendable ([(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)]) -> Void) {
         queue.async {
             let aggs = self.database.dailyAggregatesByModel(days: days)
             DispatchQueue.main.async { completion(aggs) }

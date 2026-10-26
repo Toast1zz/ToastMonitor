@@ -81,11 +81,11 @@ final class ModelNameTests: XCTestCase {
 
 final class AnalysisCSVTests: XCTestCase {
     func testCSVKeepsEveryRawIdWhileTheScreenMergesThem() {
-        let aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)] = [
-            (1, "deepseek-v4-flash", 100, 50, 850, 0.5, 4),
-            (2, "deepseek-v4-flash", 10, 5, 85, 0.05, 1),
-            (1, "deepseek/deepseek-v4-flash", 20, 10, 170, 0.1, 2),
-            (1, "claude-opus-5-5", 300, 100, 600, 3, 6),
+        let aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)] = [
+            (1, "deepseek-v4-flash", 100, 50, 850, 0.5, 4, 1000),
+            (2, "deepseek-v4-flash", 10, 5, 85, 0.05, 1, 100),
+            (1, "deepseek/deepseek-v4-flash", 20, 10, 170, 0.1, 2, 200),
+            (1, "claude-opus-5-5", 300, 100, 600, 3, 6, 1000),
         ]
         let rows = AnalysisCSVRow.perModelID(aggs)
         // Three ids, three rows; the two deepseek spellings are not merged.

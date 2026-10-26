@@ -23,6 +23,23 @@ final class DatabaseTests: XCTestCase {
         super.tearDown()
     }
 
+    func testModelAndCSVTokenTotalsMatchMixedToolTotals() {
+        let now = Int64(Date().timeIntervalSince1970)
+        XCTAssertTrue(db.insertTurns([
+            TurnRecord(tool: .codex, sessionID: "codex-test", project: nil, model: "mixed-model", ts: now,
+                       inputTokens: 100, outputTokens: 20, cacheRead: 80, cacheWrite: 0, cost: 0),
+            TurnRecord(tool: .claude, sessionID: "claude-test", project: nil, model: "mixed-model", ts: now,
+                       inputTokens: 10, outputTokens: 5, cacheRead: 30, cacheWrite: 0, cost: 0),
+        ]))
+        let toolTotal = db.totalsByTool(from: 0, to: .max).reduce(Int64(0)) {
+            $0 + (ToolKind(rawValue: $1.tool)?.totalTokens(input: $1.input, output: $1.output, cacheRead: $1.cacheRead) ?? 0)
+        }
+        XCTAssertEqual(toolTotal, 165)
+        let models = db.dailyAggregatesByModel(days: 1)
+        XCTAssertEqual(models.reduce(0) { $0 + $1.totalTokens }, 165)
+        XCTAssertEqual(AnalysisCSVRow.perModelID(models).reduce(0) { $0 + $1.tokens }, 165)
+    }
+
     func testTokenMetricIncludesCacheReadExceptCodex() {
         XCTAssertEqual(ToolKind.claude.totalTokens(input: 100, output: 20, cacheRead: 1_000), 1_120)
         XCTAssertEqual(ToolKind.codex.totalTokens(input: 100, output: 20, cacheRead: 1_000), 120)

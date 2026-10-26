@@ -95,6 +95,12 @@ enum ToolKind: String, CaseIterable, Identifiable {
     /// except for Codex, whose input already contains them.
     var cacheIncludedInInput: Bool { self == .codex }
 
+    static var totalTokensSQL: String {
+        let included = allCases.filter(\.cacheIncludedInInput).map { "'\($0.rawValue)'" }.joined(separator: ",")
+        guard !included.isEmpty else { return "input_tokens + output_tokens + cache_read" }
+        return "input_tokens + output_tokens + CASE WHEN tool IN (\(included)) THEN 0 ELSE cache_read END"
+    }
+
     func totalTokens(input: Int64, output: Int64, cacheRead: Int64) -> Int64 {
         input + output + (cacheIncludedInInput ? 0 : cacheRead)
     }

@@ -58,6 +58,7 @@ struct UsageAnalysisView: View {
         let cacheRead: Int64
         let cost: Double
         let count: Int64
+        let totalTokens: Int64?
     }
 
     /// One bar segment: a day's value for one tool/model.
@@ -237,9 +238,9 @@ struct UsageAnalysisView: View {
 
     /// Rank models by total tokens (descending) and hand each the next
     /// palette color — the top model gets the first color, no collisions.
-    private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]) -> [String: Color] {
+    private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)]) -> [String: Color] {
         let totals: [String: Int64] = aggs.reduce(into: [:]) { acc, row in
-            acc[ModelName.display(row.model), default: 0] += row.input + row.output + row.cacheRead
+            acc[ModelName.display(row.model), default: 0] += row.totalTokens
         }
         let ranked = totals.sorted { $0.value > $1.value }.map(\.key)
         var map: [String: Color] = [:]
@@ -289,13 +290,13 @@ struct UsageAnalysisView: View {
     /// One pass: per-day × name token sums, per-name totals and per-day cost —
     /// every chart and table input.
     private static func build(aggs: [Database.DayAgg],
-                              modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)],
+                              modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)],
                               grouping: Grouping,
                               range: Range,
                               modelColors: [String: Color]) -> AnalysisData {
         let rows: [Row] = grouping == .byTool
-            ? aggs.map { Row(day: $0.day, key: $0.tool, input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count) }
-            : modelAggs.map { Row(day: $0.day, key: ModelName.display($0.model), input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count) }
+            ? aggs.map { Row(day: $0.day, key: $0.tool, input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count, totalTokens: nil) }
+            : modelAggs.map { Row(day: $0.day, key: ModelName.display($0.model), input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count, totalTokens: $0.totalTokens) }
 
         var dayTokens: [Int64: [String: Int64]] = [:]
         var dayCost: [Int64: [String: Double]] = [:]
@@ -391,7 +392,7 @@ struct UsageAnalysisView: View {
                                                             cacheRead: row.cacheRead)
                 ?? row.input + row.output
         }
-        return row.input + row.output + row.cacheRead
+        return row.totalTokens ?? 0
     }
 
     private static func color(for name: String, grouping: Grouping, modelColors: [String: Color]) -> Color {
@@ -652,11 +653,11 @@ struct AnalysisCSVRow: Equatable {
     /// One row per raw model id (never merged by display name), most-used
     /// first, so an export can be matched back to the logs and price table.
     static func perModelID(
-        _ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)]
+        _ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)]
     ) -> [AnalysisCSVRow] {
         var tokens: [String: Int64] = [:], calls: [String: Int64] = [:], cost: [String: Double] = [:]
         for m in aggs {
-            tokens[m.model, default: 0] += m.input + m.output + m.cacheRead
+            tokens[m.model, default: 0] += m.totalTokens
             calls[m.model, default: 0] += max(m.count, 0)
             cost[m.model, default: 0] += max(m.cost, 0)
         }

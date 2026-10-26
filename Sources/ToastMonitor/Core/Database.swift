@@ -1985,7 +1985,7 @@ final class Database: @unchecked Sendable {
     }
 
     /// Daily aggregates grouped by (day, model) for the model grouping view.
-    func dailyAggregatesByModel(days: Int) -> [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64)] {
+    func dailyAggregatesByModel(days: Int) -> [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)] {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return [] }
         let since = startOfDay(daysAgo: max(days - 1, 0))
@@ -1993,12 +1993,12 @@ final class Database: @unchecked Sendable {
         let sql = """
         SELECT CAST(strftime('%Y%m%d', bucket, 'unixepoch', 'localtime') AS INTEGER) AS day,
                COALESCE(NULLIF(model, ''), '(unknown)') AS model,
-               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n)
+               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n), SUM(\(ToolKind.totalTokensSQL)) AS total_tokens
         FROM (\(Self.usageSource)) GROUP BY day, model ORDER BY day;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         bindUsageRange(stmt, from: since, to: .max)
-        var out: [(Int64, String, Int64, Int64, Int64, Double, Int64)] = []
+        var out: [(Int64, String, Int64, Int64, Int64, Double, Int64, Int64)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append((sqlite3_column_int64(stmt, 0),
                         String(cString: sqlite3_column_text(stmt, 1)),
@@ -2006,7 +2006,8 @@ final class Database: @unchecked Sendable {
                         sqlite3_column_int64(stmt, 3),
                         sqlite3_column_int64(stmt, 4),
                         sqlite3_column_double(stmt, 5),
-                        sqlite3_column_int64(stmt, 6)))
+                        sqlite3_column_int64(stmt, 6),
+                        sqlite3_column_int64(stmt, 7)))
         }
         sqlite3_finalize(stmt)
         return out
