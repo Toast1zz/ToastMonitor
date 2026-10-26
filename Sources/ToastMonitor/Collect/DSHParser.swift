@@ -551,8 +551,10 @@ enum DSHParser {
         var firstModel: String?
         var objectCount = 0
 
+        /// `unnumberedSeq` is set for a message that carries neither turn nor
+        /// step; it keeps such messages distinct instead of sharing `0:0`.
         func emit(usage: [String: Any], turn: Int, step: Int, time: Int64,
-                  provider: String?, model: String?) {
+                  provider: String?, model: String?, unnumberedSeq: Int64? = nil) {
             let input = FileScanner.tokenCount(usage["inputTokens"])
             let output = FileScanner.tokenCount(usage["outputTokens"])
             let cacheRead = FileScanner.tokenCount(usage["cacheReadTokens"])
@@ -572,7 +574,8 @@ enum DSHParser {
                                     inputTokens: input, outputTokens: output,
                                     cacheRead: cacheRead, cacheWrite: cacheWrite,
                                     cost: cost ?? 0, provider: provider,
-                                    eventID: "dsh-log:\(sessionID):\(turn):\(step)",
+                                    eventID: unnumberedSeq.map { "dsh-log:\(sessionID):s\($0)" }
+                                        ?? "dsh-log:\(sessionID):\(turn):\(step)",
                                     costQuality: cost == nil ? "unknown" : "estimated",
                                     usageMerge: .replace))
             if firstTs == 0 || time < firstTs { firstTs = time }
@@ -627,9 +630,11 @@ enum DSHParser {
                 let provider = msg["provider"] as? String ?? source?["provider"] as? String ?? headerProvider
                 let model = msg["model"] as? String ?? source?["model"] as? String ?? headerModel
                 let previous = pending.removeValue(forKey: key)
+                let unnumbered = d["turn"] == nil && d["step"] == nil
                 emit(usage: usage, turn: turn, step: step,
                      time: (obj["time"] as? NSNumber)?.int64Value ?? previous?.time ?? 0,
-                     provider: provider, model: model)
+                     provider: provider, model: model,
+                     unnumberedSeq: unnumbered ? (obj["seq"] as? NSNumber)?.int64Value ?? item.offset : nil)
             default:
                 break
             }

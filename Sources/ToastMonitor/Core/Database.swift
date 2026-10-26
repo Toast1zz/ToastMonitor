@@ -29,6 +29,8 @@ final class Database: @unchecked Sendable {
         let value: String?
     }
     private var pendingSettingsCache: [String: SettingCacheChange]?
+    /// Balance-series updates made inside `inTransaction`, applied only after COMMIT.
+    private var pendingSeriesOps: [() -> Void]?
     typealias ScanState = (size: Int64, mtime: Int64, identity: Int64, context: String?)
     private var scanStatesCache: [String: ScanState]?
     private(set) var dbPath: String = ""
@@ -760,9 +762,16 @@ final class Database: @unchecked Sendable {
           model = CASE WHEN (excluded.input_tokens + excluded.output_tokens + excluded.reasoning_tokens + excluded.cache_read + excluded.cache_write)
                             >= (turns.input_tokens + turns.output_tokens + turns.reasoning_tokens + turns.cache_read + turns.cache_write)
                        THEN COALESCE(excluded.model, turns.model) ELSE COALESCE(turns.model, excluded.model) END,
-          pricing_version = CASE WHEN (excluded.input_tokens + excluded.output_tokens + excluded.reasoning_tokens + excluded.cache_read + excluded.cache_write)
-                                      >= (turns.input_tokens + turns.output_tokens + turns.reasoning_tokens + turns.cache_read + turns.cache_write)
-                                 THEN excluded.pricing_version ELSE turns.pricing_version END,
+          -- A mix of both snapshots has no stored cost to match it: clear the
+          -- revision so the backfill reprices the merged tokens.
+          pricing_version = CASE
+            WHEN excluded.input_tokens >= turns.input_tokens AND excluded.output_tokens >= turns.output_tokens
+             AND excluded.reasoning_tokens >= turns.reasoning_tokens AND excluded.cache_read >= turns.cache_read
+             AND excluded.cache_write >= turns.cache_write THEN excluded.pricing_version
+            WHEN turns.input_tokens >= excluded.input_tokens AND turns.output_tokens >= excluded.output_tokens
+             AND turns.reasoning_tokens >= excluded.reasoning_tokens AND turns.cache_read >= excluded.cache_read
+             AND turns.cache_write >= excluded.cache_write THEN turns.pricing_version
+            ELSE NULL END,
           cost_quality = CASE WHEN (excluded.input_tokens + excluded.output_tokens + excluded.reasoning_tokens + excluded.cache_read + excluded.cache_write)
                                    >= (turns.input_tokens + turns.output_tokens + turns.reasoning_tokens + turns.cache_read + turns.cache_write)
                               THEN excluded.cost_quality ELSE turns.cost_quality END
@@ -901,9 +910,12 @@ final class Database: @unchecked Sendable {
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return false }
         transactionWriteError = false
         pendingSettingsCache = [:]
+        pendingSeriesOps = []
+        defer { pendingSeriesOps = nil }
         let ok = body()
         if ok && !transactionWriteError {
             if sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                pendingSeriesOps?.forEach { $0() }
                 for (key, change) in pendingSettingsCache ?? [:] {
                     settingsCache.set(key, change.value)
                 }
@@ -1319,23 +1331,43 @@ final class Database: @unchecked Sendable {
     }
 
     private func noteORCredit(ts: Int64, value: Double?) {
-        seriesLock.lock()
-        defer { seriesLock.unlock() }
-        orCreditSeries.removeAll { $0.ts == ts }
-        if let value {
-            orCreditSeries.append((ts, value))
-            orCreditSeries.sort { $0.ts < $1.ts }
+        applySeries { [self] in
+            seriesLock.lock()
+            defer { seriesLock.unlock() }
+            if let last = orCreditSeries.last, last.ts >= ts {
+                orCreditSeries.removeAll { $0.ts == ts }
+            }
+            if let value {
+                let needsSort = (orCreditSeries.last?.ts ?? Int64.min) > ts
+                orCreditSeries.append((ts, value))
+                if needsSort { orCreditSeries.sort { $0.ts < $1.ts } }
+            }
         }
     }
 
     private func noteDeepSeek(currency: String, ts: Int64, amount: Double) {
-        seriesLock.lock()
-        defer { seriesLock.unlock() }
-        var rows = deepSeekSeries[currency] ?? []
-        rows.removeAll { $0.ts == ts }
-        rows.append((ts, amount))
-        rows.sort { $0.ts < $1.ts }
-        deepSeekSeries[currency] = rows
+        applySeries { [self] in
+            seriesLock.lock()
+            defer { seriesLock.unlock() }
+            var rows = deepSeekSeries[currency] ?? []
+            if let last = rows.last, last.ts >= ts {
+                rows.removeAll { $0.ts == ts }
+            }
+            let needsSort = (rows.last?.ts ?? Int64.min) > ts
+            rows.append((ts, amount))
+            if needsSort { rows.sort { $0.ts < $1.ts } }
+            deepSeekSeries[currency] = rows
+        }
+    }
+
+    /// Runs now outside a transaction; inside one, waits for COMMIT so a
+    /// rollback never leaves a point the tables do not have.
+    private func applySeries(_ op: @escaping () -> Void) {
+        if pendingSeriesOps != nil {
+            pendingSeriesOps?.append(op)
+        } else {
+            op()
+        }
     }
 
     /// Cache-only read — never touches `lock` or SQLite (see settingsCache's

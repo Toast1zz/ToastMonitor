@@ -96,6 +96,11 @@ enum CodexParser {
                 || cacheRead > previous.cacheRead || cacheWrite > previous.cacheWrite
         }
 
+        /// Primary counters moved backwards: the stream restarted, it did not repeat.
+        func restarted(from previous: TokenTotals) -> Bool {
+            input < previous.input || output < previous.output
+        }
+
         func delta(from previous: TokenTotals) -> TokenTotals {
             TokenTotals(input: max(input - previous.input, 0),
                         output: max(output - previous.output, 0),
@@ -214,6 +219,7 @@ enum CodexParser {
             }
 
             var objectCount = 0
+            var resumedWithoutBaseline = offset > 0 && lastTotal == nil
             let fallbackTs = st.mtime / 1_000_000_000
             let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
                 objectCount += 1
@@ -240,11 +246,22 @@ enum CodexParser {
                     if let totalRaw = info["total_token_usage"] as? [String: Any] {
                         let total = TokenTotals.from(totalRaw)
                         if let previous = lastTotal {
-                            guard total.grew(beyond: previous) else { return }
-                            counted = total.delta(from: previous)
+                            if total.restarted(from: previous) {
+                                // A resumed or compacted rollout restarts its
+                                // cumulative counters; count from the new baseline.
+                                counted = total
+                            } else {
+                                guard total.grew(beyond: previous) else { return }
+                                counted = total.delta(from: previous)
+                            }
+                        } else if resumedWithoutBaseline {
+                            // Saved state predates the running total: adopt this
+                            // total as the baseline and count only its own turn.
+                            counted = (info["last_token_usage"] as? [String: Any]).map(TokenTotals.from)
                         } else {
                             counted = total
                         }
+                        resumedWithoutBaseline = false
                         lastTotal = total
                         usageForID = info["last_token_usage"] as? [String: Any] ?? totalRaw
                     } else if let counts = tokenCounts(from: info) {

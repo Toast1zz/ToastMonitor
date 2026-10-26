@@ -138,6 +138,7 @@ enum Pricing {
             return suffix == "-latest"
                 || suffix.range(of: "^-[0-9]{8}$", options: .regularExpression) != nil
         }
-        return suffix.hasPrefix("-") || suffix.hasPrefix(".")
+        guard let boundary = suffix.first else { return true }
+        return "-._:@".contains(boundary)
     }
 }
