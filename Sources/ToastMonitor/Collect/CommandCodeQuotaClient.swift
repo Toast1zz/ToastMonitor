@@ -64,8 +64,8 @@ final class CommandCodeQuotaClient: ObservableObject {
     private var cachedCookie: String?
     private var keychainLocked = false
 
-    private init() {
-        let cfg = URLSessionConfiguration.ephemeral
+    init(configuration: URLSessionConfiguration? = nil) {
+        let cfg = configuration ?? URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
@@ -93,6 +93,7 @@ final class CommandCodeQuotaClient: ObservableObject {
             return false
         }
         if KeychainStore.set(normalized, account: Self.keychainAccount, allowPrompt: true) {
+            invalidateInFlight()
             cachedCookie = normalized
             state.configured = true
             state.error = nil
@@ -108,11 +109,22 @@ final class CommandCodeQuotaClient: ObservableObject {
     }
 
     func clear() {
-        KeychainStore.delete(account: Self.keychainAccount, allowPrompt: true)
+        invalidateInFlight()
+        guard KeychainStore.delete(account: Self.keychainAccount, allowPrompt: true) else {
+            state.error = "Keychain delete failed — cookie still stored"
+            return
+        }
         cachedCookie = nil
         state = State()
         state.error = "Not configured"
         keychainLocked = false
+    }
+
+    private func invalidateInFlight() {
+        refreshGeneration &+= 1
+        inFlight = false
+        state.isLoading = false
+        backoff.succeeded()
     }
 
     private static func normalizedCookie(_ raw: String) -> String? {
@@ -138,10 +150,11 @@ final class CommandCodeQuotaClient: ObservableObject {
         let generation = refreshGeneration
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let cookie = self?.loadCookie()
+            let loaded = self?.loadCookie()
             Task { @MainActor [weak self] in
                 guard let self, self.refreshGeneration == generation else { return }
-                guard let cookie else {
+                self.keychainLocked = loaded?.locked ?? false
+                guard let cookie = loaded?.cookie else {
                     self.inFlight = false
                     self.state.error = self.keychainLocked
                         ? "Keychain locked or access denied — reauthorize to refresh"
@@ -154,13 +167,10 @@ final class CommandCodeQuotaClient: ObservableObject {
         }
     }
 
-    private nonisolated func loadCookie() -> String? {
+    private nonisolated func loadCookie() -> (cookie: String?, locked: Bool) {
         let ck = KeychainStore.get(account: Self.keychainAccount)
         let locked = KeychainStore.lastWasInteractionNotAllowed
-        Task { @MainActor in
-            self.keychainLocked = locked
-        }
-        return ck
+        return (ck, locked)
     }
 
 

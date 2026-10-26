@@ -37,6 +37,7 @@ final class OpenCodeGoClient: ObservableObject {
     @Published private(set) var state = State()
     @Published private(set) var configured = false
 
+    private let database: Database
     private let session: URLSession
     /// Retained: URLSession holds its delegate weakly.
     private let redirectBlocker = NoRedirectDelegate()
@@ -52,8 +53,9 @@ final class OpenCodeGoClient: ObservableObject {
     /// configured". Reset by a successful provision/clear.
     private var keychainLocked = false
 
-    private init() {
-        let cfg = URLSessionConfiguration.ephemeral
+    init(configuration: URLSessionConfiguration? = nil, database: Database = .shared) {
+        self.database = database
+        let cfg = configuration ?? URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 40
         // Credential-bearing request (auth cookie) — never follow redirects.
@@ -84,34 +86,32 @@ final class OpenCodeGoClient: ObservableObject {
     /// migrated on first read, then erased. Fail closed: when the Keychain
     /// is unavailable the app reports unconfigured instead of serving
     /// plaintext SQLite values to live API calls.
-    private func credentials() -> (workspaceId: String, cookie: String)? {
+    private func credentials() -> (value: (workspaceId: String, cookie: String)?, locked: Bool) {
         var ws = KeychainStore.get(account: "go-workspace-id")
         var ck = KeychainStore.get(account: "go-auth-cookie")
         if ws != nil && ck != nil {
-            Database.shared.setSetting("go_workspace_id", nil)
-            Database.shared.setSetting("go_auth_cookie", nil)
+            database.setSetting("go_workspace_id", nil)
+            database.setSetting("go_auth_cookie", nil)
         }
         if ws == nil || ck == nil {
-            let legacyWS = Database.shared.setting("go_workspace_id")
-            let legacyCK = Database.shared.setting("go_auth_cookie")
+            let legacyWS = database.setting("go_workspace_id")
+            let legacyCK = database.setting("go_auth_cookie")
             if let legacyWS, let legacyCK,
                let normalizedWS = Self.normalizedWorkspaceID(legacyWS),
                let normalizedCK = Self.normalizedCookie(legacyCK),
                KeychainStore.set(normalizedWS, account: "go-workspace-id"),
                KeychainStore.set(normalizedCK, account: "go-auth-cookie") {
-                Database.shared.setSetting("go_workspace_id", nil)
-                Database.shared.setSetting("go_auth_cookie", nil)
-                Database.shared.setSetting("go_cred_storage", "keychain")
-                keychainLocked = false
+                database.setSetting("go_workspace_id", nil)
+                database.setSetting("go_auth_cookie", nil)
+                database.setSetting("go_cred_storage", "keychain")
                 ws = normalizedWS
                 ck = normalizedCK
             } else if legacyWS != nil || legacyCK != nil {
                 // Keychain unavailable or invalid legacy data: treat as
                 // unconfigured. Plaintext stays as a recovery copy but is
                 // never used for requests.
-                Database.shared.setSetting("go_cred_storage", "keychain-unavailable")
-                keychainLocked = KeychainStore.lastWasInteractionNotAllowed
-                return nil
+                database.setSetting("go_cred_storage", "keychain-unavailable")
+                return (nil, KeychainStore.lastWasInteractionNotAllowed)
             }
         }
         guard let ws = ws.flatMap(Self.normalizedWorkspaceID),
@@ -119,10 +119,9 @@ final class OpenCodeGoClient: ObservableObject {
             // Nothing usable: genuinely unconfigured, or the keychain is
             // locked (reads then return nil indistinguishably). Remember the
             // lock so the error message is actionable.
-            keychainLocked = KeychainStore.lastWasInteractionNotAllowed
-            return nil
+            return (nil, KeychainStore.lastWasInteractionNotAllowed)
         }
-        return (ws, ck)
+        return ((ws, ck), false)
     }
 
     /// Stores only in Keychain. A locked/unavailable Keychain is an explicit
@@ -135,6 +134,7 @@ final class OpenCodeGoClient: ObservableObject {
             state.error = "Invalid workspaceId or cookie"
             return false
         }
+        invalidateInFlight()
         let oldWorkspace = KeychainStore.get(account: "go-workspace-id")
         let oldCookie = KeychainStore.get(account: "go-auth-cookie")
         let wroteWorkspace = KeychainStore.set(workspaceID, account: "go-workspace-id",
@@ -142,9 +142,9 @@ final class OpenCodeGoClient: ObservableObject {
         let okKC = wroteWorkspace && KeychainStore.set(authCookie, account: "go-auth-cookie",
                                                        allowPrompt: true)
         if okKC {
-            Database.shared.setSetting("go_workspace_id", nil)
-            Database.shared.setSetting("go_auth_cookie", nil)
-            Database.shared.setSetting("go_cred_storage", "keychain")
+            database.setSetting("go_workspace_id", nil)
+            database.setSetting("go_auth_cookie", nil)
+            database.setSetting("go_cred_storage", "keychain")
             keychainLocked = false
         } else {
             // Capture before the rollback calls overwrite the SecItem status.
@@ -175,11 +175,16 @@ final class OpenCodeGoClient: ObservableObject {
     }
 
     func clear() {
-        KeychainStore.delete(account: "go-workspace-id", allowPrompt: true)
-        KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)
-        Database.shared.setSetting("go_workspace_id", nil)
-        Database.shared.setSetting("go_auth_cookie", nil)
-        Database.shared.setSetting("go_cred_storage", nil)
+        invalidateInFlight()
+        let deletedWorkspace = KeychainStore.delete(account: "go-workspace-id", allowPrompt: true)
+        let deletedCookie = KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)
+        guard deletedWorkspace && deletedCookie else {
+            state.error = "Keychain delete failed — credentials still stored"
+            return
+        }
+        database.setSetting("go_workspace_id", nil)
+        database.setSetting("go_auth_cookie", nil)
+        database.setSetting("go_cred_storage", nil)
         cachedCredentials = nil
         credentialsLoaded = true
         configured = false
@@ -187,6 +192,13 @@ final class OpenCodeGoClient: ObservableObject {
         var cleared = State()
         cleared.error = "Not configured"
         state = cleared
+    }
+
+    private func invalidateInFlight() {
+        refreshGeneration &+= 1
+        inFlight = false
+        state.isLoading = false
+        backoff.succeeded()
     }
 
     func start() {
@@ -213,13 +225,16 @@ final class OpenCodeGoClient: ObservableObject {
             refresh(with: cachedCredentials)
             return
         }
+        let generation = refreshGeneration
         // The login Keychain may synchronously wait on securityd. Resolve the
         // pair once on a utility queue, then keep it in memory for every timer
         // and foreground refresh during this process lifetime.
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let creds = self?.credentials()
+            let loaded = self?.credentials()
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.refreshGeneration == generation else { return }
+                let creds = loaded?.value
+                self.keychainLocked = loaded?.locked ?? false
                 self.credentialsLoaded = true
                 self.cachedCredentials = creds
                 guard let creds else {
@@ -346,8 +361,8 @@ final class OpenCodeGoClient: ObservableObject {
             weeklyPct: s.weeklyPct, weeklyReset: s.weeklyReset,
             monthlyPct: s.monthlyPct, monthlyReset: s.monthlyReset)
         // DB write off the main actor.
-        DispatchQueue.global(qos: .utility).async {
-            Database.shared.insertOGSnapshot(snap)
+        DispatchQueue.global(qos: .utility).async { [database] in
+            database.insertOGSnapshot(snap)
         }
     }
 

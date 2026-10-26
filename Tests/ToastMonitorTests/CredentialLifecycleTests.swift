@@ -151,4 +151,149 @@ final class CredentialLifecycleTests: XCTestCase {
         XCTAssertEqual(client.state.usage, 22)
     }
 
+    func testGoClearDiscardsPendingResponse() async throws {
+        let (database, configuration) = fixture()
+        var pending: CredentialResponseProtocol?
+        CredentialResponseProtocol.handler = { pending = $0 }
+        let client = OpenCodeGoClient(configuration: configuration, database: database)
+        XCTAssertTrue(client.provision(workspaceId: "test-workspace", cookie: "test-cookie"))
+        client.refresh()
+        try await wait { pending != nil }
+        client.clear()
+        pending?.respond("failure", status: 500)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(client.configured)
+        XCTAssertEqual(client.state.error, "Not configured")
+        XCTAssertFalse(client.state.isLoading)
+    }
+
+    func testGoDeleteFailureKeepsConfiguredCredentials() {
+        let (database, configuration) = fixture()
+        let client = OpenCodeGoClient(configuration: configuration, database: database)
+        XCTAssertTrue(client.provision(workspaceId: "test-workspace", cookie: "test-cookie"))
+        KeychainStore.deleteImpl = { _, _ in errSecAuthFailed }
+        client.clear()
+        XCTAssertTrue(client.configured)
+        XCTAssertTrue(client.state.error?.contains("Keychain delete failed") == true)
+    }
+
+    func testGoLateCredentialReadCannotReplaceProvisionedCredentials() async throws {
+        let (database, configuration) = fixture()
+        let started = expectation(description: "Go credential read started")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        KeychainStore.readImpl = { account, _ in
+            if account == "go-workspace-id" {
+                if !Thread.isMainThread {
+                    started.fulfill()
+                    _ = release.wait(timeout: .now() + 5)
+                }
+                return (errSecSuccess, "old-workspace")
+            }
+            return (errSecSuccess, "old-cookie")
+        }
+        var paths: [String] = []
+        CredentialResponseProtocol.handler = { request in
+            paths.append(request.request.url!.path)
+            request.respond("failure", status: 500)
+        }
+        let client = OpenCodeGoClient(configuration: configuration, database: database)
+        client.refresh()
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(client.provision(workspaceId: "new-workspace", cookie: "new-cookie"))
+        client.refresh()
+        release.signal()
+        try await wait { !paths.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(paths, ["/workspace/new-workspace/go"])
+    }
+
+    func testCommandCodeClearDiscardsPendingResponse() async throws {
+        let (_, configuration) = fixture()
+        KeychainStore.readImpl = { _, _ in (errSecSuccess, "test-cookie") }
+        var pending: [CredentialResponseProtocol] = []
+        CredentialResponseProtocol.handler = { pending.append($0) }
+        let client = CommandCodeQuotaClient(configuration: configuration)
+        XCTAssertTrue(client.provision(cookie: "test-cookie"))
+        try await wait { pending.count == 2 }
+        client.clear()
+        for request in pending { request.respond("failure", status: 500) }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(client.state.configured)
+        XCTAssertEqual(client.state.error, "Not configured")
+        XCTAssertFalse(client.state.isLoading)
+    }
+
+    func testCommandCodeDeleteFailureKeepsConfiguredCookie() {
+        let (_, configuration) = fixture()
+        CredentialResponseProtocol.handler = { $0.respond("failure", status: 500) }
+        let client = CommandCodeQuotaClient(configuration: configuration)
+        XCTAssertTrue(client.provision(cookie: "test-cookie"))
+        KeychainStore.deleteImpl = { _, _ in errSecAuthFailed }
+        client.clear()
+        XCTAssertTrue(client.state.configured)
+        XCTAssertTrue(client.state.error?.contains("Keychain delete failed") == true)
+    }
+
+    func testCommandCodeLateCookieReadCannotReplaceProvisionedCookie() async throws {
+        let (_, configuration) = fixture()
+        let started = expectation(description: "Command Code cookie read started")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let lock = NSLock()
+        var storedCookie = "old-cookie"
+        var firstRead = true
+        KeychainStore.readImpl = { _, _ in
+            let snapshot = lock.withLock { () -> (String, Bool) in
+                let snapshot = (storedCookie, firstRead)
+                firstRead = false
+                return snapshot
+            }
+            if snapshot.1 {
+                started.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+            }
+            return (errSecSuccess, snapshot.0)
+        }
+        KeychainStore.writeImpl = { value, _, _ in
+            lock.withLock { storedCookie = value }
+            return errSecSuccess
+        }
+        var cookies: [String] = []
+        CredentialResponseProtocol.handler = { request in
+            cookies.append(request.request.value(forHTTPHeaderField: "Cookie") ?? "")
+            request.respond("failure", status: 500)
+        }
+        let client = CommandCodeQuotaClient(configuration: configuration)
+        client.refresh()
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(client.provision(cookie: "new-cookie"))
+        release.signal()
+        try await wait { cookies.count == 2 }
+        XCTAssertEqual(Set(cookies), ["__Secure-commandcode_prod_.session_token=new-cookie"])
+    }
+
+    func testCommandCodeRefreshReadsUpdatedStoredCookie() async throws {
+        let (_, configuration) = fixture()
+        let lock = NSLock()
+        var stored = "cookie=A"
+        KeychainStore.readImpl = { _, _ in
+            lock.lock(); defer { lock.unlock() }
+            return (errSecSuccess, stored)
+        }
+        var cookies: [String] = []
+        CredentialResponseProtocol.handler = { request in
+            cookies.append(request.request.value(forHTTPHeaderField: "Cookie") ?? "")
+            request.respond(request.request.url!.path.hasSuffix("credits")
+                ? #"{"credits":{"monthlyCredits":10}}"# : #"{"success":true,"data":null}"#)
+        }
+        let client = CommandCodeQuotaClient(configuration: configuration)
+        XCTAssertTrue(client.provision(cookie: "cookie=A"))
+        try await wait { cookies.count == 2 && !client.state.isLoading }
+        lock.withLock { stored = "cookie=B" }
+        client.refresh()
+        try await wait { cookies.count == 4 && !client.state.isLoading }
+        XCTAssertEqual(Array(cookies.suffix(2)), ["cookie=B", "cookie=B"])
+    }
+
 }
