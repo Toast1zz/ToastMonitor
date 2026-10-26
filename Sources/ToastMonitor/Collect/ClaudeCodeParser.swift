@@ -60,6 +60,18 @@ enum ClaudeCodeParser {
         return out
     }
 
+    /// Session id of a primary transcript, for the v7 recount. A file under
+    /// `subagents` is not a session key: a leftover subagent transcript must
+    /// not wipe the parent session whose own log is already gone.
+    static func recountSessionID(path: String) -> String? {
+        if (path as NSString).pathComponents.contains("subagents") { return nil }
+        let name = (path as NSString).lastPathComponent
+        guard name.hasSuffix(".jsonl") else { return nil }
+        let stem = (name as NSString).deletingPathExtension
+        guard !stem.isEmpty, !stem.contains(":"), !stem.contains(";") else { return nil }
+        return stem
+    }
+
     /// Returns (turns, sessions) parsed from all changed files.
     static func scan(knownPaths: [String], database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.claude.sourceIsRemote else { return ([], []) }

@@ -65,9 +65,9 @@ Remote feeds are contacted only at addresses you add yourself in `Settings → S
 All quotas are built in; no opencode-quota install is needed.
 
 - **Claude** (opt-in, off by default) — 5h, weekly and weekly-Opus windows from `api.anthropic.com/api/oauth/usage`, using the login Claude Code already saved on this Mac. Nothing to paste. The login is read from `~/.claude/.credentials.json` and the `Claude Code-credentials` Keychain item without ever prompting, and ToastMonitor never changes that item. When the login has expired, ToastMonitor starts `claude` once in the background to refresh it, unless macOS has quarantined that `claude` binary (for example right after a Homebrew update); then it asks you to run `claude` in Terminal instead of triggering a Gatekeeper dialog.
-- **Grok** (opt-in, off by default) — the weekly pool your Grok plan shares across Grok Chat, Imagine, Build / CLI and Grok Bot, read with the token `grok login` stores in `~/.grok/auth.json` (never copied). Turn it on under `Settings → Accounts`. When the saved token has expired, ToastMonitor may run `grok models` once to renew it. The API still reports some X Subscription plans as "SuperGrok"; add the plan in `Settings → Sources → Subscriptions` to show its real name.
+- **Grok** (opt-in) — off on a fresh install; an existing database keeps it on. The weekly pool your Grok plan shares across Grok Chat, Imagine, Build / CLI and Grok Bot, read with the token `grok login` stores in `~/.grok/auth.json` (never copied). Turn it on under `Settings → Accounts`. When the saved token has expired, ToastMonitor may run `grok models` once to renew it. The API still reports some X Subscription plans as "SuperGrok"; add the plan in `Settings → Sources → Subscriptions` to show its real name.
 - **OpenCode Go** — rolling, weekly and monthly usage from your OpenCode workspace. Paste the workspace and cookie in `Settings → Accounts`, or use `--provision-go`.
-- **Codex** (opt-in, off by default) — the ChatGPT plan's usage, read with the login Codex keeps in `~/.codex/auth.json` (never copied). Turn it on under `Settings → Accounts`.
+- **Codex** (opt-in) — off on a fresh install; an existing database keeps it on. The ChatGPT plan's usage, read with the login Codex keeps in `~/.codex/auth.json` (never copied). Turn it on under `Settings → Accounts`.
 - **Command Code** (experimental) — paste your Studio session cookie in `Settings → Accounts`; it is kept only in the Keychain. The billing endpoint is not a public API and may change.
 - **OpenRouter** — key and credit snapshots every 60 seconds while the panel is open, every 5 minutes otherwise. The key lives only in the Keychain.
 - **DeepSeek** — balance, plus account-wide spend for Platform logins, including other devices ([connect guide](docs/connect-deepseek.md)).
@@ -135,7 +135,7 @@ Development and screenshots:
 
 ## Privacy and security
 
-- Logs, usage, project paths and session metadata stay in the local database. Quota services and remote feeds are contacted only after you turn them on. Codex and Grok quota reads are off until enabled in `Settings → Accounts`.
+- Logs, usage, project paths and session metadata stay in the local database. Quota services and remote feeds are contacted only after you turn them on. Codex and Grok quota reads are off on a fresh install; an existing database keeps them on.
 - Credentials live in the macOS Keychain, never in URLs, plists or logs. No analytics or ad SDKs.
 - Update checks run once at launch (`Settings → Updates` can turn that off). An update is downloaded only after you confirm, and the signature, version and SHA-256 are checked before anything is installed.
 - `Settings → Data` exports, backs up, restores and clears the database; clearing makes a protected backup first.

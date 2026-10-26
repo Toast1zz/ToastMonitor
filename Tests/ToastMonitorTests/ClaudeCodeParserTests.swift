@@ -129,6 +129,42 @@ final class ClaudeCodeParserTests: XCTestCase {
         XCTAssertEqual(turns[0].cost, expected, accuracy: 0.0000001)
     }
 
+    func testKeepingGreaterRepricesTheMergedTokens() {
+        let older = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-haiku-4-5",
+                               ts: 1, inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                               cost: 1, eventID: "claude:s:m", usageMerge: .keepGreater)
+        let newer = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-haiku-4-5",
+                               ts: 2, inputTokens: 0, outputTokens: 1_000_000, cacheRead: 0, cacheWrite: 0,
+                               cost: 5, eventID: "claude:s:m", usageMerge: .keepGreater)
+        let merged = TurnRecord.keepingGreater(older, newer)
+        XCTAssertEqual(merged.inputTokens, 1_000_000)
+        XCTAssertEqual(merged.outputTokens, 1_000_000)
+        XCTAssertEqual(merged.cost, 6, accuracy: 0.0001)
+        XCTAssertEqual(merged.costQuality, "estimated")
+        XCTAssertEqual(merged.pricingVersion, Pricing.version)
+
+        let cached = TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "gpt-4o",
+                                ts: 1, inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                                cost: 9, eventID: "codex:s:m", usageMerge: .keepGreater)
+        let reads = TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "gpt-4o",
+                               ts: 2, inputTokens: 0, outputTokens: 0, cacheRead: 1_000_000, cacheWrite: 0,
+                               cost: 9, eventID: "codex:s:m", usageMerge: .keepGreater)
+        XCTAssertEqual(TurnRecord.keepingGreater(cached, reads).cost, 1.25, accuracy: 0.0001)
+
+        let unknownOlder = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "no-such-model",
+                                      ts: 1, inputTokens: 100, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                                      cost: 1.5, eventID: "claude:s:u", costQuality: "actual",
+                                      usageMerge: .keepGreater)
+        let unknownNewer = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "no-such-model",
+                                      ts: 2, inputTokens: 0, outputTokens: 50, cacheRead: 0, cacheWrite: 0,
+                                      cost: 4, eventID: "claude:s:u", costQuality: "actual",
+                                      usageMerge: .keepGreater)
+        let unknown = TurnRecord.keepingGreater(unknownOlder, unknownNewer)
+        XCTAssertEqual(unknown.cost, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(unknown.costQuality, "actual")
+        XCTAssertEqual(unknown.outputTokens, 50)
+    }
+
     func testStoredPartialMessageIsUpgraded() throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-upgrade-\(UUID().uuidString).sqlite").path

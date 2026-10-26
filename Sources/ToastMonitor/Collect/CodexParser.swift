@@ -28,6 +28,37 @@ enum CodexParser {
         return String(stem[r])
     }
 
+    /// Session id to rebuild during the v7 recount. A stored `sid` wins over
+    /// the rollout filename, so a filename that names a different session is
+    /// not deleted. No usable id means the file is left untouched.
+    static func recountSessionID(path: String, context: String?) -> String? {
+        switch recountContextSID(context) {
+        case .value(let sid): return sid
+        case .unusable: return nil
+        case .absent:
+            let name = (path as NSString).lastPathComponent
+            return sessionID(fromRolloutName: name).flatMap(recountUsableSessionID)
+        }
+    }
+
+    private enum RecountContextSID {
+        case absent, unusable, value(String)
+    }
+
+    private static func recountContextSID(_ context: String?) -> RecountContextSID {
+        guard let context,
+              let data = context.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = obj["sid"] else { return .absent }
+        guard let sid = recountUsableSessionID(raw as? String ?? "") else { return .unusable }
+        return .value(sid)
+    }
+
+    private static func recountUsableSessionID(_ id: String) -> String? {
+        guard !id.isEmpty, !id.contains(":"), !id.contains(";") else { return nil }
+        return id
+    }
+
     /// Token counts for a single token_count event. Uses `last_token_usage`
     /// (the per-turn delta); `total_token_usage` is cumulative across the
     /// rollout and must never be used for an individual turn.

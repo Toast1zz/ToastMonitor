@@ -146,6 +146,50 @@ enum DSHParser {
         return version
     }
 
+    /// Session id to rebuild during the v7 recount. A stored `sid` wins.
+    /// Otherwise a plain log's `type=session` header is read; a compressed
+    /// log with no stored id is left untouched, and the directory name is
+    /// never treated as the session id.
+    static func recountSessionID(path: String, context: String?) -> String? {
+        switch recountContextSID(context) {
+        case .value(let sid): return sid
+        case .unusable: return nil
+        case .absent:
+            guard !path.hasSuffix(".zstd") else { return nil }
+            return recountSessionIDInPlainLog(path)
+        }
+    }
+
+    private enum RecountContextSID {
+        case absent, unusable, value(String)
+    }
+
+    private static func recountContextSID(_ context: String?) -> RecountContextSID {
+        guard let context,
+              let data = context.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = obj["sid"] else { return .absent }
+        guard let sid = raw as? String, !sid.isEmpty, !sid.contains(":"), !sid.contains(";") else { return .unusable }
+        return .value(sid)
+    }
+
+    /// First `type=session` id in the leading 64KB. A truncated trailing
+    /// line is ignored.
+    private static func recountSessionIDInPlainLog(_ path: String) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { handle.closeFile() }
+        let data = handle.readData(ofLength: 65_536)
+        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  obj["type"] as? String == "session",
+                  let id = obj["id"] as? String,
+                  !id.isEmpty, !id.contains(":"), !id.contains(";") else { continue }
+            return id
+        }
+        return nil
+    }
+
     // MARK: - Log mode
 
     /// Parses changed session logs. `decompress` is injectable so tests can

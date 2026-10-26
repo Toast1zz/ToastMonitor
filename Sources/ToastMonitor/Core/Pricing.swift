@@ -12,7 +12,10 @@ struct ModelPrice {
 }
 
 enum Pricing {
-    static let version = "2026-10-26"
+    static let version = "2026-10-27"
+    /// Marks an estimated row whose computed price is zero, so the 60s
+    /// backfill does not select it again until this revision changes.
+    static let zeroCostStamp = version + "#0"
     static let table: [(pattern: String, price: ModelPrice)] = [
         // Claude
         // Five-minute cache writes only; one-hour writes cost twice the input rate.
@@ -41,7 +44,17 @@ enum Pricing {
         ("claude-3-5-opus", ModelPrice(input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75)),
         ("claude-3-5-sonnet", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),
         ("claude-3-haiku", ModelPrice(input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3)),
+        // Short-context list price. Prompts over 100k tokens are 5×; the
+        // one-hour write is 2× input ($0.20), applied by estimate(cacheWrite1h:).
+        // https://platform.claude.com/docs/en/about-claude/pricing
+        ("claude-haiku-5-5", ModelPrice(input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125)),
         ("claude-haiku-4-5", ModelPrice(input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25)),
+        // Short-context list prices. The cache-write column is the 30-minute
+        // write. Long context (over 272k tokens: 2× input and cache, 1.5×
+        // output) and 12-hour writes are not modeled.
+        // https://developers.openai.com/api/docs/pricing
+        ("gpt-6.1-sol", ModelPrice(input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50)),
+        ("gpt-6-astra", ModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50)),
         // GPT-5 family. Longer names are listed before the family so a reader
         // can see the intended rate; matching itself picks the longest prefix.
         ("gpt-5.6-luna", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),

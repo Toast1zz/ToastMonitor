@@ -166,29 +166,41 @@ enum ToolKind: String, CaseIterable, Identifiable {
             self.usageMerge = usageMerge
         }
 
-        /// Field-wise maximum. Cost, time, and model follow the snapshot with
-        /// the larger token sum — Claude's streaming rows only grow.
+        /// Field-wise maximum. Time and model follow the snapshot with the
+        /// larger token sum. Cost is repriced from the merged tokens when
+        /// the model has a rate; otherwise the winner's cost is kept.
+        /// One-hour cache writes are not stored on the row, so a reprice
+        /// uses the five-minute write rate.
         static func keepingGreater(_ older: TurnRecord, _ newer: TurnRecord) -> TurnRecord {
             let olderSum = older.inputTokens + older.outputTokens + older.reasoningTokens
                 + older.cacheRead + older.cacheWrite
             let newerSum = newer.inputTokens + newer.outputTokens + newer.reasoningTokens
                 + newer.cacheRead + newer.cacheWrite
             let winner = newerSum >= olderSum ? newer : older
+            let model = winner.model ?? older.model ?? newer.model
+            let input = max(older.inputTokens, newer.inputTokens)
+            let output = max(older.outputTokens, newer.outputTokens)
+            let reasoning = max(older.reasoningTokens, newer.reasoningTokens)
+            let cacheRead = max(older.cacheRead, newer.cacheRead)
+            let cacheWrite = max(older.cacheWrite, newer.cacheWrite)
+            let repriced = Pricing.estimate(model: model, input: input, output: output,
+                                            cacheRead: cacheRead, cacheWrite: cacheWrite,
+                                            inputIncludesCache: winner.tool == .codex)
             return TurnRecord(tool: winner.tool, sessionID: winner.sessionID,
                               project: winner.project ?? older.project ?? newer.project,
-                              model: winner.model ?? older.model ?? newer.model,
+                              model: model,
                               ts: winner.ts,
-                              inputTokens: max(older.inputTokens, newer.inputTokens),
-                              outputTokens: max(older.outputTokens, newer.outputTokens),
-                              reasoningTokens: max(older.reasoningTokens, newer.reasoningTokens),
-                              cacheRead: max(older.cacheRead, newer.cacheRead),
-                              cacheWrite: max(older.cacheWrite, newer.cacheWrite),
-                              cost: winner.cost,
+                              inputTokens: input,
+                              outputTokens: output,
+                              reasoningTokens: reasoning,
+                              cacheRead: cacheRead,
+                              cacheWrite: cacheWrite,
+                              cost: repriced ?? winner.cost,
                               provider: winner.provider ?? older.provider,
                               sourceInstance: winner.sourceInstance,
-                              pricingVersion: winner.pricingVersion,
+                              pricingVersion: repriced == nil ? winner.pricingVersion : Pricing.version,
                               eventID: winner.eventID ?? older.eventID,
-                              costQuality: winner.costQuality,
+                              costQuality: repriced == nil ? winner.costQuality : "estimated",
                               usageMerge: .keepGreater)
         }
     }

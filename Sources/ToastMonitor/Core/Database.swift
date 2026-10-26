@@ -410,7 +410,11 @@ final class Database: @unchecked Sendable {
     private func migrate() {
         // Versioned migrations: schema version tracked in
         // PRAGMA user_version; each version runs once, in order.
-        let current = userVersion()
+        // Captured before any step runs. A fresh file is 0; an upgrade is
+        // whatever the last shipped schema wrote. `previousVersion` below is
+        // read again after v1 and is 1 for both.
+        let versionAtOpen = userVersion()
+        let current = versionAtOpen
         if current < 1 {
             guard let db else { return }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
@@ -641,20 +645,30 @@ final class Database: @unchecked Sendable {
                 setUserVersion(previousVersion)
             }
         }
-        // v7 does not delete rows. The collector rebuilds Claude, Codex, and
-        // DeepSeek log turns from the source logs once it can see them.
-        // `usage_recount_v7` stays pending until that rescan runs.
+        // v7 does not delete rows. The collector rebuilds only the sessions
+        // whose logs are still on disk. `usage_recount_v7` stays pending
+        // until that rescan runs. Codex and Grok quota were on for every
+        // database that already existed; a fresh install leaves them unset.
         if previousVersion < 7 {
             guard let db else { return }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
-            let ok = execChecked("""
+            var sql = """
             CREATE TABLE IF NOT EXISTS settings (
               k TEXT PRIMARY KEY,
               v TEXT
             );
             INSERT INTO settings (k, v) VALUES ('usage_recount_v7', 'pending')
             ON CONFLICT(k) DO UPDATE SET v=excluded.v;
-            """) && setUserVersion(7)
+            """
+            if versionAtOpen > 0 {
+                sql += """
+                INSERT INTO settings (k, v) VALUES ('codex_quota_enabled', '1')
+                ON CONFLICT(k) DO NOTHING;
+                INSERT INTO settings (k, v) VALUES ('grok_quota_enabled', '1')
+                ON CONFLICT(k) DO NOTHING;
+                """
+            }
+            let ok = execChecked(sql) && setUserVersion(7)
             if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
                 rollbackOrPoison()
                 setUserVersion(previousVersion)
@@ -1103,33 +1117,43 @@ final class Database: @unchecked Sendable {
     }
 
     /// One-shot rebuild after the v7 counting fixes. Source logs are never
-    /// deleted. A prefix is removed only when that source has files to
-    /// rescan; the cursors for those files are zeroed in the same transaction
-    /// so the scan that follows rebuilds the rows. Empty lists still mark the
-    /// migration done — there is nothing to rebuild, and retrying forever
-    /// would delete nothing. Rows whose event id is NULL, or that use another
-    /// prefix (cache mode, remote feeds), are left in place.
+    /// deleted, and neither is history whose log is already gone. Only a
+    /// session identified from a file that is still on disk is removed, by
+    /// an exact `tool:session:` range (session ids can contain LIKE
+    /// wildcards). The following scan rebuilds those rows. Claude cursors
+    /// reset for every listed file, including subagent transcripts, because
+    /// a rescan keeps the greater usage. Codex and DeepSeek Harness cursors
+    /// reset only when the session id is known: resetting an unidentified
+    /// file would replay it without deleting the old rows. Empty lists still
+    /// mark the migration done. NULL event ids and every other prefix stay.
     func recountMiscountedUsage(claudePaths: [String], codexPaths: [String], dshPaths: [String]) {
         lock.lock(); defer { lock.unlock() }
         guard let db, setting("usage_recount_v7") == "pending" else { return }
+        let claudeSessions = Set(claudePaths.compactMap { ClaudeCodeParser.recountSessionID(path: $0) })
+        var codexSessions = Set<String>()
+        var codexReset: [String] = []
+        for path in codexPaths {
+            guard let sid = CodexParser.recountSessionID(path: path, context: scanState(path).context) else { continue }
+            codexSessions.insert(sid)
+            codexReset.append(path)
+        }
+        var dshSessions = Set<String>()
+        var dshReset: [String] = []
+        for path in dshPaths {
+            guard let sid = DSHParser.recountSessionID(path: path, context: scanState(path).context) else { continue }
+            dshSessions.insert(sid)
+            dshReset.append(path)
+        }
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
-        var ok = true
-        let groups = [(claudePaths, "claude:%"), (codexPaths, "codex:%"), (dshPaths, "dsh-log:%")]
-        for (paths, prefix) in groups where !paths.isEmpty {
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "DELETE FROM turns WHERE event_id LIKE ?;", -1, &stmt, nil) == SQLITE_OK else {
+        var ok = deleteRecountedSessions(prefix: "claude:", sessionIDs: claudeSessions)
+            && deleteRecountedSessions(prefix: "codex:", sessionIDs: codexSessions)
+            && deleteRecountedSessions(prefix: "dsh-log:", sessionIDs: dshSessions)
+        if ok {
+            for path in claudePaths + codexReset + dshReset
+                where !setScanState(path, size: 0, mtime: 0, identity: 0, context: nil) {
                 ok = false
                 break
             }
-            sqlite3_bind_text(stmt, 1, (prefix as NSString).utf8String, -1, SQLITE_TRANSIENT)
-            if sqlite3_step(stmt) != SQLITE_DONE { ok = false }
-            sqlite3_finalize(stmt)
-            if !ok { break }
-            for path in paths where !setScanState(path, size: 0, mtime: 0, identity: 0, context: nil) {
-                ok = false
-                break
-            }
-            if !ok { break }
         }
         if ok {
             var stmt: OpaquePointer?
@@ -1146,8 +1170,33 @@ final class Database: @unchecked Sendable {
         sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
     }
 
+    /// Deletes `prefix + session + ":" … ";"` only. `;` is the next byte
+    /// after `:`, so a longer session id is outside the range. Caller holds
+    /// `lock` and an open transaction.
+    private func deleteRecountedSessions(prefix: String, sessionIDs: Set<String>) -> Bool {
+        guard let db, !sessionIDs.isEmpty else { return true }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM turns WHERE event_id >= ? AND event_id < ?;", -1, &stmt, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        for id in sessionIDs {
+            guard !id.isEmpty, !id.contains(":"), !id.contains(";") else { continue }
+            let lower = prefix + id + ":"
+            let upper = prefix + id + ";"
+            sqlite3_bind_text(stmt, 1, (lower as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, (upper as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE { return false }
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+        return true
+    }
+
     /// Reprices turns whose price-table revision is stale, and stamps unknown
     /// models so a cost of zero is not selected again until the table changes.
+    /// A known model whose computed price is also zero is stamped with
+    /// `Pricing.zeroCostStamp` so the 60s pass does not select it again.
     func backfillCosts() {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return }
@@ -1159,14 +1208,20 @@ final class Database: @unchecked Sendable {
         FROM turns
         WHERE tool != 'hermes' AND model IS NOT NULL AND model != ''
           AND (
-            (cost = 0 AND cost_quality = 'estimated')
-            OR (cost_quality = 'estimated' AND (pricing_version IS NULL OR pricing_version != ?))
-            OR (cost = 0 AND cost_quality = 'unknown' AND (pricing_version IS NULL OR pricing_version != ?))
+            (cost = 0 AND cost_quality = 'estimated'
+               AND (pricing_version IS NULL OR pricing_version != ?))
+            OR (cost_quality = 'estimated'
+               AND (pricing_version IS NULL OR pricing_version != ?)
+               AND (pricing_version IS NULL OR pricing_version != ?))
+            OR (cost = 0 AND cost_quality = 'unknown'
+               AND (pricing_version IS NULL OR pricing_version != ?))
           );
         """
         guard sqlite3_prepare_v2(db, select, -1, &stmt, nil) == SQLITE_OK else { return }
-        sqlite3_bind_text(stmt, 1, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 1, (Pricing.zeroCostStamp as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 2, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 3, (Pricing.zeroCostStamp as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 4, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
         var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool, quality: String)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let model = SQLiteText.column(stmt, 1) else { continue }
@@ -1191,8 +1246,9 @@ final class Database: @unchecked Sendable {
                 if let cost = Pricing.estimate(model: r.model, input: r.input, output: r.output,
                                                cacheRead: r.cr, cacheWrite: r.cw,
                                                inputIncludesCache: r.includesCache) {
+                    let revision = cost == 0 ? Pricing.zeroCostStamp : Pricing.version
                     sqlite3_bind_double(pricedStmt, 1, cost)
-                    sqlite3_bind_text(pricedStmt, 2, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_text(pricedStmt, 2, (revision as NSString).utf8String, -1, SQLITE_TRANSIENT)
                     sqlite3_bind_int64(pricedStmt, 3, r.id)
                     if sqlite3_step(pricedStmt) != SQLITE_DONE { ok = false }
                     sqlite3_reset(pricedStmt)

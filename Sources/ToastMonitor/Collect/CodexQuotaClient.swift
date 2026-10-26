@@ -8,7 +8,7 @@ import Combine
 ///
 /// The token lives only in memory for the request; failures are explicit
 /// states, never guessed numbers.
-    @MainActor
+@MainActor
 final class CodexQuotaClient: ObservableObject {
     static let shared = CodexQuotaClient()
     static let maxResponseBytes = 10_000_000
