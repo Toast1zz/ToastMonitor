@@ -171,15 +171,12 @@ struct UsageAnalysisView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var lines = ["range,grouping,name,tokens,calls,estimated_cost,share"]
         for row in analysis.csvRows {
-            lines.append([
-                analysis.range.rawValue,
-                analysis.grouping.rawValue,
-                row.name,
-                String(row.tokens),
-                String(row.calls),
-                String(format: "%.6f", row.cost),
-                String(format: "%.6f", row.ratio),
-            ].map(Self.csvField).joined(separator: ","))
+            let textFields = [analysis.range.rawValue, analysis.grouping.rawValue, row.name]
+                .map { Self.csvField($0) }
+            let numberFields = [String(row.tokens), String(row.calls),
+                                String(format: "%.6f", row.cost), String(format: "%.6f", row.ratio)]
+                .map { Self.csvField($0, text: false) }
+            lines.append((textFields + numberFields).joined(separator: ","))
         }
         do {
             try (lines.joined(separator: "\n") + "\n")
@@ -189,9 +186,17 @@ struct UsageAnalysisView: View {
         }
     }
 
-    private static func csvField(_ value: String) -> String {
-        guard value.contains(",") || value.contains("\"") || value.contains("\n") else { return value }
-        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+    static func csvField(_ value: String, text: Bool = true) -> String {
+        var escaped = value
+        if text {
+            let leading = value.prefix(while: { $0.isWhitespace })
+            let first = value.dropFirst(leading.count).first
+            let formula = first.map { "=+-@".contains($0) } ?? false
+            let control = leading.unicodeScalars.contains { $0.value == 9 || $0.value == 13 }
+            if formula || control { escaped = "'" + value }
+        }
+        guard escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") || escaped.contains("\r") else { return escaped }
+        return "\"\(escaped.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 
     private func summary(_ data: AnalysisData) -> some View {
