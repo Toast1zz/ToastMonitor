@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct DataRepairReceipt: Equatable, Sendable {
     let backupPath: String
@@ -160,8 +161,24 @@ enum DataMaintenance {
             return nil
         }
         let destination = URL(fileURLWithPath: path).standardizedFileURL
-        guard destination.path != database.dbPath else { return nil }
+        guard isSafeExportDestination(destination, databasePath: database.dbPath) else { return nil }
         return destination
+    }
+
+    static func isSafeExportDestination(_ destination: URL, databasePath: String) -> Bool {
+        let canonical = destination.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(destination.lastPathComponent).standardizedFileURL
+        let live = URL(fileURLWithPath: databasePath).resolvingSymlinksInPath().standardizedFileURL
+        let protected = Set(["", "-wal", "-shm", "-journal"].map { live.path + $0 })
+        guard !protected.contains(canonical.path),
+              !protected.contains(canonical.resolvingSymlinksInPath().path) else { return false }
+        var sourceInfo = stat()
+        var targetInfo = stat()
+        if stat(live.path, &sourceInfo) == 0, stat(canonical.path, &targetInfo) == 0,
+           sourceInfo.st_dev == targetInfo.st_dev, sourceInfo.st_ino == targetInfo.st_ino {
+            return false
+        }
+        return true
     }
 
     private static func isSafeDatabaseFile(_ path: String) -> Bool {

@@ -2297,6 +2297,9 @@ final class Database: @unchecked Sendable {
         guard sqlite3_step(statement) == SQLITE_DONE else { return false }
         do { try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: compact) }
         catch { return false }
+        guard DataMaintenance.isSafeExportDestination(URL(fileURLWithPath: destination), databasePath: dbPath) else {
+            return false
+        }
         return Darwin.rename(compact, destination) == 0
     }
 

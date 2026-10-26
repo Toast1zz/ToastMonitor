@@ -58,4 +58,36 @@ final class DatabaseExportTests: XCTestCase {
         let attributes = try FileManager.default.attributesOfItem(atPath: target)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
+    func testExportRejectsDirectoryAliasToLiveDatabaseAndLeavesItWritable() throws {
+        let alias = directory + "/alias"
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: directory)
+        XCTAssertFalse(DataMaintenance.exportDatabase(to: alias + "/live.db", database: database))
+        XCTAssertTrue(database.setSetting("after-rejected-export", "retained"))
+        database.close()
+        database = Database.testInstance(path: directory + "/live.db")
+        XCTAssertEqual(database.setting("after-rejected-export"), "retained")
+    }
+
+    func testExportRejectsFileSymlinkAndHardLinkToLiveDatabase() throws {
+        let alias = directory + "/file-alias.db"
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: database.dbPath)
+        XCTAssertFalse(DataMaintenance.exportDatabase(to: alias, database: database))
+        let hardLink = directory + "/hard-link.db"
+        try FileManager.default.linkItem(atPath: database.dbPath, toPath: hardLink)
+        XCTAssertFalse(DataMaintenance.exportDatabase(to: hardLink, database: database))
+    }
+
+    func testExportRejectsLiveDatabaseSidecars() {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(DataMaintenance.exportDatabase(to: database.dbPath + suffix, database: database))
+        }
+    }
+
+    func testDirectRedactedExportRejectsLiveDatabaseAlias() throws {
+        let alias = directory + "/alias"
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: directory)
+        XCTAssertFalse(database.exportRedacted(to: alias + "/live.db"))
+        XCTAssertTrue(database.setSetting("after-direct-rejection", "retained"))
+    }
+
 }
