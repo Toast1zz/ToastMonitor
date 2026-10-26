@@ -2,6 +2,8 @@ import XCTest
 import SQLite3
 @testable import ToastMonitor
 
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 /// P0-3 (事件身份) 与 P0-9 (订阅 ID) 的失败测试。
 /// 每个测试使用独立临时 DB，绝不触碰真实存储。
 final class DatabaseTests: XCTestCase {
