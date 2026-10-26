@@ -155,15 +155,17 @@ final class ClaudeCodeParserTests: XCTestCase {
     func testSubagentTranscriptsAreListedOnlyAtDepthFour() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-sub-\(UUID().uuidString)").path
-        let session = "\(root)/-Users-demo-dev-app/sess"
-        let sub = "\(session)/subagents"
+        // Real layout: projects/<encoded>/<session>.jsonl beside
+        // projects/<encoded>/<session>/subagents/agent-*.jsonl.
+        let project = "\(root)/-Users-demo-dev-app"
+        let sub = "\(project)/sess/subagents"
         try FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: root) }
-        FileManager.default.createFile(atPath: "\(session)/sess.jsonl", contents: Data())
+        FileManager.default.createFile(atPath: "\(project)/sess.jsonl", contents: Data())
         FileManager.default.createFile(atPath: "\(sub)/agent-1.jsonl", contents: Data())
         let shallow = Set(FileScanner.listFiles(root, maxDepth: 2))
         let deep = Set(FileScanner.listFiles(root, maxDepth: 4))
-        XCTAssertTrue(shallow.contains("\(session)/sess.jsonl"))
+        XCTAssertTrue(shallow.contains("\(project)/sess.jsonl"))
         XCTAssertFalse(shallow.contains("\(sub)/agent-1.jsonl"))
         XCTAssertTrue(deep.contains("\(sub)/agent-1.jsonl"))
     }

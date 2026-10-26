@@ -648,6 +648,10 @@ final class Database: @unchecked Sendable {
             guard let db else { return }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
             let ok = execChecked("""
+            CREATE TABLE IF NOT EXISTS settings (
+              k TEXT PRIMARY KEY,
+              v TEXT
+            );
             INSERT INTO settings (k, v) VALUES ('usage_recount_v7', 'pending')
             ON CONFLICT(k) DO UPDATE SET v=excluded.v;
             """) && setUserVersion(7)
@@ -1154,11 +1158,15 @@ final class Database: @unchecked Sendable {
         SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool, cost_quality
         FROM turns
         WHERE tool != 'hermes' AND model IS NOT NULL AND model != ''
-          AND (pricing_version IS NULL OR pricing_version != ?)
-          AND (cost_quality = 'estimated' OR (cost = 0 AND cost_quality = 'unknown'));
+          AND (
+            (cost = 0 AND cost_quality = 'estimated')
+            OR (cost_quality = 'estimated' AND (pricing_version IS NULL OR pricing_version != ?))
+            OR (cost = 0 AND cost_quality = 'unknown' AND (pricing_version IS NULL OR pricing_version != ?))
+          );
         """
         guard sqlite3_prepare_v2(db, select, -1, &stmt, nil) == SQLITE_OK else { return }
         sqlite3_bind_text(stmt, 1, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
         var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool, quality: String)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let model = SQLiteText.column(stmt, 1) else { continue }

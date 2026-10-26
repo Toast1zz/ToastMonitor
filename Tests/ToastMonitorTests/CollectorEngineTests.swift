@@ -70,10 +70,12 @@ final class CollectorEngineTests: XCTestCase {
             XCTAssertTrue(state.setScanState(self.sourcePath, size: stat.size,
                                              mtime: stat.mtime, identity: stat.identity,
                                              context: nil))
+            // A shrink is a rewrite of bytes the cursor already accepted.
+            // An append past the cursor is kept: the next scan reads the tail.
             let handle = FileHandle(forWritingAtPath: self.sourcePath)!
             defer { handle.closeFile() }
-            handle.seekToEndOfFile()
-            handle.write(Data("changed\n".utf8))
+            handle.truncateFile(atOffset: 0)
+            handle.write(Data("x\n".utf8))
             return ([turn], [])
         }
 

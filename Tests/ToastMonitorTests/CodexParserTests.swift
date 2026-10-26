@@ -223,7 +223,9 @@ final class CodexTotalDeltaTests: XCTestCase {
         XCTAssertEqual(turns.map(\.outputTokens), [10, 15])
         XCTAssertEqual(turns.map(\.cacheRead), [4, 6])
         XCTAssertEqual(turns[0].model, "gpt-5-mini")
-        XCTAssertEqual(turns[1].cost, 50.0 / 1e6 * 0.25 + 15.0 / 1e6 * 2 + 6.0 / 1e6 * 0.025, accuracy: 0.0000001)
+        // Codex input already includes cache, so the 6 cached tokens are not billed again at the input rate.
+        let billableInput = 50.0 - 6.0
+        XCTAssertEqual(turns[1].cost, billableInput / 1e6 * 0.25 + 15.0 / 1e6 * 2 + 6.0 / 1e6 * 0.025, accuracy: 0.0000001)
     }
 
     func testSameLastUsageWithALargerTotalKeepsBothTurns() throws {
