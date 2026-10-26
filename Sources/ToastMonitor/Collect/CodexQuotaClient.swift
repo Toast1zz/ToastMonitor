@@ -12,6 +12,7 @@ import Combine
 final class CodexQuotaClient: ObservableObject {
     static let shared = CodexQuotaClient()
     static let maxResponseBytes = 10_000_000
+    static let enabledSettingKey = "codex_quota_enabled"
     struct State {
         var planType: String?
         var primaryPct: Int?       // primary_window used_percent
@@ -61,15 +62,40 @@ final class CodexQuotaClient: ObservableObject {
     }
 
 
+    @Published private(set) var enabled = false
+    private var loadedPreference = false
+
+    func setEnabled(_ on: Bool) {
+        guard on != enabled else { return }
+        enabled = on
+        loadedPreference = true
+        DispatchQueue.global(qos: .utility).async {
+            _ = Database.shared.setSetting(Self.enabledSettingKey, on ? "1" : nil)
+        }
+        if on {
+            started = false
+            start()
+        } else {
+            started = false
+            poller.stop()
+            refreshGeneration &+= 1
+            inFlight = false
+        }
+    }
+
     func start() {
-        guard !started else { return }
+        if !loadedPreference {
+            enabled = Database.shared.setting(Self.enabledSettingKey) == "1"
+            loadedPreference = true
+        }
+        guard enabled, !started else { return }
         started = true
         refresh()
         poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
     }
 
     func refresh() {
-        guard !inFlight else { return }
+        guard enabled, !inFlight else { return }
         // Backoff gate: skip attempts inside the backoff window.
         if backoff.isWaiting { return }
         inFlight = true

@@ -1,4 +1,4 @@
-{"type":"session","version":0,"id":"session-test-0001","createdAt":1786628702000,"cwd":"/Users/toast1/Projects/ToastMonitor","delegationDepth":0,"agentPreset":"standard"}
+{"type":"session","version":0,"id":"session-test-0001","createdAt":1786628702000,"cwd":"/Users/demo/Projects/ToastMonitor","delegationDepth":0,"agentPreset":"standard"}
 {"type":"request/header","seq":10,"time":1786628702500,"data":{"header":{"config":{"provider":"opencodego","model":"deepseek-v4-flash"}}}}
 {"type":"step/start","seq":11,"time":1786628702555,"data":{"turn":1,"step":1}}
 {"type":"assistant/chunk","seq":12,"time":1786628704000,"data":{"turn":1,"step":1,"chunk":{"type":"block-start","index":0,"blockType":"reasoning"}}}

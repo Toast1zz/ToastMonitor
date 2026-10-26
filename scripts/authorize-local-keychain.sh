@@ -29,6 +29,6 @@ echo "将 ToastMonitor 钥匙串条目授权给 Team ID: $TEAM_ID"
 echo "macOS 会要求输入一次登录钥匙串密码；之后同一 Team ID 的新版本不再逐次询问。"
 security set-generic-password-partition-list \
     -s ToastMonitor \
-    -S "apple-tool:,teamid:$TEAM_ID" \
+    -S "teamid:$TEAM_ID" \
     "$KEYCHAIN"
 echo "done"

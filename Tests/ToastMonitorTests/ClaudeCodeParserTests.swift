@@ -43,7 +43,7 @@ final class ClaudeCodeParserTests: XCTestCase {
         let first = turns[0]
         XCTAssertEqual(first.tool, .claude)
         XCTAssertEqual(first.sessionID, "e1f5c1a2-0000-4000-8000-000000000001")
-        XCTAssertEqual(first.project, "Fixtures") // encoded parent dir last component
+        XCTAssertEqual(first.project, "sample-project") // cwd's last path component
         XCTAssertEqual(first.model, "claude-sonnet-4-6") // read from message.model
         XCTAssertEqual(first.inputTokens, 812)
         XCTAssertEqual(first.outputTokens, 96)
@@ -98,8 +98,123 @@ final class ClaudeCodeParserTests: XCTestCase {
         try "\(first)\n\(duplicate)\n".write(to: path, atomically: true, encoding: .utf8)
 
         let (turns, _) = ClaudeCodeParser.scan(knownPaths: [path.path])
-        XCTAssertEqual(turns.count, 2)
-        XCTAssertEqual(Set(turns.compactMap(\.eventID)), ["claude:s1:msg_billable"])
+        XCTAssertEqual(turns.count, 1, "identical snapshots of one message are one turn")
+        XCTAssertEqual(turns.first?.eventID, "claude:s1:msg_billable")
+        XCTAssertEqual(turns.first?.inputTokens, 10)
+        XCTAssertEqual(turns.first?.outputTokens, 5)
+        XCTAssertEqual(turns.first?.usageMerge, .keepGreater)
+    }
+
+    /// A streaming transcript writes the same message.id several times as
+    /// usage grows. The kept row is the largest snapshot, not the first.
+    func testStreamingMessageKeepsGreatestUsage() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-stream-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("session.jsonl")
+        let partial = #"{"type":"assistant","sessionId":"s1","timestamp":"2026-08-04T10:00:02Z","cwd":"/Users/demo/dev/toast-translate","message":{"id":"msg_stream","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":5,"cache_creation_input_tokens":10}}}"#
+        let done = #"{"type":"assistant","sessionId":"s1","timestamp":"2026-08-04T10:00:03Z","cwd":"/Users/demo/dev/toast-translate","message":{"id":"msg_stream","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":40,"cache_creation":{"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":4}}}}"#
+        try "\(partial)\n\(done)\n".write(to: path, atomically: true, encoding: .utf8)
+
+        let (turns, _) = ClaudeCodeParser.scan(knownPaths: [path.path])
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns[0].eventID, "claude:s1:msg_stream")
+        XCTAssertEqual(turns[0].outputTokens, 40)
+        XCTAssertEqual(turns[0].cacheWrite, 14)
+        XCTAssertEqual(turns[0].project, "toast-translate")
+        let fiveMinute = 10.0 / 1e6 * 3.75
+        let oneHour = 4.0 / 1e6 * 3 * 2
+        let expected = 100.0 / 1e6 * 3 + 40.0 / 1e6 * 15 + fiveMinute + oneHour
+        XCTAssertEqual(turns[0].cost, expected, accuracy: 0.0000001)
+    }
+
+    func testKeepingGreaterRepricesTheMergedTokens() {
+        let older = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-haiku-4-5",
+                               ts: 1, inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                               cost: 1, eventID: "claude:s:m", usageMerge: .keepGreater)
+        let newer = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-haiku-4-5",
+                               ts: 2, inputTokens: 0, outputTokens: 1_000_000, cacheRead: 0, cacheWrite: 0,
+                               cost: 5, eventID: "claude:s:m", usageMerge: .keepGreater)
+        let merged = TurnRecord.keepingGreater(older, newer)
+        XCTAssertEqual(merged.inputTokens, 1_000_000)
+        XCTAssertEqual(merged.outputTokens, 1_000_000)
+        XCTAssertEqual(merged.cost, 6, accuracy: 0.0001)
+        XCTAssertEqual(merged.costQuality, "estimated")
+        XCTAssertEqual(merged.pricingVersion, Pricing.version)
+
+        let cached = TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "gpt-4o",
+                                ts: 1, inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                                cost: 9, eventID: "codex:s:m", usageMerge: .keepGreater)
+        let reads = TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "gpt-4o",
+                               ts: 2, inputTokens: 0, outputTokens: 0, cacheRead: 1_000_000, cacheWrite: 0,
+                               cost: 9, eventID: "codex:s:m", usageMerge: .keepGreater)
+        XCTAssertEqual(TurnRecord.keepingGreater(cached, reads).cost, 1.25, accuracy: 0.0001)
+
+        let unknownOlder = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "no-such-model",
+                                      ts: 1, inputTokens: 100, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                                      cost: 1.5, eventID: "claude:s:u", costQuality: "actual",
+                                      usageMerge: .keepGreater)
+        let unknownNewer = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "no-such-model",
+                                      ts: 2, inputTokens: 0, outputTokens: 50, cacheRead: 0, cacheWrite: 0,
+                                      cost: 4, eventID: "claude:s:u", costQuality: "actual",
+                                      usageMerge: .keepGreater)
+        let unknown = TurnRecord.keepingGreater(unknownOlder, unknownNewer)
+        XCTAssertEqual(unknown.cost, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(unknown.costQuality, "actual")
+        XCTAssertEqual(unknown.outputTokens, 50)
+
+        // The complete snapshot already holds every max field, so its cost
+        // (including a one-hour cache write) is kept rather than repriced
+        // at the five-minute write rate.
+        let partialWrite = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-sonnet-4-6",
+                                      ts: 1, inputTokens: 100, outputTokens: 5, cacheRead: 0, cacheWrite: 10,
+                                      cost: 0.001, eventID: "claude:s:h", usageMerge: .keepGreater)
+        let withOneHour = TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "claude-sonnet-4-6",
+                                     ts: 2, inputTokens: 100, outputTokens: 40, cacheRead: 0, cacheWrite: 14,
+                                     cost: 0.0009615, eventID: "claude:s:h", usageMerge: .keepGreater)
+        XCTAssertEqual(TurnRecord.keepingGreater(partialWrite, withOneHour).cost, 0.0009615, accuracy: 0.0000001)
+    }
+
+    func testStoredPartialMessageIsUpgraded() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-upgrade-\(UUID().uuidString).sqlite").path
+        let db = Database.testInstance(path: path)
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        let partial = TurnRecord(tool: .claude, sessionID: "s1", project: "p", model: "claude-sonnet-4-6",
+                                 ts: 100, inputTokens: 10, outputTokens: 1, cacheRead: 0, cacheWrite: 0,
+                                 cost: 0.01, eventID: "claude:s1:msg_billable", usageMerge: .keepGreater)
+        let complete = TurnRecord(tool: .claude, sessionID: "s1", project: "p", model: "claude-sonnet-4-6",
+                                  ts: 101, inputTokens: 10, outputTokens: 50, cacheRead: 4, cacheWrite: 0,
+                                  cost: 0.2, eventID: "claude:s1:msg_billable", usageMerge: .keepGreater)
+        XCTAssertTrue(db.insertTurns([partial]))
+        XCTAssertTrue(db.insertTurns([complete]))
+        let stored = db.turns(sessionTool: "claude", sessionID: "s1")
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored[0].output, 50)
+        XCTAssertEqual(stored[0].cacheRead, 4)
+        XCTAssertEqual(stored[0].ts, 101)
+    }
+
+    func testSubagentTranscriptsAreListedOnlyAtDepthFour() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-sub-\(UUID().uuidString)").path
+        // Real layout: projects/<encoded>/<session>.jsonl beside
+        // projects/<encoded>/<session>/subagents/agent-*.jsonl.
+        let project = "\(root)/-Users-demo-dev-app"
+        let sub = "\(project)/sess/subagents"
+        try FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        FileManager.default.createFile(atPath: "\(project)/sess.jsonl", contents: Data())
+        FileManager.default.createFile(atPath: "\(sub)/agent-1.jsonl", contents: Data())
+        let shallow = Set(FileScanner.listFiles(root, maxDepth: 2))
+        let deep = Set(FileScanner.listFiles(root, maxDepth: 4))
+        XCTAssertTrue(shallow.contains("\(project)/sess.jsonl"))
+        XCTAssertFalse(shallow.contains("\(sub)/agent-1.jsonl"))
+        XCTAssertTrue(deep.contains("\(sub)/agent-1.jsonl"))
     }
 
     func testUntimestampedRowsGetDistinctStableOffsetIdentity() throws {

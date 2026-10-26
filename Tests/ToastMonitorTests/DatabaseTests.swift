@@ -2,6 +2,8 @@ import XCTest
 import SQLite3
 @testable import ToastMonitor
 
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 /// P0-3 (事件身份) 与 P0-9 (订阅 ID) 的失败测试。
 /// 每个测试使用独立临时 DB，绝不触碰真实存储。
 final class DatabaseTests: XCTestCase {
@@ -458,6 +460,262 @@ final class DatabaseTests: XCTestCase {
                                   eventID: "second-event", costQuality: "estimated")
         XCTAssertTrue(migrated.insertTurns([distinct]))
         XCTAssertEqual(migrated.turnCount(), 2, "legacy compound UNIQUE 仍吞掉同秒同 token 事件")
+        XCTAssertEqual(migrated.setting("usage_recount_v7"), "pending")
+    }
+
+    func testUsageRecountReplacesOnlySessionsThatCanBeRebuilt() throws {
+        XCTAssertEqual(db.setting("usage_recount_v7"), "pending")
+        XCTAssertTrue(db.insertTurns([
+            TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "claude:s:msg"),
+            TurnRecord(tool: .claude, sessionID: "claude", project: nil, model: "m", ts: 10,
+                       inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "claude:claude:msg"),
+            TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 2, outputTokens: 2, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "codex:s:evt"),
+            TurnRecord(tool: .dsh, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 3, outputTokens: 3, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "dsh-log:s:1:1"),
+            TurnRecord(tool: .omp, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 4, outputTokens: 4, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "omp:keep"),
+        ]))
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(tmpPath, &raw, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw, """
+        INSERT INTO turns (tool, session_id, ts, input_tokens, output_tokens, event_id)
+        VALUES ('codex', 'legacy-null', 1, 9, 8, NULL);
+        """, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+        XCTAssertTrue(db.setScanState("/tmp/claude.jsonl", size: 20, mtime: 20, identity: 3, context: "{\"sid\":\"s\"}"))
+        XCTAssertTrue(db.setScanState("/tmp/dsh.jsonl", size: 8, mtime: 8, identity: 4, context: "{}"))
+
+        db.recountMiscountedUsage(claudePaths: ["/tmp/claude.jsonl"], codexPaths: [],
+                                  dshPaths: ["/tmp/dsh.jsonl"])
+        XCTAssertEqual(db.setting("usage_recount_v7"), "done")
+        XCTAssertEqual(db.turns(sessionTool: "claude", sessionID: "claude").count, 0,
+                       "the listed transcript's filename is the session that can be rebuilt")
+        XCTAssertEqual(db.turns(sessionTool: "claude", sessionID: "s").count, 1,
+                       "a session whose log is not in the rescan list stays")
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").count, 1)
+        XCTAssertEqual(db.turns(sessionTool: "dsh", sessionID: "s").count, 1,
+                       "a log with no session id is not deleted")
+        XCTAssertEqual(db.turns(sessionTool: "omp", sessionID: "s").count, 1)
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "legacy-null").count, 1)
+        XCTAssertEqual(db.scanState("/tmp/claude.jsonl").size, 0)
+        XCTAssertEqual(db.scanState("/tmp/claude.jsonl").mtime, 0)
+        XCTAssertNil(db.scanState("/tmp/claude.jsonl").context)
+        XCTAssertEqual(db.scanState("/tmp/dsh.jsonl").size, 8,
+                       "an unidentified DeepSeek log keeps its cursor")
+
+        db.recountMiscountedUsage(claudePaths: ["/tmp/claude.jsonl"], codexPaths: ["/tmp/codex.jsonl"],
+                                  dshPaths: ["/tmp/dsh.jsonl"])
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").count, 1,
+                       "a finished recount must not run again")
+    }
+
+    func testRecountKeepsTurnsWhoseSourceLogIsGone() throws {
+        let root = NSTemporaryDirectory() + "recount-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        func write(_ path: String, _ text: String) throws {
+            try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                     withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+        }
+        let claudeLive = "\(root)/projects/enc/a_b.jsonl"
+        let claudePrefix = "\(root)/projects/enc/ab.jsonl"
+        let claudeSub = "\(root)/projects/enc/gone-parent/subagents/agent-1.jsonl"
+        try write(claudeLive, "{}\n")
+        try write(claudePrefix, "{}\n")
+        try write(claudeSub, "{}\n")
+
+        let codexContext = "\(root)/sessions/2026/10/17/rollout-2026-10-17T01-02-03-file-uuid.jsonl"
+        let codexName = "\(root)/sessions/2026/10/17/rollout-2026-10-17T01-02-03-filename-only.jsonl"
+        let codexMystery = "\(root)/sessions/not-a-rollout.jsonl"
+        try write(codexContext, "{}\n")
+        try write(codexName, "{}\n")
+        try write(codexMystery, "{}\n")
+
+        let dshHeader = "\(root)/session-decoy/session.jsonl"
+        let dshContext = "\(root)/dsh-context/session.jsonl"
+        let dshZstd = "\(root)/session-old/session.jsonl.zstd"
+        try write(dshHeader, "{\"type\":\"session\",\"id\":\"live-dsh\",\"cwd\":\"/tmp/session-decoy\"}\n")
+        try write(dshContext, "{\"type\":\"session\",\"id\":\"header-ignored\"}\n")
+        try write(dshZstd, "")
+
+        func row(_ tool: ToolKind, _ session: String, _ event: String) -> TurnRecord {
+            TurnRecord(tool: tool, sessionID: session, project: nil, model: "m", ts: 10,
+                       inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: event)
+        }
+        XCTAssertTrue(db.insertTurns([
+            row(.claude, "old-claude", "claude:old-claude:m"),
+            row(.claude, "a_b", "claude:a_b:m"),
+            row(.claude, "aXb", "claude:aXb:m"),
+            row(.claude, "ab", "claude:ab:m"),
+            row(.claude, "abcd", "claude:abcd:m"),
+            row(.claude, "gone-parent", "claude:gone-parent:m"),
+            row(.codex, "old-codex", "codex:old-codex:m"),
+            row(.codex, "context-wins", "codex:context-wins:m"),
+            row(.codex, "file-uuid", "codex:file-uuid:m"),
+            row(.codex, "filename-only", "codex:filename-only:m"),
+            row(.dsh, "old-dsh", "dsh-log:old-dsh:1:1"),
+            row(.dsh, "live-dsh", "dsh-log:live-dsh:1:1"),
+            row(.dsh, "decoy", "dsh-log:decoy:1:1"),
+            row(.dsh, "session-decoy", "dsh-log:session-decoy:1:1"),
+            row(.dsh, "context-dsh", "dsh-log:context-dsh:1:1"),
+            row(.dsh, "header-ignored", "dsh-log:header-ignored:1:1"),
+            row(.omp, "s", "omp:keep"),
+        ]))
+        XCTAssertTrue(db.setScanState(codexContext, size: 11, mtime: 11, identity: 1, context: "{\"sid\":\"context-wins\"}"))
+        XCTAssertTrue(db.setScanState(codexName, size: 16, mtime: 16, identity: 6, context: nil))
+        XCTAssertTrue(db.setScanState(codexMystery, size: 12, mtime: 12, identity: 2, context: nil))
+        XCTAssertTrue(db.setScanState(dshHeader, size: 17, mtime: 17, identity: 7, context: nil))
+        XCTAssertTrue(db.setScanState(dshContext, size: 13, mtime: 13, identity: 3, context: "{\"sid\":\"context-dsh\"}"))
+        XCTAssertTrue(db.setScanState(dshZstd, size: 14, mtime: 14, identity: 4, context: nil))
+        XCTAssertTrue(db.setScanState(claudeLive, size: 15, mtime: 15, identity: 5, context: nil))
+        XCTAssertTrue(db.setScanState(claudePrefix, size: 18, mtime: 18, identity: 8, context: nil))
+        XCTAssertTrue(db.setScanState(claudeSub, size: 19, mtime: 19, identity: 9, context: nil))
+
+        db.recountMiscountedUsage(
+            claudePaths: [claudeLive, claudePrefix, claudeSub],
+            codexPaths: [codexContext, codexName, codexMystery],
+            dshPaths: [dshHeader, dshContext, dshZstd])
+
+        func kept(_ tool: String, _ session: String) {
+            XCTAssertEqual(db.turns(sessionTool: tool, sessionID: session).count, 1, "\(tool) \(session)")
+        }
+        func rebuilt(_ tool: String, _ session: String) {
+            XCTAssertEqual(db.turns(sessionTool: tool, sessionID: session).count, 0, "\(tool) \(session)")
+        }
+        kept("claude", "old-claude")
+        rebuilt("claude", "a_b")
+        kept("claude", "aXb")
+        rebuilt("claude", "ab")
+        kept("claude", "abcd")
+        kept("claude", "gone-parent")
+        kept("codex", "old-codex")
+        rebuilt("codex", "context-wins")
+        kept("codex", "file-uuid")
+        rebuilt("codex", "filename-only")
+        kept("dsh", "old-dsh")
+        rebuilt("dsh", "live-dsh")
+        kept("dsh", "decoy")
+        kept("dsh", "session-decoy")
+        rebuilt("dsh", "context-dsh")
+        kept("dsh", "header-ignored")
+        kept("omp", "s")
+
+        XCTAssertEqual(db.scanState(claudeLive).size, 0)
+        XCTAssertEqual(db.scanState(claudeSub).size, 0)
+        XCTAssertEqual(db.scanState(codexContext).size, 0)
+        XCTAssertEqual(db.scanState(codexName).size, 0)
+        XCTAssertEqual(db.scanState(codexMystery).size, 12)
+        XCTAssertEqual(db.scanState(dshHeader).size, 0)
+        XCTAssertEqual(db.scanState(dshContext).size, 0)
+        XCTAssertEqual(db.scanState(dshZstd).size, 14)
+
+        db.recountMiscountedUsage(claudePaths: [claudeLive], codexPaths: [codexName], dshPaths: [dshHeader])
+        kept("claude", "old-claude")
+        kept("codex", "old-codex")
+        kept("dsh", "old-dsh")
+    }
+
+    func testRecountWithNoFilesStillFinishes() {
+        XCTAssertTrue(db.insertTurns([
+            TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "m", ts: 10,
+                       inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       eventID: "codex:s:evt"),
+        ]))
+        db.recountMiscountedUsage(claudePaths: [], codexPaths: [], dshPaths: [])
+        XCTAssertEqual(db.setting("usage_recount_v7"), "done")
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").count, 1)
+    }
+
+    func testFreshInstallLeavesCodexAndGrokQuotaOff() {
+        XCTAssertNil(db.setting("codex_quota_enabled"))
+        XCTAssertNil(db.setting("grok_quota_enabled"))
+    }
+
+    func testExistingDatabaseKeepsCodexAndGrokQuotaOn() throws {
+        let path = NSTemporaryDirectory() + "quota-migrate-\(UUID().uuidString).db"
+        defer {
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: path + "-wal")
+            try? FileManager.default.removeItem(atPath: path + "-shm")
+        }
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(path, &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw, """
+        PRAGMA user_version=6;
+        CREATE TABLE settings (k TEXT PRIMARY KEY, v TEXT);
+        INSERT INTO settings (k, v) VALUES ('codex_quota_enabled', '0');
+        """, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+
+        let migrated = Database.testInstance(path: path)
+        defer { migrated.close() }
+        XCTAssertEqual(migrated.setting("codex_quota_enabled"), "0",
+                       "an explicit off survives the upgrade")
+        XCTAssertEqual(migrated.setting("grok_quota_enabled"), "1")
+        XCTAssertEqual(migrated.setting("usage_recount_v7"), "pending")
+    }
+
+    func testBackfillStampsAComputedZeroInsteadOfRetrying() throws {
+        XCTAssertTrue(db.insertTurns([
+            TurnRecord(tool: .opencode, sessionID: "free", project: nil, model: "gpt-4o", ts: 10,
+                       inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       costQuality: "estimated"),
+            TurnRecord(tool: .opencode, sessionID: "already-zero", project: nil, model: "gpt-4o", ts: 10,
+                       inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0, cost: 0,
+                       costQuality: "estimated"),
+        ]))
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(tmpPath, &raw, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        let stamp = Pricing.zeroCostStamp.replacingOccurrences(of: "'", with: "''")
+        XCTAssertEqual(sqlite3_exec(raw, """
+        UPDATE turns SET pricing_version='\(stamp)' WHERE session_id='already-zero';
+        """, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+
+        db.setSetting("backfill_costs_last", nil)
+        db.backfillCosts()
+        XCTAssertEqual(db.turns(sessionTool: "opencode", sessionID: "free").first?.cost, 0)
+        XCTAssertEqual(pricingVersion(session: "free"), Pricing.zeroCostStamp)
+        XCTAssertEqual(db.turns(sessionTool: "opencode", sessionID: "already-zero").first?.cost, 0,
+                       "a zero stamp is not repriced into a real rate")
+
+        db.setSetting("backfill_costs_last", nil)
+        db.backfillCosts()
+        XCTAssertEqual(pricingVersion(session: "free"), Pricing.zeroCostStamp)
+        XCTAssertEqual(db.turns(sessionTool: "opencode", sessionID: "already-zero").first?.cost, 0)
+    }
+
+    private func pricingVersion(session: String) -> String? {
+        var raw: OpaquePointer?
+        guard sqlite3_open_v2(tmpPath, &raw, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_close(raw) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(raw, "SELECT pricing_version FROM turns WHERE session_id=?;", -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (session as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW, let rawText = sqlite3_column_text(stmt, 0) else { return nil }
+        return String(cString: rawText)
+    }
+
+    func testBackfillRepricesAStaleEstimate() {
+        let stale = TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "gpt-5-mini", ts: 10,
+                               inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                               cost: 9, pricingVersion: "1999-01-01", eventID: "codex:s:old")
+        XCTAssertTrue(db.insertTurns([stale]))
+        db.setSetting("backfill_costs_last", nil)
+        db.backfillCosts()
+        let stored = db.turns(sessionTool: "codex", sessionID: "s")
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored[0].cost, 0.25, accuracy: 0.0001)
     }
 
     func testOpenRouterCycleSpendSubtractsMiddayBaseline() {

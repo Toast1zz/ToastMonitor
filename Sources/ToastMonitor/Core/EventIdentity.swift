@@ -26,10 +26,10 @@ enum EventIdentity {
             return "claude:\(sessionID):\(messageID)"
         }
         let message = object["message"] as? [String: Any]
-        // The fallback digest is anchored on the stable byte offset, NOT the
-        // timestamp: untimestamped rows resolve to Date().now, which changes
-        // on every scan and would mint a new digest on each replay. The
-        // offset is stable for a given file content, so replays dedupe.
+        // The fallback digest is anchored on the stable byte offset, not the
+        // timestamp. A missing timestamp uses the file mtime, which can
+        // change, and would mint a new digest on replay. The offset stays
+        // put for a given file, so replays dedupe.
         let stable = digest([
             sessionID,
             String(offset),

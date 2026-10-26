@@ -67,7 +67,9 @@ jobs:
         run: swift test -c release --filter FileScannerTests
 
       - name: Strict concurrency gate
-        run: swift build -Xswiftc -strict-concurrency=complete
+        # A cached debug build ignores new frontend flags, so this step uses
+        # its own scratch path and actually recompiles.
+        run: swift build -c debug --scratch-path "${{ runner.temp }}/strict-concurrency" -Xswiftc -strict-concurrency=complete
 
       # Four dashboard pages, the popover, and two settings panes in light/dark.
       # Average-hash comparison tolerates minor antialiasing changes while

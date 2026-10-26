@@ -12,6 +12,9 @@ cd "$ROOT"
 # Glass on macOS 26/27. Lowering the deployment target does not change that:
 # glass adoption follows the recorded SDK, not the minimum OS.
 SWIFT_BUILD=(swift build --build-system native)
+# Rewrite this checkout's absolute path out of every release binary.
+SWIFT_BUILD+=(-Xswiftc -file-prefix-map -Xswiftc "$ROOT=.")
+SWIFT_BUILD+=(-Xswiftc -debug-prefix-map -Xswiftc "$ROOT=.")
 BUILD_ROOT="${TM_BUILD_PATH:-$ROOT/.build}"
 if [[ -n "${TM_BUILD_PATH:-}" ]]; then SWIFT_BUILD+=(--scratch-path "$BUILD_ROOT"); fi
 if [[ -n "${TM_CACHE_PATH:-}" ]]; then SWIFT_BUILD+=(--cache-path "$TM_CACHE_PATH"); fi

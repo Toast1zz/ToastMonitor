@@ -174,13 +174,6 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
-    func loadORSnapshots(limit: Int = 500, completion: @escaping @MainActor @Sendable ([Database.ORSnapshot]) -> Void) {
-        queue.async {
-            let snapshots = self.database.orSnapshots(limit: limit)
-            DispatchQueue.main.async { completion(snapshots) }
-        }
-    }
-
     func loadPerfPoints(days: Int, completion: @escaping @MainActor @Sendable ([PerfPoint]) -> Void) {
         queue.async {
             let points = self.database.perfPoints(days: days)

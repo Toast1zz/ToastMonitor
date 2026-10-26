@@ -80,7 +80,8 @@ enum OmpParser {
                 let cacheWrite = FileScanner.tokenCount(usage["cacheWrite"])
                 guard [input, output, cacheRead, cacheWrite].contains(where: { $0 > 0 }) else { return }
                 let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
-                    ?? Int64(Date().timeIntervalSince1970)
+                    ?? st.mtime / 1_000_000_000
+                guard ts > 0 else { return }
                 let model = msg["model"] as? String
                 let cost = (usage["cost"] as? [String: Any])?["total"] as? NSNumber
                 let eventID = EventIdentity.omp(relativePath: relKey, sessionID: sessionID,

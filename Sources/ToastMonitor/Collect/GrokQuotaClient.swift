@@ -23,6 +23,7 @@ final class GrokQuotaClient: ObservableObject {
     /// `grok login` writes one entry per scope; the OIDC scope is SuperGrok.
     nonisolated static let oidcScopePrefix = "https://auth.x.ai::"
     nonisolated static let legacySessionScope = "https://accounts.x.ai/sign-in"
+    static let enabledSettingKey = "grok_quota_enabled"
     static let notConfigured = "Grok login not found (run grok login)"
     nonisolated static let expired = "Grok login expired — run grok once"
 
@@ -98,8 +99,35 @@ final class GrokQuotaClient: ObservableObject {
 
     // MARK: - Foreground-aware refresh
 
+    @Published private(set) var enabled = false
+    private var loadedPreference = false
+
+    /// Off until the user opts in. Enabling can run `grok` in the background
+    /// when the saved access token is expired.
+    func setEnabled(_ on: Bool) {
+        guard on != enabled else { return }
+        enabled = on
+        loadedPreference = true
+        DispatchQueue.global(qos: .utility).async {
+            _ = Database.shared.setSetting(Self.enabledSettingKey, on ? "1" : nil)
+        }
+        if on {
+            started = false
+            start()
+        } else {
+            started = false
+            poller.stop()
+            refreshGeneration &+= 1
+            inFlight = false
+        }
+    }
+
     func start() {
-        guard !started else { return }
+        if !loadedPreference {
+            enabled = Database.shared.setting(Self.enabledSettingKey) == "1"
+            loadedPreference = true
+        }
+        guard enabled, !started else { return }
         started = true
         refresh()
         poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
@@ -108,7 +136,7 @@ final class GrokQuotaClient: ObservableObject {
     // MARK: - Refresh
 
     func refresh() {
-        guard !inFlight, !isDemo else { return }
+        guard enabled, !inFlight, !isDemo else { return }
         // Backoff gate: skip attempts inside the backoff window.
         if backoff.isWaiting { return }
         inFlight = true

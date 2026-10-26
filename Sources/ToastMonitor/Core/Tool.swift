@@ -130,10 +130,13 @@ enum ToolKind: String, CaseIterable, Identifiable {
         let eventID: String?
         /// 'actual' | 'estimated' | 'unknown'.
         let costQuality: String
+        /// How a later row with the same event id is combined with the stored one.
+        let usageMerge: TurnUsageMerge
 
-        /// Ceiling for token counts: hostile/malformed logs must not be
-        /// able to overflow Int64 sums or poison daily/weekly aggregates.
-        static let maxTokens: Int64 = 9_000_000_000_000_000
+    /// Ceiling for one field of one turn. A trillion tokens is far above any
+    /// real call, and two values near the old 9e15 ceiling could overflow
+    /// Int64 sums and SQLite SUM.
+    static let maxTokens: Int64 = 1_000_000_000_000
         /// Ceiling for a single turn's estimated/actual cost (USD).
         static let maxCost: Double = 1_000_000_000
 
@@ -142,7 +145,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
              cacheRead: Int64, cacheWrite: Int64, cost: Double,
              provider: String? = nil, sourceInstance: String = "local",
              pricingVersion: String? = Pricing.version, eventID: String? = nil,
-             costQuality: String = "estimated") {
+             costQuality: String = "estimated",
+             usageMerge: TurnUsageMerge = .ignore) {
             self.tool = tool
             self.sessionID = sessionID
             self.project = project
@@ -159,8 +163,65 @@ enum ToolKind: String, CaseIterable, Identifiable {
             self.pricingVersion = costQuality == "estimated" ? pricingVersion : nil
             self.eventID = eventID
             self.costQuality = costQuality
+            self.usageMerge = usageMerge
+        }
+
+        /// Field-wise maximum. Time and model follow the snapshot with the
+        /// larger token sum. When those merged tokens are exactly the
+        /// winner's, its cost is already consistent and is kept, including a
+        /// one-hour cache write the price table cannot reconstruct. A mix
+        /// of the two snapshots is repriced from the merged tokens. That
+        /// reprice uses the five-minute write rate, because one-hour writes
+        /// are not stored on the row. An unknown model keeps the winner's cost.
+        static func keepingGreater(_ older: TurnRecord, _ newer: TurnRecord) -> TurnRecord {
+            let olderSum = older.inputTokens + older.outputTokens + older.reasoningTokens
+                + older.cacheRead + older.cacheWrite
+            let newerSum = newer.inputTokens + newer.outputTokens + newer.reasoningTokens
+                + newer.cacheRead + newer.cacheWrite
+            let winner = newerSum >= olderSum ? newer : older
+            let model = winner.model ?? older.model ?? newer.model
+            let input = max(older.inputTokens, newer.inputTokens)
+            let output = max(older.outputTokens, newer.outputTokens)
+            let reasoning = max(older.reasoningTokens, newer.reasoningTokens)
+            let cacheRead = max(older.cacheRead, newer.cacheRead)
+            let cacheWrite = max(older.cacheWrite, newer.cacheWrite)
+            let tokensMatchWinner = model == winner.model
+                && input == winner.inputTokens && output == winner.outputTokens
+                && reasoning == winner.reasoningTokens && cacheRead == winner.cacheRead
+                && cacheWrite == winner.cacheWrite
+            let repriced = tokensMatchWinner ? nil : Pricing.estimate(
+                model: model, input: input, output: output,
+                cacheRead: cacheRead, cacheWrite: cacheWrite,
+                inputIncludesCache: winner.tool == .codex)
+            return TurnRecord(tool: winner.tool, sessionID: winner.sessionID,
+                              project: winner.project ?? older.project ?? newer.project,
+                              model: model,
+                              ts: winner.ts,
+                              inputTokens: input,
+                              outputTokens: output,
+                              reasoningTokens: reasoning,
+                              cacheRead: cacheRead,
+                              cacheWrite: cacheWrite,
+                              cost: repriced ?? winner.cost,
+                              provider: winner.provider ?? older.provider,
+                              sourceInstance: winner.sourceInstance,
+                              pricingVersion: repriced == nil ? winner.pricingVersion : Pricing.version,
+                              eventID: winner.eventID ?? older.eventID,
+                              costQuality: repriced == nil ? winner.costQuality : "estimated",
+                              usageMerge: .keepGreater)
         }
     }
+
+/// What to do when a turn's event id is already stored.
+enum TurnUsageMerge: Equatable {
+    /// Keep the first row (`INSERT OR IGNORE`).
+    case ignore
+    /// Keep the greater token count in each field. A later Claude snapshot
+    /// of the same message replaces an earlier partial one.
+    case keepGreater
+    /// The new row is authoritative (a DeepSeek step's final message).
+    case replace
+}
 
 /// Session-level info upserted from sources that expose it.
 struct SessionInfo: Equatable {

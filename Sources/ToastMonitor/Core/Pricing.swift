@@ -2,7 +2,8 @@ import Foundation
 
 /// Approximate per-1M-token pricing (USD) for common models.
 /// Unknown models fall back to nil cost (tokens still shown).
-/// Order matters: first matching pattern wins, longest prefix matched first.
+/// Matching picks the longest prefix. A shorter family name never wins
+/// because it happens to be a substring (`gpt-5` does not price `gpt-5-mini`).
 struct ModelPrice {
     let input: Double      // per 1M input tokens
     let output: Double     // per 1M output tokens
@@ -11,7 +12,10 @@ struct ModelPrice {
 }
 
 enum Pricing {
-    static let version = "2026-10-03"
+    static let version = "2026-10-27"
+    /// Marks an estimated row whose computed price is zero, so the 60s
+    /// backfill does not select it again until this revision changes.
+    static let zeroCostStamp = version + "#0"
     static let table: [(pattern: String, price: ModelPrice)] = [
         // Claude
         // Five-minute cache writes only; one-hour writes cost twice the input rate.
@@ -40,13 +44,28 @@ enum Pricing {
         ("claude-3-5-opus", ModelPrice(input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75)),
         ("claude-3-5-sonnet", ModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75)),
         ("claude-3-haiku", ModelPrice(input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3)),
+        // Short-context list price. Prompts over 100k tokens are 5×; the
+        // one-hour write is 2× input ($0.20), applied by estimate(cacheWrite1h:).
+        // https://platform.claude.com/docs/en/about-claude/pricing
+        ("claude-haiku-5-5", ModelPrice(input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125)),
         ("claude-haiku-4-5", ModelPrice(input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25)),
-        // GPT-5 family
+        // Short-context list prices. The cache-write column is the 30-minute
+        // write. Long context (over 272k tokens: 2× input and cache, 1.5×
+        // output) and 12-hour writes are not modeled.
+        // https://developers.openai.com/api/docs/pricing
+        ("gpt-6.1-sol", ModelPrice(input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50)),
+        ("gpt-6-astra", ModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50)),
+        // GPT-5 family. Longer names are listed before the family so a reader
+        // can see the intended rate; matching itself picks the longest prefix.
         ("gpt-5.6-luna", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),
         ("gpt-5.6", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),
         ("gpt-5.4-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
         ("gpt-5.4", ModelPrice(input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 1.875)),
+        ("gpt-5.1-codex-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
+        ("gpt-5-nano", ModelPrice(input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0.075)),
+        ("gpt-5-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
         ("gpt-5", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),
+        ("gpt-4.1-nano", ModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.15)),
         ("gpt-4.1-mini", ModelPrice(input: 0.4, output: 1.6, cacheRead: 0.05, cacheWrite: 0.6)),
         ("gpt-4.1", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
         ("gpt-4o-mini", ModelPrice(input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15)),
@@ -60,7 +79,9 @@ enum Pricing {
         ("deepseek-reasoner", ModelPrice(input: 0.56, output: 1.68, cacheRead: 0.056, cacheWrite: 0.56)),
         ("deepseek", ModelPrice(input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28)),
         // Others
+        ("gemini-2.5-flash", ModelPrice(input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.45)),
         ("gemini-2.5", ModelPrice(input: 1.25, output: 10, cacheRead: 0.0625, cacheWrite: 1.875)),
+        ("gemini-2.0-flash", ModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.15)),
         ("gemini-2.0", ModelPrice(input: 1.25, output: 10, cacheRead: 0.0625, cacheWrite: 1.875)),
         ("gemini", ModelPrice(input: 1.25, output: 10, cacheRead: 0.0625, cacheWrite: 1.875)),
         ("qwen3", ModelPrice(input: 0.5, output: 2, cacheRead: 0.05, cacheWrite: 0.75)),
@@ -68,33 +89,56 @@ enum Pricing {
         ("kimi", ModelPrice(input: 0.6, output: 2.5, cacheRead: 0.06, cacheWrite: 0.9)),
         ("glm-4", ModelPrice(input: 0.1, output: 0.1, cacheRead: 0.01, cacheWrite: 0.05)),
         ("glm", ModelPrice(input: 0.1, output: 0.1, cacheRead: 0.01, cacheWrite: 0.05)),
+        ("o4-mini", ModelPrice(input: 1.1, output: 4.4, cacheRead: 0.275, cacheWrite: 1.65)),
         ("o3-mini", ModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.65)),
         ("o3", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
         ("o4", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
     ]
 
     /// Returns estimated cost in USD for a turn, or nil when the model is unknown.
+    /// `cacheWrite` is the five-minute cache-write bucket. `cacheWrite1h` is
+    /// priced at twice the input rate, which is the one-hour write price.
     static func estimate(model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64,
-                         inputIncludesCache: Bool = false) -> Double? {
+                         inputIncludesCache: Bool = false, cacheWrite1h: Int64 = 0) -> Double? {
         guard let model = model?.lowercased(), !model.isEmpty else { return nil }
-        for entry in table where matches(model, pattern: entry.pattern) {
-            let p = entry.price
-            let billableInput = inputIncludesCache ? max(input - cacheRead, 0) : input
-            return Double(billableInput) / 1e6 * p.input
-                + Double(output) / 1e6 * p.output
-                + Double(cacheRead) / 1e6 * p.cacheRead
-                + Double(cacheWrite) / 1e6 * p.cacheWrite
+        guard let price = price(for: model) else { return nil }
+        let billableInput = inputIncludesCache ? max(input - cacheRead, 0) : input
+        return Double(billableInput) / 1e6 * price.input
+            + Double(output) / 1e6 * price.output
+            + Double(cacheRead) / 1e6 * price.cacheRead
+            + Double(cacheWrite) / 1e6 * price.cacheWrite
+            + Double(cacheWrite1h) / 1e6 * price.input * 2
+    }
+
+    /// Longest matching pattern. Claude keeps its dated-snapshot rule so
+    /// `claude-sonnet-4-9` does not inherit `claude-sonnet-4`. Every other
+    /// family matches a prefix only at a `-` or `.` boundary, never as a
+    /// substring (`gpt-5` must not price `gpt-5-mini`).
+    static func price(for model: String) -> ModelPrice? {
+        let lowered = model.lowercased()
+        let leaf = lowered.split(separator: "/").last.map(String.init) ?? lowered
+        var best: (length: Int, price: ModelPrice)?
+        for entry in table {
+            let candidate = entry.pattern.hasPrefix("claude-")
+                ? leaf.replacingOccurrences(of: ".", with: "-")
+                : leaf
+            guard matches(candidate, pattern: entry.pattern) else { continue }
+            if best == nil || entry.pattern.count > best!.length {
+                best = (entry.pattern.count, entry.price)
+            }
         }
-        return nil
+        return best?.price
     }
 
     private static func matches(_ model: String, pattern: String) -> Bool {
-        guard pattern.hasPrefix("claude-") else { return model.contains(pattern) }
-        let normalized = model.replacingOccurrences(of: ".", with: "-")
-            .split(separator: "/").last.map(String.init) ?? model
-        guard normalized.hasPrefix(pattern) else { return false }
-        let suffix = String(normalized.dropFirst(pattern.count))
-        return suffix.isEmpty || suffix == "-latest"
-            || suffix.range(of: "^-[0-9]{8}$", options: .regularExpression) != nil
+        guard model == pattern || model.hasPrefix(pattern) else { return false }
+        if model == pattern { return true }
+        let suffix = String(model.dropFirst(pattern.count))
+        if pattern.hasPrefix("claude-") {
+            return suffix == "-latest"
+                || suffix.range(of: "^-[0-9]{8}$", options: .regularExpression) != nil
+        }
+        guard let boundary = suffix.first else { return true }
+        return "-._:@".contains(boundary)
     }
 }

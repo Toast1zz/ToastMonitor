@@ -1,8 +1,10 @@
+import AppKit
 import Foundation
 
-/// Orchestrates collection. A 1s foreground / 5s background poll uses cheap
-/// per-file stat checks, keeps the menu-bar token count fresh while the
-/// popover is hidden, and avoids FSEvents feedback from SQLite sidecars.
+/// Orchestrates collection. The loop is 1s while a panel is open, 5s in the
+/// background, 30s after an idle scan, and 60s on low power. Sleep pauses it.
+/// Per-file stat checks keep an idle pass cheap and avoid FSEvents feedback
+/// from SQLite sidecars.
 final class CollectorEngine: @unchecked Sendable {
     struct ScanReceipt: Sendable {
         let requestID: UUID?
@@ -26,7 +28,7 @@ final class CollectorEngine: @unchecked Sendable {
         database: Database,
         sourcePaths: [String],
         scan: (any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo])
-    ) -> (committed: Bool, turns: [TurnRecord], sessions: [SessionInfo]) {
+    ) -> (committed: Bool, turns: [TurnRecord], sessions: [SessionInfo], problem: String?) {
         let staged = StagedParserStateStore(database: database, sourcePaths: sourcePaths)
         let out = scan(staged)
         let committed = database.inTransaction {
@@ -35,7 +37,7 @@ final class CollectorEngine: @unchecked Sendable {
                 && database.upsertSessions(out.sessions)
                 && staged.apply()
         }
-        return (committed, out.turns, out.sessions)
+        return (committed, out.turns, out.sessions, staged.problem)
     }
 
     private let queue = DispatchQueue(label: "toastmonitor.collector", qos: .utility)
@@ -49,18 +51,9 @@ final class CollectorEngine: @unchecked Sendable {
     /// Source DBs do not use scan_state cursors; their main/WAL mtimes form
     /// an in-memory preflight watermark so idle scans avoid opening a tx.
     private var sourceSignatures: [String: String] = [:]
-    private var fileLists: [String: (loadedAt: CFAbsoluteTime, paths: [String])] = [:]
-
-    private func cachedFileList(_ key: String, maxAge: CFAbsoluteTime = 60,
-                                load: () -> [String]) -> [String] {
-        let now = CFAbsoluteTimeGetCurrent()
-        if let cached = fileLists[key], now - cached.loadedAt < maxAge {
-            return cached.paths
-        }
-        let paths = load()
-        fileLists[key] = (now, paths)
-        return paths
-    }
+    private var lastScanWasIdle = false
+    private var installedInterval: TimeInterval = 0
+    private var pausedForSleep = false
 
     private func sourceSignature(_ path: String) -> String? {
         guard let main = FileScanner.fileStat(path) else { return nil }
@@ -104,6 +97,24 @@ final class CollectorEngine: @unchecked Sendable {
                 }
             }
         }
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.queue.async { [weak self] in
+                guard let self else { return }
+                self.pausedForSleep = true
+                self.timer?.cancel()
+                self.timer = nil
+                self.installedInterval = 0
+            }
+        }
+        workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.queue.async { [weak self] in
+                guard let self else { return }
+                self.pausedForSleep = false
+                self.installTimer()
+                self.runScan()
+            }
+        }
     }
 
     private func updateForeground() {
@@ -125,15 +136,29 @@ final class CollectorEngine: @unchecked Sendable {
         }
     }
 
+    /// Foreground stays at 1s. Background is 5s while something is changing,
+    /// 30s after an idle scan, and 60s on Low Power Mode. Sleep cancels it.
+    private func desiredInterval() -> TimeInterval {
+        if foreground { return 1 }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 60 }
+        if lastScanWasIdle { return 30 }
+        return 5
+    }
+
     private func installTimer() {
         dispatchPrecondition(condition: .onQueue(queue))
+        guard !pausedForSleep else { return }
+        let seconds = desiredInterval()
+        guard timer == nil || installedInterval != seconds else { return }
         timer?.cancel()
         timer = nil
-        let interval: DispatchTimeInterval = foreground ? .seconds(1) : .seconds(5)
-        // ~10% leeway lets the system coalesce this wakeup with others.
-        let leeway: DispatchTimeInterval = foreground ? .milliseconds(100) : .milliseconds(500)
+        installedInterval = seconds
+        let millis = Int(seconds * 1000)
+        let leeway = max(millis / 10, 1)
         let source = DispatchSource.makeTimerSource(queue: queue)
-        source.schedule(deadline: .now() + interval, repeating: interval, leeway: leeway)
+        source.schedule(deadline: .now() + .milliseconds(millis),
+                        repeating: .milliseconds(millis),
+                        leeway: .milliseconds(leeway))
         source.setEventHandler { [weak self] in self?.runScan() }
         source.resume()
         timer = source
@@ -193,6 +218,15 @@ final class CollectorEngine: @unchecked Sendable {
             let turnRows = prepared.turns.count
             let sessionRows = prepared.sessions.count
             let duration = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
+            if let problem = prepared.problem {
+                failedSources.append(source)
+                Task { @MainActor in
+                    SourceHealthHub.shared.record(tool: source, rows: turnRows,
+                                                  failed: max(turnRows, 1), durationMs: duration,
+                                                  error: problem)
+                }
+                return
+            }
             if !prepared.committed {
                 failedSources.append(source)
                 Task { @MainActor in
@@ -217,38 +251,38 @@ final class CollectorEngine: @unchecked Sendable {
             }
         }
 
-        let claudeFiles = cachedFileList("claude") {
-            (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 2)
-                + ClaudeCodeParser.listCoworkFiles())
-                .filter { $0.hasSuffix(".jsonl") }
-        }
+        let claudeFiles = (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 4)
+            + ClaudeCodeParser.listCoworkFiles())
+            .filter { $0.hasSuffix(".jsonl") }
+        let codexFiles = FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4)
+            .filter { $0.hasSuffix(".jsonl") }
+        let dshLogFiles = (!ToolKind.dsh.sourceIsRemote && DSHParser.resolveMode() == .log)
+            ? DSHParser.listSessionFiles() : []
+        Database.shared.recountMiscountedUsage(
+            claudePaths: ToolKind.claude.sourceIsRemote ? [] : claudeFiles,
+            codexPaths: ToolKind.codex.sourceIsRemote ? [] : codexFiles,
+            dshPaths: dshLogFiles)
+
         ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) },
                sourcePaths: claudeFiles) { state in
             ClaudeCodeParser.scan(knownPaths: claudeFiles, database: state)
         }
 
-        let codexFiles = cachedFileList("codex") {
-            FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4)
-                .filter { $0.hasSuffix(".jsonl") }
-        }
         ingest("codex", preflight: { self.fileSourcesChanged(codexFiles) },
                sourcePaths: codexFiles) { state in
-            CodexParser.scan(database: state)
+            CodexParser.scan(files: codexFiles, database: state)
         }
 
         ingest("opencode", preflight: { self.sourceChanged(OpenCodeParser.dbPath) },
                sourcePaths: [OpenCodeParser.dbPath, OpenCodeParser.dbPath + "-wal"],
                scan: { OpenCodeParser.scan(database: $0) }, signaturePath: OpenCodeParser.dbPath)
 
-        // One store per Hermes profile; new profiles appear within a minute.
-        let hermesDBs = cachedFileList("hermes") { HermesParser.dbPaths }
+        let hermesDBs = HermesParser.dbPaths
         ingest("hermes", preflight: { hermesDBs.contains { self.sourceChanged($0) } },
                sourcePaths: hermesDBs.flatMap { [$0, $0 + "-wal"] },
                scan: { HermesParser.scan(database: $0) }, signaturePaths: hermesDBs)
-        let ompFiles = cachedFileList("omp") {
-            FileScanner.listFiles(OmpParser.root, maxDepth: 3)
-                .filter { $0.hasSuffix(".jsonl") }
-        }
+        let ompFiles = FileScanner.listFiles(OmpParser.root, maxDepth: 3)
+            .filter { $0.hasSuffix(".jsonl") }
         ingest("omp", preflight: { self.fileSourcesChanged(ompFiles) },
                sourcePaths: ompFiles) { state in
             OmpParser.scan(knownPaths: ompFiles, database: state)
@@ -259,7 +293,7 @@ final class CollectorEngine: @unchecked Sendable {
         // (see DSHParser.resolveMode) so the two accounting paths never mix.
         switch DSHParser.resolveMode() {
         case .log:
-            let dshFiles = cachedFileList("dsh") { DSHParser.listSessionFiles() }
+            let dshFiles = dshLogFiles
             ingest("dsh", preflight: { self.fileSourcesChanged(dshFiles) },
                    sourcePaths: dshFiles) { state in
                 DSHParser.scanLogs(knownPaths: dshFiles, database: state)
@@ -284,6 +318,12 @@ final class CollectorEngine: @unchecked Sendable {
 
         if turnCount > 0 || sessionCount > 0 {
             Database.shared.setSetting("last_scan_heartbeat", "\(Int64(Date().timeIntervalSince1970))")
+        }
+
+        let idle = turnCount == 0 && sessionCount == 0 && failedSources.isEmpty
+        if idle != lastScanWasIdle {
+            lastScanWasIdle = idle
+            installTimer()
         }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0

@@ -6,14 +6,23 @@ import SQLite3
 /// We compute per-scan deltas against session_totals to build turn records.
 enum OpenCodeParser {
 
+    static let watermarkKey = "opencode_row_watermark"
+
     static var dbPath: String {
-        // Env override mirrors HermesParser (HERMES_HOME) / DSHParser
-        // (DSH_HOME) so tests and alternate installs can redirect the source.
-        if let h = ProcessInfo.processInfo.environment["OPENCODE_HOME"], !h.isEmpty {
-            return (h as NSString).appendingPathComponent("opencode.db")
+        // getenv sees setenv (tests). OPENCODE_HOME wins even when the file
+        // does not exist yet, so a scan can wait for the database to appear.
+        if let raw = getenv("OPENCODE_HOME"), let home = String(validatingUTF8: raw), !home.isEmpty {
+            return (home as NSString).appendingPathComponent("opencode.db")
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/share/opencode/opencode.db").path
+        let fm = FileManager.default
+        let userHome = fm.homeDirectoryForCurrentUser
+        var candidates: [String] = []
+        if let raw = getenv("XDG_DATA_HOME"), let xdg = String(validatingUTF8: raw), !xdg.isEmpty {
+            candidates.append((xdg as NSString).appendingPathComponent("opencode/opencode.db"))
+        }
+        candidates.append(userHome.appendingPathComponent("Library/Application Support/opencode/opencode.db").path)
+        candidates.append(userHome.appendingPathComponent(".local/share/opencode/opencode.db").path)
+        return candidates.first { fm.fileExists(atPath: $0) } ?? candidates[candidates.count - 1]
     }
 
     struct Row {
@@ -33,25 +42,39 @@ enum OpenCodeParser {
         let timeUpdated: Int64
     }
 
-    @discardableResult
-    private static func forEachRow(_ body: (Row) -> Void) -> Int {
-        guard FileManager.default.fileExists(atPath: dbPath) else { return 0 }
+    /// Rows at or after `watermark` (raw `time_updated`). A prepare failure is
+    /// reported and does not advance the watermark.
+    private static func forEachRow(since watermark: Int64, database: any ParserStateStore,
+                                   _ body: (Row) -> Void) -> (count: Int, maxUpdated: Int64, failed: Bool) {
+        guard FileManager.default.fileExists(atPath: dbPath) else { return (0, watermark, false) }
         var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return 0 }
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            database.noteScanProblem("OpenCode database could not be opened")
+            return (0, watermark, true)
+        }
         defer { sqlite3_close(db) }
         var stmt: OpaquePointer?
         let sql = """
         SELECT id, COALESCE(title,''), COALESCE(directory,''), model, cost,
                tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
-               time_created, time_updated FROM session;
+               time_created, time_updated FROM session WHERE time_updated >= ?;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            database.noteScanProblem("OpenCode database could not be read")
+            return (0, watermark, true)
+        }
         defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, watermark)
         var count = 0
+        var maxUpdated = watermark
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let col = { (i: Int32) -> String in String(cString: sqlite3_column_text(stmt, i)) }
-            let model: String? = sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : col(3)
-            body(Row(id: col(0), title: col(1), directory: col(2), model: normalizeModel(model),
+            guard let id = SQLiteText.column(stmt, 0), !id.isEmpty else { continue }
+            let model = SQLiteText.column(stmt, 3)
+            let updated = sqlite3_column_int64(stmt, 11)
+            if updated > maxUpdated { maxUpdated = updated }
+            body(Row(id: id, title: SQLiteText.column(stmt, 1) ?? "",
+                     directory: SQLiteText.column(stmt, 2) ?? "",
+                     model: normalizeModel(model),
                      provider: normalizeProvider(model),
                      cost: sqlite3_column_double(stmt, 4),
                      hasActualCost: sqlite3_column_type(stmt, 4) != SQLITE_NULL,
@@ -61,10 +84,10 @@ enum OpenCodeParser {
                      cacheRead: FileScanner.tokenCount(sqlite3_column_int64(stmt, 8)),
                      cacheWrite: FileScanner.tokenCount(sqlite3_column_int64(stmt, 9)),
                      timeCreated: sqlite3_column_int64(stmt, 10),
-                     timeUpdated: sqlite3_column_int64(stmt, 11)))
+                     timeUpdated: updated))
             count += 1
         }
-        return count
+        return (count, maxUpdated, false)
     }
 
     /// The `model` column is sometimes a JSON object
@@ -94,8 +117,14 @@ enum OpenCodeParser {
         let prevTotals = database.sessionTotals()
         // opencode stores ms timestamps; normalize to seconds.
         func sec(_ v: Int64) -> Int64 { v > 1_000_000_000_000 ? v / 1000 : v }
+        func quality(_ row: Row) -> String {
+            let tokens = row.input + row.output + row.reasoning + row.cacheRead + row.cacheWrite
+            if row.cost == 0 && tokens > 0 { return "unknown" }
+            return row.hasActualCost ? "actual" : "unknown"
+        }
+        let watermark = Int64(database.setting(watermarkKey) ?? "") ?? 0
 
-        let rowCount = forEachRow { row in
+        let read = forEachRow(since: watermark, database: database) { row in
             let key = "opencode|\(row.id)"
             let project = row.directory.isEmpty ? nil : (row.directory as NSString).lastPathComponent
             sessions.append(SessionInfo(tool: .opencode, sessionID: row.id, title: row.title.isEmpty ? nil : row.title,
@@ -120,7 +149,7 @@ enum OpenCodeParser {
                                       cacheRead: max(dCacheRead, 0), cacheWrite: max(dCacheWrite, 0),
                                       cost: max(dCost, 0), provider: row.provider,
                                       eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
-                                      costQuality: row.hasActualCost ? "actual" : "unknown")
+                                      costQuality: quality(row))
                 if turn.inputTokens + turn.outputTokens + turn.reasoningTokens + turn.cacheRead + turn.cacheWrite > 0 {
                     turns.append(turn)
                 }
@@ -135,7 +164,7 @@ enum OpenCodeParser {
                                         cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, cost: row.cost,
                                         provider: row.provider,
                                         eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
-                                        costQuality: row.hasActualCost ? "actual" : "unknown"))
+                                        costQuality: quality(row)))
             }
             // Cost-only changes without token growth are intentionally not imported.
             // Keep high-water counters across rollbacks. On the legacy transition,
@@ -151,7 +180,11 @@ enum OpenCodeParser {
                                      cost: max(prev?.cost ?? 0, row.cost),
                                      updated: sec(row.timeUpdated))
         }
-        guard rowCount > 0 else { return ([], []) }
+        if read.failed { return ([], []) }
+        guard read.count > 0 else { return ([], []) }
+        if read.maxUpdated > watermark {
+            database.setSetting(watermarkKey, "\(read.maxUpdated)")
+        }
         return (turns, sessions)
     }
 }
