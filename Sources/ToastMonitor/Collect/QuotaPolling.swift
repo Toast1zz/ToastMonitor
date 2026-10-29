@@ -16,6 +16,10 @@ struct RefreshBackoff {
     }
 
     mutating func succeeded() { delay = 0 }
+
+    /// Lifts the current wait but keeps the delay, so another failure
+    /// continues the schedule instead of starting over.
+    mutating func allowNow() { nextAllowed = 0 }
 }
 
 /// Refresh timer for a quota client: the foreground cadence while the
