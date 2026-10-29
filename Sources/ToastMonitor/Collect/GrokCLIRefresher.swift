@@ -30,9 +30,9 @@ enum GrokCLIRefresher {
         lock.unlock()
 
         guard let binary = binary ?? ClaudeCLIRefresher.locateBinary(named: "grok") else { return false }
-        // Same Gatekeeper reason as ClaudeCLIRefresher: an unapproved
-        // Homebrew cask would raise a dialog on every attempt.
-        guard !ClaudeCLIRefresher.isQuarantined(binary) else { return false }
+        // Same Gatekeeper reason as ClaudeCLIRefresher: a quarantined build
+        // that is not notarized would raise a dialog on every attempt.
+        guard !ClaudeCLIRefresher.launchBlocked(binary) else { return false }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)

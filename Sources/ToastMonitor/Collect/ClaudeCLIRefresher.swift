@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Security
 
 /// Delegates Claude Code's OAuth token refresh to the real `claude` CLI
 /// instead of ToastMonitor implementing an OAuth refresh flow of its own.
@@ -79,6 +80,26 @@ enum ClaudeCLIRefresher {
         return quarantineBlocksLaunch(String(decoding: buffer, as: UTF8.self))
     }
 
+    /// True when launching the file from this app would raise a Gatekeeper
+    /// dialog: quarantined and not notarized. Homebrew re-quarantines a cask
+    /// on every upgrade and a Terminal run never clears the flag, so blocking
+    /// notarized builds too stopped renewals for good after each upgrade.
+    nonisolated static func launchBlocked(_ path: String) -> Bool {
+        isQuarantined(path) && !isNotarized(path)
+    }
+
+    /// Checks the notarization ticket (stapled, or online); may block briefly.
+    nonisolated static func isNotarized(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath() as CFURL
+        var code: SecStaticCode?
+        var requirement: SecRequirement?
+        guard SecStaticCodeCreateWithPath(url, [], &code) == errSecSuccess, let code,
+              SecRequirementCreateWithString("notarized" as CFString, [], &requirement) == errSecSuccess,
+              let requirement else { return false }
+        return SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
+                                          requirement) == errSecSuccess
+    }
+
     /// The xattr reads "flags;timestamp;agent;uuid" with hex flags; 0x40
     /// marks a file the user already approved to open.
     nonisolated static func quarantineBlocksLaunch(_ value: String) -> Bool {
@@ -100,11 +121,10 @@ enum ClaudeCLIRefresher {
         lock.unlock()
 
         guard let binary = binary ?? locateBinary() else { return false }
-        // A freshly installed or upgraded `claude` (e.g. a Homebrew cask)
-        // carries an unapproved quarantine flag. Launching it from this app
-        // makes Gatekeeper put up a "cannot verify" dialog on every attempt,
-        // while a Terminal run is exempt — so leave it to the user there.
-        guard !isQuarantined(binary) else { return false }
+        // A quarantined build that is not notarized makes Gatekeeper put up
+        // a "cannot verify" dialog on every attempt, while a Terminal run is
+        // exempt — so leave that one to the user there.
+        guard !launchBlocked(binary) else { return false }
 
         var masterFD: Int32 = 0
         var slaveFD: Int32 = 0

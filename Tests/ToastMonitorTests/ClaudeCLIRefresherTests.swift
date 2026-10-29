@@ -88,6 +88,8 @@ final class ClaudeCLIRefresherTests: XCTestCase {
         let value = Array("0181;6ada222b;;9604CC98-E333-49CA-AFAA-0FA61756BF20".utf8)
         XCTAssertEqual(setxattr(real, "com.apple.quarantine", value, value.count, 0, 0), 0)
         XCTAssertTrue(ClaudeCLIRefresher.isQuarantined(link))
+        // An unsigned script is not notarized, so it stays blocked.
+        XCTAssertTrue(ClaudeCLIRefresher.launchBlocked(link))
     }
 
     func testQuarantinedBinaryIsNeverLaunched() throws {
