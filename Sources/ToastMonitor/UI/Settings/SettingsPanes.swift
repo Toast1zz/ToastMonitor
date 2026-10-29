@@ -93,6 +93,15 @@ struct GeneralSettingsPane: View {
                 get: { alerts.enabled },
                 set: { alerts.setEnabled($0) }
             ))
+            Picker("Alert when quota left is below", selection: Binding(
+                get: { alerts.threshold },
+                set: { alerts.setThreshold($0) }
+            )) {
+                ForEach(QuotaAlertManager.thresholdChoices, id: \.self) { value in
+                    Text("\(Int(value))%").tag(value)
+                }
+            }
+            .disabled(!alerts.enabled)
         } footer: {
             if let message = launch.message {
                 Text(message)

@@ -59,7 +59,9 @@ final class QuotaAlertManager: ObservableObject {
 
     @Published private(set) var enabled: Bool
     @Published private(set) var unreadCount = 0
-    let threshold: Double
+    /// Remaining percent at or below which a quota alerts.
+    @Published private(set) var threshold: Double
+    static let thresholdChoices: [Double] = [10, 20, 30, 50]
 
     private var started = false
     private var panelVisible = false
@@ -76,7 +78,8 @@ final class QuotaAlertManager: ObservableObject {
     init(readingProvider: (() -> [Reading])? = nil) {
         self.readingProvider = readingProvider
         enabled = Database.shared.setting(Self.enabledKey) == "1"
-        threshold = Double(Database.shared.setting(Self.thresholdKey) ?? "20") ?? 20
+        let saved = Double(Database.shared.setting(Self.thresholdKey) ?? "") ?? 20
+        threshold = Self.thresholdChoices.contains(saved) ? saved : 20
         if let raw = Database.shared.setting(Self.badgeStateKey), let data = raw.data(using: .utf8),
            let saved = try? JSONDecoder().decode([String: QuotaAlertPolicy.BadgeState].self, from: data) {
             badgeStates = saved
@@ -112,6 +115,13 @@ final class QuotaAlertManager: ObservableObject {
             .store(in: &cancellables)
         evaluate()
         scheduleRenewalReminders()
+    }
+
+    func setThreshold(_ newValue: Double) {
+        guard newValue != threshold, Self.thresholdChoices.contains(newValue) else { return }
+        threshold = newValue
+        _ = Database.shared.setSetting(Self.thresholdKey, "\(Int(newValue))")
+        evaluate()
     }
 
     func setEnabled(_ newValue: Bool) {
