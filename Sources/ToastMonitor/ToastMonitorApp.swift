@@ -119,10 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 attributes: [.posixPermissions: 0o700])
         try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
         pruneCrashLogs(in: dir)
-        // Precompute "<dir>/crash-" for the signal handler (which must not
-        // call Foundation) and force the scratch buffer's lazy init now.
-        tmCrashDirPrefixC = Array((dir.path + "/crash-").utf8CString.dropLast())
-        _ = tmCrashScratch.count
+        // Precompute everything the signal handler writes; it must not call
+        // Foundation or allocate.
+        tmCrashPrepare(pathPrefix: dir.path + "/crash-", header: tmVersionLine() + "\n")
 
         // Objective-C exception handler: may use Foundation (normal context).
         NSSetUncaughtExceptionHandler { exception in
@@ -134,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                      attributes: [.posixPermissions: 0o700])
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
-            let line = "uncaught exception \(name): \(reason)\n\(stack)\n"
+            let line = "\(tmVersionLine())\nuncaught exception \(name): \(reason)\n\(stack)\n"
             let path = dir.appendingPathComponent("crash-\(Int(Date().timeIntervalSince1970)).log")
             try? line.write(to: path, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
@@ -821,17 +820,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Crash signal handler (async-signal-safe)
 
-/// "<dir>/crash-" (NUL-terminated). Built once in `installCrashHandlers`
-/// (Foundation allowed there); read-only afterwards.
-nonisolated(unsafe) private var tmCrashDirPrefixC: [CChar] = []
-/// Preallocated scratch buffer. Lazily initialized on first access — forced
-/// during `installCrashHandlers`, so the handler itself never allocates
-/// (malloc is not async-signal-safe).
-nonisolated(unsafe) private var tmCrashScratch = [CChar](repeating: 0, count: 2048)
+/// "ToastMonitor <version> (<build>)", the first line of every crash log.
+private func tmVersionLine() -> String {
+    let info = Bundle.main.infoDictionary
+    let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    return "ToastMonitor \(version) (\(build))"
+}
+
+/// Buffers the signal handler writes from, allocated once in
+/// `tmCrashPrepare` and never freed: raw pointers, so the handler never
+/// touches a Swift array (whose accessors may allocate or check exclusivity,
+/// neither async-signal-safe).
+nonisolated(unsafe) private var tmCrashPath: UnsafeMutablePointer<CChar>?
+nonisolated(unsafe) private var tmCrashPathPrefixLength = 0
+nonisolated(unsafe) private var tmCrashText: UnsafeMutablePointer<CChar>?
+nonisolated(unsafe) private var tmCrashHeaderLength = 0
+/// Room after the prefix or header for a timestamp or "signal N\n" and NUL.
+private let tmCrashTailRoom = 32
+
+private func tmCrashPrepare(pathPrefix: String, header: String) {
+    func copy(_ string: String) -> (UnsafeMutablePointer<CChar>, Int) {
+        let bytes = Array(string.utf8)
+        let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: bytes.count + tmCrashTailRoom)
+        for (i, b) in bytes.enumerated() { buffer[i] = CChar(bitPattern: b) }
+        return (buffer, bytes.count)
+    }
+    (tmCrashPath, tmCrashPathPrefixLength) = copy(pathPrefix)
+    (tmCrashText, tmCrashHeaderLength) = copy(header)
+}
 
 /// Appends the decimal digits of `v` (>= 0) to `buf` at `i`, returning the
 /// index after the last digit. Pure integer math — safe in signal handlers.
-private func tmAppendDecimal(_ v: Int64, to buf: UnsafeMutableBufferPointer<CChar>, at i: Int) -> Int {
+private func tmAppendDecimal(_ v: Int64, to buf: UnsafeMutablePointer<CChar>, at i: Int) -> Int {
     var n = 1
     var t = v
     while t >= 10 { n += 1; t /= 10 }
@@ -845,36 +866,29 @@ private func tmAppendDecimal(_ v: Int64, to buf: UnsafeMutableBufferPointer<CCha
     return i + n
 }
 
-/// Writes `<dir>/crash-<unix-ts>.log` with a one-line "signal <N>" marker,
-/// then restores the default disposition and re-raises so the OS records
-/// the crash normally. Only async-signal-safe calls: open/write/close/time/
-/// signal/raise plus integer math on the preallocated buffer (string
-/// literals are static; iterating their utf8 never allocates).
+/// Writes `<dir>/crash-<unix-ts>.log` with the version line and a
+/// "signal <N>" marker, then restores the default disposition and re-raises
+/// so the OS records the crash normally. Only async-signal-safe calls:
+/// open/write/close/time/signal/raise plus integer math on the preallocated
+/// buffers (string literals are static; iterating their utf8 never allocates).
 private func tmCrashSignalHandler(_ sig: Int32) {
-    tmCrashScratch.withUnsafeMutableBufferPointer { buf in
-        var i = 0
-        for c in tmCrashDirPrefixC {
-            if i >= buf.count - 24 { break }
-            buf[i] = c
-            i += 1
-        }
-        i = tmAppendDecimal(Int64(time(nil)), to: buf, at: i)
+    if let path = tmCrashPath, let text = tmCrashText {
+        var i = tmAppendDecimal(Int64(time(nil)), to: path, at: tmCrashPathPrefixLength)
         for b in ".log".utf8 {
-            guard i < buf.count - 2 else { break }
-            buf[i] = CChar(bitPattern: b)
+            path[i] = CChar(bitPattern: b)
             i += 1
         }
-        buf[i] = 0 // NUL-terminate the path
-        let fd = open(buf.baseAddress!, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        path[i] = 0 // NUL-terminate the path
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
         if fd >= 0 {
-            var j = 0
+            var j = tmCrashHeaderLength
             for b in "signal ".utf8 {
-                buf[j] = CChar(bitPattern: b)
+                text[j] = CChar(bitPattern: b)
                 j += 1
             }
-            j = tmAppendDecimal(Int64(sig), to: buf, at: j)
-            buf[j] = 0x0A // '\n'
-            _ = write(fd, buf.baseAddress!, j + 1)
+            j = tmAppendDecimal(Int64(sig), to: text, at: j)
+            text[j] = 0x0A // '\n'
+            _ = write(fd, text, j + 1)
             close(fd)
         }
     }
