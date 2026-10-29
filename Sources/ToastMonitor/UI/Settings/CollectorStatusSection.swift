@@ -101,13 +101,11 @@ struct CollectorStatusSection: View {
                         .frame(width: 16)
                     Text(row.name)
                 }
-                .help("\(row.name) · \(row.mode)")
             }
             .width(min: 96, ideal: 128)
             TableColumn("Status") { row in
                 Label(row.status.rawValue, systemImage: row.status.symbol)
                     .foregroundStyle(row.status.color)
-                    .help(row.error ?? row.status.rawValue)
             }
             .width(min: 56, ideal: 64)
             TableColumn("Last Scan") { row in

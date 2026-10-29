@@ -92,7 +92,6 @@ struct DashCard<Trailing: View, Content: View>: View {
 struct DashMetric: View {
     let label: String
     let value: String
-    var help: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -110,7 +109,6 @@ struct DashMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(TMDesign.surface,
                     in: RoundedRectangle(cornerRadius: DashLayout.cardRadius, style: .continuous))
-        .help(help ?? "")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(label)
         .accessibilityValue(Text(value))

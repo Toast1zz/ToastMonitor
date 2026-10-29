@@ -46,10 +46,8 @@ struct OverviewView: View {
                     .tmNumericTextTransition(value: Double(periodTokens))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: periodTokens)
                 DashMetric(label: "Calls", value: Format.count(periodCalls))
-                DashMetric(label: actualSpendLabel, value: actualSpendText,
-                           help: actualSpendHelp)
-                DashMetric(label: "API Value", value: Format.money(apiValue),
-                           help: "What these model calls would cost at official API list prices. This is not a billed amount.")
+                DashMetric(label: actualSpendLabel, value: actualSpendText)
+                DashMetric(label: "API Value", value: Format.money(apiValue))
             }
             // The breakdowns absorb the window's spare height; a long model
             // list scrolls inside its card.
@@ -182,14 +180,6 @@ struct OverviewView: View {
         if period == .all { return "Actual Spend · OR recent month" }
         return "Actual Spend"
     }
-
-    private var actualSpendHelp: String {
-        let base = "Billed turn costs, OpenRouter account usage, and subscription amortization."
-        return period == .all
-            ? base + " OpenRouter only exposes its recent monthly window, so All Time includes that recent month rather than full history."
-            : base
-    }
-
 
     private var statusLine: some View {
         let broken = health.sources.filter { $0.error != nil }.count
