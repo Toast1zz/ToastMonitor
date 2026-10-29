@@ -718,7 +718,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusLabel(_ button: NSStatusBarButton) {
         let app = AppState.shared
         // Status bar shows ONLY today's tokens (user preference); costs live
-        // in the popover and tooltip.
+        // in the popover.
         let text = Format.compact(app.todayTokens)
 
         // Defaults to the system UI font (SF Pro, tabular digits); a
@@ -740,32 +740,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             access += ", \(quotaAlerts.unreadCount) unread"
         }
         button.setAccessibilityValue(access)
-
-        let or = OpenRouterClient.shared
-        let todayActual = app.costToday.actual
-        var tooltip = """
-        ToastMonitor
-        今日 \(Format.compact(app.todayTokens)) tokens（输入 + 输出 + 缓存命中）
-        今日已确认变量支出 \(Format.money(todayActual))
-        今日估算变量支出 \(Format.money(app.costToday.estimated))
-        · 订阅摊销 \(Format.money(subAmortized()))
-        """
-        if or.state.usageDaily > 0 {
-            tooltip += "\n· OpenRouter 今日（UTC）实际 \(Format.money(or.state.usageDaily))"
-        }
-        button.toolTip = tooltip
-    }
-
-    private func subAmortized() -> Double {
-        var t = 0.0
-        let app = AppState.shared
-        for sub in app.subscriptions {
-            guard sub.startDate <= Int64(Date().timeIntervalSince1970) else { continue }
-            if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
-                t += sub.price / Double(info.totalDays)
-            }
-        }
-        return t
     }
 
     @objc private func togglePanel(_ sender: Any?) {
