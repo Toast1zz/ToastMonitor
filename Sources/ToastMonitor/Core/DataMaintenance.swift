@@ -19,8 +19,8 @@ enum DataMaintenance {
         return Database.shared.previewLocalRebuild(tools: tools)
     }
 
-    /// Creates a protected SQLite snapshot and keeps seven managed backups,
-    /// reserving one slot for the newest routine snapshot.
+    /// Creates a protected, LZFSE-compressed SQLite snapshot (about a fifth
+    /// of the database size), then prunes by `retained(_:)`.
     static func createBackup(label: String = "manual", database: Database = .shared,
                              backupDirectory: URL? = nil, date: Date = Date()) -> String? {
         let directory = backupDirectory ?? Self.directory
@@ -40,16 +40,62 @@ enum DataMaintenance {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
+        // Hidden, so a crash mid-backup never leaves a listed leftover.
+        let staging = directory.appendingPathComponent(".staging-\(UUID().uuidString).db")
+        defer { try? fm.removeItem(at: staging) }
+        guard database.backup(to: staging.path, overwrite: false) else { return nil }
         for _ in 0..<8 {
             let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
-            let url = directory.appendingPathComponent("toastmonitor-\(String(safeLabel))-\(formatter.string(from: date))-\(suffix).db")
-            if database.backup(to: url.path, overwrite: false) {
-                pruneBackups(keeping: 7, in: directory)
+            let url = directory.appendingPathComponent(
+                "toastmonitor-\(String(safeLabel))-\(formatter.string(from: date))-\(suffix).db.\(compressedExtension)")
+            if compress(staging, to: url) {
+                pruneBackups(in: directory)
                 return url.path
             }
             if !fm.fileExists(atPath: url.path) { return nil }
         }
         return nil
+    }
+
+    static let compressedExtension = "lzfse"
+
+    /// Writes `source` compressed to a new private file; never overwrites.
+    @discardableResult
+    static func compress(_ source: URL, to destination: URL) -> Bool {
+        guard let data = NSData(contentsOf: source),
+              let packed = try? data.compressed(using: .lzfse) else { return false }
+        let descriptor = Darwin.open(destination.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard descriptor >= 0 else { return false }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: packed as Data)
+            try handle.synchronize()
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            return false
+        }
+    }
+
+    /// Expands a compressed backup to a private file for restore.
+    static func expand(_ source: URL, to destination: URL) -> Bool {
+        guard let data = NSData(contentsOf: source),
+              let raw = try? data.decompressed(using: .lzfse) else { return false }
+        return FileManager.default.createFile(atPath: destination.path, contents: raw as Data,
+                                              attributes: [.posixPermissions: 0o600])
+    }
+
+    /// Compresses backups written before compression existed, keeping their
+    /// dates so retention still orders them correctly.
+    static func compressLegacyBackups(in directory: URL = DataMaintenance.directory) {
+        let fm = FileManager.default
+        for url in availableBackups(in: directory) where url.pathExtension == "db" {
+            let target = url.appendingPathExtension(compressedExtension)
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            guard compress(url, to: target) else { continue }
+            if let date { try? fm.setAttributes([.modificationDate: date], ofItemAtPath: target.path) }
+            try? fm.removeItem(at: url)
+        }
     }
 
     /// Exports a compact snapshot with known legacy credential keys removed.
@@ -115,6 +161,21 @@ enum DataMaintenance {
                                    backupDirectory: URL? = nil) -> String? {
         let directory = backupDirectory ?? Self.directory
         guard isManagedBackup(path, in: directory), isSafeDatabaseFile(path) else { return nil }
+        let url = URL(fileURLWithPath: path)
+        guard url.pathExtension == compressedExtension else {
+            return restore(path, database: database, directory: directory)
+        }
+        let fm = FileManager.default
+        let workspace = fm.temporaryDirectory.appendingPathComponent("tm-expand-\(UUID().uuidString)")
+        guard (try? fm.createDirectory(at: workspace, withIntermediateDirectories: true,
+                                       attributes: [.posixPermissions: 0o700])) != nil else { return nil }
+        defer { try? fm.removeItem(at: workspace) }
+        let expanded = workspace.appendingPathComponent("backup.db")
+        guard expand(url, to: expanded) else { return nil }
+        return restore(expanded.path, database: database, directory: directory)
+    }
+
+    private static func restore(_ path: String, database: Database, directory: URL) -> String? {
         var snapshot: String?
         let restored = database.restore(from: path, beforeReplace: {
             snapshot = createBackup(label: "pre-restore", database: database, backupDirectory: directory)
@@ -129,9 +190,13 @@ enum DataMaintenance {
     /// unconditionally on every scan tick — the throttle keeps the actual
     /// backup+prune work to once per 7 days. This is the only automatic
     /// backup in the app; `repair()`/`clearAllData()` each also create their
-    /// own mandatory pre-operation backup. Rotation reserves the latest weekly
-    /// snapshot; operation snapshots share the other six slots.
+    /// own mandatory pre-operation backup. See `retained(_:)` for rotation.
     static func maybeCreateRoutineBackupIfDue() {
+        if Database.shared.setting("backups_compressed") == nil {
+            _ = Database.shared.setSetting("backups_compressed", "1")
+            pruneBackups()
+            compressLegacyBackups()
+        }
         let now = Int64(Date().timeIntervalSince1970)
         let key = "routine_backup_last"
         if let last = Int64(Database.shared.setting(key) ?? "0"), now - last < 7 * 86400 { return }
@@ -148,7 +213,7 @@ enum DataMaintenance {
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: keys,
                                                                   options: [.skipsHiddenFiles])) ?? []
-        return urls.filter { $0.pathExtension == "db" && isSQLiteFile($0) }.sorted {
+        return urls.filter(isBackupFile).sorted {
             let a = (try? $0.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
             let b = (try? $1.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
             return a > b
@@ -200,19 +265,57 @@ enum DataMaintenance {
         return data.count >= magic.count && data.prefix(magic.count) == magic
     }
 
-    static func pruneBackups(keeping count: Int, in directory: URL = DataMaintenance.directory) {
-        let backups = availableBackups(in: directory)
-        let routine = backups.first { ["weekly", "routine"].contains(managedBackupLabel(for: $0)) }
-        let capacity = max(count, routine == nil ? 0 : 1)
-        let operations = backups.filter { $0 != routine }.prefix(max(capacity - (routine == nil ? 0 : 1), 0))
-        let retained = Set(operations).union(routine.map { [$0] } ?? [])
-        for url in backups where !retained.contains(url) {
-            try? FileManager.default.removeItem(at: url)
+    /// A compressed backup (LZFSE block magic "bvx") or a legacy SQLite one.
+    static func isBackupFile(_ url: URL) -> Bool {
+        switch url.pathExtension {
+        case "db": return isSQLiteFile(url)
+        case compressedExtension:
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+            defer { try? handle.close() }
+            return (try? handle.read(upToCount: 3)) == Data("bvx".utf8)
+        default: return false
+        }
+    }
+
+    struct BackupInfo: Equatable {
+        let url: URL
+        let date: Date
+        let isRoutine: Bool
+    }
+
+    /// Weekly snapshots: the newest four, plus the newest of each of the
+    /// three months before those. Operation snapshots (pre-clear, manual…):
+    /// the newest three. A year of use stays around ten small files.
+    static func retained(_ backups: [BackupInfo], calendar: Calendar = .current) -> Set<URL> {
+        let newestFirst = backups.sorted { $0.date > $1.date }
+        let routine = newestFirst.filter(\.isRoutine)
+        var keep = Set(routine.prefix(4).map(\.url))
+        var months = Set<DateComponents>()
+        for backup in routine.dropFirst(4) {
+            let month = calendar.dateComponents([.year, .month], from: backup.date)
+            guard months.count < 3, months.insert(month).inserted else { continue }
+            keep.insert(backup.url)
+        }
+        keep.formUnion(newestFirst.filter { !$0.isRoutine }.prefix(3).map(\.url))
+        return keep
+    }
+
+    static func pruneBackups(in directory: URL = DataMaintenance.directory) {
+        let infos = availableBackups(in: directory).map { url in
+            BackupInfo(url: url,
+                       date: (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                           .contentModificationDate ?? .distantPast,
+                       isRoutine: ["weekly", "routine"].contains(managedBackupLabel(for: url)))
+        }
+        let keep = retained(infos)
+        for info in infos where !keep.contains(info.url) {
+            try? FileManager.default.removeItem(at: info.url)
         }
     }
 
     static func managedBackupLabel(for url: URL) -> String {
-        let name = url.deletingPathExtension().lastPathComponent
+        let base = url.pathExtension == compressedExtension ? url.deletingPathExtension() : url
+        let name = base.deletingPathExtension().lastPathComponent
         let pattern = "^toastmonitor-(.+)-[0-9]{8}-[0-9]{6}(?:-[a-f0-9]{8})?$"
         guard let expression = try? NSRegularExpression(pattern: pattern),
               let match = expression.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),

@@ -308,8 +308,8 @@ struct DataSettingsPane: View {
     }
 
     /// A backup is created automatically once a week (idle weeks included)
-    /// plus before any repair/clear operation; the newest 7 are kept, and
-    /// any of them can be restored from here.
+    /// plus before any repair/clear operation; DataMaintenance.retained
+    /// decides which are kept, and any of them can be restored from here.
     private var backupsSection: some View {
         Section {
             if backups.isEmpty {

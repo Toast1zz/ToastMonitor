@@ -95,7 +95,9 @@ final class RestoreSafetyTests: XCTestCase {
         let snapshot = try XCTUnwrap(DataMaintenance.restoreWithReceipt(backupPath: source,
             database: database, backupDirectory: backups))
         XCTAssertTrue((snapshot as NSString).lastPathComponent.hasPrefix("toastmonitor-pre-restore-"))
-        let recovery = Database.testInstance(path: snapshot)
+        let expanded = directory + "/recovery.db"
+        XCTAssertTrue(DataMaintenance.expand(URL(fileURLWithPath: snapshot), to: URL(fileURLWithPath: expanded)))
+        let recovery = Database.testInstance(path: expanded)
         defer { recovery.close() }
         XCTAssertEqual(recovery.turnCount(), 0)
         XCTAssertEqual(database.turnCount(), 1)
