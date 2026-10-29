@@ -211,8 +211,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--clear-or-key") {
             Database.shared.open()
-            KeychainStore.delete(account: "or-keys", allowPrompt: true)
-            KeychainStore.delete(account: "openrouter-key", allowPrompt: true)
+            let deleted = [KeychainStore.delete(account: "or-keys", allowPrompt: true),
+                           KeychainStore.delete(account: "openrouter-key", allowPrompt: true)]
+            guard !deleted.contains(false) else {
+                print("key clear failed: Keychain delete failed, the key is still stored")
+                exit(1)
+            }
             Database.shared.setSetting("or_keys", nil)
             Database.shared.setSetting("openrouter_key", nil)
             Database.shared.setSetting("or_cred_storage", nil)
@@ -221,8 +225,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--clear-go") {
             Database.shared.open()
-            KeychainStore.delete(account: "go-workspace-id", allowPrompt: true)
-            KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)
+            let deleted = [KeychainStore.delete(account: "go-workspace-id", allowPrompt: true),
+                           KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)]
+            guard !deleted.contains(false) else {
+                print("go clear failed: Keychain delete failed, credentials are still stored")
+                exit(1)
+            }
             Database.shared.setSetting("go_workspace_id", nil)
             Database.shared.setSetting("go_auth_cookie", nil)
             Database.shared.setSetting("go_cred_storage", nil)
