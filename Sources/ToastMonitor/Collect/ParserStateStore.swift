@@ -214,7 +214,11 @@ final class StagedParserStateStore: ParserStateStore {
         guard current.identity == identity, current.size >= cursor else { return false }
         let rewritten = current.size == cursor && current.mtime != observedMtime
         if path.hasSuffix(".jsonl") {
-            return !rewritten && FileScanner.isLineBoundary(path: path, offset: cursor)
+            // The reader accepts a complete final line with no newline, which
+            // leaves the cursor at end of file. A later append then fails the
+            // boundary check in isAppendOnly and replays through event dedupe.
+            return !rewritten && (current.size == cursor
+                || FileScanner.isLineBoundary(path: path, offset: cursor))
         }
         if path.hasSuffix(".zstd") {
             return !rewritten

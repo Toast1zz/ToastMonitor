@@ -110,4 +110,24 @@ final class CollectorEngineTests: XCTestCase {
         XCTAssertEqual(cursor.identity, stat.identity)
         XCTAssertEqual(cursor.context, "stable")
     }
+
+    /// One unterminated log must not stop its whole source from being stored.
+    func testFinalLineWithoutNewlineCommits() throws {
+        let line = #"{"type":"assistant","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","message":{"id":"m","model":"claude-opus-5-5","usage":{"input_tokens":3,"output_tokens":2}}}"#
+        try Data(line.utf8).write(to: URL(fileURLWithPath: sourcePath))
+        let first = CollectorEngine.prepareAndCommit(database: database, sourcePaths: [sourcePath]) { state in
+            ClaudeCodeParser.scan(knownPaths: [self.sourcePath], database: state)
+        }
+        XCTAssertTrue(first.committed)
+        XCTAssertEqual(database.turnCount(), 1)
+
+        // A later append replays the file; the event id keeps it from doubling.
+        let next = line.replacingOccurrences(of: #""id":"m""#, with: #""id":"m2""#)
+        try Data((line + "\n" + next + "\n").utf8).write(to: URL(fileURLWithPath: sourcePath))
+        let second = CollectorEngine.prepareAndCommit(database: database, sourcePaths: [sourcePath]) { state in
+            ClaudeCodeParser.scan(knownPaths: [self.sourcePath], database: state)
+        }
+        XCTAssertTrue(second.committed)
+        XCTAssertEqual(database.turnCount(), 2)
+    }
 }
