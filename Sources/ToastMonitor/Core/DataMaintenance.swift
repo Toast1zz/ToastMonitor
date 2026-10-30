@@ -14,9 +14,19 @@ enum DataMaintenance {
         return base.appendingPathComponent("ToastMonitor/Backups", isDirectory: true)
     }
 
+    /// Logs a rebuild can read back: only these sessions are ever removed.
+    private static func localLogs() -> (claude: [String], codex: [String]) {
+        let claude = ToolKind.claude.sourceIsRemote ? [] :
+            (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 4)
+                + ClaudeCodeParser.listCoworkFiles()).filter { $0.hasSuffix(".jsonl") }
+        let codex = ToolKind.codex.sourceIsRemote ? [] :
+            FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4).filter { $0.hasSuffix(".jsonl") }
+        return (claude, codex)
+    }
+
     static func preview() -> Database.LocalRebuildPreview {
-        let tools = [ToolKind.claude, .codex].filter { !$0.sourceIsRemote }
-        return Database.shared.previewLocalRebuild(tools: tools)
+        let logs = localLogs()
+        return Database.shared.previewLocalRebuild(claudePaths: logs.claude, codexPaths: logs.codex)
     }
 
     /// Creates a protected, LZFSE-compressed SQLite snapshot (about a fifth
@@ -122,16 +132,15 @@ enum DataMaintenance {
     }
 
     static func repair() throws -> DataRepairReceipt {
-        let specs: [(tool: ToolKind, roots: [String])] = [
-            (.claude, [ClaudeCodeParser.root]),
-            (.codex, [CodexParser.sessionsRoot, CodexParser.stateDBPath]),
-        ].filter { !$0.tool.sourceIsRemote }
-        guard !specs.isEmpty else { throw MaintenanceError.noLocalSources }
-        let preview = Database.shared.previewLocalRebuild(tools: specs.map(\.tool))
+        guard !ToolKind.claude.sourceIsRemote || !ToolKind.codex.sourceIsRemote else {
+            throw MaintenanceError.noLocalSources
+        }
+        let logs = localLogs()
+        let preview = Database.shared.previewLocalRebuild(claudePaths: logs.claude, codexPaths: logs.codex)
         guard let backup = createBackup(label: "pre-rebuild") else {
             throw MaintenanceError.backupFailed
         }
-        guard Database.shared.resetLocalUsage(specs) else {
+        guard Database.shared.resetLocalUsage(claudePaths: logs.claude, codexPaths: logs.codex) else {
             throw MaintenanceError.resetFailed(backup)
         }
         return DataRepairReceipt(backupPath: backup,
@@ -281,11 +290,13 @@ enum DataMaintenance {
         let url: URL
         let date: Date
         let isRoutine: Bool
+        var label = ""
     }
 
     /// Weekly snapshots: the newest four, plus the newest of each of the
-    /// three months before those. Operation snapshots (pre-clear, manual…):
-    /// the newest three. A year of use stays around ten small files.
+    /// three months before those. Operation snapshots: the newest three of
+    /// each label, so restores cannot push out the pre-rebuild copy they may
+    /// still need. A year of use stays around a dozen small files.
     static func retained(_ backups: [BackupInfo], calendar: Calendar = .current) -> Set<URL> {
         let newestFirst = backups.sorted { $0.date > $1.date }
         let routine = newestFirst.filter(\.isRoutine)
@@ -296,7 +307,10 @@ enum DataMaintenance {
             guard months.count < 3, months.insert(month).inserted else { continue }
             keep.insert(backup.url)
         }
-        keep.formUnion(newestFirst.filter { !$0.isRoutine }.prefix(3).map(\.url))
+        let operations = Dictionary(grouping: newestFirst.filter { !$0.isRoutine }, by: \.label)
+        for snapshots in operations.values {
+            keep.formUnion(snapshots.prefix(3).map(\.url))
+        }
         return keep
     }
 
@@ -305,7 +319,8 @@ enum DataMaintenance {
             BackupInfo(url: url,
                        date: (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                            .contentModificationDate ?? .distantPast,
-                       isRoutine: ["weekly", "routine"].contains(managedBackupLabel(for: url)))
+                       isRoutine: ["weekly", "routine"].contains(managedBackupLabel(for: url)),
+                       label: managedBackupLabel(for: url))
         }
         let keep = retained(infos)
         for info in infos where !keep.contains(info.url) {

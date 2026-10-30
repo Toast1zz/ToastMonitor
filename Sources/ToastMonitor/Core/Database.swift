@@ -2317,91 +2317,84 @@ final class Database: @unchecked Sendable {
     }
 
     struct LocalRebuildPreview: Equatable, Sendable {
-        let turns: Int
-        let sessions: Int
-        let tokens: Int64
+        /// Sessions whose log is still on disk. These are re-read.
+        var turns: Int
+        var sessions: Int
+        var tokens: Int64
+        /// History whose log is gone. A rebuild leaves it untouched.
+        var keptTurns = 0
+        var keptSessions = 0
+        var keptTokens: Int64 = 0
     }
 
-    func previewLocalRebuild(tools: [ToolKind]) -> LocalRebuildPreview {
+    /// Session ids a rebuild removes, and the logs to read again. Codex files
+    /// without a usable id stay out of both, as in the v7 recount: replaying
+    /// them without deleting their rows is not safe.
+    private func rebuildTargets(claudePaths: [String], codexPaths: [String])
+        -> (claude: Set<String>, codex: Set<String>, reset: [String]) {
+        let claude = Set(claudePaths.compactMap { ClaudeCodeParser.recountSessionID(path: $0) })
+        var codex = Set<String>()
+        var reset = claudePaths
+        for path in codexPaths {
+            guard let sid = CodexParser.recountSessionID(path: path, context: scanState(path).context) else { continue }
+            codex.insert(sid)
+            reset.append(path)
+        }
+        return (claude, codex, reset)
+    }
+
+    func previewLocalRebuild(claudePaths: [String], codexPaths: [String]) -> LocalRebuildPreview {
         lock.lock(); defer { lock.unlock() }
-        guard let db, !tools.isEmpty else { return .init(turns: 0, sessions: 0, tokens: 0) }
-        var turns = 0
-        var sessions = 0
-        var tokens: Int64 = 0
+        guard let db else { return .init(turns: 0, sessions: 0, tokens: 0) }
+        let targets = rebuildTargets(claudePaths: claudePaths, codexPaths: codexPaths)
+        let sql = """
+        SELECT tool, session_id, COUNT(*),
+               COALESCE(SUM(input_tokens + output_tokens + CASE WHEN tool='codex' THEN 0 ELSE cache_read END),0)
+        FROM turns WHERE tool IN ('claude','codex') GROUP BY tool, session_id;
+        """
         var stmt: OpaquePointer?
-        for tool in tools {
-            let raw = tool.rawValue
-            if sqlite3_prepare_v2(db, "SELECT COUNT(*), COALESCE(SUM(input_tokens + output_tokens + CASE WHEN tool='codex' THEN 0 ELSE cache_read END),0) FROM turns WHERE tool=?;", -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(stmt, 1, (raw as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                if sqlite3_step(stmt) == SQLITE_ROW {
-                    turns += Int(sqlite3_column_int64(stmt, 0))
-                    tokens += sqlite3_column_int64(stmt, 1)
-                }
-                sqlite3_finalize(stmt)
-                stmt = nil
-            }
-            if sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sessions WHERE tool=?;", -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(stmt, 1, (raw as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                if sqlite3_step(stmt) == SQLITE_ROW { sessions += Int(sqlite3_column_int64(stmt, 0)) }
-                sqlite3_finalize(stmt)
-                stmt = nil
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return .init(turns: 0, sessions: 0, tokens: 0) }
+        defer { sqlite3_finalize(stmt) }
+        var out = LocalRebuildPreview(turns: 0, sessions: 0, tokens: 0)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let sid = SQLiteText.column(stmt, 1) ?? ""
+            let turns = Int(sqlite3_column_int64(stmt, 2))
+            let tokens = sqlite3_column_int64(stmt, 3)
+            let targeted = SQLiteText.column(stmt, 0) == "codex" ? targets.codex : targets.claude
+            if targeted.contains(sid) {
+                out.turns += turns
+                out.sessions += 1
+                out.tokens += tokens
+            } else {
+                out.keptTurns += turns
+                out.keptSessions += 1
+                out.keptTokens += tokens
             }
         }
-        return .init(turns: turns, sessions: sessions, tokens: tokens)
+        return out
     }
 
-    /// Removes local usage for selected tools and their file cursors in one
-    /// transaction. Callers must first create a backup and must only pass tools
-    /// currently configured as local; the next collector scan rebuilds truth
-    /// from canonical raw events.
-    func resetLocalUsage(_ tools: [(tool: ToolKind, roots: [String])]) -> Bool {
-        guard !tools.isEmpty else { return false }
+    /// Removes the Claude and Codex sessions whose logs are still on disk and
+    /// rewinds those logs in one transaction. History whose log is gone cannot
+    /// be read back and stays. Callers must first create a backup; the next
+    /// collector scan rebuilds the removed rows.
+    func resetLocalUsage(claudePaths: [String], codexPaths: [String]) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let targets = rebuildTargets(claudePaths: claudePaths, codexPaths: codexPaths)
         return inTransaction {
-            guard let db = self.db else { return false }
-            var ok = true
-            for spec in tools {
-                let raw = spec.tool.rawValue
-                for table in ["turns", "sessions", "session_totals", "perf_samples"] {
-                    var stmt: OpaquePointer?
-                    let sql = "DELETE FROM \(table) WHERE tool=?;"
-                    if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) != SQLITE_OK {
-                        ok = false
-                        markTransactionWriteFailure()
-                    } else {
-                        sqlite3_bind_text(stmt, 1, (raw as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                        if sqlite3_step(stmt) != SQLITE_DONE {
-                            ok = false
-                            markTransactionWriteFailure()
-                        }
-                    }
-                    sqlite3_finalize(stmt)
-                }
-                for root in spec.roots {
-                    for cursorTable in ["scan_state", "perf_cursors"] {
-                        var stmt: OpaquePointer?
-                        let sql = "DELETE FROM \(cursorTable) WHERE substr(source,1,length(?))=?;"
-                        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) != SQLITE_OK {
-                            ok = false
-                            markTransactionWriteFailure()
-                        } else {
-                            sqlite3_bind_text(stmt, 1, (root as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                            sqlite3_bind_text(stmt, 2, (root as NSString).utf8String, -1, SQLITE_TRANSIENT)
-                            if sqlite3_step(stmt) != SQLITE_DONE {
-                                ok = false
-                                markTransactionWriteFailure()
-                            }
-                        }
-                        sqlite3_finalize(stmt)
-                    }
-                }
+            guard deleteRecountedSessions(prefix: "claude:", sessionIDs: targets.claude),
+                  deleteRecountedSessions(prefix: "codex:", sessionIDs: targets.codex) else {
+                markTransactionWriteFailure()
+                return false
+            }
+            for path in targets.reset where !setScanState(path, size: 0, mtime: 0, identity: 0, context: nil) {
+                return false
             }
             // Deletes do not grow MAX(id); bump the version stamp so the
             // snapshot cache invalidates after a local rebuild.
-            if ok {
-                scanStatesCache = nil
-                bumpDataVersion()
-            }
-            return ok
+            scanStatesCache = nil
+            bumpDataVersion()
+            return true
         }
     }
     /// Clears usage/history tables without touching settings or credentials.

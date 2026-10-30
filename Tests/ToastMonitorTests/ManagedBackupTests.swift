@@ -108,4 +108,17 @@ final class ManagedBackupTests: XCTestCase {
         XCTAssertFalse(database.backup(to: path, overwrite: false))
         XCTAssertTrue(DataMaintenance.isBackupFile(URL(fileURLWithPath: path)))
     }
+
+    func testRestoresCannotPushOutThePreRebuildSnapshot() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func snapshot(_ name: String, _ label: String, _ age: Double) -> DataMaintenance.BackupInfo {
+            DataMaintenance.BackupInfo(url: URL(fileURLWithPath: "/\(name)"),
+                                       date: start - age, isRoutine: false, label: label)
+        }
+        let rebuild = snapshot("rebuild", "pre-rebuild", 1000)
+        let restores = (0..<5).map { snapshot("restore\($0)", "pre-restore", Double($0)) }
+        let kept = DataMaintenance.retained([rebuild] + restores)
+        XCTAssertTrue(kept.contains(rebuild.url))
+        XCTAssertEqual(kept.count, 4)
+    }
 }

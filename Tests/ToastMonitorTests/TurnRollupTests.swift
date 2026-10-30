@@ -170,8 +170,8 @@ final class TurnRollupTests: XCTestCase {
         """)
         assertRollupMatchesRaw("external updates")
 
-        XCTAssertTrue(db.resetLocalUsage([(tool: .opencode, roots: [])]))
-        assertRollupMatchesRaw("reset one tool")
+        XCTAssertTrue(db.resetLocalUsage(claudePaths: ["/tmp/s1.jsonl"], codexPaths: []))
+        assertRollupMatchesRaw("reset one session")
 
         let backupPath = tmpPath + ".bak"
         XCTAssertTrue(db.backup(to: backupPath))

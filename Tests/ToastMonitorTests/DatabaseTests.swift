@@ -293,18 +293,44 @@ final class DatabaseTests: XCTestCase {
             SessionInfo(tool: .claude, sessionID: "s1", title: nil, project: nil,
                         model: "m", created: 100, updated: 100)
         ]))
-        let preview = db.previewLocalRebuild(tools: [.claude])
+        let preview = db.previewLocalRebuild(claudePaths: ["/tmp/claude-root/s1.jsonl"], codexPaths: [])
         XCTAssertEqual(preview.turns, 1)
         XCTAssertEqual(preview.sessions, 1)
         XCTAssertEqual(preview.tokens, 17)
+        XCTAssertEqual(preview.keptSessions, 0)
 
         let backup = tmpPath + ".backup"
         defer { try? FileManager.default.removeItem(atPath: backup) }
         XCTAssertTrue(db.backup(to: backup))
-        XCTAssertTrue(db.resetLocalUsage([(.claude, ["/tmp/claude-root"])]))
+        XCTAssertTrue(db.resetLocalUsage(claudePaths: ["/tmp/claude-root/s1.jsonl"], codexPaths: []))
         XCTAssertEqual(db.turnCount(), 0)
         XCTAssertTrue(db.restore(from: backup))
         XCTAssertEqual(db.turnCount(), 1)
+    }
+
+    func testRebuildKeepsHistoryWhoseLogIsGoneAndRewindsCowork() {
+        func turn(_ tool: ToolKind, _ sid: String) -> TurnRecord {
+            TurnRecord(tool: tool, sessionID: sid, project: nil, model: "m", ts: 100,
+                       inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0, cost: 1,
+                       eventID: "\(tool.rawValue):\(sid):1")
+        }
+        XCTAssertTrue(db.insertTurns([turn(.claude, "live"), turn(.claude, "gone"), turn(.claude, "cowork"),
+                                      turn(.codex, "codex-live"), turn(.codex, "codex-gone")]))
+        let cowork = "/tmp/Claude/local-agent-mode-sessions/o/p/local_1/.claude/projects/x/cowork.jsonl"
+        let codexLog = "/tmp/rollout-2026-01-01T00-00-00-codex-live.jsonl"
+        XCTAssertTrue(db.setScanState(cowork, size: 1152, mtime: 9, identity: 1))
+        let claude = ["/tmp/projects/x/live.jsonl", cowork]
+
+        let preview = db.previewLocalRebuild(claudePaths: claude, codexPaths: [codexLog])
+        XCTAssertEqual(preview.sessions, 3)
+        XCTAssertEqual(preview.keptSessions, 2)
+        XCTAssertEqual(preview.keptTokens, 30)
+
+        XCTAssertTrue(db.resetLocalUsage(claudePaths: claude, codexPaths: [codexLog]))
+        XCTAssertEqual(db.turnCount(), 2, "only the sessions with no log survive untouched")
+        XCTAssertEqual(db.totals(from: 0, to: .max, tool: .claude).count, 1)
+        XCTAssertEqual(db.totals(from: 0, to: .max, tool: .codex).count, 1)
+        XCTAssertEqual(db.scanState(cowork).size, 0, "Cowork logs must be read again too")
     }
 
     func testDailyAggregatesCountCallsRatherThanDays() {
@@ -852,7 +878,8 @@ extension DatabaseTests {
         XCTAssertTrue(db.insertTurns([codex, claude]))
         let keyAfterInsert = db.dataVersionKey()
 
-        XCTAssertTrue(db.resetLocalUsage([(.codex, ["/tmp/codex-roots"])]))
+        XCTAssertTrue(db.resetLocalUsage(claudePaths: [],
+                                         codexPaths: ["/tmp/rollout-2026-01-01T00-00-00-s-codex.jsonl"]))
         XCTAssertNotEqual(db.dataVersionKey(), keyAfterInsert,
                           "resetLocalUsage must invalidate the snapshot cache key (DB-1)")
 

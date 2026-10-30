@@ -243,9 +243,15 @@ struct DataSettingsPane: View {
                     .disabled(isWorking)
             }
             if let preview {
-                LabeledContent("Found") {
-                    Text("Claude Code and Codex: \(preview.turns) records · \(preview.sessions) sessions · \(Format.count(preview.tokens)) tokens")
+                LabeledContent("Rebuilt from logs") {
+                    Text(Self.scope(preview.turns, preview.sessions, preview.tokens))
                         .tmMonospacedDigit()
+                }
+                if preview.keptSessions > 0 {
+                    LabeledContent("Kept, log no longer exists") {
+                        Text(Self.scope(preview.keptTurns, preview.keptSessions, preview.keptTokens))
+                            .tmMonospacedDigit()
+                    }
                 }
                 HStack {
                     Spacer()
@@ -274,7 +280,7 @@ struct DataSettingsPane: View {
             Button("Back Up and Rebuild", role: .destructive) { repair() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Only local Claude Code and Codex logs are processed; a backup is created first, then those logs are re-scanned.")
+            Text("A backup is created first. Sessions with a log on this Mac are read again; history whose log is gone is kept as it is.")
         }
         .confirmationDialog("Restore pre-rebuild backup?", isPresented: $confirmsRestore) {
             Button("Restore Backup", role: .destructive) { restore() }
@@ -332,6 +338,10 @@ struct DataSettingsPane: View {
         }
     }
 
+
+    private static func scope(_ turns: Int, _ sessions: Int, _ tokens: Int64) -> String {
+        "\(Format.count(Int64(turns))) \(turns == 1 ? "record" : "records") · \(sessions) \(sessions == 1 ? "session" : "sessions") · \(Format.count(tokens)) tokens"
+    }
 
     private static func dateAndSize(for url: URL) -> String {
         let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
