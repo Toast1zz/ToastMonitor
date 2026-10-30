@@ -71,10 +71,14 @@ final class UsageQueryService: @unchecked Sendable {
     private var fullComputations = 0
     private var dailyComputations = 0
 
+    private let currentDate: @Sendable () -> Date
+
     init(database: Database = .shared,
-         queue: DispatchQueue = DispatchQueue(label: "toastmonitor.queries", qos: .userInitiated)) {
+         queue: DispatchQueue = DispatchQueue(label: "toastmonitor.queries", qos: .userInitiated),
+         now: @escaping @Sendable () -> Date = { Date() }) {
         self.database = database
         self.queue = queue
+        self.currentDate = now
     }
 
     struct CacheDiagnostics: Equatable {
@@ -105,7 +109,7 @@ final class UsageQueryService: @unchecked Sendable {
     func loadSnapshot(configuration: UsagePeriodConfiguration = UsagePeriodConfiguration(),
                       completion: @escaping @MainActor @Sendable (Snapshot) -> Void) {
         queue.async {
-            let now = Date()
+            let now = self.currentDate()
             let key = self.cacheKey(configuration: configuration, now: now)
             if let c = self.cachedSnapshot, c.key == key {
                 DispatchQueue.main.async { completion(c.snapshot) }
@@ -120,7 +124,7 @@ final class UsageQueryService: @unchecked Sendable {
     func loadLightSnapshot(configuration: UsagePeriodConfiguration = UsagePeriodConfiguration(),
                            completion: @escaping @MainActor @Sendable (LightSnapshot) -> Void) {
         queue.async {
-            let now = Date()
+            let now = self.currentDate()
             let key = self.cacheKey(configuration: configuration, now: now)
             if DebugLog.enabled {
                 NSLog("[ToastMonitor][query] light key=%@ cached=%@", key, self.cachedLight?.key ?? "-")
@@ -188,7 +192,15 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
     private func cacheKey(configuration: UsagePeriodConfiguration, now: Date) -> String {
-        "\(database.dataVersionKey())|\(configuration.cacheKey(now: now))"
+        let settled = elsewhereSettledKey(now: Int64(now.timeIntervalSince1970))
+        return "\(database.dataVersionKey())|\(settled)|\(configuration.cacheKey(now: now))"
+    }
+
+    /// The newest quota interval joins the estimate once its ingest margin
+    /// passes. No DB write marks that moment, so it has to be in the keys.
+    private func elsewhereSettledKey(now: Int64) -> String {
+        database.claudeQuotaSampleLatestTs() <= now - ClaudeNonLocalEstimator.ingestMarginSeconds
+            ? "settled" : "pending"
     }
 
     private func computeLight(configuration: UsagePeriodConfiguration,
@@ -273,7 +285,7 @@ final class UsageQueryService: @unchecked Sendable {
 
     /// Caller runs on `queue`.
     private func claudeElsewhereEstimate(now: Int64) -> ClaudeNonLocalEstimator.TokenEstimate? {
-        let key = "\(database.claudeQuotaSampleMarker())|\(now / 300)"
+        let key = "\(database.claudeQuotaSampleMarker())|\(elsewhereSettledKey(now: now))|\(now / 300)"
         if let cached = cachedElsewhere, cached.key == key { return cached.estimate }
         let samples = database.claudeQuotaSamples(since: now - Database.claudeQuotaSampleRetention)
         let estimate = ClaudeNonLocalEstimator.tokenEstimate(

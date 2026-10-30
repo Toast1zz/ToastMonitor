@@ -189,6 +189,37 @@ final class UsageQueryServiceTests: XCTestCase {
         XCTAssertEqual(diagnostics.dailyComputations, 3)
     }
 
+    func testNewestQuotaRiseAppearsOnceItsIngestMarginPassesWithoutNewData() async {
+        let base = Int64(Date().timeIntervalSince1970)
+        let reset = base + 4 * 3600
+        let clock = TestClock(Date(timeIntervalSince1970: TimeInterval(base + 7200 + 60)))
+        let service = UsageQueryService(database: database,
+                                        queue: DispatchQueue(label: "toastmonitor.queries.clock"),
+                                        now: { clock.date })
+        XCTAssertTrue(database.insertTurns([makeTurn(eventID: "query-elsewhere", input: 10_000_000)]))
+        for (ts, pct) in [(base - 60, 10), (base + 1200, 20), (base + 7200, 23)] {
+            XCTAssertTrue(database.insertClaudeQuotaSample(ClaudeNonLocalEstimator.Sample(
+                ts: ts, weeklyPct: 40, weeklyReset: base + 86400, fiveHourPct: pct, fiveHourReset: reset)))
+        }
+        let configuration = UsagePeriodConfiguration()
+        func hasEstimate() async -> Bool {
+            await withCheckedContinuation { continuation in
+                service.loadLightSnapshot(configuration: configuration) { light in
+                    continuation.resume(returning: light.byToolAll.contains {
+                        $0.tool == ClaudeNonLocalEstimator.estimateToolLabel
+                    })
+                }
+            }
+        }
+        let beforeMargin = await hasEstimate()
+        XCTAssertFalse(beforeMargin, "an interval that just ended may still gain local turns")
+        clock.date = clock.date.addingTimeInterval(TimeInterval(ClaudeNonLocalEstimator.ingestMarginSeconds))
+        let afterMargin = await hasEstimate()
+        XCTAssertTrue(afterMargin, "no DB write marks this moment, so the cache key has to")
+        _ = await hasEstimate()
+        XCTAssertEqual(service.cacheDiagnostics().lightComputations, 2)
+    }
+
     private func makeTurn(eventID: String, input: Int64) -> TurnRecord {
         TurnRecord(tool: .claude, sessionID: "query-cache", project: nil,
                    model: "claude-sonnet-4-5",
@@ -221,4 +252,9 @@ final class UsageQueryServiceTests: XCTestCase {
             }
         }
     }
+}
+
+private final class TestClock: @unchecked Sendable {
+    var date: Date
+    init(_ date: Date) { self.date = date }
 }

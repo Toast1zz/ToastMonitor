@@ -1831,6 +1831,17 @@ final class Database: @unchecked Sendable {
         return "\(sqlite3_column_int64(stmt, 0)):\(sqlite3_column_int64(stmt, 1))"
     }
 
+    func claudeQuotaSampleLatestTs() -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return 0 }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(ts),0) FROM claude_quota_samples;",
+                                 -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return sqlite3_column_int64(stmt, 0)
+    }
+
     func claudeQuotaSamples(since: Int64) -> [ClaudeNonLocalEstimator.Sample] {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return [] }

@@ -124,6 +124,29 @@ final class ClaudeNonLocalEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate?.events, [E.TokenEvent(ts: s[2].ts + hour / 2, tokens: 7_000_000)])
     }
 
+    func testRiseFromAnUnopenedWindowCountsAsUse() {
+        // The usage endpoint reports no reset time while the 5h window sits
+        // at 0%; the first use afterwards must not vanish with that sample.
+        var s = samples(fiveHour: [10, 15, 20])
+        s.append(E.Sample(ts: start + 3 * hour, weeklyPct: 40, weeklyReset: weeklyReset,
+                          fiveHourPct: 0, fiveHourReset: nil))
+        s.append(E.Sample(ts: start + 4 * hour, weeklyPct: 40, weeklyReset: weeklyReset,
+                          fiveHourPct: 7, fiveHourReset: start + 4 * hour + 4 * hour))
+        let events = [localWork(in: 0, total: 5_000_000), localWork(in: 1, total: 5_000_000)]
+        let estimate = E.tokenEstimate(samples: s, localIntervalTotals: intervalTotals(samples: s, turns: events),
+                                       now: farFuture)
+        XCTAssertEqual(estimate?.events, [E.TokenEvent(ts: s[3].ts + hour / 2, tokens: 7_000_000)])
+    }
+
+    func testWindowClosingWithoutResetTimeIsNotUse() {
+        var s = samples(fiveHour: [10, 15, 20])
+        s.append(E.Sample(ts: start + 3 * hour, weeklyPct: 40, weeklyReset: weeklyReset,
+                          fiveHourPct: 0, fiveHourReset: nil))
+        let events = [localWork(in: 0, total: 5_000_000), localWork(in: 1, total: 5_000_000)]
+        XCTAssertEqual(E.tokenEstimate(samples: s, localIntervalTotals: intervalTotals(samples: s, turns: events),
+                                       now: farFuture)?.events, [])
+    }
+
     func testWindowResetIsNotAnInterval() {
         var s = samples(fiveHour: [10, 15, 20])
         // Next sample belongs to a new 5h window: 20 → 3 is a reset, not use.
