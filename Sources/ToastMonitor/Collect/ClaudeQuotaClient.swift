@@ -130,6 +130,8 @@ final class ClaudeQuotaClient: ObservableObject {
             timer = nil
             refreshGeneration &+= 1 // orphan any in-flight request's completion
             inFlight = false
+            renewalRetry.reset()
+            rejectedToken = nil
             state = State()
         }
     }
@@ -203,14 +205,42 @@ final class ClaudeQuotaClient: ObservableObject {
     /// popover/dashboard appearing) from adding up to a burst.
     private static let minPassiveInterval: TimeInterval = 3 * 60
 
-    /// - Parameter force: bypasses only the soft passive-cooldown above (used
-    ///   by the explicit "Refresh" button); a real server-imposed backoff
-    ///   from `nextAllowedRefresh` still applies even when forced.
-    func refresh(force: Bool = false) {
+    private let renewalRetry = CLIRenewalRetry()
+    /// The token the usage API last refused. Held in memory only.
+    private var rejectedToken: String?
+
+    /// True when the saved login can't be used until something replaces it.
+    nonisolated static func needsRenewal(_ credentials: Credentials, rejectedToken: String?,
+                                         now: Int64 = Int64(Date().timeIntervalSince1970)) -> Bool {
+        if let expiresAt = credentials.expiresAt, expiresAt <= now { return true }
+        return credentials.accessToken == rejectedToken
+    }
+
+    private func renewalFailed(outcome: CLIRenewalOutcome?) {
+        let rejected = rejectedToken != nil
+        renewalRetry.schedule(counting: outcome != .throttled) { [weak self] in
+            self?.refresh(force: true, renewing: true)
+        }
+        if renewalRetry.shouldReport {
+            state.error = rejected
+                ? "Claude login expired — run claude /login to restore"
+                : "Login expired — run claude in Terminal"
+        }
+        if renewalRetry.shouldRetestRejectedToken { rejectedToken = nil }
+    }
+
+    /// - Parameters:
+    ///   - force: bypasses only the soft passive-cooldown above (used by the
+    ///     explicit "Refresh" button); a real server-imposed backoff from
+    ///     `nextAllowedRefresh` still applies even when forced.
+    ///   - renewing: a retry of a failed login renewal. Runs through any
+    ///     backoff, which covers the usage API and not the CLI, so the retry
+    ///     can't stop; the usage API still waits for the backoff to end.
+    func refresh(force: Bool = false, renewing: Bool = false) {
         guard enabled, !isDemo else { return }
         guard !inFlight else { return }
         let now = Date().timeIntervalSince1970
-        guard now >= nextAllowedRefresh else { return }
+        guard renewing || now >= nextAllowedRefresh else { return }
         if !force, lastAttemptAt > 0, now - lastAttemptAt < Self.minPassiveInterval { return }
 
         inFlight = true
@@ -220,20 +250,23 @@ final class ClaudeQuotaClient: ObservableObject {
 
         // Credential lookup touches disk (and possibly the Keychain); never
         // on the main actor.
+        let rejected = rejectedToken
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var credentials = Self.loadCredentials()
-            if let creds = credentials, let expiresAt = creds.expiresAt,
-               expiresAt <= Int64(Date().timeIntervalSince1970) {
-                // Expired: rather than give up immediately, delegate to the
-                // real `claude` CLI (see ClaudeCLIRefresher) and let its own
+            var outcome: CLIRenewalOutcome?
+            if let creds = credentials, Self.needsRenewal(creds, rejectedToken: rejected) {
+                // Rather than give up immediately, delegate to the real
+                // `claude` CLI (see ClaudeCLIRefresher) and let its own
                 // startup sequence refresh the token, then re-read whatever
                 // it wrote. This blocks for up to ~25s, which is exactly why
                 // it happens here and not on the main actor.
-                if ClaudeCLIRefresher.refresh() {
-                    credentials = Self.loadCredentials()
-                }
+                outcome = ClaudeCLIRefresher.refresh(renewed: {
+                    Self.loadCredentials().map { !Self.needsRenewal($0, rejectedToken: rejected) } ?? false
+                })
+                credentials = Self.loadCredentials()
             }
             let resolved = credentials
+            let attempted = outcome
             Task { @MainActor [weak self] in
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
@@ -249,19 +282,24 @@ final class ClaudeQuotaClient: ObservableObject {
                     return
                 }
                 self.state.configured = true
-                if let expiresAt = resolved.expiresAt,
-                   expiresAt <= Int64(Date().timeIntervalSince1970) {
-                    // Still expired even after attempting a CLI-delegated
+                if Self.needsRenewal(resolved, rejectedToken: rejected) {
+                    // Still unusable even after attempting a CLI-delegated
                     // refresh (no `claude` binary found, one Gatekeeper would
                     // block, the probe couldn't complete in time, or the login
                     // is genuinely gone).
                     self.inFlight = false
-                    self.state.error = "Login expired — run claude in Terminal"
-                    self.applyBackoff(retryAfterHeader: nil)
+                    self.renewalFailed(outcome: attempted)
                     return
                 }
+                if attempted != nil { ClaudeCLIRefresher.renewalSucceeded() }
+                self.renewalRetry.reset()
+                self.rejectedToken = nil
                 if self.state.planType == nil {
                     self.state.planType = resolved.subscriptionType
+                }
+                guard Date().timeIntervalSince1970 >= self.nextAllowedRefresh else {
+                    self.inFlight = false
+                    return
                 }
                 self.requestUsage(accessToken: resolved.accessToken, generation: generation)
             }
@@ -508,9 +546,13 @@ final class ClaudeQuotaClient: ObservableObject {
                     self.applyBackoff(retryAfterHeader: retryAfter)
                     return
                 }
+                if http.statusCode == 401 || http.statusCode == 403 {
+                    self.rejectedToken = accessToken
+                    self.refresh(force: true, renewing: true)
+                    return
+                }
                 guard http.statusCode == 200 else {
                     switch http.statusCode {
-                    case 401, 403: self.state.error = "Claude login expired — run claude /login to restore"
                     case 429: self.state.error = "Rate limited by Anthropic (HTTP 429)"
                     default: self.state.error = "usage API HTTP \(http.statusCode)"
                     }
