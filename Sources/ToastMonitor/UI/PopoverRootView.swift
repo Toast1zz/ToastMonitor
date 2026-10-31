@@ -57,6 +57,8 @@ struct PopoverRootView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
+            .frame(minWidth: 24, minHeight: 24)
+            .contentShape(Rectangle())
             .buttonStyle(.borderless)
             .disabled(app.manualRefreshing)
             .help("Refresh data")
@@ -129,14 +131,7 @@ struct PopoverRootView: View {
     }
 
     private func refresh() {
-        DeepSeekBillingClient.shared.refresh(force: true)
-        app.refresh(manual: true)
-        CollectorEngine.shared.scheduleScan()
-        OpenRouterClient.shared.refresh()
-        OpenCodeGoClient.shared.refresh()
-        CodexQuotaClient.shared.refresh()
-        ClaudeQuotaClient.shared.refresh(force: true)
-        HermesRemoteClient.shared.maybePoll()
+        app.refreshAllSources()
     }
 }
 

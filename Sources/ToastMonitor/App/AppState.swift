@@ -299,6 +299,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The user asked for fresh numbers: every source's poller, together. Each
+    /// client keeps its own opt-in and backoff checks.
+    func refreshAllSources() {
+        DeepSeekBillingClient.shared.refresh(force: true)
+        refresh(manual: true)
+        CollectorEngine.shared.scheduleScan()
+        OpenRouterClient.shared.refresh()
+        OpenCodeGoClient.shared.refresh()
+        CodexQuotaClient.shared.refresh()
+        ClaudeQuotaClient.shared.refresh(force: true)
+        if AccountConnection.commandCode { CommandCodeQuotaClient.shared.refresh() }
+        GrokQuotaClient.shared.refresh()
+        HermesRemoteClient.shared.maybePoll()
+    }
+
     /// Re-reads everything after the store was replaced.
     func databaseWasReplaced() {
         databaseProblem = Database.shared.openProblem

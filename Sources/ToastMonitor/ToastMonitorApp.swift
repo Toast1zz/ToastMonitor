@@ -25,7 +25,7 @@ UI verification:
   --render-settings PATH [general|appearance|sources|data|updates] [HEIGHT]
   --show-panel [--backdrop white|dark] [--appearance light|dark] [--demo] [--capture PATH]
                                      --demo: made-up data; needs TM_DATABASE_PATH
-  --show-dashboard [--appearance light|dark] [--demo] [--capture-dashboard PATH]
+  --show-dashboard [--tab overview|analysis|performance|plans|sessions] [--appearance light|dark] [--demo] [--capture-dashboard PATH]
   --show-settings [PANE] [--appearance light|dark] [--capture-settings PATH]
   --show-dashboard --benchmark-dashboard-switches
   --verify-status-toggle
@@ -421,6 +421,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isPanelVerification = args.contains("--show-panel")
             || args.contains("--verify-status-toggle")
             || args.contains("--verify-quota-badge")
+        // A second copy would scan and poll beside the first. The updater's
+        // replacement is exempt: it starts while the old copy is on its way out.
+        if !isDashboardVerification, !isPanelVerification, !args.contains("--tm-update-ready"),
+           let bundleID = Bundle.main.bundleIdentifier,
+           let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .first(where: { $0.processIdentifier != getpid() }) {
+            running.activate()
+            exit(0)
+        }
         NSApp.setActivationPolicy(.accessory)
         Database.shared.open() // synchronous — needed before any DB reads
 
@@ -459,7 +468,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 AppState.shared.refresh()
-                WindowManager.shared.show()
+                let tab = args.firstIndex(of: "--tab").flatMap { flag -> DashboardView.Tab? in
+                    guard args.indices.contains(flag + 1) else { return nil }
+                    return DashboardView.Tab.allCases.first { $0.rawValue.lowercased() == args[flag + 1].lowercased() }
+                }
+                WindowManager.shared.show(tab: tab)
                 if args.contains("--benchmark-dashboard-switches") {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                         for pass in 1...2 {
@@ -776,7 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         let lastScan = AppState.shared.lastScan
         let syncItem = NSMenuItem(
-            title: lastScan > 0 ? "Last synced \(Format.dateTime(lastScan))" : "Not yet synced",
+            title: lastScan > 0 ? "Last new usage \(Format.dateTime(lastScan))" : "No usage recorded yet",
             action: nil, keyEquivalent: "")
         syncItem.isEnabled = false
         menu.addItem(syncItem)
@@ -790,19 +803,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.show()
     }
 
-    /// Same refresh sequence as the popover's toolbar button and the
-    /// dashboard toolbar's Refresh item (PopoverRootView.refresh(),
-    /// DashboardToolbarController.refreshData(_:)) — every source's
-    /// independent poller, triggered together.
     @objc private func menuRefreshNow() {
-        DeepSeekBillingClient.shared.refresh(force: true)
-        AppState.shared.refresh(manual: true)
-        CollectorEngine.shared.scheduleScan()
-        OpenRouterClient.shared.refresh()
-        OpenCodeGoClient.shared.refresh()
-        CodexQuotaClient.shared.refresh()
-        ClaudeQuotaClient.shared.refresh(force: true)
-        HermesRemoteClient.shared.maybePoll()
+        AppState.shared.refreshAllSources()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

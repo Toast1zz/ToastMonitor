@@ -406,14 +406,7 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
     }
 
     @objc private func refreshData(_ sender: Any?) {
-        DeepSeekBillingClient.shared.refresh(force: true)
-        AppState.shared.refresh(manual: true)
-        CollectorEngine.shared.scheduleScan()
-        OpenRouterClient.shared.refresh()
-        OpenCodeGoClient.shared.refresh()
-        HermesRemoteClient.shared.maybePoll()
-        CodexQuotaClient.shared.refresh()
-        ClaudeQuotaClient.shared.refresh(force: true)
+        AppState.shared.refreshAllSources()
     }
 
     /// Menu items and Cmd+1…4 change the page without going through the
