@@ -130,4 +130,34 @@ final class CollectorEngineTests: XCTestCase {
         XCTAssertTrue(second.committed)
         XCTAssertEqual(database.turnCount(), 2)
     }
+
+    /// Manual: a copy of a real database, migrated and replayed against this
+    /// Mac's Claude logs. Logs are only read. Prints totals per model.
+    func testCacheSplitReplayOnARealCopy() throws {
+        guard let source = ProcessInfo.processInfo.environment["TM_REAL_DB_COPY"] else {
+            throw XCTSkip("set TM_REAL_DB_COPY to a copy of a database")
+        }
+        let path = (databasePath as NSString).deletingLastPathComponent + "/real.db"
+        try FileManager.default.copyItem(atPath: source, toPath: path)
+        let real = Database.testInstance(path: path)
+        defer { real.close() }
+        let files = (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 4) + ClaudeCodeParser.listCoworkFiles())
+            .filter { $0.hasSuffix(".jsonl") }
+        let before = real.modelAggregates(from: 0, to: .max)
+        let valueBefore = real.apiValue(from: 0, to: .max)
+        real.replayClaudeForCacheSplit(paths: files)
+        let result = CollectorEngine.prepareAndCommit(database: real, sourcePaths: files) { state in
+            ClaudeCodeParser.scan(knownPaths: files, database: state)
+        }
+        XCTAssertTrue(result.committed)
+        real.setSetting("backfill_costs_last", nil)
+        real.backfillCosts()
+        XCTAssertEqual(real.rollupMismatchCount(), 0)
+        for row in real.modelAggregates(from: 0, to: .max) {
+            let old = before.first { $0.tool == row.tool && $0.model == row.model }
+            print(String(format: "REAL %@ %@ turns %lld -> %lld cost %.2f -> %.2f", row.tool, row.model,
+                         old?.count ?? 0, row.count, old?.cost ?? 0, row.cost))
+        }
+        print(String(format: "REAL value %.2f -> %.2f", valueBefore, real.apiValue(from: 0, to: .max)))
+    }
 }

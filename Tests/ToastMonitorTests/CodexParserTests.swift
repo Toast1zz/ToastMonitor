@@ -129,11 +129,11 @@ final class CodexParserJSONTests: XCTestCase {
         XCTAssertEqual(contextModel, "gpt-5.6-sol")
         XCTAssertEqual(tokenCountEvents, 2)
 
-        // The resolved model must price via the gpt-5.6 entry (1.25/10).
+        // The resolved model must price via its own entry (4/20).
         let est = Pricing.estimate(model: contextModel, input: 3500, output: 421,
                                    cacheRead: 1200, cacheWrite: 80)
-        XCTAssertNotNil(est, "gpt-5.6-sol must resolve to the gpt-5.6 rate")
-        XCTAssertEqual(est!, 3500.0 / 1e6 * 1.25 + 421.0 / 1e6 * 10 + 1200.0 / 1e6 * 0.125 + 80.0 / 1e6 * 1.875,
+        XCTAssertNotNil(est, "gpt-5.6-sol must resolve to its own rate")
+        XCTAssertEqual(est!, 3500.0 / 1e6 * 4 + 421.0 / 1e6 * 20 + 1200.0 / 1e6 * 0.40 + 80.0 / 1e6 * 5,
                        accuracy: 0.0001)
     }
 }

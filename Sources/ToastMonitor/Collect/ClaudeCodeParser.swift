@@ -166,7 +166,8 @@ enum ClaudeCodeParser {
                     let project = FileScanner.projectName(cwd: cwd, encodedDirectory: encodedDir)
                     appendTurn(TurnRecord(tool: .claude, sessionID: sessionID, project: project,
                                           model: model, ts: ts, inputTokens: input, outputTokens: output,
-                                          cacheRead: cacheRead, cacheWrite: cacheWrite, cost: est ?? 0,
+                                          cacheRead: cacheRead, cacheWrite: cacheWrite, cacheWrite1h: write1h,
+                                          cost: est ?? 0,
                                           eventID: eventID,
                                           costQuality: est == nil ? "unknown" : "estimated",
                                           usageMerge: messageID == nil ? .ignore : .keepGreater))

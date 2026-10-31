@@ -120,6 +120,9 @@ enum ToolKind: String, CaseIterable, Identifiable {
         let reasoningTokens: Int64
         let cacheRead: Int64
         let cacheWrite: Int64
+        /// The one-hour part of `cacheWrite`, which costs more than a
+        /// five-minute write. Nil when the source does not report the split.
+        let cacheWrite1h: Int64?
         let cost: Double
         let provider: String?
         /// Stable source namespace ("local", or a hash of the remote feed URL).
@@ -142,7 +145,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
 
         init(tool: ToolKind, sessionID: String, project: String?, model: String?, ts: Int64,
              inputTokens: Int64, outputTokens: Int64, reasoningTokens: Int64 = 0,
-             cacheRead: Int64, cacheWrite: Int64, cost: Double,
+             cacheRead: Int64, cacheWrite: Int64, cacheWrite1h: Int64? = nil, cost: Double,
              provider: String? = nil, sourceInstance: String = "local",
              pricingVersion: String? = Pricing.version, eventID: String? = nil,
              costQuality: String = "estimated",
@@ -157,6 +160,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
             self.reasoningTokens = min(max(reasoningTokens, 0), Self.maxTokens)
             self.cacheRead = min(max(cacheRead, 0), Self.maxTokens)
             self.cacheWrite = min(max(cacheWrite, 0), Self.maxTokens)
+            let writeCeiling = self.cacheWrite
+            self.cacheWrite1h = cacheWrite1h.map { min(max($0, 0), writeCeiling) }
             self.cost = cost.isFinite ? min(max(cost, 0), Self.maxCost) : 0
             self.provider = provider
             self.sourceInstance = sourceInstance
@@ -168,11 +173,9 @@ enum ToolKind: String, CaseIterable, Identifiable {
 
         /// Field-wise maximum. Time and model follow the snapshot with the
         /// larger token sum. When those merged tokens are exactly the
-        /// winner's, its cost is already consistent and is kept, including a
-        /// one-hour cache write the price table cannot reconstruct. A mix
-        /// of the two snapshots is repriced from the merged tokens. That
-        /// reprice uses the five-minute write rate, because one-hour writes
-        /// are not stored on the row. An unknown model keeps the winner's cost.
+        /// winner's, its cost is already consistent and is kept. A mix of the
+        /// two snapshots is repriced from the merged tokens. An unknown model
+        /// keeps the winner's cost.
         static func keepingGreater(_ older: TurnRecord, _ newer: TurnRecord) -> TurnRecord {
             let olderSum = older.inputTokens + older.outputTokens + older.reasoningTokens
                 + older.cacheRead + older.cacheWrite
@@ -185,14 +188,16 @@ enum ToolKind: String, CaseIterable, Identifiable {
             let reasoning = max(older.reasoningTokens, newer.reasoningTokens)
             let cacheRead = max(older.cacheRead, newer.cacheRead)
             let cacheWrite = max(older.cacheWrite, newer.cacheWrite)
+            let cacheWrite1h = [older.cacheWrite1h, newer.cacheWrite1h].compactMap { $0 }.max()
             let tokensMatchWinner = model == winner.model
                 && input == winner.inputTokens && output == winner.outputTokens
                 && reasoning == winner.reasoningTokens && cacheRead == winner.cacheRead
                 && cacheWrite == winner.cacheWrite
             let repriced = tokensMatchWinner ? nil : Pricing.estimate(
                 model: model, input: input, output: output,
-                cacheRead: cacheRead, cacheWrite: cacheWrite,
-                inputIncludesCache: winner.tool == .codex)
+                cacheRead: cacheRead, cacheWrite: cacheWrite - min(cacheWrite1h ?? 0, cacheWrite),
+                inputIncludesCache: winner.tool == .codex,
+                cacheWrite1h: min(cacheWrite1h ?? 0, cacheWrite))
             return TurnRecord(tool: winner.tool, sessionID: winner.sessionID,
                               project: winner.project ?? older.project ?? newer.project,
                               model: model,
@@ -202,6 +207,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
                               reasoningTokens: reasoning,
                               cacheRead: cacheRead,
                               cacheWrite: cacheWrite,
+                              cacheWrite1h: cacheWrite1h,
                               cost: repriced ?? winner.cost,
                               provider: winner.provider ?? older.provider,
                               sourceInstance: winner.sourceInstance,

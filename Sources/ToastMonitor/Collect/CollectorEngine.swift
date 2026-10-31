@@ -304,6 +304,8 @@ final class CollectorEngine: @unchecked Sendable {
             claudePaths: ToolKind.claude.sourceIsRemote ? [] : claudeFiles,
             codexPaths: ToolKind.codex.sourceIsRemote ? [] : codexFiles,
             dshPaths: dshLogFiles)
+        Database.shared.replayClaudeForCacheSplit(
+            paths: ToolKind.claude.sourceIsRemote ? [] : claudeFiles)
 
         ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) },
                sourcePaths: claudeFiles) { state in
