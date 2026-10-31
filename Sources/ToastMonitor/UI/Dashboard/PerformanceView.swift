@@ -36,6 +36,13 @@ struct PerformanceView: View {
     /// Lines beyond this many models turn the chart into noise; the table
     /// still lists every model.
     private static let chartModelLimit = 6
+    /// A median of fewer samples than this is shown as "—".
+    private static let minSamples = 20
+
+    private static func median(_ samples: [Double]?) -> Double? {
+        guard let samples, samples.count >= minSamples else { return nil }
+        return PerfStats.median(samples)
+    }
 
     private struct ModelRow {
         let model: String
@@ -60,8 +67,6 @@ struct PerformanceView: View {
         let ttftPoints: [ChartPoint]
         let chartModels: [String]
         let chartColors: [Color]
-        let medianSpeed: Double?
-        let medianTTFT: Double?
         let calls: Int
         let xDomain: ClosedRange<Date>
     }
@@ -108,8 +113,14 @@ struct PerformanceView: View {
 
     private func summary(_ data: PerfData) -> some View {
         DashMetricRow {
-            DashMetric(label: "Median Speed", value: Self.speedText(data.medianSpeed))
-            DashMetric(label: "Median First Token", value: Self.ttftText(data.medianTTFT))
+            // One model each: a median across models mostly reports whichever
+            // model happens to leave the most samples.
+            let speed = data.rows.first { $0.tokensPerSecond != nil }
+            let first = data.rows.first { $0.ttftMs != nil }
+            DashMetric(label: speed.map { "Speed · \($0.model)" } ?? "Speed",
+                       value: Self.speedText(speed?.tokensPerSecond))
+            DashMetric(label: first.map { "First Token · \($0.model)" } ?? "First Token",
+                       value: Self.ttftText(first?.ttftMs))
             DashMetric(label: "Measured Calls", value: Format.count(Int64(data.calls)))
         }
     }
@@ -176,16 +187,14 @@ struct PerformanceView: View {
             range: range,
             rows: ranked.map { model in
                 ModelRow(model: model, color: colors[model] ?? palette[0],
-                         tokensPerSecond: speedByModel[model].flatMap(PerfStats.median),
-                         ttftMs: ttftByModel[model].flatMap(PerfStats.median),
+                         tokensPerSecond: median(speedByModel[model]),
+                         ttftMs: median(ttftByModel[model]),
                          calls: callsByModel[model] ?? 0)
             },
             speedPoints: series(speedByDay),
             ttftPoints: series(ttftByDay),
             chartModels: chartModels,
             chartColors: chartModels.map { colors[$0] ?? palette[0] },
-            medianSpeed: PerfStats.median(points.compactMap(\.tokensPerSecond)),
-            medianTTFT: PerfStats.median(points.compactMap(\.ttftMs)),
             calls: points.count,
             xDomain: first...end)
     }
