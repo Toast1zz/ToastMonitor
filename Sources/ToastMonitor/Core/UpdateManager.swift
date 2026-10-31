@@ -50,7 +50,21 @@ final class UpdateManager: ObservableObject {
     func consumeInstallFailure() {
         let url = Self.installFailureURL
         guard let message = try? String(contentsOf: url, encoding: .utf8) else { return }
+        // A report older than this build is about an update that has since
+        // been replaced by hand, so it no longer applies.
+        if Self.reportIsStale(url, executable: Bundle.main.executableURL) {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         lastError = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated static func reportIsStale(_ report: URL, executable: URL?) -> Bool {
+        func modified(_ url: URL?) -> Date? {
+            (try? url?.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        }
+        guard let written = modified(report), let built = modified(executable) else { return false }
+        return written < built
     }
 
     private static var installFailureURL: URL {
@@ -58,10 +72,6 @@ final class UpdateManager: ObservableObject {
             .appendingPathComponent("ToastMonitor", isDirectory: true)
             .appendingPathComponent(installFailureName)
     }
-    private static var hasPendingInstallFailure: Bool {
-        FileManager.default.fileExists(atPath: installFailureURL.path)
-    }
-
     /// The replacement acknowledges startup only with its verified version.
     static func acknowledgeLaunch(arguments: [String]) {
         guard let flag = arguments.firstIndex(of: "--tm-update-ready"),
@@ -116,7 +126,11 @@ final class UpdateManager: ObservableObject {
         guard !checking, !installing else { return }
         if !force, !Self.autoCheckEnabled { return }
         checking = true
-        if !silentFailure, !Self.hasPendingInstallFailure { lastError = nil }
+        // Asking again answers the old install report.
+        if !silentFailure {
+            lastError = nil
+            try? FileManager.default.removeItem(at: Self.installFailureURL)
+        }
         defer { checking = false }
         do {
             let found = try await UpdateChecker.check(
@@ -154,7 +168,7 @@ final class UpdateManager: ObservableObject {
             available = found
             lastCheckAt = Date()
         } catch {
-            if !silentFailure, !Self.hasPendingInstallFailure {
+            if !silentFailure {
                 lastError = Self.friendlyMessage(for: error)
             }
             available = nil

@@ -236,6 +236,22 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: failureURL.path))
     }
 
+    /// A report from before the running build is about an update replaced by hand.
+    func testInstallReportOlderThanTheBuildIsStale() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tm-report-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let report = directory.appendingPathComponent("report.txt")
+        let executable = directory.appendingPathComponent("app")
+        try Data("x".utf8).write(to: report)
+        try Data("x".utf8).write(to: executable)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: report.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: executable.path)
+        XCTAssertTrue(UpdateManager.reportIsStale(report, executable: executable))
+        XCTAssertFalse(UpdateManager.reportIsStale(executable, executable: report))
+        XCTAssertFalse(UpdateManager.reportIsStale(report, executable: nil))
+    }
 }
 
 @MainActor
