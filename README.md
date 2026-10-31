@@ -58,7 +58,7 @@ When an account cannot refresh, a small question mark appears next to it; click 
 
 Remote feeds are contacted only at addresses you add yourself in `Settings → Sources`; nothing is preconfigured. Local and remote sources can be turned off independently.
 
-**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how the shared Claude quota moves while this Mac is idle, and shows the result as the "Cowork & web" row. It is included in the headline token count, the menu bar and the Overview. Calls, cost, Analysis and Sessions count recorded usage only. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
+**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how far the shared Claude quota rises beyond what this Mac's own usage explains, and shows the result as the "Cowork & web" row. It is included in the headline token count, the menu bar and the Overview. Calls, cost, Analysis and Sessions count recorded usage only. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
 
 ## Accounts and quotas
 

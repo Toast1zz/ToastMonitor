@@ -2035,10 +2035,12 @@ final class Database: @unchecked Sendable {
         let intervalCount = samples.count - 1
         var freshDiff = [Int64](repeating: 0, count: intervalCount + 1)
         var totalByInterval = [Int64](repeating: 0, count: intervalCount)
+        var costByInterval = [Double](repeating: 0, count: intervalCount)
+        var unpricedByInterval = [Int64](repeating: 0, count: intervalCount)
         var stmt: OpaquePointer?
         let sql = """
         SELECT ts, input_tokens + output_tokens + cache_write,
-               input_tokens + output_tokens + cache_read
+               input_tokens + output_tokens + cache_read, cost
         FROM turns
         WHERE tool = 'claude' AND ts >= ? AND ts <= ?
         ORDER BY ts;
@@ -2073,6 +2075,7 @@ final class Database: @unchecked Sendable {
             let ts = sqlite3_column_int64(stmt, 0)
             let fresh = max(sqlite3_column_int64(stmt, 1), 0)
             let total = max(sqlite3_column_int64(stmt, 2), 0)
+            let cost = sqlite3_column_double(stmt, 3)
 
             let firstFreshInterval = lowerBoundEnd(ts)
             let afterLastFreshInterval = upperBoundStart(ts + ClaudeNonLocalEstimator.serverLagSeconds)
@@ -2086,6 +2089,11 @@ final class Database: @unchecked Sendable {
             if totalInterval < intervalCount,
                samples[totalInterval].ts < ts {
                 totalByInterval[totalInterval] += total
+                if cost > 0 {
+                    costByInterval[totalInterval] += cost
+                } else {
+                    unpricedByInterval[totalInterval] += total
+                }
             }
         }
         var out: [ClaudeNonLocalEstimator.LocalIntervalTotals] = []
@@ -2093,7 +2101,8 @@ final class Database: @unchecked Sendable {
         var freshRunning: Int64 = 0
         for i in 0..<intervalCount {
             freshRunning += freshDiff[i]
-            out.append(.init(freshTokens: freshRunning, totalTokens: totalByInterval[i]))
+            out.append(.init(freshTokens: freshRunning, totalTokens: totalByInterval[i],
+                             cost: costByInterval[i], unpricedTokens: unpricedByInterval[i]))
         }
         return out
     }
