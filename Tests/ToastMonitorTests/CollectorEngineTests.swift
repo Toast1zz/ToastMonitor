@@ -131,14 +131,39 @@ final class CollectorEngineTests: XCTestCase {
         XCTAssertEqual(database.turnCount(), 2)
     }
 
+    /// The whole rebuild: a session with a log comes back from it, one without stays.
+    func testRebuildRereadsLogsAndKeepsTheRest() throws {
+        let directory = (sourcePath as NSString).deletingLastPathComponent
+        let log = directory + "/live.jsonl"
+        let line = #"{"type":"assistant","sessionId":"live","timestamp":"2026-01-01T00:00:00Z","message":{"id":"m","model":"claude-opus-5-5","usage":{"input_tokens":3,"output_tokens":2}}}"#
+        try Data((line + "\n").utf8).write(to: URL(fileURLWithPath: log))
+        func scan() -> Bool {
+            CollectorEngine.prepareAndCommit(database: database, sourcePaths: [log]) { state in
+                ClaudeCodeParser.scan(knownPaths: [log], database: state)
+            }.committed
+        }
+        XCTAssertTrue(scan())
+        XCTAssertTrue(database.insertTurns([TurnRecord(tool: .claude, sessionID: "gone", project: nil, model: "m", ts: 1,
+                                                       inputTokens: 7, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                                                       cost: 2, eventID: "claude:gone:m")]))
+        XCTAssertEqual(database.turnCount(), 2)
+        XCTAssertTrue(database.resetLocalUsage(claudePaths: [log], codexPaths: []))
+        XCTAssertEqual(database.turnCount(), 1, "the session with a log waits for the scan")
+        XCTAssertTrue(scan())
+        XCTAssertEqual(database.turnCount(), 2)
+        XCTAssertEqual(database.totals(from: 0, to: .max, tool: .claude).input, 10)
+    }
+
     /// Manual: a copy of a real database, migrated and replayed against this
     /// Mac's Claude logs. Logs are only read. Prints totals per model.
     func testCacheSplitReplayOnARealCopy() throws {
         guard let source = ProcessInfo.processInfo.environment["TM_REAL_DB_COPY"] else {
             throw XCTSkip("set TM_REAL_DB_COPY to a copy of a database")
         }
-        let path = (databasePath as NSString).deletingLastPathComponent + "/real.db"
-        try FileManager.default.copyItem(atPath: source, toPath: path)
+        // TM_REAL_DB_KEEP keeps the result for inspection; it must already be a copy.
+        let keep = ProcessInfo.processInfo.environment["TM_REAL_DB_KEEP"] == "1"
+        let path = keep ? source : (databasePath as NSString).deletingLastPathComponent + "/real.db"
+        if !keep { try FileManager.default.copyItem(atPath: source, toPath: path) }
         let real = Database.testInstance(path: path)
         defer { real.close() }
         let files = (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 4) + ClaudeCodeParser.listCoworkFiles())
@@ -159,7 +184,9 @@ final class CollectorEngineTests: XCTestCase {
                          old?.count ?? 0, row.count, old?.cost ?? 0, row.cost))
         }
         print(String(format: "REAL value %.2f -> %.2f", valueBefore, real.apiValue(from: 0, to: .max)))
-        let hermes = HermesParser.scan(database: real)
+        let hermes = CollectorEngine.prepareAndCommit(database: real, sourcePaths: []) { HermesParser.scan(database: $0) }
+        real.setSetting("backfill_costs_last", nil)
+        real.backfillCosts()
         print("REAL hermes missed input \(hermes.turns.reduce(0) { $0 + $1.inputTokens }) output \(hermes.turns.reduce(0) { $0 + $1.outputTokens }) cacheRead \(hermes.turns.reduce(0) { $0 + $1.cacheRead })")
     }
 }

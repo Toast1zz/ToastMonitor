@@ -1219,9 +1219,9 @@ private struct TrendChartView: View {
             }
             .chartXAxis {
                 // Three date labels, colored like the Activity month labels.
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisMarks(preset: .aligned, values: .automatic(desiredCount: 3)) { _ in
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
-                    AxisValueLabel(format: .dateTime.month(.defaultDigits).day(), anchor: .top)
+                    AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
                         .font(.system(size: 10))
                         .foregroundStyle(TMDesign.quiet)
                 }

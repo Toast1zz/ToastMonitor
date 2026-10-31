@@ -56,6 +56,8 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(Format.money(0), "$0.00")
         XCTAssertEqual(Format.money(100), "$100", "whole dollars drop cents")
         XCTAssertEqual(Format.money(123.45), "$123.45", ">= 100 keeps cents (FM-1)")
+        XCTAssertEqual(Format.money(1418.9), "$1,418.90", "cents are two digits")
+        XCTAssertEqual(Format.money(1418.999), "$1,419", "rounds up to whole dollars")
         XCTAssertEqual(Format.money(99.99), "$99.99", ">= 1 keeps cents")
         XCTAssertEqual(Format.money(1), "$1.00")
         XCTAssertEqual(Format.money(1.234), "$1.23")

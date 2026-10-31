@@ -88,7 +88,7 @@ enum TMDesign {
     static let quiet = Color(nsColor: NSColor(name: nil) { appearance in
         if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast { return .labelColor }
         return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(white: 1, alpha: 0.72)
+            ? NSColor(white: 1, alpha: 0.8)
             : NSColor(white: 0, alpha: 0.66)
     })
     static let radius: CGFloat = 12

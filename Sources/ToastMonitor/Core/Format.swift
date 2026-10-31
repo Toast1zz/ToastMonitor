@@ -98,6 +98,8 @@ enum Format {
 
     private static func moneyWholeString(_ v: Double) -> String {
         formatterLock.lock(); defer { formatterLock.unlock() }
+        // Cents show as two digits or not at all: "$1,418.90", never "$1,418.9".
+        moneyWholeFormatter.minimumFractionDigits = (v * 100).rounded().truncatingRemainder(dividingBy: 100) == 0 ? 0 : 2
         return moneyWholeFormatter.string(from: NSNumber(value: v)) ?? String(format: "%.2f", v)
     }
 
