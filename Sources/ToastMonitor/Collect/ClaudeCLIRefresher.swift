@@ -256,8 +256,10 @@ enum ClaudeCLIRefresher {
     /// anywhere in the recent output" check the probe relies on — exact
     /// spacing/formatting in Claude Code's TUI output isn't something to
     /// depend on.
-    private static func compact(_ bytes: [UInt8]) -> String {
-        guard let text = String(bytes: bytes, encoding: .utf8) else { return "" }
+    static func compact(_ bytes: [UInt8]) -> String {
+        // The scan window can start or end inside a multibyte character; a
+        // strict decode would blank the whole window until more output came.
+        let text = String(decoding: bytes, as: UTF8.self)
         var out = ""
         out.reserveCapacity(text.count)
         var iterator = text.unicodeScalars.makeIterator()

@@ -271,6 +271,9 @@ final class ClaudeQuotaClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
                     self.inFlight = false
+                    if self.renewalRetry.loginUnreadable(renewing: renewing, outcome: attempted, retry: { [weak self] in
+                        self?.refresh(force: true, renewing: true)
+                    }) { return }
                     // A denied read means the login is there and neither this
                     // app nor /usr/bin/security may decrypt it — telling the
                     // user to log in again would send them down the wrong path.

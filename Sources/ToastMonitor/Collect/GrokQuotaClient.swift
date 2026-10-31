@@ -184,8 +184,11 @@ final class GrokQuotaClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
                     self.inFlight = false
-                    self.state.configured = false
                     self.state.isLoading = false
+                    if self.renewalRetry.loginUnreadable(renewing: renewing, outcome: attempted, retry: { [weak self] in
+                        self?.refresh(renewing: true)
+                    }) { return }
+                    self.state.configured = false
                     self.state.error = Self.notConfigured
                     return
                 }

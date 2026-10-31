@@ -34,6 +34,10 @@ final class CLIRenewalRetry {
     /// A renewal can fail for a moment after waking or upgrading the CLI, so
     /// the row only asks for attention after this many failures in a row.
     static let failuresBeforeReporting = 5
+    /// Each attempt can start a full CLI. A login still dead after an hour is
+    /// not a blip, so slow down; opening the panel still tries right away.
+    static let failuresBeforeSlowing = 60
+    static let slowInterval: TimeInterval = 10 * 60
 
     private let interval: TimeInterval
     private(set) var failures = 0
@@ -51,12 +55,26 @@ final class CLIRenewalRetry {
         failures > 0 && failures % Self.failuresBeforeReporting == 0
     }
 
+    var nextDelay: TimeInterval {
+        failures >= Self.failuresBeforeSlowing ? Self.slowInterval : interval
+    }
+
     func schedule(counting: Bool, retry: @escaping @MainActor @Sendable () -> Void) {
         if counting { failures += 1 }
         pending?.cancel()
         let work = DispatchWorkItem { MainActor.assumeIsolated { retry() } }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + nextDelay, execute: work)
+    }
+
+    /// Mid-renewal a login can be unreadable for a moment (a slow Keychain,
+    /// the CLI rewriting it), which must not end the retries. True while the
+    /// row should stay as it is instead of reporting a missing login.
+    func loginUnreadable(renewing: Bool, outcome: CLIRenewalOutcome?,
+                         retry: @escaping @MainActor @Sendable () -> Void) -> Bool {
+        guard renewing || outcome != nil else { return false }
+        schedule(counting: outcome != .throttled, retry: retry)
+        return !shouldReport
     }
 
     func reset() {
