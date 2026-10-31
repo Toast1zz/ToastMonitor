@@ -182,7 +182,7 @@ struct PlansView: View {
                 FigureColumn(label: "Today", value: Format.money(or.usageDaily))
                 FigureColumn(label: "This month", value: Format.money(or.usageMonthly))
                 if let remaining = or.limitRemaining, let limit = or.limit, limit > 0 {
-                    // Bar semantics are "used": a fresh key renders empty.
+                    // Pass what is used; quotaColumn applies the used/remaining mode.
                     quotaColumn("Key", usedPercent: (limit - remaining) / limit * 100,
                                 captions: ["\(Format.money(remaining)) of \(Format.money(limit)) left"],
                                 color: ToolKind.openrouter.color)
@@ -395,15 +395,15 @@ struct PlansView: View {
         }
     }
 
-    /// A quota window as a figure column. The bar always encodes usage; the
-    /// used/remaining preference from the popover changes only the figure.
+    /// A quota window as a figure column. The figure and the bar both follow
+    /// the used/remaining preference from the popover.
     private func quotaColumn(_ label: String, usedPercent: Double, captions: [String],
                              color: Color) -> FigureColumn {
         let p = min(max(usedPercent, 0), 100)
-        let shown = Int((showsRemaining ? 100 - p : p).rounded())
-        return FigureColumn(label: label, value: "\(shown)%",
+        let shown = QuotaWindow.shownPercent(used: p, showsRemaining: showsRemaining)
+        return FigureColumn(label: label, value: "\(Int(shown.rounded()))%",
                             unit: showsRemaining ? "left" : "used",
-                            usedPercent: p, barTint: color, captions: captions)
+                            barPercent: shown, barTint: color, captions: captions)
     }
 
     /// "resets in 4.8d" for an absolute unix-seconds reset; nil once passed.
@@ -438,7 +438,7 @@ private struct FigureColumn: View {
     let value: String
     var unit: String?
     var tint: Color = .primary
-    var usedPercent: Double?
+    var barPercent: Double?
     var barTint: Color = .accentColor
     var captions: [String] = []
     var captionTint: Color = TMDesign.quiet
@@ -462,8 +462,8 @@ private struct FigureColumn: View {
                         .foregroundStyle(TMDesign.quiet)
                 }
             }
-            if let usedPercent {
-                DashUsageBar(usedPercent: usedPercent, tint: barTint, height: 4)
+            if let barPercent {
+                DashUsageBar(fillPercent: barPercent, tint: barTint, height: 4)
                     .padding(.vertical, 2)
             }
             ForEach(captions, id: \.self) { caption in

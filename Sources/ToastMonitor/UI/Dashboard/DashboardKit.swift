@@ -216,11 +216,10 @@ struct ShareList: View {
     }
 }
 
-/// Usage bar: empty = untouched, fills rightward as the window is used. Always
-/// encodes usage; the used/remaining preference changes the label only.
+/// Gauge bar: fills rightward to the percentage it is given.
 struct DashUsageBar: View {
-    /// 0…100 — how much is used.
-    let usedPercent: Double
+    /// 0…100.
+    let fillPercent: Double
     let tint: Color
     var height: CGFloat = 6
     /// Optional hairline at a fixed fraction (0…1) of the bar — e.g. the
@@ -228,7 +227,7 @@ struct DashUsageBar: View {
     var marker: Double?
 
     var body: some View {
-        let used = min(max(usedPercent, 0), 100) / 100
+        let used = min(max(fillPercent, 0), 100) / 100
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.09))
