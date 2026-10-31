@@ -809,6 +809,37 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(db.rollupMismatchCount(), 0)
     }
 
+    func testSessionWithoutADateUsesItsLastTurnAndStubsAreHidden() {
+        func session(_ id: String) -> SessionInfo {
+            SessionInfo(tool: .codex, sessionID: id, title: nil, project: nil, model: nil, created: 0, updated: 0)
+        }
+        XCTAssertTrue(db.upsertSessions([session("used"), session("stub")]))
+        XCTAssertTrue(db.insertTurns([TurnRecord(tool: .codex, sessionID: "used", project: nil, model: "m", ts: 5_000,
+                                                 inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0,
+                                                 cost: 0, eventID: "e1")]))
+        let rows = db.sessions()
+        XCTAssertEqual(rows.map(\.sessionID), ["used"])
+        XCTAssertEqual(rows.first?.updated, 5_000)
+        XCTAssertEqual(db.sessionCount(), 1)
+        XCTAssertEqual(db.sessionCount(tool: .claude), 0)
+    }
+
+    func testCodexCoveredBySubscriptionCostsNothingEverywhere() {
+        let now = Int64(Date().timeIntervalSince1970)
+        XCTAssertTrue(db.upsertSessions([SessionInfo(tool: .codex, sessionID: "s", title: nil, project: nil,
+                                                     model: "m", created: now, updated: now)]))
+        XCTAssertTrue(db.insertTurns([TurnRecord(tool: .codex, sessionID: "s", project: nil, model: "m", ts: now,
+                                                 inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0,
+                                                 cost: 5, eventID: "e1")]))
+        XCTAssertEqual(db.modelAggregates(from: 0, to: .max).first?.cost ?? 0, 5, accuracy: 0.001)
+        db.setSetting("codex_billing_mode", "subscription")
+        XCTAssertEqual(db.modelAggregates(from: 0, to: .max).first?.cost ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(db.dailyAggregates(days: 2).first?.cost ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(db.dailyAggregatesByModel(days: 2).first?.cost ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(db.sessions().first?.cost ?? 1, 0, accuracy: 0.001)
+        XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").first?.cost ?? 1, 0, accuracy: 0.001)
+    }
+
     func testOpenRouterCycleSpendSubtractsMiddayBaseline() {
         let day = Int64(2_000_000_000 / 86400) * 86400
         XCTAssertTrue(db.insertORSnapshot(.init(ts: day + 100, usage: 0, usageDaily: 2,

@@ -101,8 +101,8 @@ enum HermesParser {
                 var titleCol = "NULL"
                 if cols.contains("title") { titleCol = "title" }
                 var createdCol = "0", updatedCol = "0"
-                if cols.contains("created_at") { createdCol = "created_at" }
-                if cols.contains("updated_at") { updatedCol = "updated_at" }
+                if let name = ["started_at", "created_at"].first(where: cols.contains) { createdCol = name }
+                if let name = ["last_activity_at", "updated_at"].first(where: cols.contains) { updatedCol = name }
                 let sql = "SELECT \(idCol), \(titleCol), \(createdCol), \(updatedCol) FROM sessions;"
                 if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
                     while sqlite3_step(stmt) == SQLITE_ROW {
@@ -209,25 +209,60 @@ enum HermesParser {
         }
         func seconds(_ i: Int32) -> Int64 {
             let v = sqlite3_column_double(stmt, i)
-            guard v.isFinite, v > 0 else { return 0 }
+            guard v.isFinite, v > 0, v < 1e17 else { return 0 }
             return Int64(v > 1_000_000_000_000 ? v / 1000 : v)
         }
-        var turns: [TurnRecord] = []
-        var totals = database.sessionTotals()
+        // Hermes keeps separate rows per billing mode and task (title
+        // generation, approval, compression) under one route. They add up to
+        // the route's usage, and the stored baseline is the route's high-water
+        // mark, so the part an older scan missed arrives as an ordinary delta.
+        struct Route {
+            let sid: String
+            let model: String?
+            let provider: String?
+            var input: Int64
+            var output: Int64
+            var reasoning: Int64
+            var cacheRead: Int64
+            var cacheWrite: Int64
+            var firstSeen: Int64
+            var lastSeen: Int64
+        }
+        var routes: [String: Route] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let sid = text(0), !sid.isEmpty else { continue }
             let model = text(1)
             let provider = text(2)
-            let current = HermesUsageBaseline.Counters(
-                input: FileScanner.tokenCount(sqlite3_column_int64(stmt, 4)),
-                output: FileScanner.tokenCount(sqlite3_column_int64(stmt, 5)),
-                reasoning: FileScanner.tokenCount(sqlite3_column_int64(stmt, 6)),
-                cacheRead: FileScanner.tokenCount(sqlite3_column_int64(stmt, 7)),
-                cacheWrite: FileScanner.tokenCount(sqlite3_column_int64(stmt, 8)))
-            let lastSeen = seconds(10)
-            let firstSeen = min(seconds(9), lastSeen)
-            let key = HermesUsageBaseline.key(session: sid, model: model, provider: provider,
-                                              baseURL: text(3))
+            let key = HermesUsageBaseline.key(session: sid, model: model, provider: provider, baseURL: text(3))
+            let last = seconds(10)
+            let first = min(seconds(9), last)
+            var route = routes[key] ?? Route(sid: sid, model: model, provider: provider, input: 0, output: 0,
+                                             reasoning: 0, cacheRead: 0, cacheWrite: 0, firstSeen: first, lastSeen: last)
+            func add(_ total: Int64, _ column: Int32) -> Int64 {
+                min(total + FileScanner.tokenCount(sqlite3_column_int64(stmt, column)), TurnRecord.maxTokens)
+            }
+            route.input = add(route.input, 4)
+            route.output = add(route.output, 5)
+            route.reasoning = add(route.reasoning, 6)
+            route.cacheRead = add(route.cacheRead, 7)
+            route.cacheWrite = add(route.cacheWrite, 8)
+            route.firstSeen = first > 0 && (route.firstSeen == 0 || first < route.firstSeen) ? first : route.firstSeen
+            route.lastSeen = max(route.lastSeen, last)
+            routes[key] = route
+        }
+
+        var turns: [TurnRecord] = []
+        var totals = database.sessionTotals()
+        for key in routes.keys.sorted() {
+            guard let route = routes[key] else { continue }
+            let sid = route.sid
+            let model = route.model
+            let provider = route.provider
+            let current = HermesUsageBaseline.Counters(input: route.input, output: route.output,
+                                                       reasoning: route.reasoning, cacheRead: route.cacheRead,
+                                                       cacheWrite: route.cacheWrite)
+            let lastSeen = route.lastSeen
+            let firstSeen = route.firstSeen
             let localKey = HermesUsageBaseline.localTotalsKey(key)
             let local: [Int64] = totals[localKey].map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] } ?? []
             let prev = HermesUsageBaseline.merge(current: current, baselines: [local,

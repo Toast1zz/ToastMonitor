@@ -187,4 +187,51 @@ final class HermesParserTests: XCTestCase {
         XCTAssertEqual(remote.first?.input, 250)
         XCTAssertEqual(remote.first?.output, 40)
     }
+
+    private func writeUsage(_ rows: [(task: String, input: Int64)], sessionColumns: Bool = true) {
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(HermesParser.dbPath, &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        XCTAssertEqual(sqlite3_exec(raw, """
+        CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT, started_at REAL, last_activity_at REAL);
+        INSERT OR REPLACE INTO sessions VALUES ('20260101_000000_ab', 't', 1767225600.5, 1767229200.5);
+        CREATE TABLE IF NOT EXISTS session_model_usage (session_id TEXT, model TEXT, billing_provider TEXT, billing_base_url TEXT,
+          billing_mode TEXT, task TEXT, input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+          cache_read_tokens INTEGER, cache_write_tokens INTEGER, first_seen REAL, last_seen REAL,
+          PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task));
+        DELETE FROM session_model_usage;
+        """, nil, nil, nil), SQLITE_OK)
+        for row in rows {
+            XCTAssertEqual(sqlite3_exec(raw, """
+            INSERT INTO session_model_usage VALUES ('20260101_000000_ab','m','p','u','std','\(row.task)',\(row.input),1,0,0,0,1767225600,1767229200);
+            """, nil, nil, nil), SQLITE_OK)
+        }
+    }
+
+    func testRowsForEveryTaskOfARouteAddUp() {
+        writeUsage([(task: "", input: 1_000), (task: "title_generation", input: 300), (task: "compression", input: 200)])
+        let first = HermesParser.scan(database: db)
+        XCTAssertEqual(first.turns.reduce(0) { $0 + $1.inputTokens }, 1_500)
+        XCTAssertEqual(first.turns.count, 1)
+        XCTAssertTrue(db.insertTurns(first.turns))
+        XCTAssertEqual(HermesParser.scan(database: db).turns.count, 0, "unchanged rows add nothing")
+    }
+
+    /// A store scanned before: its baseline is the largest row alone, and only
+    /// the missed part may be added, never the whole history again.
+    func testOldBaselineGainsOnlyTheMissedTasks() {
+        let key = HermesUsageBaseline.key(session: "20260101_000000_ab", model: "m", provider: "p", baseURL: "u")
+        db.setSetting(key, "1000,1,0,0,0,0")
+        writeUsage([(task: "", input: 1_000), (task: "title_generation", input: 300)])
+        let turns = HermesParser.scan(database: db).turns
+        XCTAssertEqual(turns.reduce(0) { $0 + $1.inputTokens }, 300)
+        XCTAssertEqual(turns.reduce(0) { $0 + $1.outputTokens }, 1)
+    }
+
+    func testCurrentSessionColumnsGiveARealDate() {
+        writeUsage([(task: "", input: 1)])
+        let session = HermesParser.scan(database: db).sessions.first
+        XCTAssertEqual(session?.created, 1_767_225_600)
+        XCTAssertEqual(session?.updated, 1_767_229_200)
+    }
 }

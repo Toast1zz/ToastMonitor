@@ -1611,9 +1611,7 @@ final class Database: @unchecked Sendable {
         // subscription's fixed cost; its estimated API price must not also
         // appear as variable spend (subscriptions pay subscriptions, API pays
         // API). Tokens stay counted; only the cost sum is zeroed.
-        let codexCovered = codexBilledBySubscription()
-        let costExpr = codexCovered ? "SUM(CASE WHEN tool='codex' THEN 0.0 ELSE cost END)" : "SUM(cost)"
-        var sql = "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), \(costExpr), SUM(n) FROM (\(Self.usageSource))"
+        var sql = "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), \(costSum), SUM(n) FROM (\(Self.usageSource))"
         if tool != nil { sql += " WHERE tool=?5" }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
@@ -1636,6 +1634,11 @@ final class Database: @unchecked Sendable {
     /// mode Codex estimated costs are excluded from variable spend.
     func codexBilledBySubscription() -> Bool {
         setting("codex_billing_mode") == "subscription"
+    }
+
+    /// Every cost total: Codex covered by a subscription costs nothing extra.
+    private var costSum: String {
+        codexBilledBySubscription() ? "SUM(CASE WHEN tool='codex' THEN 0.0 ELSE cost END)" : "SUM(cost)"
     }
 
     func totalsByTool(from: Int64, to: Int64) -> [ToolTotals] {
@@ -1677,7 +1680,7 @@ final class Database: @unchecked Sendable {
         var stmt: OpaquePointer?
         let sql = """
         SELECT CAST(strftime('%Y%m%d', bucket, 'unixepoch', 'localtime') AS INTEGER) AS day, tool,
-               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n)
+               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), \(costSum), SUM(n)
         FROM (\(Self.usageSource)) GROUP BY day, tool;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
@@ -1702,8 +1705,8 @@ final class Database: @unchecked Sendable {
         guard let db else { return out }
         var stmt: OpaquePointer?
         let sql = """
-        SELECT tool, COALESCE(NULLIF(model,''), '(unknown)'), SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n)
-        FROM (\(Self.usageSource)) GROUP BY tool, model ORDER BY SUM(cost) DESC;
+        SELECT tool, COALESCE(NULLIF(model,''), '(unknown)'), SUM(input_tokens), SUM(output_tokens), SUM(cache_read), \(costSum), SUM(n)
+        FROM (\(Self.usageSource)) GROUP BY tool, model ORDER BY \(costSum) DESC;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
         bindUsageRange(stmt, from: from, to: to)
@@ -1721,17 +1724,36 @@ final class Database: @unchecked Sendable {
         return out
     }
 
+    /// A session with neither a date nor usage is a stub from the source's
+    /// own index; it is not listed.
+    private static let listedSession = "(s.updated > 0 OR EXISTS (SELECT 1 FROM turns t WHERE t.tool=s.tool AND t.session_id=s.session_id))"
+
+    func sessionCount(tool: ToolKind? = nil) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        guard let db else { return 0 }
+        var stmt: OpaquePointer?
+        let sql = "SELECT COUNT(*) FROM sessions s WHERE \(Self.listedSession)\(tool != nil ? " AND s.tool=?" : "");"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        if let tool { sqlite3_bind_text(stmt, 1, (tool.rawValue as NSString).utf8String, -1, SQLITE_TRANSIENT) }
+        return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int64(stmt, 0)) : 0
+    }
+
     func sessions(tool: ToolKind? = nil, limit: Int = 100) -> [SessionRow] {
         lock.lock(); defer { lock.unlock() }
         var out: [SessionRow] = []
         guard let db else { return out }
+        // A source that keeps no session date falls back to its last turn.
+        let cost = codexBilledBySubscription() ? "SUM(CASE WHEN t.tool='codex' THEN 0.0 ELSE t.cost END)" : "SUM(t.cost)"
         var sql = """
-        SELECT s.tool, s.session_id, s.title, s.project, s.model, s.created, s.updated,
-               COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0), COALESCE(SUM(t.cache_read),0), COALESCE(SUM(t.cost),0), COUNT(t.id)
+        SELECT s.tool, s.session_id, s.title, s.project, s.model, s.created,
+               CASE WHEN s.updated > 0 THEN s.updated ELSE COALESCE(MAX(t.ts), 0) END AS last_seen,
+               COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0), COALESCE(SUM(t.cache_read),0), COALESCE(\(cost),0), COUNT(t.id)
         FROM sessions s LEFT JOIN turns t ON t.tool=s.tool AND t.session_id=s.session_id
+        WHERE \(Self.listedSession)
         """
-        if tool != nil { sql += " WHERE s.tool=?" }
-        sql += " GROUP BY s.tool, s.session_id ORDER BY s.updated DESC LIMIT ?;"
+        if tool != nil { sql += " AND s.tool=?" }
+        sql += " GROUP BY s.tool, s.session_id ORDER BY last_seen DESC LIMIT ?;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
         var idx: Int32 = 1
@@ -1764,8 +1786,9 @@ final class Database: @unchecked Sendable {
         var out: [(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = []
         guard let db else { return out }
         var stmt: OpaquePointer?
+        let cost = sessionTool == "codex" && codexBilledBySubscription() ? "0.0" : "cost"
         let sql = """
-        SELECT ts, model, input_tokens, output_tokens, cache_read, cache_write, cost
+        SELECT ts, model, input_tokens, output_tokens, cache_read, cache_write, \(cost)
         FROM turns WHERE tool=? AND session_id=? ORDER BY ts DESC LIMIT ?;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
@@ -2334,7 +2357,7 @@ final class Database: @unchecked Sendable {
         let sql = """
         SELECT CAST(strftime('%Y%m%d', bucket, 'unixepoch', 'localtime') AS INTEGER) AS day,
                COALESCE(NULLIF(model, ''), '(unknown)') AS model,
-               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cost), SUM(n), SUM(\(ToolKind.totalTokensSQL)) AS total_tokens
+               SUM(input_tokens), SUM(output_tokens), SUM(cache_read), \(costSum), SUM(n), SUM(\(ToolKind.totalTokensSQL)) AS total_tokens
         FROM (\(Self.usageSource)) GROUP BY day, model ORDER BY day;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -2619,7 +2642,7 @@ final class Database: @unchecked Sendable {
             return false
         }
         defer { sqlite3_close(handle) }
-        guard sqlite3_exec(handle, "DELETE FROM settings WHERE k IN ('or_keys','openrouter_key','go_auth_cookie','go_workspace_id');",
+        guard sqlite3_exec(handle, "DELETE FROM settings WHERE k IN ('or_keys','openrouter_key','go_auth_cookie','go_workspace_id','remote_feed_url');",
                            nil, nil, nil) == SQLITE_OK else { return false }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, "VACUUM INTO ?;", -1, &statement, nil) == SQLITE_OK else { return false }

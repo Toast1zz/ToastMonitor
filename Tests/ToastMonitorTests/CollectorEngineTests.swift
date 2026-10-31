@@ -159,5 +159,7 @@ final class CollectorEngineTests: XCTestCase {
                          old?.count ?? 0, row.count, old?.cost ?? 0, row.cost))
         }
         print(String(format: "REAL value %.2f -> %.2f", valueBefore, real.apiValue(from: 0, to: .max)))
+        let hermes = HermesParser.scan(database: real)
+        print("REAL hermes missed input \(hermes.turns.reduce(0) { $0 + $1.inputTokens }) output \(hermes.turns.reduce(0) { $0 + $1.outputTokens }) cacheRead \(hermes.turns.reduce(0) { $0 + $1.cacheRead })")
     }
 }
