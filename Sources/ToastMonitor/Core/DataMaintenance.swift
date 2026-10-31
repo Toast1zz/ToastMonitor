@@ -166,11 +166,32 @@ enum DataMaintenance {
         restoreWithReceipt(backupPath: path) != nil
     }
 
+    /// Replaces a store that cannot be opened. With no backup it starts empty.
+    /// The broken file stays beside the new one.
+    static func recover(from backup: URL?, database: Database = .shared) -> Bool {
+        guard let backup else { return database.replaceUnusableStore(with: nil) }
+        guard backup.pathExtension == compressedExtension else {
+            return database.replaceUnusableStore(with: backup.path)
+        }
+        let fm = FileManager.default
+        let workspace = fm.temporaryDirectory.appendingPathComponent("tm-expand-\(UUID().uuidString)")
+        guard (try? fm.createDirectory(at: workspace, withIntermediateDirectories: true,
+                                       attributes: [.posixPermissions: 0o700])) != nil else { return false }
+        defer { try? fm.removeItem(at: workspace) }
+        let expanded = workspace.appendingPathComponent("backup.db")
+        guard expand(backup, to: expanded), isSQLiteFile(expanded) else { return false }
+        return database.replaceUnusableStore(with: expanded.path)
+    }
+
     static func restoreWithReceipt(backupPath path: String, database: Database = .shared,
                                    backupDirectory: URL? = nil) -> String? {
         let directory = backupDirectory ?? Self.directory
         guard isManagedBackup(path, in: directory), isSafeDatabaseFile(path) else { return nil }
         let url = URL(fileURLWithPath: path)
+        // A broken store cannot be snapshotted first, and needs no snapshot.
+        if database.openProblem != nil {
+            return recover(from: url, database: database) ? path : nil
+        }
         guard url.pathExtension == compressedExtension else {
             return restore(path, database: database, directory: directory)
         }

@@ -58,7 +58,7 @@ When an account cannot refresh, a small question mark appears next to it; click 
 
 Remote feeds are contacted only at addresses you add yourself in `Settings → Sources`; nothing is preconfigured. Local and remote sources can be turned off independently.
 
-**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how the shared Claude quota moves while this Mac is idle, and shows the result as the "Cowork & web" row. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
+**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how the shared Claude quota moves while this Mac is idle, and shows the result as the "Cowork & web" row. It is included in the headline token count, the menu bar and the Overview, which say so: "Includes ≈13.3M estimated" in the panel, "≈" in the menu bar. Calls, cost, Analysis and Sessions count recorded usage only. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
 
 ## Accounts and quotas
 
@@ -130,7 +130,7 @@ Development and screenshots:
 
 - **One collection loop** — scans every second while the panel is open, every 5 seconds in the background, every 30 seconds when nothing changed, and every 60 seconds on low power. Sleep pauses the loop. Files are read incrementally, keyed on size, nanosecond mtime and inode, so an idle scan is only `stat` calls. Large JSONL and DeepSeek Harness logs are streamed in bounded chunks rather than loaded whole.
 - **One SQLite store** — `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL).
-- **Cost estimates** — a built-in price table for common models; unknown models count tokens without a price, and OpenCode's own cost is used when present.
+- **Cost estimates** — a built-in price table for common models; unknown models count tokens without a price, and OpenCode's own cost is used when present. A cost is priced once: a later price change applies to new usage, not to history. Value is the exception, and always shows today's list price.
 - **DeepSeek Harness** — parses the zstd-compressed session logs when the `zstd` CLI is installed, otherwise falls back to the projection cache (no model or per-call timing). The mode never switches once chosen, so the two can't double-count.
 
 ## Privacy and security
@@ -138,12 +138,12 @@ Development and screenshots:
 - Logs, usage, project paths and session metadata stay in the local database. Quota services and remote feeds are contacted only after you turn them on. Codex and Grok quota reads are off on a fresh install; an existing database keeps them on.
 - Credentials live in the macOS Keychain, never in URLs, plists or logs. No analytics or ad SDKs.
 - Update checks run once at launch (`Settings → Updates` can turn that off). An update is downloaded only after you confirm, and the signature, version and SHA-256 are checked before anything is installed.
-- `Settings → Data` exports, backs up, restores and clears the database; clearing makes a protected backup first.
+- `Settings → Data` exports, backs up, restores and rebuilds the database. A rebuild makes a protected backup first, re-reads the logs still on this Mac, and keeps history whose log is gone.
 
 ## Known limitations
 
 - The menu bar shows today's tokens only; cost and subscriptions live in the panel.
-- Claude usage outside this Mac is estimated from the shared quota, never counted in tokens.
+- Claude usage outside this Mac is estimated from the shared quota. It counts toward the headline tokens and is marked "≈", so the Overview total can be higher than the Analysis total, which is recorded usage only.
 - Prices are approximate official list prices.
 - Without the `zstd` CLI, DeepSeek Harness usage has no model, so its cost is 0.
 

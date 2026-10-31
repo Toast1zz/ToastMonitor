@@ -102,4 +102,65 @@ final class RestoreSafetyTests: XCTestCase {
         XCTAssertEqual(recovery.turnCount(), 0)
         XCTAssertEqual(database.turnCount(), 1)
     }
+
+    func testDamagedStoreIsReportedAndRecoveredWithoutDeletingIt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tm-damaged-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let goodPath = directory.appendingPathComponent("good.db").path
+        let good = Database.testInstance(path: goodPath)
+        XCTAssertNil(good.openProblem)
+        XCTAssertTrue(good.insertTurns([TurnRecord(tool: .claude, sessionID: "s", project: nil, model: "m", ts: 1,
+                                                   inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0,
+                                                   cost: 0, eventID: "e")]))
+        let backups = directory.appendingPathComponent("backups")
+        let backup = try XCTUnwrap(DataMaintenance.createBackup(label: "weekly", database: good, backupDirectory: backups))
+        good.close()
+
+        let badPath = directory.appendingPathComponent("bad.db").path
+        try Data(repeating: 0x41, count: 8192).write(to: URL(fileURLWithPath: badPath))
+        let bad = Database.testInstance(path: badPath)
+        defer { bad.close() }
+        guard case .damaged = bad.openProblem else { return XCTFail("a random file must read as damaged") }
+
+        XCTAssertTrue(DataMaintenance.recover(from: URL(fileURLWithPath: backup), database: bad))
+        XCTAssertNil(bad.openProblem)
+        XCTAssertEqual(bad.turnCount(), 1)
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("bad.db.damaged-") }, "the broken file must be kept")
+    }
+
+    func testStartingFreshFromADamagedStoreKeepsTheFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tm-damaged-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("bad.db").path
+        try Data(repeating: 0x41, count: 8192).write(to: URL(fileURLWithPath: path))
+        let bad = Database.testInstance(path: path)
+        defer { bad.close() }
+        XCTAssertNotNil(bad.openProblem)
+        XCTAssertTrue(DataMaintenance.recover(from: nil, database: bad))
+        XCTAssertNil(bad.openProblem)
+        XCTAssertEqual(bad.turnCount(), 0)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .contains { $0.hasPrefix("bad.db.damaged-") })
+    }
+
+    func testReadOnlyStoreIsReported() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tm-ro-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("ro.db").path
+        defer {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let writable = Database.testInstance(path: path)
+        writable.close()
+        // Opening re-asserts file modes, so only the immutable flag stays read-only.
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: path)
+        let store = Database.testInstance(path: path)
+        defer { store.close() }
+        XCTAssertNotNil(store.openProblem)
+    }
 }

@@ -202,7 +202,7 @@ struct UsageAnalysisView: View {
     private func summary(_ data: AnalysisData) -> some View {
         let daily = data.dayCount > 0 ? data.totalTokens / Int64(data.dayCount) : 0
         return DashMetricRow {
-            DashMetric(label: "Tokens", value: Format.compact(data.totalTokens))
+            DashMetric(label: "Tokens · recorded only", value: Format.compact(data.totalTokens))
             DashMetric(label: "Estimated Cost", value: Format.moneyShort(data.totalCost))
             DashMetric(label: "Daily Avg Tokens", value: Format.compact(daily))
             DashMetric(label: "Calls", value: Format.count(data.totalCalls))

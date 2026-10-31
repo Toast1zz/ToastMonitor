@@ -62,6 +62,11 @@ enum ClaudeNonLocalEstimator {
 
     /// Label of the synthetic per-tool row carrying the estimate.
     static let estimateToolLabel = "Cowork & web"
+
+    /// The estimated part of a period's per-source rows.
+    static func estimatedTokens(in rows: [Database.ToolTotals]) -> Int64 {
+        rows.first { $0.tool == estimateToolLabel }?.input ?? 0
+    }
     /// Quota points of local activity needed before a tokens-per-point rate
     /// is trusted.
     static let minCalibrationPoints = 5

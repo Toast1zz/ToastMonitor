@@ -36,13 +36,17 @@ struct OverviewView: View {
 
     var body: some View {
         DashPage {
+            if let problem = app.databaseProblem {
+                DashCard { DatabaseProblemView(problem: problem) }
+                    .dashFixedHeight()
+            }
             HStack(alignment: .center, spacing: 12) {
                 periodControl
                 Spacer(minLength: 8)
                 statusLine
             }
             DashMetricRow {
-                DashMetric(label: "Tokens", value: Format.compact(periodTokens))
+                DashMetric(label: tokensLabel, value: Format.compact(periodTokens))
                     .tmNumericTextTransition(value: Double(periodTokens))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: periodTokens)
                 DashMetric(label: "Calls", value: Format.count(periodCalls))
@@ -121,6 +125,20 @@ struct OverviewView: View {
         case .month: return app.monthTokens
         case .all: return app.allTokens
         }
+    }
+
+    private var periodRows: [Database.ToolTotals] {
+        switch period {
+        case .today: return app.byToolToday
+        case .week: return app.byToolWeek
+        case .month: return app.byToolMonth
+        case .all: return app.byToolAll
+        }
+    }
+
+    private var tokensLabel: String {
+        let estimated = ClaudeNonLocalEstimator.estimatedTokens(in: periodRows)
+        return estimated > 0 ? "Tokens · incl. \(Format.approximate(estimated)) estimated" : "Tokens"
     }
 
     private var periodCalls: Int64 {
@@ -256,7 +274,10 @@ struct OverviewView: View {
     // MARK: - Attribution
 
     private var toolItems: [ShareItem] {
-        toolRows(period).map { ShareItem(name: $0.0, value: $0.1, color: $0.3) }
+        toolRows(period).map {
+            ShareItem(name: $0.0, value: $0.1, color: $0.3,
+                      approximate: $0.0 == ClaudeNonLocalEstimator.estimateToolLabel)
+        }
     }
 
     private var modelItems: [ShareItem] {
@@ -297,21 +318,14 @@ struct OverviewView: View {
     }
 
     private func toolRows(_ period: Period) -> [(String, Int64, Double, Color)] {
-        let rows: [Database.ToolTotals]
-        switch period {
-        case .today: rows = app.byToolToday
-        case .week: rows = app.byToolWeek
-        case .month: rows = app.byToolMonth
-        case .all: rows = app.byToolAll
-        }
-        return rows.sorted {
+        periodRows.sorted {
             (ToolKind(rawValue: $0.tool)?.totalTokens($0) ?? $0.input + $0.output) >
                 (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? $1.input + $1.output)
         }.map { row in
             (ToolKind(rawValue: row.tool)?.displayName ?? row.tool,
              ToolKind(rawValue: row.tool)?.totalTokens(row) ?? row.input + row.output,
              row.cost,
-             ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent)
+             TMDesign.sourceColor(row.tool))
         }
     }
 }

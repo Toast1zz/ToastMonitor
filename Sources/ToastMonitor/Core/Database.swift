@@ -25,6 +25,13 @@ final class Database: @unchecked Sendable {
     /// but prepare/step/ALTER/commit errors must never be silently committed.
     private var transactionWriteError = false
     private var startupHadError = false
+    /// Why the store cannot be used, after an open. An empty database is not
+    /// a problem; this is what keeps a broken one from looking like a fresh install.
+    enum OpenProblem: Equatable, Sendable {
+        case damaged(String)
+        case readOnly(String)
+    }
+    private(set) var openProblem: OpenProblem?
     private struct SettingCacheChange {
         let value: String?
     }
@@ -119,7 +126,10 @@ final class Database: @unchecked Sendable {
 
         var handle: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            NSLog("[ToastMonitor] DB open failed: %s", sqlite3_errmsg(handle))
+            let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "Could not open the file"
+            NSLog("[ToastMonitor] DB open failed: %@", message)
+            openProblem = .damaged(message)
+            if let handle { sqlite3_close(handle) }
             return
         }
         db = handle
@@ -153,6 +163,56 @@ final class Database: @unchecked Sendable {
         // Last: every migration above may rebuild or rewrite `turns`, and a
         // restored file may carry a stale rollup. Install, then verify.
         ensureRollup()
+        openProblem = usabilityProblem()
+    }
+
+    /// Reads the schema and takes the write lock, without changing anything.
+    private func usabilityProblem() -> OpenProblem? {
+        guard let db else { return .damaged("Could not open the file") }
+        var stmt: OpaquePointer?
+        let readable = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master;", -1, &stmt, nil) == SQLITE_OK
+            && sqlite3_step(stmt) == SQLITE_ROW
+        let readError = String(cString: sqlite3_errmsg(db))
+        sqlite3_finalize(stmt)
+        guard readable else { return .damaged(readError) }
+        if sqlite3_db_readonly(db, "main") == 1 { return .readOnly("The database file is read-only.") }
+        guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+            let code = sqlite3_errcode(db)
+            let message = String(cString: sqlite3_errmsg(db))
+            // Another writer holding the lock is ordinary, not a broken store.
+            if code == SQLITE_BUSY || code == SQLITE_LOCKED { return nil }
+            return code == SQLITE_READONLY ? .readOnly(message) : .damaged(message)
+        }
+        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+        return nil
+    }
+
+    /// Recovery from a store that cannot be opened: moves it aside, never
+    /// deleting it, then opens `source` in its place or starts empty.
+    func replaceUnusableStore(with source: String?) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let fm = FileManager.default
+        close()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        do {
+            for suffix in ["", "-wal", "-shm"] where fm.fileExists(atPath: dbPath + suffix) {
+                try fm.moveItem(atPath: dbPath + suffix, toPath: "\(dbPath).damaged-\(stamp)\(suffix)")
+            }
+            if let source {
+                try fm.copyItem(atPath: source, toPath: dbPath)
+                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dbPath)
+            }
+        } catch {
+            NSLog("[ToastMonitor] store replacement failed: %@", error.localizedDescription)
+            openLocked(dbPath)
+            return false
+        }
+        openLocked(dbPath)
+        bumpDataVersion()
+        return openProblem == nil
     }
     /// Older stores can report user_version=1 while missing tables that were
     /// created by the original bootstrap. Recreate absent tables before

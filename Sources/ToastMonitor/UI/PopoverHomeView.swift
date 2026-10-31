@@ -186,21 +186,26 @@ struct PopoverHomeView: View {
                     ScrollViewReader { scroller in
                         ScrollView(.vertical, showsIndicators: false) {
                             VStack(alignment: .leading, spacing: 10) {
+                                if let problem = app.databaseProblem {
+                                    PopoverCard(title: "") { DatabaseProblemView(problem: problem) }
+                                }
                                 // Everything the period selector changes lives in
                                 // this one card; Quota and Balance below are
                                 // current state and sit outside it.
                                 // The selector heads the card instead of a title: it
                                 // names what the card shows and has the full width.
-                                PopoverCard(title: "") {
-                                    VStack(alignment: .leading, spacing: 14) {
-                                        periodControl
-                                        hero
-                                        if !isSectionHidden("sources") { sourceBar }
+                                if app.databaseProblem == nil {
+                                    PopoverCard(title: "") {
+                                        VStack(alignment: .leading, spacing: 14) {
+                                            periodControl
+                                            hero
+                                            if !isSectionHidden("sources") { sourceBar }
+                                        }
                                     }
                                 }
                                 if !isSectionHidden("quota") { quotaSection }
                                 if !isSectionHidden("balance") { balanceSection }
-                                if !isSectionHidden("activity") {
+                                if !isSectionHidden("activity"), app.databaseProblem == nil {
                                     PopoverCard(title: "Activity",
                                                 accessory: { historyAccessory },
                                                 trailing: { historyPicker }) { historyBlock }
@@ -311,10 +316,17 @@ struct PopoverHomeView: View {
                     // as a live token update.
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
                     .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
-                    .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
+                    .accessibilityValue(Text("\(Format.full(tokens)) tokens"
+                        + (estimatedTokens > 0 ? ", including about \(Format.full(estimatedTokens)) estimated" : "")))
                 Text("tokens")
                     .font(TMType.regular(13))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(TMDesign.quiet)
+            }
+            if estimatedTokens > 0 {
+                Text("Includes \(Format.approximate(estimatedTokens)) estimated")
+                    .font(TMType.number(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                    .accessibilityHidden(true)
             }
             HStack(spacing: 16) {
                 HeroChip(label: "Spent", value: combinedSpentText,
@@ -329,6 +341,11 @@ struct PopoverHomeView: View {
                          value: estimatedShown > 0 ? Format.money(estimatedShown) : "—")
             }
         }
+    }
+
+    /// Claude use outside this Mac, inferred from the quota: part of `tokens`.
+    private var estimatedTokens: Int64 {
+        ClaudeNonLocalEstimator.estimatedTokens(in: byTool)
     }
 
     /// DeepSeek account billing is part of Spent but has not landed (or is
@@ -439,13 +456,13 @@ struct PopoverHomeView: View {
             } else {
                 SourceBar(segments: rows.map { row in
                     (Double(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)),
-                     Self.sourceColor(row.tool))
+                     TMDesign.sourceColor(row.tool))
                 })
 
                 ForEach(rows, id: \.tool) { row in
                     HStack(spacing: 7) {
                         Circle()
-                            .fill(Self.sourceColor(row.tool))
+                            .fill(TMDesign.sourceColor(row.tool))
                             .frame(width: 7, height: 7)
                         Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
                             .font(TMType.medium(TMType.body))
@@ -454,23 +471,18 @@ struct PopoverHomeView: View {
                             .font(TMType.number(TMType.caption))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(Format.compact(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)))
+                        let isEstimate = row.tool == ClaudeNonLocalEstimator.estimateToolLabel
+                        let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
+                        Text(isEstimate ? Format.approximate(value) : Format.compact(value))
                             .font(TMType.number(TMType.body))
                             .foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
-                    .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens, \(percentText(row, total: total)) of total"))
+                    .accessibilityValue(Text("\(row.tool == ClaudeNonLocalEstimator.estimateToolLabel ? "about " : "")\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens\(row.tool == ClaudeNonLocalEstimator.estimateToolLabel ? " estimated" : ""), \(percentText(row, total: total)) of total"))
                 }
             }
         }
-    }
-
-    /// The estimated row reuses Claude's hue, faded, so it reads as "more
-    /// Claude, but not measured".
-    private static func sourceColor(_ tool: String) -> Color {
-        if tool == ClaudeNonLocalEstimator.estimateToolLabel { return ToolKind.claude.color.opacity(0.45) }
-        return ToolKind(rawValue: tool)?.color ?? TMDesign.accent
     }
 
     private func loadDetectedTools() {

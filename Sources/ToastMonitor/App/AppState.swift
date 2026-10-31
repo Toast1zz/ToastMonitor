@@ -104,6 +104,8 @@ final class AppState: ObservableObject {
     @Published private var state = UIState()
     /// True only while a USER-initiated refresh is in flight.
     @Published private(set) var manualRefreshing = false
+    /// Set at launch and after a recovery attempt.
+    @Published private(set) var databaseProblem: Database.OpenProblem?
 
     // Read-only views of `state`; every write goes through refresh()'s
     // single `state = next` publish.
@@ -181,6 +183,7 @@ final class AppState: ObservableObject {
     }
 
     func start() {
+        databaseProblem = Database.shared.openProblem
         refresh()
         updateForeground()
     }
@@ -294,6 +297,13 @@ final class AppState: ObservableObject {
                 self.finishRefresh(generation: generation)
             }
         }
+    }
+
+    /// Re-reads everything after the store was replaced.
+    func databaseWasReplaced() {
+        databaseProblem = Database.shared.openProblem
+        refresh(manual: true)
+        CollectorEngine.shared.scheduleScan(force: true)
     }
 
     private func finishRefresh(generation: UInt64) {

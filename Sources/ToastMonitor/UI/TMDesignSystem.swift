@@ -103,6 +103,13 @@ enum TMDesign {
     /// follows the label color and stays monochrome in both appearances.
     static let grok = Color(nsColor: .labelColor)
 
+    /// A row in a per-source breakdown. The estimated row reuses Claude's hue,
+    /// faded, so it reads as "more Claude, but not measured".
+    static func sourceColor(_ tool: String) -> Color {
+        if tool == ClaudeNonLocalEstimator.estimateToolLabel { return ToolKind.claude.color.opacity(0.45) }
+        return ToolKind(rawValue: tool)?.color ?? accent
+    }
+
     /// A brand color from its hex value, with an optional dark-appearance
     /// variant for brands that specify one.
     static func brand(_ light: UInt32, dark: UInt32? = nil) -> Color {

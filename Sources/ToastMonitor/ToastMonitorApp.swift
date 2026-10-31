@@ -718,7 +718,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let app = AppState.shared
         // Status bar shows ONLY today's tokens (user preference); costs live
         // in the popover.
-        let text = Format.compact(app.todayTokens)
+        let estimated = ClaudeNonLocalEstimator.estimatedTokens(in: app.byToolToday)
+        let text = (estimated > 0 ? "≈" : "") + Format.compact(app.todayTokens)
 
         // Defaults to the system UI font (SF Pro, tabular digits); a
         // user-picked font comes from the Appearance settings section.
@@ -734,7 +735,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ]))
         }
         button.attributedTitle = attr
-        var access = "Today: \(text) tokens"
+        var access = "Today: \(Format.compact(app.todayTokens)) tokens"
+        if estimated > 0 { access += ", including about \(Format.compact(estimated)) estimated" }
         if quotaAlerts.unreadCount > 0 {
             access += ", \(quotaAlerts.unreadCount) unread"
         }
