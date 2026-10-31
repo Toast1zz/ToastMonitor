@@ -867,8 +867,7 @@ struct PopoverHomeView: View {
         ].compactMap { $0 }
     }
 
-    /// A usage window line: `usedPercent` is how much is USED (0…100), so the
-    /// bar grows rightward as the quota is consumed.
+    /// A quota window: `usedPercent` always stores how much is used (0…100).
     private func window(_ label: String, _ usedPercent: Double?, reset: Int64?,
                          duration: Int64? = nil) -> QuotaWindow? {
         guard let usedPercent, usedPercent.isFinite else { return nil }
@@ -1675,25 +1674,25 @@ private struct QuotaWindowLine: View {
                     .font(TMType.number(TMType.caption, weight: .medium))
                     .foregroundStyle(.primary)
             }
-            UsageBar(usedPercent: window.usedPercent, tint: tint, elapsed: window.elapsed)
+            UsageBar(usedPercent: showsRemaining ? 100 - window.usedPercent : window.usedPercent,
+                     tint: tint,
+                     elapsed: window.elapsed.map { showsRemaining ? 1 - $0 : $0 })
         }
     }
 }
 
-/// Usage bar: empty = untouched, fills rightward as the window is used.
-/// Always shows usage; the used/remaining setting changes only the number.
+/// Quota bar: fills rightward to the selected used or remaining percentage.
 /// Filled with the service's color at every usage level.
 ///
-/// With a time mark, solid color runs to whichever comes first, usage or
-/// elapsed time; the stretch between the two is one step lighter. Behind
-/// time it is a darker track (headroom); past time it is a paler fill
-/// (using the window faster than it passes). Either way the solid edge is
-/// the time mark, so it never disappears under the fill.
+/// With a time mark, solid color runs to whichever comes first, quota or
+/// time; the stretch between the two is one step lighter. Below the time
+/// mark it is a darker track; above it is a paler fill. Either way the solid
+/// edge is the time mark, so it never disappears under the fill.
 private struct UsageBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let usedPercent: Double
     let tint: Color
-    /// 0…1 share of the window's time already passed.
+    /// 0…1 share of the window's time, matching the quota's used/remaining mode.
     var elapsed: Double?
 
     var body: some View {
