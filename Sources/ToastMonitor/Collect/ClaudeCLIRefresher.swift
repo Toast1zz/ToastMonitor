@@ -34,6 +34,8 @@ enum ClaudeCLIRefresher {
     ]
 
     private static let probeTimeout: TimeInterval = 25
+    /// Each check re-reads the login, which can start /usr/bin/security.
+    private static let renewedCheckInterval: TimeInterval = 3
     private static let gate = CLIRenewalGate()
 
     private static var attempt = 0
@@ -142,8 +144,8 @@ enum ClaudeCLIRefresher {
         }
     }
 
-    private nonisolated static func probe(binary: String?, attempt: Int,
-                                          renewed: (@Sendable () -> Bool)?) -> CLIRenewalOutcome {
+    nonisolated static func probe(binary: String?, attempt: Int,
+                                  renewed: (@Sendable () -> Bool)?) -> CLIRenewalOutcome {
         guard let binary = binary ?? locateBinary() else { return .failed("binary not found") }
         // A quarantined build that is not notarized makes Gatekeeper put up
         // a "cannot verify" dialog on every attempt, while a Terminal run is
@@ -195,7 +197,8 @@ enum ClaudeCLIRefresher {
         var nudgedAfterStatus = false
         var scanFrom = 0
         var succeeded = false
-        var nextRenewedCheck = Date().addingTimeInterval(1)
+        var exitedEarly = false
+        var nextRenewedCheck = Date().addingTimeInterval(renewedCheckInterval)
 
         while Date() < deadline {
             if let renewed, Date() >= nextRenewedCheck {
@@ -203,13 +206,23 @@ enum ClaudeCLIRefresher {
                     succeeded = true
                     break
                 }
-                nextRenewedCheck = Date().addingTimeInterval(1)
+                nextRenewedCheck = Date().addingTimeInterval(renewedCheckInterval)
             }
             var pfd = pollfd(fd: masterFD, events: Int16(POLLIN), revents: 0)
+            var gotOutput = false
             if poll(&pfd, 1, 80) > 0, Int32(pfd.revents) & POLLIN != 0 {
                 var chunk = [UInt8](repeating: 0, count: 8192)
                 let n = read(masterFD, &chunk, chunk.count)
-                if n > 0 { buffer.append(contentsOf: chunk[0..<n]) }
+                if n > 0 {
+                    buffer.append(contentsOf: chunk[0..<n])
+                    gotOutput = true
+                }
+            }
+            // With the CLI gone and its output drained, poll returns at once,
+            // so carrying on would spin a core until the deadline.
+            if !gotOutput, !process.isRunning {
+                exitedEarly = true
+                break
             }
             let fresh = buffer.dropFirst(min(scanFrom, buffer.count))
             let scan = compact(Array(fresh.suffix(20_000)))
@@ -243,7 +256,9 @@ enum ClaudeCLIRefresher {
         }
         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         close(masterFD)
-        return succeeded ? .completed : .failed("no account info within \(Int(probeTimeout))s")
+        if succeeded { return .completed }
+        return .failed(exitedEarly ? "exited with status \(process.terminationStatus)"
+                                   : "no account info within \(Int(probeTimeout))s")
     }
 
     private static func writeToFD(_ fd: Int32, _ text: String) {
