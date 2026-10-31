@@ -148,18 +148,6 @@ enum DataMaintenance {
                                  removedSessions: preview.sessions,
                                  removedTokens: preview.tokens)
     }
-    /// Clears usage/history while preserving settings and Keychain credentials.
-    /// A managed pre-clear backup is mandatory and returned to the caller.
-    static func clearAllData() throws -> String {
-        guard let backup = createBackup(label: "pre-clear") else {
-            throw MaintenanceError.backupFailed
-        }
-        guard Database.shared.clearAllData() else {
-            throw MaintenanceError.clearFailed(backup)
-        }
-        return backup
-    }
-
     /// Restores only a regular, non-empty managed backup. Database.restore
     /// performs the SQLite schema/integrity check before replacing live data.
     static func restore(backupPath path: String) -> Bool {
@@ -219,7 +207,7 @@ enum DataMaintenance {
     /// still have changed) must still get backed up, so callers invoke this
     /// unconditionally on every scan tick — the throttle keeps the actual
     /// backup+prune work to once per 7 days. This is the only automatic
-    /// backup in the app; `repair()`/`clearAllData()` each also create their
+    /// backup in the app; `repair()` also creates its
     /// own mandatory pre-operation backup. See `retained(_:)` for rotation.
     static func maybeCreateRoutineBackupIfDue() {
         if Database.shared.setting("backups_compressed") == nil {
@@ -369,14 +357,12 @@ enum DataMaintenance {
         case noLocalSources
         case backupFailed
         case resetFailed(String)
-        case clearFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .noLocalSources: return "Claude and Codex are both using remote sources"
             case .backupFailed: return "Could not create the pre-maintenance backup"
             case .resetFailed(let backup): return "Rebuild failed; original data retained. Backup: \(backup)"
-            case .clearFailed(let backup): return "Clear failed; original data retained. Backup: \(backup)"
             }
         }
     }

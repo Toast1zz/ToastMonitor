@@ -840,26 +840,6 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s").first?.cost ?? 1, 0, accuracy: 0.001)
     }
 
-    func testOpenRouterCycleSpendSubtractsMiddayBaseline() {
-        let day = Int64(2_000_000_000 / 86400) * 86400
-        XCTAssertTrue(db.insertORSnapshot(.init(ts: day + 100, usage: 0, usageDaily: 2,
-                                                usageWeekly: 2, usageMonthly: 2, limit: nil,
-                                                limitRemaining: nil, limitReset: nil, isFreeTier: false,
-                                                creditsTotal: nil, creditsUsage: nil, accountUsage: nil,
-                                                accountBalance: nil, isManagementKey: false)))
-        XCTAssertTrue(db.insertORSnapshot(.init(ts: day + 5_000, usage: 0, usageDaily: 5,
-                                                usageWeekly: 5, usageMonthly: 5, limit: nil,
-                                                limitRemaining: nil, limitReset: nil, isFreeTier: false,
-                                                creditsTotal: nil, creditsUsage: nil, accountUsage: nil,
-                                                accountBalance: nil, isManagementKey: false)))
-        XCTAssertTrue(db.insertORSnapshot(.init(ts: day + 86_500, usage: 0, usageDaily: 4,
-                                                usageWeekly: 4, usageMonthly: 4, limit: nil,
-                                                limitRemaining: nil, limitReset: nil, isFreeTier: false,
-                                                creditsTotal: nil, creditsUsage: nil, accountUsage: nil,
-                                                accountBalance: nil, isManagementKey: false)))
-        XCTAssertEqual(db.orSpendSince(day + 2_000), 7, accuracy: 0.0001)
-    }
-
     // P0-9: 两条 id=0 订阅不得互相覆盖。
     func testZeroIDSubscriptionsDoNotOverwrite() {
         let a = Database.Subscription(id: 0, name: "OpenCode Go", plan: "go",
@@ -1181,26 +1161,4 @@ extension DatabaseTests {
         XCTAssertEqual(remaining.first?.ts, now)
     }
 
-    /// DB-8: on the first day of a cycle there may be no same-day snapshot
-    /// before the cycle start; the baseline must come from the most recent
-    /// snapshot on ANY earlier day (else pre-cycle usage is double-counted).
-    func testOrSpendBaselineFallsBackToPriorDaySnapshot() {
-        let day0 = Int64(2_000_000_000 / 86400) * 86400
-        let day1 = day0 + 86400
-        let snap = { (ts: Int64, daily: Double) in
-            Database.ORSnapshot(ts: ts, usage: 0, usageDaily: daily, usageWeekly: daily,
-                                usageMonthly: daily, limit: nil, limitRemaining: nil, limitReset: nil,
-                                isFreeTier: false, creditsTotal: nil, creditsUsage: nil,
-                                accountUsage: nil, accountBalance: nil, isManagementKey: false)
-        }
-        // No snapshot on day1 before the cycle start: the baseline must come
-        // from day0 (usage_daily 3). First-day contribution = 7 - 3 = 4.
-        // Old behavior (same-day-only baseline) would count the full 7.
-        XCTAssertTrue(db.insertORSnapshot(snap(day0 + 100, 3)))   // prior day: baseline source
-        XCTAssertTrue(db.insertORSnapshot(snap(day1 + 5_000, 7))) // cycle-start day, after start
-        XCTAssertEqual(db.orSpendSince(day1 + 2_000), 4, accuracy: 0.0001)
-
-        // With no snapshots after the start there is nothing to sum.
-        XCTAssertEqual(db.orSpendSince(day1 + 50_000), 0, accuracy: 0.0001)
-    }
 }

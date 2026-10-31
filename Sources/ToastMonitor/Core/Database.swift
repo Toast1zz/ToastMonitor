@@ -2320,34 +2320,6 @@ final class Database: @unchecked Sendable {
         return (deepSeekSeries[currency] ?? []).filter { $0.ts >= start }
     }
 
-    func orSpendSince(_ start: Int64) -> Double {
-        lock.lock(); defer { lock.unlock() }
-        guard let db else { return 0 }
-        var stmt: OpaquePointer?
-        let startDay = start / 86400
-        var baseline: Double = 0
-        let baselineSQL = "SELECT usage_daily FROM openrouter_snapshots WHERE ts < ? ORDER BY ts DESC LIMIT 1;"
-        if sqlite3_prepare_v2(db, baselineSQL, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_int64(stmt, 1, start)
-            if sqlite3_step(stmt) == SQLITE_ROW { baseline = sqlite3_column_double(stmt, 0) }
-            sqlite3_finalize(stmt)
-        }
-        let sql = """
-        SELECT ts / 86400 AS utc_day, MAX(usage_daily) FROM openrouter_snapshots
-        WHERE ts >= ? GROUP BY utc_day;
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-        sqlite3_bind_int64(stmt, 1, start)
-        var total: Double = 0
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let day = sqlite3_column_int64(stmt, 0)
-            let maxDaily = sqlite3_column_double(stmt, 1)
-            total += day == startDay ? max(maxDaily - baseline, 0) : maxDaily
-        }
-        sqlite3_finalize(stmt)
-        return total
-    }
-
     /// Daily aggregates grouped by (day, model) for the model grouping view.
     func dailyAggregatesByModel(days: Int) -> [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)] {
         lock.lock(); defer { lock.unlock() }

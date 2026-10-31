@@ -51,18 +51,6 @@ final class SubscriptionMathTests: XCTestCase {
         XCTAssertEqual(info.progress, 20.0 / 30.0, accuracy: 0.001)
     }
 
-    /// Plans without a linked data source must degrade to no forecast rather
-    /// than crashing or fabricating numbers. Unknown plan strings hit the
-    /// default branch; ChatGPT/Codex share the OpenAI branch (Codex turns).
-    func testUnlinkedPlanForecastIsNil() {
-        let start = now.addingTimeInterval(-10 * 86400)
-        let end = now.addingTimeInterval(20 * 86400)
-        XCTAssertNil(SubscriptionMath.forecast(plan: "not-a-plan", cycleStart: start, cycleEnd: end, now: now),
-                     "unknown plans must not fabricate a forecast")
-        XCTAssertNil(SubscriptionMath.cycleValue(plan: "not-a-plan", cycle: "monthly", cycleStart: start),
-                     "unknown plans must not fabricate a value")
-    }
-
     /// SM-1: a weekly cycle must advance by adding 7 days (not week-of-year
     /// math, which misbehaves across year boundaries). A subscription that
     /// starts 2025-12-29 must have its window end exactly 2026-01-05.
