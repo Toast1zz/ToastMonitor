@@ -171,10 +171,11 @@ final class UsageQueryService: @unchecked Sendable {
     }
 
     func loadSessions(tool: ToolKind?, limit: Int = 500,
-                      completion: @escaping @MainActor @Sendable ([Database.SessionRow]) -> Void) {
+                      completion: @escaping @MainActor @Sendable ([Database.SessionRow], Int) -> Void) {
         queue.async {
             let sessions = self.database.sessions(tool: tool, limit: limit)
-            DispatchQueue.main.async { completion(sessions) }
+            let total = self.database.sessionCount(tool: tool)
+            DispatchQueue.main.async { completion(sessions, total) }
         }
     }
 

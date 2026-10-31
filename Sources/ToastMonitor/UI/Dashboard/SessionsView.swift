@@ -7,6 +7,10 @@ struct SessionsView: View {
     @State private var selectedSession: Database.SessionRow?
     @State private var loading = false
     @State private var loadGeneration = 0
+    @State private var total = 0
+    @State private var limit = Self.pageSize
+
+    private static let pageSize = 500
 
     var body: some View {
         DashPage {
@@ -16,7 +20,9 @@ struct SessionsView: View {
                 if loading {
                     ProgressView().controlSize(.small)
                 } else if !rows.isEmpty {
-                    Text("\(rows.count) session\(rows.count == 1 ? "" : "s")")
+                    Text(rows.count < total
+                         ? "Latest \(rows.count) of \(total) sessions"
+                         : "\(rows.count) session\(rows.count == 1 ? "" : "s")")
                         .font(TMType.regular(TMType.caption))
                         .tmMonospacedDigit()
                         .foregroundStyle(TMDesign.quiet)
@@ -61,6 +67,15 @@ struct SessionsView: View {
                         }
                         .padding(.horizontal, 10)
                         .padding(.bottom, 10)
+                        if rows.count < total {
+                            Button("Show \(min(Self.pageSize, total - rows.count)) More") {
+                                limit += Self.pageSize
+                                load()
+                            }
+                            .disabled(loading)
+                            .tmGlassButton(circle: false)
+                            .padding(.bottom, 14)
+                        }
                     }
                 }
             }
@@ -68,6 +83,7 @@ struct SessionsView: View {
         .onAppear(perform: load)
         .onChange(of: selectedTool) { _ in
             rows = []
+            limit = Self.pageSize
             load()
         }
         .sheet(item: $selectedSession) { SessionDetailView(session: $0) }
@@ -106,11 +122,37 @@ struct SessionsView: View {
         loadGeneration = generation
         loading = true
         let tool = selectedTool == "all" ? nil : ToolKind(rawValue: selectedTool)
-        UsageQueryService.shared.loadSessions(tool: tool) {
+        UsageQueryService.shared.loadSessions(tool: tool, limit: limit) { sessions, count in
             guard generation == loadGeneration else { return }
-            rows = $0
+            rows = sessions
+            total = count
             loading = false
         }
+    }
+}
+
+/// What a session is called on screen. Sources often store the prompt, which
+/// can open with a generated file list or carry raw Markdown links.
+enum SessionTitle {
+    static func clean(_ raw: String?) -> String? {
+        guard var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        if text.hasPrefix("# Files mentioned") {
+            // The user's words follow this heading; without it there are none.
+            guard let heading = text.range(of: #"(?m)^## My request[^\n]*\n"#, options: .regularExpression) else { return nil }
+            text = String(text[heading.upperBound...])
+        }
+        let lines = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let first = lines.first(where: { !$0.isEmpty }) else { return nil }
+        return first.replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "\\", with: "")
+    }
+
+    /// Title, else project; never a session id.
+    static func display(title: String?, project: String?) -> String {
+        if let cleaned = clean(title), !cleaned.isEmpty { return cleaned }
+        if let project, !project.isEmpty { return project }
+        return "Untitled session"
     }
 }
 
@@ -171,15 +213,13 @@ struct SessionRowView: View {
     private var tool: ToolKind? { ToolKind(rawValue: row.tool) }
 
     private var title: String {
-        if let t = row.title, !t.isEmpty { return t }
-        if let p = row.project, !p.isEmpty { return p }
-        return "Untitled session"
+        SessionTitle.display(title: row.title, project: row.project)
     }
 
     /// Context under the title. When the project already serves as the title
     /// it is not repeated.
     private var context: String {
-        let titled = row.title.map { !$0.isEmpty } ?? false
+        let titled = SessionTitle.clean(row.title) != nil
         var parts: [String] = []
         if titled, let p = row.project, !p.isEmpty { parts.append(p) }
         if let m = row.model, !m.isEmpty { parts.append(ModelName.display(m)) }
@@ -212,7 +252,7 @@ struct SessionRowView: View {
                     Text(Format.compact(tokens) + " tokens")
                         .font(TMType.medium(TMType.body))
                         .tmMonospacedDigit()
-                    Text("\(Format.count(row.count)) calls · \(Format.moneyShort(row.cost))")
+                    Text("\(Format.count(row.count)) calls" + (row.cost > 0 ? " · \(Format.moneyShort(row.cost))" : ""))
                         .font(TMType.regular(TMType.caption))
                         .tmMonospacedDigit()
                         .foregroundStyle(TMDesign.quiet)
@@ -256,7 +296,7 @@ struct SessionDetailView: View {
                 DashGlyph(symbol: tool?.symbol ?? "terminal",
                           color: tool?.color ?? TMDesign.accent, size: 36)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.title?.isEmpty == false ? session.title! : session.sessionID)
+                    Text(SessionTitle.display(title: session.title, project: session.project))
                         .font(TMType.semibold(TMType.section))
                         .lineLimit(2)
                     Text([tool?.displayName ?? session.tool, session.project]
@@ -277,7 +317,14 @@ struct SessionDetailView: View {
                 DashMetric(label: "Cost", value: Format.moneyShort(session.cost))
             }
 
-            DashCard("Turns", inset: 10) {
+            DashCard("Turns", inset: 10, trailing: {
+                if loaded, Int64(turns.count) < session.count {
+                    Text("Latest \(turns.count) of \(Format.count(session.count))")
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(TMDesign.quiet)
+                }
+            }) {
                 if !loaded {
                     ProgressView().controlSize(.small)
                         .frame(maxWidth: .infinity, minHeight: 80)
@@ -301,7 +348,8 @@ struct SessionDetailView: View {
                                             .foregroundStyle(TMDesign.quiet)
                                     }
                                     Spacer(minLength: 12)
-                                    Text(Format.compact(turn.input + turn.output + turn.cacheRead))
+                                    Text(Format.compact(tool?.totalTokens(input: turn.input, output: turn.output, cacheRead: turn.cacheRead)
+                                                        ?? turn.input + turn.output + turn.cacheRead))
                                         .font(TMType.medium(TMType.body))
                                         .tmMonospacedDigit()
                                     Text(Format.moneyShort(turn.cost))

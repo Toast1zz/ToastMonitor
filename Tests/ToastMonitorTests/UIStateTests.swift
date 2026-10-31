@@ -174,4 +174,14 @@ final class UIStateTests: XCTestCase {
         XCTAssertTrue(coordinator.request(manual: false, now: 110.001,
                                           watchdogSeconds: 10)?.restartedByWatchdog == true)
     }
+
+    func testSessionTitlesDropGeneratedText() {
+        XCTAssertEqual(SessionTitle.clean("# Files mentioned by the user:\n\n## a.pdf: /Users/demo/a.pdf\n\n## My request:\nFix the poster\nsecond line"),
+                       "Fix the poster")
+        XCTAssertEqual(SessionTitle.clean("# Files mentioned by the user:\n\n## a.md: /Users/demo/a.md\n\nInstructions"), nil)
+        XCTAssertEqual(SessionTitle.clean("[https\\://a.example](https\\://a.example) look at this"), "https://a.example look at this")
+        XCTAssertEqual(SessionTitle.clean("  plain  "), "plain")
+        XCTAssertEqual(SessionTitle.display(title: nil, project: "demo"), "demo")
+        XCTAssertEqual(SessionTitle.display(title: "", project: nil), "Untitled session")
+    }
 }
