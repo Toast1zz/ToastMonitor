@@ -464,13 +464,13 @@ struct PopoverHomeView: View {
                             .foregroundStyle(.primary)
                         Text("(\(percentText(row, total: total)))")
                             .font(TMType.number(TMType.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(TMDesign.quiet)
                         Spacer()
                         let isEstimate = row.tool == ClaudeNonLocalEstimator.estimateToolLabel
                         let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
                         Text(isEstimate ? Format.approximate(value) : Format.compact(value))
                             .font(TMType.number(TMType.body))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(TMDesign.quiet)
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
@@ -634,7 +634,7 @@ struct PopoverHomeView: View {
     private var historyAccessory: some View {
         Text(historyMode == .heatmap
              ? "\(activeDays) active days"
-             : "Peak \(Format.compact(trendPeak))")
+             : trendPeak > 0 ? "Peak \(Format.compact(trendPeak))" : "")
             .font(TMType.number(TMType.caption))
             .foregroundStyle(TMDesign.quiet)
     }
@@ -1194,35 +1194,34 @@ private struct TrendChartView: View {
                 if let h = hoveredTrend {
                     Text("\(shortDayFormatter.string(from: dayFromKey(h.key))) · \(Format.compact(h.tokens))")
                         .font(TMType.number(TMType.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TMDesign.quiet)
                 }
                 Spacer()
             }
             .frame(height: 16)
-            // Smoothed line (catmullRom). The persisted heatmap cache covers the
-            // cold start; fresh data replaces it asynchronously.
+            // Monotone, as on the Performance page: a curve that overshoots
+            // would show usage that never happened. The persisted heatmap cache
+            // covers the cold start; fresh data replaces it asynchronously.
             Chart(series, id: \.key) { d in
                 AreaMark(
                     x: .value("Day", dayFromKey(d.key)),
                     y: .value("Tokens", d.tokens)
                 )
-                .foregroundStyle(LinearGradient(
-                    colors: [TMDesign.accent.opacity(0.28), TMDesign.accent.opacity(0.02)],
-                    startPoint: .top, endPoint: .bottom))
-                .interpolationMethod(.catmullRom)
+                .foregroundStyle(TMDesign.accent.opacity(0.16))
+                .interpolationMethod(.monotone)
                 LineMark(
                     x: .value("Day", dayFromKey(d.key)),
                     y: .value("Tokens", d.tokens)
                 )
                 .foregroundStyle(TMDesign.accent)
                 .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.monotone)
             }
             .chartXAxis {
                 // Three date labels, colored like the Activity month labels.
                 AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
-                    AxisValueLabel(format: .dateTime.month(.defaultDigits).day())
+                    AxisValueLabel(format: .dateTime.month(.defaultDigits).day(), anchor: .top)
                         .font(.system(size: 10))
                         .foregroundStyle(TMDesign.quiet)
                 }
@@ -1522,7 +1521,7 @@ private struct BalanceLine: View {
                     Spacer()
                     Text(item.value)
                         .font(TMType.number(TMType.body))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TMDesign.quiet)
                 }
                 .lineLimit(1)
                 .accessibilityElement(children: .combine)
@@ -1610,7 +1609,6 @@ private struct PopoverCard<Accessory: View, Trailing: View, Content: View>: View
                     // Title case, matching the dashboard cards.
                     Text(title)
                         .font(TMType.semibold(12))
-                        .foregroundStyle(TMDesign.quiet)
                     accessory
                     Spacer(minLength: 6)
                     trailing
@@ -1815,7 +1813,7 @@ private struct UnconnectedSourcesRow: View {
                     .foregroundStyle(TMDesign.quiet)
                 Text(names.joined(separator: " · "))
                     .font(TMType.regular(TMType.micro))
-                    .foregroundStyle(TMDesign.faint)
+                    .foregroundStyle(TMDesign.quiet)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1854,7 +1852,7 @@ struct PopoverHeatmap: View {
     static var totalHeight: CGFloat { gridHeight }
 
     /// Opacity of the accent for levels 1…4 — one hue, light to strong.
-    private static let levelOpacity: [Double] = [0.28, 0.5, 0.75, 1]
+    static let levelOpacity: [Double] = [0.28, 0.5, 0.75, 1]
 
     /// Quartile cut points of the active days' totals. Levels follow rank,
     /// not share of the peak, so one huge day can't flatten every other day

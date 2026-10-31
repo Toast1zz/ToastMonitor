@@ -318,6 +318,11 @@ struct UsageAnalysisView: View {
         }
 
         let orderedNames = tokensByName.sorted { $0.value > $1.value }.map(\.key)
+        // Models past the legend share one gray: more colors than the legend
+        // can name leave segments nobody can identify. The table lists them all.
+        let chartedNames = grouping == .byModel ? Array(orderedNames.prefix(legendLimit)) : orderedNames
+        let charted = Set(chartedNames)
+        func chartName(_ name: String) -> String { charted.contains(name) ? name : otherLabel }
         let dayOrder = Set(rows.map(\.day)).sorted()
         let totalTokens = tokensByName.values.reduce(0, +)
 
@@ -329,13 +334,19 @@ struct UsageAnalysisView: View {
         var costPoints: [ChartPoint] = []
         for d in dayOrder {
             guard let date = date(fromDayKey: d) else { continue }
+            var tokens: [String: Double] = [:]
+            var cost: [String: Double] = [:]
             for name in orderedNames {
-                let c = color(for: name, grouping: grouping, modelColors: modelColors)
-                if let v = dayTokens[d]?[name], v > 0 {
+                tokens[chartName(name), default: 0] += Double(dayTokens[d]?[name] ?? 0)
+                cost[chartName(name), default: 0] += dayCost[d]?[name] ?? 0
+            }
+            for name in chartedNames + [otherLabel] {
+                let c = name == otherLabel ? otherColor : color(for: name, grouping: grouping, modelColors: modelColors)
+                if let v = tokens[name], v > 0 {
                     tokenPoints.append(ChartPoint(dayKey: d, date: date, label: label(name),
-                                                  color: c, value: Double(v)))
+                                                  color: c, value: v))
                 }
-                if let v = dayCost[d]?[name], v > 0 {
+                if let v = cost[name], v > 0 {
                     costPoints.append(ChartPoint(dayKey: d, date: date, label: label(name),
                                                  color: c, value: v))
                 }
@@ -372,6 +383,8 @@ struct UsageAnalysisView: View {
         let today = calendar.startOfDay(for: Date())
         let first = calendar.date(byAdding: .day, value: -(range.days - 1), to: today) ?? today
         let end = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        let hasOther = chartedNames.count < orderedNames.count
+        let chartedAggregates = aggregates.filter { charted.contains($0.name) }
 
         return AnalysisData(grouping: grouping,
                             range: range,
@@ -379,8 +392,8 @@ struct UsageAnalysisView: View {
                             costPoints: costPoints,
                             tokenByDay: Dictionary(grouping: tokenPoints, by: \.dayKey),
                             costByDay: Dictionary(grouping: costPoints, by: \.dayKey),
-                            labels: aggregates.map { label($0.name) },
-                            colors: aggregates.map(\.color),
+                            labels: chartedAggregates.map { label($0.name) } + (hasOther ? [otherLabel] : []),
+                            colors: chartedAggregates.map(\.color) + (hasOther ? [otherColor] : []),
                             aggregates: aggregates,
                             csvRows: csvRows,
                             dayCount: dayOrder.count,
@@ -389,6 +402,10 @@ struct UsageAnalysisView: View {
                             totalCalls: callsByName.values.reduce(0, +),
                             xDomain: first...end)
     }
+
+    private static let legendLimit = 5
+    private static let otherLabel = "Other"
+    private static let otherColor = Color.primary.opacity(0.25)
 
     private static func tokenValue(_ row: Row, grouping: Grouping) -> Int64 {
         if grouping == .byTool {
@@ -402,7 +419,7 @@ struct UsageAnalysisView: View {
 
     private static func color(for name: String, grouping: Grouping, modelColors: [String: Color]) -> Color {
         if grouping == .byTool {
-            return ToolKind(rawValue: name)?.color ?? TMDesign.accent
+            return TMDesign.sourceColor(name)
         }
         // Model colors are pre-assigned by usage rank (assignModelColors), so a
         // model has one color everywhere; a newly seen model gets the first.
@@ -631,13 +648,14 @@ struct UsageAnalysisView: View {
     // MARK: - Legend
 
     private var legend: some View {
-        // Sorted by usage (aggregates are descending), top 6.
-        let top = analysis?.aggregates.prefix(6) ?? []
+        // The chart's own scale, so every color on it is named here.
+        let labels = analysis?.labels ?? []
+        let colors = analysis?.colors ?? []
         return HStack(spacing: 14) {
-            ForEach(top, id: \.name) { r in
+            ForEach(Array(zip(labels, colors).enumerated()), id: \.offset) { _, item in
                 HStack(spacing: 5) {
-                    Circle().fill(r.color).frame(width: 8, height: 8)
-                    Text(displayName(for: r.name))
+                    Circle().fill(item.1).frame(width: 8, height: 8)
+                    Text(item.0)
                         .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.quiet)
                         .lineLimit(1)

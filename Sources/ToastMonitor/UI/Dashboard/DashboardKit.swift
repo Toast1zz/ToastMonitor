@@ -284,6 +284,10 @@ struct DashSegmented<Value: Hashable & Identifiable>: View {
                          accessibilityName: accessibilityName)
             .fixedSize()
             .modifier(SegmentedControlSize())
+            // Measured on macOS 27: bare, the capsule overhangs its row by 6.5 pt
+            // on each side, past the cards and into the next control. With any
+            // padding it lays out at full width and lines up with the cards.
+            .padding(.horizontal, 0.5)
     }
 }
 

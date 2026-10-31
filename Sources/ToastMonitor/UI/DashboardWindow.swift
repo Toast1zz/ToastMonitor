@@ -137,6 +137,9 @@ final class WindowManager {
     }
 
     private static let defaultContentSize = NSSize(width: 980, height: 680)
+    /// Pages fill exactly the window and do not scroll; below this their fixed
+    /// cards overflow under the toolbar and past the side margins.
+    private static let minimumContentSize = NSSize(width: 960, height: 660)
     private static let titlebarAllowance: CGFloat = 32
 
     func show(tab: DashboardView.Tab? = nil) {
@@ -173,12 +176,18 @@ final class WindowManager {
             height: min(Self.defaultContentSize.height, visibleFrame.height - Self.titlebarAllowance)))
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
-        window.contentMinSize = NSSize(width: 900, height: 600)
+        window.contentMinSize = Self.minimumContentSize
         window.center()
         // v3: the default shrank, and a remembered v2 frame would keep
         // reopening at the old large size, so the size memory starts over
         // once at the new default.
         window.setFrameAutosaveName("ToastMonitorDashboard.v3")
+        // A frame remembered from when the minimum was lower.
+        let restored = window.contentRect(forFrameRect: window.frame).size
+        if restored.width < Self.minimumContentSize.width || restored.height < Self.minimumContentSize.height {
+            window.setContentSize(NSSize(width: max(restored.width, Self.minimumContentSize.width),
+                                         height: max(restored.height, Self.minimumContentSize.height)))
+        }
         // Build and lay out all four pages before the window appears. This
         // moves each SwiftUI page's one-time construction cost out of toolbar
         // clicks, so the native tab island never shares a frame with Charts,

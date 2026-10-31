@@ -232,9 +232,12 @@ struct AccountsSettingsSection: View {
                 Text(status)
             } label: {
                 HStack(spacing: 8) {
+                    // Decorative: the system would read its symbol name, such
+                    // as "off" for Grok's mark.
                     Image(systemName: symbol)
                         .foregroundStyle(color)
                         .frame(width: 18)
+                        .accessibilityHidden(true)
                     Text(title)
                 }
             }

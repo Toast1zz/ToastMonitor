@@ -43,7 +43,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         switch self {
         case .claude: return TMDesign.brand(0xD97757)       // Claude brand orange
         case .codex: return TMDesign.brand(0x7A9DFF)        // Codex app icon gradient midpoint
-        case .dsh: return TMDesign.brand(0x4D6BFE)          // DeepSeek brand blue
+        case .dsh: return TMDesign.brand(0x2F49D1, dark: 0x3D5AEA) // DeepSeek brand blue, deepened to stand apart from Codex
         case .openrouter: return TMDesign.brand(0x7624F4, dark: 0xC8FF00) // OpenRouter Grape / Volt
         case .opencode: return Color(nsColor: .systemGreen)
         case .hermes: return Color(nsColor: .systemPurple)

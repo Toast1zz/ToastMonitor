@@ -51,7 +51,7 @@ struct OverviewView: View {
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: periodTokens)
                 DashMetric(label: "Calls", value: Format.count(periodCalls))
                 DashMetric(label: actualSpendLabel, value: actualSpendText)
-                DashMetric(label: "API Value", value: Format.money(apiValue))
+                DashMetric(label: "API Value", value: apiValue > 0 ? Format.money(apiValue) : "—")
             }
             // The breakdowns absorb the window's spare height; a long model
             // list scrolls inside its card.
@@ -65,7 +65,7 @@ struct OverviewView: View {
                     weeks: heatmapWeeks,
                     heatmap: app.heatmap,
                     heatmapCost: app.heatmapCost,
-                    maxTokens: heatmapMaxTokens,
+                    thresholds: PopoverHeatmap.thresholds(heatmapWeeks.joined().compactMap { $0.flatMap { app.heatmap[$0] } }),
                     weekdayLabels: weekdayLabels,
                     hoveredDay: $hoveredDay
                 )
@@ -220,11 +220,6 @@ struct OverviewView: View {
         }
     }
 
-    /// One O(n) pass per body evaluation, shared by every heatmap cell.
-    private var heatmapMaxTokens: Int64 {
-        app.heatmap.values.max() ?? 0
-    }
-
     /// 53-week geometry is keyed by calendar year and ordinal day. A day-only
     /// key reused the prior year's grid when the app stayed open over New Year.
     /// Timezone identifier joins the key: year/ordinal-day components depend on
@@ -344,7 +339,8 @@ private struct HeatmapGrid: View {
     let weeks: [[Int64?]]
     let heatmap: [Int64: Int64]
     let heatmapCost: [Int64: Double]
-    let maxTokens: Int64
+    /// Same quartile levels as the panel: one huge day cannot flatten the rest.
+    let thresholds: [Int64]
     /// One label per weekday row, empty for rows that stay unlabeled.
     let weekdayLabels: [String]
     @Binding var hoveredDay: HeatmapDay?
@@ -459,7 +455,7 @@ private struct HeatmapGrid: View {
                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                     .fill(level == 0
                           ? Color.primary.opacity(0.07)
-                          : TMDesign.accent.opacity(0.18 + Double(level) / 4 * 0.72))
+                          : TMDesign.accent.opacity(PopoverHeatmap.levelOpacity[level - 1]))
                     .frame(width: 12, height: 12)
                     .accessibilityHidden(true)
             }
@@ -499,17 +495,13 @@ private struct HeatmapGrid: View {
         // date > now); it renders fainter than a real zero-token day.
         if let day, day > 0 {
             let tokenCount = heatmap[day] ?? 0
-            let value = Double(tokenCount)
-            let maxValue = Double(maxTokens)
-            let intensity = value > 0 && maxValue > 0 ? max(0.18, min(1, value / maxValue)) : 0
+            let level = PopoverHeatmap.level(tokenCount, thresholds: thresholds)
             let label = Format.shortDayKey(day)
             let cost = heatmapCost[day] ?? 0
             let valueText = "\(Format.full(tokenCount)) tokens" + (cost > 0 ? ", \(Format.money(cost))" : "")
 
             RoundedRectangle(cornerRadius: 3, style: .continuous)
-                // Linear ramp with a 0.4 floor so any populated day (today
-                // included) is clearly visible next to the peak day.
-                .fill(value > 0 ? TMDesign.accent.opacity(max(0.4, 0.18 + intensity * 0.72)) : Color.primary.opacity(0.07))
+                .fill(level > 0 ? TMDesign.accent.opacity(PopoverHeatmap.levelOpacity[level - 1]) : Color.primary.opacity(0.07))
                 .frame(width: size, height: size)
                 .contentShape(Rectangle())
                 .accessibilityLabel(Text(label))

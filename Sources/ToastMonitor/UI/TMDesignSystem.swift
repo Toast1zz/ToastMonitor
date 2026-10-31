@@ -82,10 +82,15 @@ enum TMDesign {
         return NSColor(calibratedWhite: 0.955, alpha: 1.0)
     })
     static let divider = Color.primary.opacity(0.13)
-    // System label colors, not fixed opacities: they follow Increase
-    // Contrast and the vibrancy of the popover's material.
-    static let quiet = Color(nsColor: .secondaryLabelColor)
-    static let faint = Color(nsColor: .tertiaryLabelColor)
+    /// Secondary text. Not the system secondary label: over the panel's glass
+    /// its vibrancy measured under 3:1, and it follows the desktop behind the
+    /// panel. Increase Contrast still gets the system's stronger label color.
+    static let quiet = Color(nsColor: NSColor(name: nil) { appearance in
+        if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast { return .labelColor }
+        return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.72)
+            : NSColor(white: 0, alpha: 0.66)
+    })
     static let radius: CGFloat = 12
 
     /// The one semantic color: anomalies/danger (quota past 80%, errors).
@@ -345,41 +350,6 @@ struct TMStatusCapsule: View {
             .padding(.vertical, compact ? 2 : 4)
             .background(TMDesign.dangerFill, in: Capsule(style: .continuous))
             .accessibilityLabel("Critical: \(text)")
-    }
-}
-
-/// Forecast status and English forecast copy, shared by the Plans and Settings panes.
-enum ForecastText {
-    enum Status { case ok, warn, danger, neutral }
-
-    /// English forecast line for a subscription.
-    static func line(for fc: SubscriptionMath.Forecast, plan: String) -> (text: String, status: Status) {
-        switch plan {
-        case "go":
-            if let exhaust = fc.exhaustDate {
-                return ("\(Format.money(fc.used)) used · exhausts \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
-            }
-            let remaining = max(fc.limit - (fc.projectedEnd ?? 0), 0)
-            return ("\(Format.money(fc.used)) used · \(Format.money(fc.dailyRate))/day · \(Format.money(remaining)) left at cycle end", .ok)
-        case "openrouter":
-            if let exhaust = fc.exhaustDate {
-                return ("Balance \(Format.money(fc.limit)) · ~empty \(Format.day(Int64(exhaust.timeIntervalSince1970)))", .warn)
-            }
-            return ("Balance \(Format.money(fc.limit)) · \(Format.money(fc.dailyRate))/day", .ok)
-        case "claude":
-            return ("Claude value \(Format.money(fc.used)) · \(Format.money(fc.dailyRate))/day", .ok)
-        default:
-            return ("Paid \(Format.money(fc.used)) · no usage source linked", .neutral)
-        }
-    }
-
-    static func color(_ status: Status) -> Color {
-        switch status {
-        case .ok: return TMDesign.quiet
-        case .warn: return TMDesign.accent
-        case .danger: return TMDesign.danger
-        case .neutral: return .secondary
-        }
     }
 }
 
