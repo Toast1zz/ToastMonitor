@@ -329,7 +329,9 @@ struct PopoverHomeView: View {
                     .accessibilityHidden(true)
             }
             HStack(spacing: 16) {
-                HeroChip(label: "Spent", value: combinedSpentText,
+                // OpenRouter only reports a monthly window, as the Overview says too.
+                HeroChip(label: period == .all && AccountConnection.openRouter ? "Spent · OR recent month" : "Spent",
+                         value: combinedSpentText,
                          problem: deepseekSpendPending
                              ? RowProblem(title: "DeepSeek spending not included yet",
                                           detail: "Spent leaves out DeepSeek's account billing for this "
@@ -411,15 +413,8 @@ struct PopoverHomeView: View {
     }
 
     private var subsAmortized: Double {
-        let days: Int
-        switch period {
-        case .today: days = 1
-        case .week: days = 7
-        case .month: days = 30
-        // All: a 10-year window covers every subscription, ended ones included.
-        case .all: days = 3650
-        }
-        return SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
+        SubscriptionMath.amortized(slot: period.slot, configuration: periodSettings.configuration,
+                                   subscriptions: app.subscriptions, now: now)
     }
 
     /// Source share bar plus one row per source.

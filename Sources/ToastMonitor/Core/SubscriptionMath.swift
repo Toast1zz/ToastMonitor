@@ -119,7 +119,23 @@ enum SubscriptionMath {
     /// An explicit end date truncates the final cycle before its daily rate is calculated.
     static func amortized(days: Int, subscriptions: [Database.Subscription], now: Date = Date()) -> Double {
         guard days > 0 else { return 0 }
-        let windowStart = now.addingTimeInterval(-Double(days) * 86400)
+        return amortized(since: now.addingTimeInterval(-Double(days) * 86400),
+                         subscriptions: subscriptions, now: now)
+    }
+
+    /// Same share for the time a period actually covers, so Spent matches the
+    /// tokens beside it: "Weekly" on a Monday morning is a few hours, not 7 days.
+    static func amortized(slot: UsagePeriodSlot, configuration: UsagePeriodConfiguration,
+                          subscriptions: [Database.Subscription], now: Date = Date()) -> Double {
+        // All: a 10-year window covers every subscription, ended ones included.
+        if slot == .all { return amortized(days: 3650, subscriptions: subscriptions, now: now) }
+        let start = configuration.range(for: slot, now: now).start
+        return amortized(since: Date(timeIntervalSince1970: TimeInterval(start)),
+                         subscriptions: subscriptions, now: now)
+    }
+
+    private static func amortized(since windowStart: Date, subscriptions: [Database.Subscription], now: Date) -> Double {
+        guard windowStart < now else { return 0 }
         var total = 0.0
         for sub in subscriptions {
             for cycle in cycles(of: sub, overlapping: windowStart..<now) {

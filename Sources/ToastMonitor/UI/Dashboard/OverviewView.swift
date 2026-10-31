@@ -172,15 +172,15 @@ struct OverviewView: View {
     /// Actual spend = billed/direct cost + OpenRouter + amortized subscriptions.
     private var actualSpend: Double {
         let orUsage: Double
-        let days: Int
         switch period {
-        case .today: orUsage = orClient.state.usageDaily; days = 1
-        case .week: orUsage = orClient.state.usageWeekly; days = 7
-        case .month: orUsage = orClient.state.usageMonthly; days = 30
-        case .all: orUsage = orClient.state.usageMonthly; days = 3650 // OpenRouter has only a monthly window; 10 years covers every subscription
+        case .today: orUsage = orClient.state.usageDaily
+        case .week: orUsage = orClient.state.usageWeekly
+        case .month: orUsage = orClient.state.usageMonthly
+        case .all: orUsage = orClient.state.usageMonthly // OpenRouter has only a monthly window
         }
         return periodCost.actual + orUsage
-            + SubscriptionMath.amortized(days: days, subscriptions: app.subscriptions)
+            + SubscriptionMath.amortized(slot: period.slot, configuration: periodSettings.configuration,
+                                         subscriptions: app.subscriptions)
     }
 
     /// Same composition as the popover's Spent chip: local billed cost,

@@ -129,4 +129,21 @@ final class SubscriptionMathTests: XCTestCase {
         XCTAssertEqual(SubscriptionMath.amortized(days: 9, subscriptions: [monthly], now: date(2026, 2, 10)), 20, accuracy: 0.0001)
     }
 
+
+    /// Calendar "Weekly" a day after its start pays for one day, not seven.
+    func testAmortizedFollowsTheCalendarPeriod() {
+        let sub = Database.Subscription(id: 1, name: "Plan", plan: "", startDate: 1_700_000_000,
+                                        cycle: "monthly", price: 30, currency: "USD")
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        let monday = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 0))!
+        let tuesdayNoon = monday.addingTimeInterval(36 * 3600)
+        var configuration = UsagePeriodConfiguration()
+        configuration.mode = .calendar
+        configuration.weekStart = .monday
+        let week = SubscriptionMath.amortized(slot: .week, configuration: configuration,
+                                              subscriptions: [sub], now: tuesdayNoon)
+        let sevenDays = SubscriptionMath.amortized(days: 7, subscriptions: [sub], now: tuesdayNoon)
+        XCTAssertEqual(week / sevenDays, 1.5 / 7, accuracy: 0.03)
+    }
 }
