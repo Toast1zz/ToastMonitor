@@ -629,7 +629,7 @@ struct UsageAnalysisView: View {
                             Text(r.cost > 0 ? Format.moneyShort(r.cost) : "—")
                                 .foregroundStyle(TMDesign.quiet)
                             HStack(spacing: 8) {
-                                DashUsageBar(usedPercent: r.ratio * 100, tint: r.color, height: 5)
+                                DashUsageBar(fillPercent: r.ratio * 100, tint: r.color, height: 5)
                                     .frame(width: 84)
                                 Text(String(format: "%.1f%%", r.ratio * 100))
                                     .foregroundStyle(TMDesign.quiet)
