@@ -111,14 +111,16 @@ final class CollectorEngine: @unchecked Sendable {
     /// Logs that end in a partial line, as of the scan that could not finish
     /// them. The cursor stays before that line, so size alone reads as a change
     /// and the same bytes would be parsed and written on every tick.
-    private var settledPartialTails: [String: FileScanner.Stat] = [:]
+    private var settledPartialTails: [String: (stat: FileScanner.Stat, cursor: Int64)] = [:]
 
     private func fileSourcesChanged(_ paths: [String]) -> Bool {
         paths.contains { path in
             guard let stat = FileScanner.fileStat(path) else { return false }
-            if let settled = settledPartialTails[path], settled.size == stat.size,
-               settled.mtime == stat.mtime, settled.identity == stat.identity { return false }
             let previous = Database.shared.scanState(path)
+            // A rebuild moves the cursor without touching the file.
+            if let settled = settledPartialTails[path], settled.cursor == previous.size,
+               settled.stat.size == stat.size, settled.stat.mtime == stat.mtime,
+               settled.stat.identity == stat.identity { return false }
             return previous.size != stat.size
                 || previous.mtime != stat.mtime
                 || previous.identity != stat.identity
@@ -130,7 +132,7 @@ final class CollectorEngine: @unchecked Sendable {
             guard let stat = FileScanner.fileStat(path) else { continue }
             let state = Database.shared.scanState(path)
             if state.size < stat.size, state.mtime == stat.mtime, state.identity == stat.identity {
-                settledPartialTails[path] = stat
+                settledPartialTails[path] = (stat, state.size)
             } else {
                 settledPartialTails[path] = nil
             }
