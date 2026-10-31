@@ -90,6 +90,14 @@ final class CLIRenewalTests: XCTestCase {
     }
 
     @MainActor
+    func testUnreadableLoginAfterAFirstAttemptStartsTheRetry() {
+        let retry = CLIRenewalRetry(interval: 0.01)
+        let fired = expectation(description: "retried")
+        XCTAssertTrue(retry.loginUnreadable(renewing: false, outcome: .completed) { fired.fulfill() })
+        wait(for: [fired], timeout: 2)
+    }
+
+    @MainActor
     func testUnreadableLoginIsReportedAfterRepeatedFailures() {
         let retry = CLIRenewalRetry(interval: 60)
         defer { retry.reset() }

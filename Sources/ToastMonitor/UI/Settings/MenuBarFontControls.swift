@@ -46,12 +46,10 @@ struct MenuBarFontControls: View {
                     settings.set(.from(font))
                 }
             }
-            .help("Choose the font used for the menu bar token count")
             .accessibilityLabel("Menu bar font")
             .accessibilityValue(settings.selection.displayName)
             if !settings.selection.isSystemDefault {
                 Button("Reset") { settings.resetToDefault() }
-                    .help("Use the system UI font (SF Pro)")
                     .accessibilityLabel("Reset menu bar font")
             }
         }

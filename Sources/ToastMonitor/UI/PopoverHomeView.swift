@@ -1101,7 +1101,7 @@ struct PopoverHomeView: View {
         return state.balanceError.map { RowProblem.from(service: "DeepSeek", error: $0) }
     }
 
-    /// "~3.2d left" when the DeepSeek balance is running out. Platform
+    /// "3.2d left" when the DeepSeek balance is running out. Platform
     /// logins report this month's spend directly; API-key logins fall back
     /// to how the recorded balance has been falling. Several funded wallets
     /// have no single answer, so they say nothing.

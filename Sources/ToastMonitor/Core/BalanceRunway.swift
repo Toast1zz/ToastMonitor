@@ -1,7 +1,7 @@
 import Foundation
 
 /// How long a prepaid balance lasts at the recent spending pace. Only shown
-/// when it is running out ("~3.2d left"); a healthy balance says nothing.
+/// when it is running out ("3.2d left"); a healthy balance says nothing.
 enum BalanceRunway {
     /// History looked at for the pace.
     static let lookback: Int64 = 30 * 86_400
@@ -30,13 +30,13 @@ enum BalanceRunway {
     /// Under this many days left, a balance needs attention.
     static let warnDays = 7.0
 
-    /// "~3.2d left" when the balance runs out within `warnDays` at the
+    /// "3.2d left" when the balance runs out within `warnDays` at the
     /// recent pace; nil otherwise, including when the pace is unknown.
     static func lowText(balance: Double, dailySpend: Double?) -> String? {
         guard let dailySpend, dailySpend.isFinite, dailySpend >= idleDailySpend,
               balance.isFinite, balance > 0 else { return nil }
         let days = balance / dailySpend
         guard days < warnDays else { return nil }
-        return "~\(Format.remaining(Int64(days * 86_400))) left"
+        return "\(Format.remaining(Int64(days * 86_400))) left"
     }
 }
