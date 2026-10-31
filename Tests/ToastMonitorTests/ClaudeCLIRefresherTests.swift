@@ -47,6 +47,17 @@ final class ClaudeCLIRefresherTests: XCTestCase {
         XCTAssertEqual(found, "\(home)/.local/bin/grok")
     }
 
+    func testLocateBinaryFindsGrokFromItsOwnInstaller() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cli-refresher-home-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: "\(home)/.grok/bin", withIntermediateDirectories: true)
+        makeExecutable(at: "\(home)/.grok/bin/grok")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let found = ClaudeCLIRefresher.locateBinary(named: "grok", env: [:], home: home, fixedCandidates: [])
+        XCTAssertEqual(found, "\(home)/.grok/bin/grok")
+    }
+
     func testLocateBinaryReturnsNilWhenNothingFound() throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("cli-refresher-home-\(UUID().uuidString)").path
@@ -103,7 +114,7 @@ final class ClaudeCLIRefresherTests: XCTestCase {
         let value = Array("0181;6ada222b;;9604CC98-E333-49CA-AFAA-0FA61756BF20".utf8)
         XCTAssertEqual(setxattr(script, "com.apple.quarantine", value, value.count, 0, 0), 0)
 
-        XCTAssertFalse(ClaudeCLIRefresher.refresh(binary: script))
+        XCTAssertEqual(ClaudeCLIRefresher.refresh(binary: script), .failed("blocked by Gatekeeper"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
     }
 }

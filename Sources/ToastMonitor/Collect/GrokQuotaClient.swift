@@ -119,6 +119,8 @@ final class GrokQuotaClient: ObservableObject {
             poller.stop()
             refreshGeneration &+= 1
             inFlight = false
+            renewalRetry.reset()
+            rejectedToken = nil
         }
     }
 
@@ -135,25 +137,52 @@ final class GrokQuotaClient: ObservableObject {
 
     // MARK: - Refresh
 
-    func refresh() {
+    private let renewalRetry = CLIRenewalRetry()
+    /// The token the billing API last refused. Held in memory only.
+    private var rejectedToken: String?
+
+    /// True when the saved login can't be used until something replaces it.
+    nonisolated static func needsRenewal(_ credentials: Credentials, rejectedToken: String?,
+                                         now: Date = Date()) -> Bool {
+        if let expiresAt = credentials.expiresAt, expiresAt <= now { return true }
+        return credentials.accessToken == rejectedToken
+    }
+
+    private func renewalFailed(outcome: CLIRenewalOutcome?) {
+        renewalRetry.schedule(counting: outcome != .throttled) { [weak self] in
+            self?.refresh(renewing: true)
+        }
+        if renewalRetry.shouldReport { state.error = Self.expired }
+        if renewalRetry.shouldRetestRejectedToken { rejectedToken = nil }
+    }
+
+    /// `renewing` is a retry of a failed login renewal. It runs through the
+    /// backoff, which covers the billing API and not the CLI, so the retry
+    /// can't stop; the billing API still waits for the backoff to end.
+    func refresh(renewing: Bool = false) {
         guard enabled, !inFlight, !isDemo else { return }
         // Backoff gate: skip attempts inside the backoff window.
-        if backoff.isWaiting { return }
+        if !renewing, backoff.isWaiting { return }
         inFlight = true
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        let rejected = rejectedToken
 
         // Never read auth.json on the main actor.
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var credentials = Self.loadCredentials()
+            var outcome: CLIRenewalOutcome?
             // The access token lasts about six hours; let the Grok CLI renew
             // it from the refresh token instead of asking for a new login.
-            if let expiresAt = credentials?.expiresAt, expiresAt <= Date(), GrokCLIRefresher.refresh() {
+            if let current = credentials, Self.needsRenewal(current, rejectedToken: rejected) {
+                outcome = GrokCLIRefresher.refresh()
                 credentials = Self.loadCredentials()
             }
+            let attempted = outcome
+            let resolved = credentials
             Task { @MainActor [weak self] in
                 guard let self, self.refreshGeneration == generation else { return }
-                guard let credentials else {
+                guard let resolved else {
                     self.inFlight = false
                     self.state.configured = false
                     self.state.isLoading = false
@@ -161,13 +190,19 @@ final class GrokQuotaClient: ObservableObject {
                     return
                 }
                 self.state.configured = true
-                if let expiresAt = credentials.expiresAt, expiresAt <= Date() {
+                if Self.needsRenewal(resolved, rejectedToken: rejected) {
                     self.inFlight = false
                     self.state.isLoading = false
-                    self.state.error = Self.expired
+                    self.renewalFailed(outcome: attempted)
                     return
                 }
-                self.requestUsage(token: credentials.accessToken, generation: generation)
+                self.renewalRetry.reset()
+                self.rejectedToken = nil
+                guard !self.backoff.isWaiting else {
+                    self.inFlight = false
+                    return
+                }
+                self.requestUsage(token: resolved.accessToken, generation: generation)
             }
         }
     }
@@ -272,31 +307,15 @@ final class GrokQuotaClient: ObservableObject {
                 self.apply(snapshot)
             case .failure(.status(let code))? where code == 401 || code == 403:
                 // Rejected before its expiry (revoked, or the clock is off):
-                // one CLI renewal, then a normal refresh with the new token.
-                self.state.error = Self.expired
-                self.renewAfterRejection()
+                // renew through the CLI, then a normal refresh with the new token.
+                self.rejectedToken = token
+                self.refresh(renewing: true)
             case .failure(let error)?:
                 self.state.error = Self.message(for: error)
                 self.backoff.failed()
             case nil:
                 self.state.error = "Grok billing request failed"
                 self.backoff.failed()
-            }
-        }
-    }
-
-    private func renewAfterRejection() {
-        inFlight = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let renewed = GrokCLIRefresher.refresh()
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.inFlight = false
-                if renewed {
-                    self.refresh()
-                } else {
-                    self.backoff.failed()
-                }
             }
         }
     }

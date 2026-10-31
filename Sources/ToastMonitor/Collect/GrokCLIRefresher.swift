@@ -11,28 +11,27 @@ import Foundation
 /// chat turn, no TUI and no PTY. ToastMonitor then re-reads auth.json.
 enum GrokCLIRefresher {
     private static let timeout: TimeInterval = 20
-    /// A refresh token that is really dead fails every time; don't spawn the
-    /// CLI on every poll while the user still has to sign in again.
-    private static let minReinvokeInterval: TimeInterval = 10 * 60
+    private static let gate = CLIRenewalGate()
 
-    private static var lastInvoke: TimeInterval = 0
-    private static let lock = NSLock()
-
-    /// Blocks for up to `timeout`; never call it on the main actor. True
-    /// when `grok models` exited cleanly, which it does only with a usable
+    /// Blocks for up to `timeout`; never call it on the main actor. Completes
+    /// when `grok models` exits cleanly, which it does only with a usable
     /// (possibly just renewed) login.
-    @discardableResult
-    nonisolated static func refresh(binary: String? = nil) -> Bool {
-        lock.lock()
-        let now = Date().timeIntervalSince1970
-        guard now - lastInvoke >= minReinvokeInterval else { lock.unlock(); return false }
-        lastInvoke = now
-        lock.unlock()
+    nonisolated static func refresh() -> CLIRenewalOutcome {
+        guard gate.begin() else { return .throttled }
+        let outcome = run(binary: nil)
+        if case .failed(let reason) = outcome {
+            NSLog("[ToastMonitor][renewal] grok failed: %@", reason)
+        }
+        return outcome
+    }
 
-        guard let binary = binary ?? ClaudeCLIRefresher.locateBinary(named: "grok") else { return false }
+    nonisolated static func run(binary: String?) -> CLIRenewalOutcome {
+        guard let binary = binary ?? ClaudeCLIRefresher.locateBinary(named: "grok") else {
+            return .failed("binary not found")
+        }
         // Same Gatekeeper reason as ClaudeCLIRefresher: a quarantined build
         // that is not notarized would raise a dialog on every attempt.
-        guard !ClaudeCLIRefresher.launchBlocked(binary) else { return false }
+        guard !ClaudeCLIRefresher.launchBlocked(binary) else { return .failed("blocked by Gatekeeper") }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
@@ -48,15 +47,15 @@ enum GrokCLIRefresher {
         do {
             try process.run()
         } catch {
-            return false
+            return .failed("launch: \(error.localizedDescription)")
         }
         if exited.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             if exited.wait(timeout: .now() + 2) == .timedOut {
                 kill(process.processIdentifier, SIGKILL)
             }
-            return false
+            return .failed("timed out after \(Int(timeout))s")
         }
-        return process.terminationStatus == 0
+        return process.terminationStatus == 0 ? .completed : .failed("exit \(process.terminationStatus)")
     }
 }

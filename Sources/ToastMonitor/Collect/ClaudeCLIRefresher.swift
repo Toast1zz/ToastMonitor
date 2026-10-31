@@ -34,15 +34,18 @@ enum ClaudeCLIRefresher {
     ]
 
     private static let probeTimeout: TimeInterval = 25
-    /// Don't spawn a probe more often than this even if a caller keeps
-    /// asking — e.g. the token stays expired because the user is genuinely
-    /// logged out, not just idle. A whole `claude` session is heavier than
-    /// a network request; this keeps a stuck state from repeatedly spawning
-    /// one on every refresh cycle.
-    private static let minReinvokeInterval: TimeInterval = 10 * 60
+    private static let gate = CLIRenewalGate()
 
-    private static var lastInvoke: TimeInterval = 0
+    private static var attempt = 0
     private static let lock = NSLock()
+
+    /// `--tools ""` disables the tool list. The probe still uses the user's
+    /// Claude login; CLAUDE_CONFIG_DIR is left unset on purpose. A failed
+    /// login retries every minute, and a normal start launches every
+    /// configured MCP server, so most retries skip them.
+    nonisolated static func arguments(attempt: Int) -> [String] {
+        attempt % 5 == 0 ? ["--tools", ""] : ["--tools", "", "--strict-mcp-config"]
+    }
 
     /// Finds a `claude` executable without shelling out when possible.
     /// Returns nil if none is found — callers should fall back to the
@@ -56,7 +59,9 @@ enum ClaudeCLIRefresher {
                                          home: String = NSHomeDirectory(),
                                          fixedCandidates: [String]? = nil) -> String? {
         let fixed = fixedCandidates ?? ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"]
-        let candidates = ["\(home)/.local/bin/\(name)"] + fixed
+        // ~/.grok/bin is where Grok's own installer puts it; an app opened
+        // from Finder doesn't get the PATH line that installer adds.
+        let candidates = ["\(home)/.local/bin/\(name)", "\(home)/.\(name)/bin/\(name)"] + fixed
         for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
             return path
         }
@@ -109,26 +114,45 @@ enum ClaudeCLIRefresher {
     }
 
     /// Runs the probe synchronously — this blocks for up to ~25s and must
-    /// never be called on the main actor. Returns true only once `/status`
-    /// visibly rendered account info, which is the signal Claude Code's own
-    /// login check (and refresh, if the token had expired) completed.
-    @discardableResult
-    nonisolated static func refresh(binary: String? = nil) -> Bool {
+    /// never be called on the main actor. Ends as soon as `renewed` reports
+    /// the new login, or once `/status` visibly rendered account info, which
+    /// is the signal Claude Code's own login check completed.
+    nonisolated static func refresh(binary: String? = nil,
+                                    renewed: (@Sendable () -> Bool)? = nil) -> CLIRenewalOutcome {
+        guard gate.begin() else { return .throttled }
         lock.lock()
-        let now = Date().timeIntervalSince1970
-        guard now - lastInvoke >= minReinvokeInterval else { lock.unlock(); return false }
-        lastInvoke = now
+        let currentAttempt = attempt
+        attempt += 1
         lock.unlock()
+        let outcome = probe(binary: binary, attempt: currentAttempt, renewed: renewed)
+        if case .failed(let reason) = outcome {
+            NSLog("[ToastMonitor][renewal] claude attempt %d failed: %@", currentAttempt, reason)
+        }
+        return outcome
+    }
 
-        guard let binary = binary ?? locateBinary() else { return false }
+    /// The next renewal, hours away, starts over with the full launch.
+    nonisolated static func renewalSucceeded() {
+        lock.lock()
+        let attempts = attempt
+        attempt = 0
+        lock.unlock()
+        if attempts > 1 {
+            NSLog("[ToastMonitor][renewal] claude renewed on attempt %d", attempts - 1)
+        }
+    }
+
+    private nonisolated static func probe(binary: String?, attempt: Int,
+                                          renewed: (@Sendable () -> Bool)?) -> CLIRenewalOutcome {
+        guard let binary = binary ?? locateBinary() else { return .failed("binary not found") }
         // A quarantined build that is not notarized makes Gatekeeper put up
         // a "cannot verify" dialog on every attempt, while a Terminal run is
         // exempt — so leave that one to the user there.
-        guard !launchBlocked(binary) else { return false }
+        guard !launchBlocked(binary) else { return .failed("blocked by Gatekeeper") }
 
         var masterFD: Int32 = 0
         var slaveFD: Int32 = 0
-        guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else { return false }
+        guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else { return .failed("no PTY") }
 
         // A dedicated scratch directory: this must never run inside one of
         // the user's real projects (wrong trust prompts, wrong CLAUDE.md,
@@ -145,9 +169,7 @@ enum ClaudeCLIRefresher {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
-        // `--tools ""` disables the tool list. The probe still uses the
-        // user's Claude login; CLAUDE_CONFIG_DIR is left unset on purpose.
-        process.arguments = ["--tools", ""]
+        process.arguments = arguments(attempt: attempt)
         process.currentDirectoryURL = probeDir
         let slaveHandle = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: false)
         process.standardInput = slaveHandle
@@ -159,7 +181,7 @@ enum ClaudeCLIRefresher {
         } catch {
             close(masterFD)
             close(slaveFD)
-            return false
+            return .failed("launch: \(error.localizedDescription)")
         }
         close(slaveFD) // the child holds its own copy; the parent's is done
 
@@ -173,8 +195,16 @@ enum ClaudeCLIRefresher {
         var nudgedAfterStatus = false
         var scanFrom = 0
         var succeeded = false
+        var nextRenewedCheck = Date().addingTimeInterval(1)
 
         while Date() < deadline {
+            if let renewed, Date() >= nextRenewedCheck {
+                if renewed() {
+                    succeeded = true
+                    break
+                }
+                nextRenewedCheck = Date().addingTimeInterval(1)
+            }
             var pfd = pollfd(fd: masterFD, events: Int16(POLLIN), revents: 0)
             if poll(&pfd, 1, 80) > 0, Int32(pfd.revents) & POLLIN != 0 {
                 var chunk = [UInt8](repeating: 0, count: 8192)
@@ -213,7 +243,7 @@ enum ClaudeCLIRefresher {
         }
         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         close(masterFD)
-        return succeeded
+        return succeeded ? .completed : .failed("no account info within \(Int(probeTimeout))s")
     }
 
     private static func writeToFD(_ fd: Int32, _ text: String) {
