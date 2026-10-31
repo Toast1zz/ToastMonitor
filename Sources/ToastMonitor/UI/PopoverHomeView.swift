@@ -316,17 +316,10 @@ struct PopoverHomeView: View {
                     // as a live token update.
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: HeroValue(tokens: tokens, full: fullTokens))
                     .accessibilityLabel("\(periodSettings.configuration.label(for: period.slot)) token usage")
-                    .accessibilityValue(Text("\(Format.full(tokens)) tokens"
-                        + (estimatedTokens > 0 ? ", including about \(Format.full(estimatedTokens)) estimated" : "")))
+                    .accessibilityValue(Text("\(Format.full(tokens)) tokens"))
                 Text("tokens")
                     .font(TMType.regular(13))
                     .foregroundStyle(TMDesign.quiet)
-            }
-            if estimatedTokens > 0 {
-                Text("Includes \(Format.approximate(estimatedTokens)) estimated")
-                    .font(TMType.number(TMType.caption))
-                    .foregroundStyle(TMDesign.quiet)
-                    .accessibilityHidden(true)
             }
             HStack(spacing: 16) {
                 // OpenRouter only reports a monthly window, as the Overview says too.
@@ -343,11 +336,6 @@ struct PopoverHomeView: View {
                          value: estimatedShown > 0 ? Format.money(estimatedShown) : "—")
             }
         }
-    }
-
-    /// Claude use outside this Mac, inferred from the quota: part of `tokens`.
-    private var estimatedTokens: Int64 {
-        ClaudeNonLocalEstimator.estimatedTokens(in: byTool)
     }
 
     /// DeepSeek account billing is part of Spent but has not landed (or is
@@ -466,15 +454,14 @@ struct PopoverHomeView: View {
                             .font(TMType.number(TMType.caption))
                             .foregroundStyle(TMDesign.quiet)
                         Spacer()
-                        let isEstimate = row.tool == ClaudeNonLocalEstimator.estimateToolLabel
                         let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
-                        Text(isEstimate ? Format.approximate(value) : Format.compact(value))
+                        Text(Format.compact(value))
                             .font(TMType.number(TMType.body))
                             .foregroundStyle(TMDesign.quiet)
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
-                    .accessibilityValue(Text("\(row.tool == ClaudeNonLocalEstimator.estimateToolLabel ? "about " : "")\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens\(row.tool == ClaudeNonLocalEstimator.estimateToolLabel ? " estimated" : ""), \(percentText(row, total: total)) of total"))
+                    .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens, \(percentText(row, total: total)) of total"))
                 }
             }
         }

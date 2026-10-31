@@ -46,7 +46,7 @@ struct OverviewView: View {
                 statusLine
             }
             DashMetricRow {
-                DashMetric(label: tokensLabel, value: Format.compact(periodTokens))
+                DashMetric(label: "Tokens", value: Format.compact(periodTokens))
                     .tmNumericTextTransition(value: Double(periodTokens))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: periodTokens)
                 DashMetric(label: "Calls", value: Format.count(periodCalls))
@@ -134,11 +134,6 @@ struct OverviewView: View {
         case .month: return app.byToolMonth
         case .all: return app.byToolAll
         }
-    }
-
-    private var tokensLabel: String {
-        let estimated = ClaudeNonLocalEstimator.estimatedTokens(in: periodRows)
-        return estimated > 0 ? "Tokens · incl. \(Format.approximate(estimated)) estimated" : "Tokens"
     }
 
     private var periodCalls: Int64 {
@@ -270,8 +265,7 @@ struct OverviewView: View {
 
     private var toolItems: [ShareItem] {
         toolRows(period).map {
-            ShareItem(name: $0.0, value: $0.1, color: $0.3,
-                      approximate: $0.0 == ClaudeNonLocalEstimator.estimateToolLabel)
+            ShareItem(name: $0.0, value: $0.1, color: $0.3)
         }
     }
 

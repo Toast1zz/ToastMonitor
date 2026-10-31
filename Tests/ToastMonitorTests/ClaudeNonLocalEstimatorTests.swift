@@ -24,10 +24,12 @@ final class ClaudeNonLocalEstimatorTests: XCTestCase {
 
     /// Reference interval aggregation for checking database range assignment.
     private func intervalTotals(samples: [E.Sample], turns: [LocalTurn]) -> [E.LocalIntervalTotals] {
-        zip(samples, samples.dropFirst()).map { a, b in
-            E.LocalIntervalTotals(
+        zip(samples, samples.dropFirst()).map { a, b -> E.LocalIntervalTotals in
+            let total: Int64 = turns.reduce(0) { $0 + ($1.ts > a.ts && $1.ts <= b.ts ? max($1.total, 0) : 0) }
+            return E.LocalIntervalTotals(
                 freshTokens: turns.reduce(0) { $0 + ($1.ts >= a.ts - E.serverLagSeconds && $1.ts <= b.ts ? max($1.fresh, 0) : 0) },
-                totalTokens: turns.reduce(0) { $0 + ($1.ts > a.ts && $1.ts <= b.ts ? max($1.total, 0) : 0) })
+                totalTokens: total,
+                unpricedTokens: total)
         }
     }
 
@@ -98,9 +100,9 @@ final class ClaudeNonLocalEstimatorTests: XCTestCase {
         XCTAssertTrue(db.insertTurns(turns))
 
         let expected = [
-            E.LocalIntervalTotals(freshTokens: 15, totalTokens: 22),
-            E.LocalIntervalTotals(freshTokens: 18, totalTokens: 22),
-            E.LocalIntervalTotals(freshTokens: 24, totalTokens: 22),
+            E.LocalIntervalTotals(freshTokens: 15, totalTokens: 22, unpricedTokens: 22),
+            E.LocalIntervalTotals(freshTokens: 18, totalTokens: 22, unpricedTokens: 22),
+            E.LocalIntervalTotals(freshTokens: 24, totalTokens: 22, unpricedTokens: 22),
         ]
         let actual = db.claudeLocalIntervalTotals(samples: s)
         XCTAssertEqual(actual, expected)
@@ -192,6 +194,94 @@ final class ClaudeNonLocalEstimatorTests: XCTestCase {
                               cacheWrite: 300, cost: 0, provider: nil, costQuality: "estimated")
         XCTAssertTrue(db.insertTurns([turn]))
         XCTAssertEqual(db.claudeLocalIntervalTotals(samples: [sample, nextSample]),
-                       [E.LocalIntervalTotals(freshTokens: 330, totalTokens: 250_030)])
+                       [E.LocalIntervalTotals(freshTokens: 330, totalTokens: 250_030, unpricedTokens: 250_030)])
+    }
+
+    func testDatabaseSplitsPricedAndUnpricedTurns() {
+        let path = NSTemporaryDirectory() + "tm-test-\(UUID().uuidString).db"
+        let db = Database.testInstance(path: path)
+        defer {
+            db.close()
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
+        }
+        let s = [1_000, 1_200].map {
+            E.Sample(ts: Int64($0), weeklyPct: 10, weeklyReset: 5_000, fiveHourPct: 7, fiveHourReset: 3_000)
+        }
+        XCTAssertTrue(db.insertTurns([
+            TurnRecord(tool: .claude, sessionID: "a", project: nil, model: "claude-sonnet-5",
+                       ts: 1_100, inputTokens: 10, outputTokens: 20, cacheRead: 1_000,
+                       cacheWrite: 300, cost: 1.5, provider: nil, costQuality: "estimated"),
+            TurnRecord(tool: .claude, sessionID: "b", project: nil, model: "claude-new",
+                       ts: 1_150, inputTokens: 1, outputTokens: 2, cacheRead: 100,
+                       cacheWrite: 3, cost: 0, provider: nil, costQuality: "estimated"),
+        ]))
+        XCTAssertEqual(db.claudeLocalIntervalTotals(samples: s),
+                       [E.LocalIntervalTotals(freshTokens: 336, totalTokens: 1_133, cost: 1.5, unpricedTokens: 103)])
+    }
+
+    // MARK: - Cost-based attribution
+
+    /// $0.50 per point and 4M tokens per dollar, so 2M tokens per point.
+    private func costEstimate(fiveHour: [Int], dollars: [Double]) -> E.TokenEstimate? {
+        let s = samples(fiveHour: fiveHour)
+        let totals = dollars.map {
+            E.LocalIntervalTotals(freshTokens: $0 > 0 ? 50_000 : 0, totalTokens: Int64($0 * 4_000_000), cost: $0)
+        }
+        return E.tokenEstimate(samples: s, localIntervalTotals: totals, now: s.last!.ts + hour)
+    }
+
+    private func middle(of interval: Int64) -> Int64 {
+        start + interval * hour + hour / 2
+    }
+
+    func testRiseBeyondLocalCostCountsAsNonLocal() {
+        let estimate = costEstimate(fiveHour: [0, 10, 20, 40], dollars: [5, 5, 5])
+        XCTAssertEqual(estimate?.tokensPerPoint, 2_000_000)
+        XCTAssertEqual(estimate?.events, [E.TokenEvent(ts: middle(of: 2), tokens: 20_000_000)])
+    }
+
+    func testRiseWithinLocalSpreadIsNotAttributed() {
+        XCTAssertEqual(costEstimate(fiveHour: [0, 10, 20, 34], dollars: [5, 5, 5])?.events, [])
+    }
+
+    func testLocalRiseThatShowsLateIsNotAttributed() {
+        XCTAssertEqual(costEstimate(fiveHour: [0, 0, 20, 30, 40], dollars: [5, 5, 5, 5])?.events, [])
+    }
+
+    func testIdleRiseCountsInFullAfterLocalWork() {
+        let estimate = costEstimate(fiveHour: [0, 10, 20, 20, 40], dollars: [5, 5, 5, 0])
+        XCTAssertEqual(estimate?.events, [E.TokenEvent(ts: middle(of: 3), tokens: 40_000_000)])
+    }
+
+    func testOldLocalOverestimateDoesNotHideALaterRise() {
+        let estimate = costEstimate(fiveHour: [0, 0, 0, 30, 40, 50], dollars: [5, 5, 5, 5, 5])
+        XCTAssertEqual(estimate?.events, [E.TokenEvent(ts: middle(of: 2), tokens: 20_000_000)])
+    }
+
+    func testUnpricedTurnsStillExplainTheirRise() {
+        let s = samples(fiveHour: [0, 10, 20, 30])
+        let priced = E.LocalIntervalTotals(freshTokens: 50_000, totalTokens: 20_000_000, cost: 5)
+        let unpriced = E.LocalIntervalTotals(freshTokens: 50_000, totalTokens: 20_000_000, unpricedTokens: 20_000_000)
+        let estimate = E.tokenEstimate(samples: s, localIntervalTotals: [priced, priced, unpriced],
+                                       now: s.last!.ts + hour)
+        XCTAssertEqual(estimate?.events, [])
+    }
+
+    func testCalibrationFollowsRecentWork() {
+        let gap = 40 * 86400 as Int64
+        let points: [(ts: Int64, pct: Int)] = [
+            (start, 0), (start + hour, 2), (start + 2 * hour, 4), (start + 3 * hour, 6),
+            (start + 3 * hour + gap, 6), (start + 4 * hour + gap, 16), (start + 5 * hour + gap, 26),
+        ]
+        let s = points.map {
+            E.Sample(ts: $0.ts, weeklyPct: 40, weeklyReset: weeklyReset, fiveHourPct: $0.pct, fiveHourReset: fiveHourReset)
+        }
+        let oldPlan = E.LocalIntervalTotals(freshTokens: 50_000, totalTokens: 40_000_000, cost: 10)
+        let idle = E.LocalIntervalTotals(freshTokens: 0, totalTokens: 0)
+        let current = E.LocalIntervalTotals(freshTokens: 50_000, totalTokens: 20_000_000, cost: 5)
+        let estimate = E.tokenEstimate(samples: s,
+                                       localIntervalTotals: [oldPlan, oldPlan, oldPlan, idle, current, current],
+                                       now: s.last!.ts + hour)
+        XCTAssertEqual(estimate?.tokensPerPoint, 2_000_000)
     }
 }
