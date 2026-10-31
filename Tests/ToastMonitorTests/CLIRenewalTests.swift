@@ -117,6 +117,20 @@ final class CLIRenewalTests: XCTestCase {
         XCTAssertEqual(retry.failures, 0)
     }
 
+    func testProbeStopsWhenTheCLIExitsEarly() throws {
+        let dir = NSTemporaryDirectory() + "claude-exit-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let script = "\(dir)/claude"
+        FileManager.default.createFile(atPath: script, contents: Data("#!/bin/sh\nexit 3\n".utf8),
+                                       attributes: [.posixPermissions: 0o755])
+
+        let started = Date()
+        XCTAssertEqual(ClaudeCLIRefresher.probe(binary: script, attempt: 0, renewed: nil),
+                       .failed("exited with status 3"))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+    }
+
     func testProbeOutputSurvivesACutMultibyteCharacter() {
         let line = Array("Logged in ─".utf8)
         XCTAssertTrue(ClaudeCLIRefresher.compact(Array(line.dropLast())).contains("loggedin"))
