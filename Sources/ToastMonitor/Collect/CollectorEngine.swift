@@ -108,13 +108,32 @@ final class CollectorEngine: @unchecked Sendable {
         }
     }
 
+    /// Logs that end in a partial line, as of the scan that could not finish
+    /// them. The cursor stays before that line, so size alone reads as a change
+    /// and the same bytes would be parsed and written on every tick.
+    private var settledPartialTails: [String: FileScanner.Stat] = [:]
+
     private func fileSourcesChanged(_ paths: [String]) -> Bool {
         paths.contains { path in
             guard let stat = FileScanner.fileStat(path) else { return false }
+            if let settled = settledPartialTails[path], settled.size == stat.size,
+               settled.mtime == stat.mtime, settled.identity == stat.identity { return false }
             let previous = Database.shared.scanState(path)
             return previous.size != stat.size
                 || previous.mtime != stat.mtime
                 || previous.identity != stat.identity
+        }
+    }
+
+    private func notePartialTails(_ paths: [String]) {
+        for path in paths {
+            guard let stat = FileScanner.fileStat(path) else { continue }
+            let state = Database.shared.scanState(path)
+            if state.size < stat.size, state.mtime == stat.mtime, state.identity == stat.identity {
+                settledPartialTails[path] = stat
+            } else {
+                settledPartialTails[path] = nil
+            }
         }
     }
 
@@ -278,6 +297,7 @@ final class CollectorEngine: @unchecked Sendable {
                 return
             }
             sourceRetry.succeeded(source)
+            notePartialTails(sourcePaths.filter { $0.hasSuffix(".jsonl") })
             for path in [signaturePath].compactMap({ $0 }) + signaturePaths { rememberSource(path) }
             if turnRows == 0 && sessionRows == 0 {
                 Task { @MainActor in
@@ -371,7 +391,7 @@ final class CollectorEngine: @unchecked Sendable {
         }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
-        if turnCount > 0 || sessionCount > 0 || elapsed > 0.05 {
+        if turnCount > 0 || sessionCount > 0 || elapsed > 1 {
             NSLog("[ToastMonitor] scan: %d turns, %d sessions, %.1fms",
                   turnCount, sessionCount, elapsed * 1000)
         }

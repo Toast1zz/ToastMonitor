@@ -166,7 +166,11 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
             UserDefaults.standard.set(pane.rawValue, forKey: Self.lastPaneKey)
         }
         let incoming = host(for: pane)
-        guard pane != current else { return }
+        guard pane != current else {
+            // Measuring leaves the last pane current before any frame was set.
+            window.setFrame(frame(for: incoming, in: window), display: true)
+            return
+        }
         let outgoing = current.flatMap { panes[$0] }
         current = pane
         incoming.install(in: root, below: window)

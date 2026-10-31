@@ -302,6 +302,7 @@ struct DataSettingsPane: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "ToastMonitor-backup-\(Int64(Date().timeIntervalSince1970)).db"
         panel.canCreateDirectories = true
+        panel.message = "The export includes session titles and project names."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         isWorking = true
         DispatchQueue.global(qos: .userInitiated).async {
