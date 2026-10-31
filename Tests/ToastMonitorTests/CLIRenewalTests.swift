@@ -66,6 +66,63 @@ final class CLIRenewalTests: XCTestCase {
         XCTAssertTrue(retry.shouldRetestRejectedToken)
     }
 
+    @MainActor
+    func testRetrySlowsDownOnlyAfterAnHourOfFailures() {
+        let retry = CLIRenewalRetry()
+        defer { retry.reset() }
+        for _ in 1..<CLIRenewalRetry.failuresBeforeSlowing {
+            retry.schedule(counting: true) {}
+            XCTAssertEqual(retry.nextDelay, CLIRenewalRetry.defaultInterval)
+        }
+        retry.schedule(counting: true) {}
+        XCTAssertEqual(retry.nextDelay, CLIRenewalRetry.slowInterval)
+        retry.reset()
+        XCTAssertEqual(retry.nextDelay, CLIRenewalRetry.defaultInterval)
+    }
+
+    @MainActor
+    func testUnreadableLoginKeepsTheRetryGoing() {
+        let retry = CLIRenewalRetry(interval: 0.01)
+        let fired = expectation(description: "retried")
+        XCTAssertTrue(retry.loginUnreadable(renewing: true, outcome: nil) { fired.fulfill() })
+        wait(for: [fired], timeout: 2)
+        XCTAssertEqual(retry.failures, 1)
+    }
+
+    @MainActor
+    func testUnreadableLoginAfterAFirstAttemptStartsTheRetry() {
+        let retry = CLIRenewalRetry(interval: 0.01)
+        let fired = expectation(description: "retried")
+        XCTAssertTrue(retry.loginUnreadable(renewing: false, outcome: .completed) { fired.fulfill() })
+        wait(for: [fired], timeout: 2)
+    }
+
+    @MainActor
+    func testUnreadableLoginIsReportedAfterRepeatedFailures() {
+        let retry = CLIRenewalRetry(interval: 60)
+        defer { retry.reset() }
+        for _ in 1..<CLIRenewalRetry.failuresBeforeReporting {
+            XCTAssertTrue(retry.loginUnreadable(renewing: true, outcome: .completed) {})
+        }
+        XCTAssertFalse(retry.loginUnreadable(renewing: true, outcome: .completed) {})
+    }
+
+    @MainActor
+    func testMissingLoginOutsideARenewalStartsNoRetry() {
+        let retry = CLIRenewalRetry(interval: 0.01)
+        let fired = expectation(description: "retried")
+        fired.isInverted = true
+        XCTAssertFalse(retry.loginUnreadable(renewing: false, outcome: nil) { fired.fulfill() })
+        wait(for: [fired], timeout: 0.1)
+        XCTAssertEqual(retry.failures, 0)
+    }
+
+    func testProbeOutputSurvivesACutMultibyteCharacter() {
+        let line = Array("Logged in ─".utf8)
+        XCTAssertTrue(ClaudeCLIRefresher.compact(Array(line.dropLast())).contains("loggedin"))
+        XCTAssertTrue(ClaudeCLIRefresher.compact(Array("─ Logged in".utf8).dropFirst().map { $0 }).contains("loggedin"))
+    }
+
     func testClaudeRenewsAnExpiredOrRejectedToken() {
         let valid = ClaudeQuotaClient.Credentials(accessToken: "a", expiresAt: 2000, subscriptionType: nil)
         let expired = ClaudeQuotaClient.Credentials(accessToken: "a", expiresAt: 1000, subscriptionType: nil)

@@ -22,8 +22,8 @@ final class BalanceRunwayTests: XCTestCase {
     }
 
     func testOnlyARunningOutBalanceSaysAnything() {
-        XCTAssertEqual(BalanceRunway.lowText(balance: 3, dailySpend: 1), "~3.0d left")
-        XCTAssertEqual(BalanceRunway.lowText(balance: 0.5, dailySpend: 1), "~12.0h left")
+        XCTAssertEqual(BalanceRunway.lowText(balance: 3, dailySpend: 1), "3.0d left")
+        XCTAssertEqual(BalanceRunway.lowText(balance: 0.5, dailySpend: 1), "12.0h left")
         XCTAssertNil(BalanceRunway.lowText(balance: 7, dailySpend: 1))      // exactly a week: fine
         XCTAssertNil(BalanceRunway.lowText(balance: 1.74, dailySpend: 0.0001)) // idle
     }
