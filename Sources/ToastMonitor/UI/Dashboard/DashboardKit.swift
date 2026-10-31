@@ -128,8 +128,6 @@ struct ShareItem: Identifiable {
     let name: String
     let value: Int64
     let color: Color
-    /// An estimated figure rather than a measured one.
-    var approximate = false
     var id: String { name }
 }
 
@@ -203,7 +201,7 @@ struct ShareList: View {
                                 .tmMonospacedDigit()
                                 .foregroundStyle(TMDesign.quiet)
                                 .frame(width: 54, alignment: .trailing)
-                            Text(item.approximate ? Format.approximate(item.value) : Format.compact(item.value))
+                            Text(Format.compact(item.value))
                                 .font(TMType.medium(TMType.body))
                                 .tmMonospacedDigit()
                                 .frame(width: 62, alignment: .trailing)

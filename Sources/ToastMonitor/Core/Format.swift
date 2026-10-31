@@ -152,11 +152,6 @@ enum Format {
         dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "yyyy-MM-dd")
     }
     /// Count abbreviation (1.2k / 34), same units as compact.
-    /// An estimated figure, never to be read as a measured one.
-    static func approximate(_ n: Int64) -> String {
-        "≈" + compact(n)
-    }
-
     static func count(_ n: Int64) -> String {
         compact(n)
     }

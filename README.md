@@ -58,7 +58,7 @@ When an account cannot refresh, a small question mark appears next to it; click 
 
 Remote feeds are contacted only at addresses you add yourself in `Settings → Sources`; nothing is preconfigured. Local and remote sources can be turned off independently.
 
-**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how the shared Claude quota moves while this Mac is idle, and shows the result as the "Cowork & web" row. It is included in the headline token count, the menu bar and the Overview, which say so: "Includes ≈13.3M estimated" in the panel, "≈" in the menu bar. Calls, cost, Analysis and Sessions count recorded usage only. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
+**Claude usage outside this Mac.** Cowork, claude.ai chat and Claude Code on other machines leave no local transcript. ToastMonitor estimates their tokens from how the shared Claude quota moves while this Mac is idle, and shows the result as the "Cowork & web" row. It is included in the headline token count, the menu bar and the Overview. Calls, cost, Analysis and Sessions count recorded usage only. It is an estimate and likely a lower bound: the quota is only sampled while the panel or dashboard is open.
 
 ## Accounts and quotas
 
@@ -143,7 +143,7 @@ Development and screenshots:
 ## Known limitations
 
 - The menu bar shows today's tokens only; cost and subscriptions live in the panel.
-- Claude usage outside this Mac is estimated from the shared quota. It counts toward the headline tokens and is marked "≈", so the Overview total can be higher than the Analysis total, which is recorded usage only.
+- Claude usage outside this Mac is estimated from the shared quota. It counts toward the headline tokens, so the Overview total can be higher than the Analysis total, which is recorded usage only.
 - Prices are approximate official list prices.
 - Without the `zstd` CLI, DeepSeek Harness usage has no model, so its cost is 0.
 
