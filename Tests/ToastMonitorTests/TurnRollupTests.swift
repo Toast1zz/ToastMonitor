@@ -199,6 +199,20 @@ final class TurnRollupTests: XCTestCase {
         assertRollupMatchesRaw("after reinstall")
     }
 
+    func testOlderRollupDefinitionIsReplacedOnOpen() {
+        XCTAssertTrue(db.insertTurns(randomTurns(100, seed: 7)))
+        externalExec("""
+        DROP TRIGGER turn_rollup_insert;
+        CREATE TRIGGER turn_rollup_insert AFTER INSERT ON turns BEGIN SELECT 1; END;
+        UPDATE settings SET v = '2' WHERE k = 'turn_rollup_schema';
+        """)
+        reopen()
+        XCTAssertTrue(db.insertTurns(randomTurns(100, seed: 8)))
+        assertRollupMatchesRaw("after upgrade")
+        reopen()
+        XCTAssertEqual(db.setting("turn_rollup_schema"), "3")
+    }
+
     func testLegacyStoreWithoutRollupIsBackfilled() {
         XCTAssertTrue(db.insertTurns(randomTurns(300, seed: 6)))
         externalExec("""

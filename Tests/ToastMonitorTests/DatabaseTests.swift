@@ -752,6 +752,21 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(db.turns(sessionTool: "codex", sessionID: "s")[0].cost, 4, accuracy: 0.0001)
     }
 
+    func testStoredCostsDoNotTakeOnTheLongContextCharge() {
+        func turn(_ sid: String, _ model: String, cost: Double, version: String?) -> TurnRecord {
+            TurnRecord(tool: .opencode, sessionID: sid, project: nil, model: model, ts: 10,
+                       inputTokens: 1_000_000, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
+                       cost: cost, pricingVersion: version, eventID: "opencode:\(sid):1")
+        }
+        XCTAssertTrue(db.insertTurns([turn("past", "gpt-6.1-sol", cost: 2, version: "2026-10-27"),
+                                      turn("unpriced", "gpt-6.1-sol", cost: 0, version: nil)]))
+        db.setSetting("backfill_costs_last", nil)
+        db.backfillCosts()
+        XCTAssertEqual(db.turns(sessionTool: "opencode", sessionID: "past")[0].cost, 2, accuracy: 0.0001)
+        XCTAssertEqual(db.turns(sessionTool: "opencode", sessionID: "unpriced")[0].cost, 4, accuracy: 0.0001)
+        XCTAssertEqual(db.apiValue(from: 0, to: .max), 8, accuracy: 0.0001, "Value uses today's prices")
+    }
+
     func testCorrectionKeepsOneHourWritesAndSkipsUnknownSplits() {
         func turn(_ sid: String, split: Int64?) -> TurnRecord {
             TurnRecord(tool: .claude, sessionID: sid, project: nil, model: "claude-sonnet-5-5", ts: 10,
@@ -806,6 +821,35 @@ final class DatabaseTests: XCTestCase {
         let expected = rows.reduce(0) { $0 + $1.cost }
         XCTAssertEqual(db.apiValue(from: 0, to: .max), expected, accuracy: 1e-9)
         XCTAssertEqual(db.apiValue(from: 1_000, to: 1_001, tool: "claude"), rows[0].cost + rows[1].cost, accuracy: 1e-9)
+        XCTAssertEqual(db.rollupMismatchCount(), 0)
+    }
+
+    /// Value reads grouped sums, so each GPT model's tier must be in the rollup
+    /// key, with Codex cache reads counted once as they are per row.
+    func testAPIValueMatchesPerRowPricingForGPTLongContext() {
+        func turn(_ i: Int, _ tool: ToolKind, _ model: String, input: Int64, read: Int64) -> TurnRecord {
+            let cost = Pricing.estimate(model: model, input: input, output: 1_000, cacheRead: read, cacheWrite: 0,
+                                        inputIncludesCache: tool == .codex)!
+            return TurnRecord(tool: tool, sessionID: "s", project: nil, model: model, ts: 1_000 + Int64(i),
+                              inputTokens: input, outputTokens: 1_000, cacheRead: read, cacheWrite: 0,
+                              cost: cost, eventID: "\(tool.rawValue):s:\(i)")
+        }
+        let models = ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+                      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "openai/GPT-6.1-Sol"]
+        var rows: [TurnRecord] = []
+        for model in models {
+            let i = rows.count
+            rows += [turn(i, .codex, model, input: 200_000, read: 150_000),
+                     turn(i + 1, .codex, model, input: 300_000, read: 290_000),
+                     turn(i + 2, .opencode, model, input: 200_000, read: 150_000),
+                     turn(i + 3, .opencode, model, input: 100_000, read: 150_000)]
+        }
+        XCTAssertTrue(db.insertTurns(rows))
+        let expected = rows.reduce(0) { $0 + $1.cost }
+        XCTAssertEqual(db.apiValue(from: 0, to: .max), expected, accuracy: 1e-9)
+        db.aggregatesUseRollup = false
+        XCTAssertEqual(db.apiValue(from: 0, to: .max), expected, accuracy: 1e-9)
+        db.aggregatesUseRollup = true
         XCTAssertEqual(db.rollupMismatchCount(), 0)
     }
 

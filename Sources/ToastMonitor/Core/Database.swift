@@ -1340,7 +1340,8 @@ final class Database: @unchecked Sendable {
         var stmt: OpaquePointer?
         let corrected = Pricing.correctedModels.map { "model LIKE '\($0)'" }.joined(separator: " OR ")
         let select = """
-        SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool, cost_quality, cache_write_1h
+        SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool, cost_quality, cache_write_1h,
+               pricing_version IS NOT NULL AND cost != 0
         FROM turns
         WHERE tool != 'hermes' AND model IS NOT NULL AND model != ''
           AND (
@@ -1358,7 +1359,7 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_text(stmt, 1, (Pricing.zeroCostStamp as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 2, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 3, (Pricing.correctionRevision as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool, quality: String, cw1h: Int64)] = []
+        var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool, quality: String, cw1h: Int64, alreadyPriced: Bool)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let model = SQLiteText.column(stmt, 1) else { continue }
             rows.append((sqlite3_column_int64(stmt, 0),
@@ -1367,7 +1368,8 @@ final class Database: @unchecked Sendable {
                          sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
                          SQLiteText.column(stmt, 6) == "codex",
                          SQLiteText.column(stmt, 7) ?? "estimated",
-                         sqlite3_column_int64(stmt, 8)))
+                         sqlite3_column_int64(stmt, 8),
+                         sqlite3_column_int(stmt, 9) != 0))
         }
         sqlite3_finalize(stmt)
 
@@ -1380,10 +1382,15 @@ final class Database: @unchecked Sendable {
             && sqlite3_prepare_v2(db, stamp, -1, &stampStmt, nil) == SQLITE_OK
         if ok {
             for r in rows {
+                // A correction fixes a wrong table entry. The long-context
+                // charge is a newer rule, and history does not take it on.
+                let skipsLongContext = r.alreadyPriced
+                    && Pricing.price(for: r.model)?.longPromptThreshold == Pricing.longContextThreshold
                 if let cost = Pricing.estimate(model: r.model, input: r.input, output: r.output,
                                                cacheRead: r.cr, cacheWrite: r.cw - min(r.cw1h, r.cw),
                                                inputIncludesCache: r.includesCache,
-                                               cacheWrite1h: min(r.cw1h, r.cw)) {
+                                               cacheWrite1h: min(r.cw1h, r.cw),
+                                               longPrompt: skipsLongContext ? false : nil) {
                     let revision = cost == 0 ? Pricing.zeroCostStamp : Pricing.version
                     sqlite3_bind_double(pricedStmt, 1, cost)
                     sqlite3_bind_text(pricedStmt, 2, (revision as NSString).utf8String, -1, SQLITE_TRANSIENT)
@@ -2920,7 +2927,7 @@ final class Database: @unchecked Sendable {
     /// day grouping stays exact in any time zone.
     static let rollupBucketSeconds: Int64 = 900
     /// Bump when the rollup table or trigger definitions change.
-    private static let rollupSchemaVersion = "2"
+    private static let rollupSchemaVersion = "3"
 
     /// Test hook: false routes every aggregate through raw `turns` rows, the
     /// reference the rollup path must match exactly.
@@ -2937,13 +2944,20 @@ final class Database: @unchecked Sendable {
          longPromptSQL(row)]
     }
 
-    /// Whether a row's prompt is in `Pricing.longPromptThreshold`'s tier. It is
-    /// part of the key because a sum of many prompts cannot tell afterwards.
-    /// Limited to the one model that has the tier, so other rows do not split.
+    /// Whether a row's prompt is in its model's long tier. It is part of the
+    /// key because a sum of many prompts cannot tell afterwards. Limited to the
+    /// models that have a tier, so other rows do not split. Same prompt as
+    /// `Pricing.estimate`: Codex input already includes its cache reads.
     private static func longPromptSQL(_ row: String) -> String {
+        let prompt = """
+        CASE WHEN \(row).tool = 'codex' THEN MAX(\(row).input_tokens, \(row).cache_read) \
+        ELSE \(row).input_tokens + \(row).cache_read END + \(row).cache_write
         """
-        COALESCE((\(row).model LIKE '%haiku-5-5%' OR \(row).model LIKE '%haiku-5.5%') \
-        AND \(row).input_tokens + \(row).cache_read + \(row).cache_write > \(Pricing.longPromptThreshold), 0)
+        let longContext = Pricing.longContextModels.map { "\(row).model LIKE '\($0)'" }.joined(separator: " OR ")
+        return """
+        COALESCE(((\(row).model LIKE '%haiku-5-5%' OR \(row).model LIKE '%haiku-5.5%') \
+        AND \(prompt) > \(Pricing.longPromptThreshold)) \
+        OR ((\(longContext)) AND \(prompt) > \(Pricing.longContextThreshold)), 0)
         """
     }
 

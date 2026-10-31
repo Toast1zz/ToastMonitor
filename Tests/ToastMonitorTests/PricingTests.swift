@@ -29,9 +29,9 @@ final class PricingTests: XCTestCase {
             ("gpt-5.4", 2.5, 15, 0.25, 0)
         ]
         for (model, input, output, read, write) in fixtures {
-            XCTAssertEqual(try cost(model, input: 1_000_000), input, accuracy: 0.00001, model)
+            XCTAssertEqual(try cost(model, input: 1_000_000, longPrompt: false), input, accuracy: 0.00001, model)
             XCTAssertEqual(try cost(model, output: 1_000_000), output, accuracy: 0.00001, model)
-            XCTAssertEqual(try cost(model, cacheRead: 1_000_000), read, accuracy: 0.00001, model)
+            XCTAssertEqual(try cost(model, cacheRead: 1_000_000, longPrompt: false), read, accuracy: 0.00001, model)
             if model.hasPrefix("claude") {
                 XCTAssertEqual(try cost(model, cacheWrite: 1_000_000), write, accuracy: 0.00001, model)
                 XCTAssertEqual(try cost(model.replacingOccurrences(of: "-", with: ".")
@@ -49,34 +49,34 @@ final class PricingTests: XCTestCase {
     /// Unwraps the estimate so the `accuracy:` overload applies; a nil
     /// estimate (unknown model) fails with a clear message.
     private func cost(_ model: String?, input: Int64 = 0, output: Int64 = 0,
-                      cacheRead: Int64 = 0, cacheWrite: Int64 = 0) throws -> Double {
+                      cacheRead: Int64 = 0, cacheWrite: Int64 = 0, longPrompt: Bool? = nil) throws -> Double {
         try XCTUnwrap(Pricing.estimate(model: model, input: input, output: output,
-                                       cacheRead: cacheRead, cacheWrite: cacheWrite))
+                                       cacheRead: cacheRead, cacheWrite: cacheWrite, longPrompt: longPrompt))
     }
 
     func testHaiku55AndGPT6ShortContextRates() throws {
         // claude-haiku-5-5, prompts ≤100k: platform.claude.com/docs/en/about-claude/pricing
         // gpt-6.1-sol and gpt-6-astra short context: developers.openai.com/api/docs/pricing
-        // (30-minute cache write; long context and 12-hour writes are not modeled).
+        // (30-minute cache write; 12-hour writes are not modeled).
         XCTAssertEqual(try cost("claude-haiku-5-5", input: 100_000), 0.01, accuracy: 0.00001)
         XCTAssertEqual(try cost("claude-haiku-5-5", output: 1_000_000), 0.50, accuracy: 0.00001)
         XCTAssertEqual(try cost("claude-haiku-5-5", cacheRead: 100_000), 0.001, accuracy: 0.00001)
         XCTAssertEqual(try cost("claude-haiku-5-5", cacheWrite: 100_000), 0.0125, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6.1-sol", input: 1_000_000), 2, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6.1-sol", input: 1_000_000, longPrompt: false), 2, accuracy: 0.00001)
         XCTAssertEqual(try cost("gpt-6.1-sol", output: 1_000_000), 10, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6.1-sol", cacheRead: 1_000_000), 0.10, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6.1-sol", cacheWrite: 1_000_000), 2.50, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6-astra", input: 1_000_000), 10, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6.1-sol", cacheRead: 1_000_000, longPrompt: false), 0.10, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6.1-sol", cacheWrite: 1_000_000, longPrompt: false), 2.50, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6-astra", input: 1_000_000, longPrompt: false), 10, accuracy: 0.00001)
         XCTAssertEqual(try cost("gpt-6-astra", output: 1_000_000), 50, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6-astra", cacheRead: 1_000_000), 1, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6-astra", cacheWrite: 1_000_000), 12.50, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6-astra", cacheRead: 1_000_000, longPrompt: false), 1, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6-astra", cacheWrite: 1_000_000, longPrompt: false), 12.50, accuracy: 0.00001)
         XCTAssertNil(Pricing.estimate(model: "claude-haiku-5", input: 1, output: 0, cacheRead: 0, cacheWrite: 0))
-        XCTAssertEqual(try cost("gpt-6-sol", cacheRead: 1_000_000), 0.20, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6-sol", cacheRead: 1_000_000, longPrompt: false), 0.20, accuracy: 0.00001)
         XCTAssertEqual(try cost("gpt-6-luna", output: 1_000_000), 0.50, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-6.1-terra", input: 1_000_000), 1, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-5.6-sol", input: 1_000_000), 4, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-6.1-terra", input: 1_000_000, longPrompt: false), 1, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.6-sol", input: 1_000_000, longPrompt: false), 4, accuracy: 0.00001)
         XCTAssertEqual(try cost("gpt-5.6-terra", output: 1_000_000), 12, accuracy: 0.00001)
-        XCTAssertEqual(try cost("gpt-5.6-luna", cacheRead: 1_000_000), 0.02, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.6-luna", cacheRead: 1_000_000, longPrompt: false), 0.02, accuracy: 0.00001)
     }
 
     /// Official table: over 100,000 tokens every Haiku 5.5 rate is 5×, and the
@@ -97,6 +97,53 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(try cost("claude-sonnet-5-5", input: 1_000_000), 2, accuracy: 0.00001)
     }
 
+    /// Official long rates, developers.openai.com/api/docs/pricing, 2026-10-31.
+    func testGPTLongContextChargesTheWholeRequest() throws {
+        let fixtures: [(String, Double, Double, Double, Double, Double, Double, Double, Double)] = [
+            ("gpt-6.1-sol", 2, 0.10, 2.50, 10, 4, 0.20, 5, 15),
+            ("gpt-6.1-terra", 1, 0.05, 1.25, 5, 2, 0.10, 2.50, 7.50),
+            ("gpt-6-astra", 10, 1, 12.50, 50, 20, 2, 25, 75),
+            ("gpt-6-sol", 2, 0.20, 2.50, 10, 4, 0.40, 5, 15),
+            ("gpt-6-luna", 0.10, 0.01, 0.125, 0.50, 0.20, 0.02, 0.25, 0.75),
+            ("gpt-5.6-sol", 4, 0.40, 5, 20, 8, 0.80, 10, 30),
+            ("gpt-5.6-terra", 2, 0.20, 2.50, 12, 4, 0.40, 5, 18),
+            ("gpt-5.6-luna", 0.20, 0.02, 0.25, 1.20, 0.40, 0.04, 0.50, 1.80),
+            ("gpt-5.4", 2.50, 0.25, 1.875, 15, 5, 0.50, 3.75, 22.50)
+        ]
+        for (model, input, read, write, output, longInput, longRead, longWrite, longOutput) in fixtures {
+            XCTAssertEqual(try cost(model, input: 272_000, output: 1_000_000),
+                           0.272 * input + output, accuracy: 0.00001, model)
+            XCTAssertEqual(try cost(model, input: 1, output: 1_000_000, cacheRead: 200_000, cacheWrite: 72_000),
+                           1.0 / 1e6 * longInput + longOutput + 0.2 * longRead + 0.072 * longWrite,
+                           accuracy: 0.00001, model)
+            XCTAssertEqual(try cost(model, input: 1, cacheRead: 200_000, cacheWrite: 71_999),
+                           1.0 / 1e6 * input + 0.2 * read + 0.071999 * write, accuracy: 0.00001, model)
+        }
+        // Over the threshold on cache hits alone, and with a provider prefix.
+        XCTAssertEqual(try cost("openai/gpt-6.1-sol", output: 1_000_000, cacheRead: 300_000),
+                       15 + 0.3 * 0.20, accuracy: 0.00001)
+    }
+
+    /// Codex counts cache reads inside input, so they must not count twice.
+    func testGPTLongContextCountsCodexCachedInputOnce() throws {
+        func codex(input: Int64, cacheRead: Int64) throws -> Double {
+            try XCTUnwrap(Pricing.estimate(model: "gpt-6.1-sol", input: input, output: 0, cacheRead: cacheRead,
+                                           cacheWrite: 0, inputIncludesCache: true))
+        }
+        XCTAssertEqual(try codex(input: 200_000, cacheRead: 150_000),
+                       0.05 * 2 + 0.15 * 0.10, accuracy: 0.00001)
+        XCTAssertEqual(try codex(input: 300_000, cacheRead: 290_000),
+                       0.01 * 4 + 0.29 * 0.20, accuracy: 0.00001)
+    }
+
+    func testModelsWithoutAPublishedLongRateKeepTheirRate() throws {
+        for (model, rate) in [("gpt-5.4-mini", 0.25), ("gpt-5.6", 1.25), ("gpt-5.6-cyber", 1.25), ("gpt-5", 1.25),
+                              ("gpt-5.1-codex-mini", 0.25), ("gpt-4o", 2.5), ("o4", 2.0)] {
+            XCTAssertEqual(try cost(model, input: 1_000_000), rate, accuracy: 0.00001, model)
+        }
+        XCTAssertEqual(try cost("claude-haiku-5-5", input: 272_000), 0.272 * 0.50, accuracy: 0.00001)
+    }
+
     func testFirstMatchWinsGPT54MiniOverBase() throws {
         // "gpt-5.4-mini" sits BEFORE "gpt-5.4"/"gpt-5" in the table: a mini
         // model must hit the mini rate (0.25/2), not the base rate (1.25/10).
@@ -108,9 +155,9 @@ final class PricingTests: XCTestCase {
         // "gpt-5.4" precedes "gpt-5": a gpt-5.4.x model resolves to the
         // gpt-5 family rate via the "gpt-5.4" entry and never falls through
         // to unknown (or to the mini rate).
-        XCTAssertEqual(try cost("gpt-5.4-pro", input: 1_000_000, output: 1_000_000),
+        XCTAssertEqual(try cost("gpt-5.4-pro", input: 1_000_000, output: 1_000_000, longPrompt: false),
                        2.5 + 15, accuracy: 0.0001)
-        XCTAssertEqual(try cost("gpt-5.4", input: 1_000_000), 2.5, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5.4", input: 1_000_000, longPrompt: false), 2.5, accuracy: 0.0001)
         XCTAssertEqual(try cost("gpt-5.1", input: 1_000_000), 1.25, accuracy: 0.0001,
                        "other gpt-5.x models resolve via the gpt-5 entry")
     }

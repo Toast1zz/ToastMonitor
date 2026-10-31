@@ -12,6 +12,8 @@ struct ModelPrice {
     /// Every rate is multiplied when one request's prompt is over this size.
     var longPromptThreshold: Int64? = nil
     var longPromptMultiplier: Double = 1
+    /// Replaces `longPromptMultiplier` for output when the two differ.
+    var longPromptOutputMultiplier: Double? = nil
 }
 
 enum Pricing {
@@ -26,6 +28,11 @@ enum Pricing {
     static let correctedModels = ["%sonnet-5-5%", "%sonnet-5.5%", "%haiku-5-5%", "%haiku-5.5%", "gpt-5.6-%"]
     /// Claude Haiku 5.5 only: a prompt counts input, cache reads and writes.
     static let longPromptThreshold: Int64 = 100_000
+    /// OpenAI's long context starts above this many input tokens.
+    static let longContextThreshold: Int64 = 272_000
+    /// Models with a long-context entry below, for matching stored rows in SQL.
+    static let longContextModels = ["%gpt-6.1-sol%", "%gpt-6.1-terra%", "%gpt-6-astra%", "%gpt-6-sol%", "%gpt-6-luna%",
+                                    "%gpt-5.6-sol%", "%gpt-5.6-terra%", "%gpt-5.6-luna%", "%gpt-5.4%"]
     /// Marks an estimated row whose computed price is zero, so the 60s
     /// backfill does not select it again until this revision changes.
     static let zeroCostStamp = version + "#0"
@@ -64,22 +71,26 @@ enum Pricing {
                                         longPromptThreshold: longPromptThreshold, longPromptMultiplier: 5)),
         ("claude-haiku-4-5", ModelPrice(input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25)),
         // Short-context list prices. The cache-write column is the 30-minute
-        // write. Long context (over 272k tokens: 2× input and cache, 1.5×
-        // output) and 12-hour writes are not modeled.
+        // write; 12-hour writes are not modeled. Over 272k input tokens these
+        // cost 2× input and cache, 1.5× output. OpenAI does not say whether the
+        // whole request pays that, so charging all of it is an estimate.
         // https://developers.openai.com/api/docs/pricing
-        ("gpt-6.1-sol", ModelPrice(input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50)),
-        ("gpt-6.1-terra", ModelPrice(input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25)),
-        ("gpt-6-astra", ModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50)),
-        ("gpt-6-sol", ModelPrice(input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50)),
-        ("gpt-6-luna", ModelPrice(input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125)),
+        ("gpt-6.1-sol", longContext(ModelPrice(input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50))),
+        ("gpt-6.1-terra", longContext(ModelPrice(input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25))),
+        ("gpt-6-astra", longContext(ModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50))),
+        ("gpt-6-sol", longContext(ModelPrice(input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50))),
+        ("gpt-6-luna", longContext(ModelPrice(input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125))),
         // GPT-5 family. Longer names are listed before the family so a reader
         // can see the intended rate; matching itself picks the longest prefix.
-        ("gpt-5.6-sol", ModelPrice(input: 4, output: 20, cacheRead: 0.40, cacheWrite: 5)),
-        ("gpt-5.6-terra", ModelPrice(input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50)),
-        ("gpt-5.6-luna", ModelPrice(input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25)),
+        // Only the 5.6 tiers and 5.4 carry a long rate here. gpt-5.5 publishes one
+        // but has no entry of its own, and the rest have none on the page or are
+        // fallbacks that also price models without one, so they stay unmodeled.
+        ("gpt-5.6-sol", longContext(ModelPrice(input: 4, output: 20, cacheRead: 0.40, cacheWrite: 5))),
+        ("gpt-5.6-terra", longContext(ModelPrice(input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50))),
+        ("gpt-5.6-luna", longContext(ModelPrice(input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25))),
         ("gpt-5.6", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),
         ("gpt-5.4-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
-        ("gpt-5.4", ModelPrice(input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 1.875)),
+        ("gpt-5.4", longContext(ModelPrice(input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 1.875))),
         ("gpt-5.1-codex-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
         ("gpt-5-nano", ModelPrice(input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0.075)),
         ("gpt-5-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
@@ -114,6 +125,14 @@ enum Pricing {
         ("o4", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
     ]
 
+    private static func longContext(_ price: ModelPrice) -> ModelPrice {
+        var price = price
+        price.longPromptThreshold = longContextThreshold
+        price.longPromptMultiplier = 2
+        price.longPromptOutputMultiplier = 1.5
+        return price
+    }
+
     /// Returns estimated cost in USD for a turn, or nil when the model is unknown.
     /// `cacheWrite` is the five-minute cache-write bucket. `cacheWrite1h` is
     /// priced at twice the input rate, which is the one-hour write price.
@@ -128,11 +147,12 @@ enum Pricing {
         let prompt = billableInput + cacheRead + cacheWrite + cacheWrite1h
         let isLong = longPrompt ?? (price.longPromptThreshold.map { prompt > $0 } ?? false)
         let multiplier = isLong ? price.longPromptMultiplier : 1
+        let outputMultiplier = isLong ? price.longPromptOutputMultiplier ?? multiplier : 1
         return (Double(billableInput) / 1e6 * price.input
-            + Double(output) / 1e6 * price.output
             + Double(cacheRead) / 1e6 * price.cacheRead
             + Double(cacheWrite) / 1e6 * price.cacheWrite
             + Double(cacheWrite1h) / 1e6 * price.input * 2) * multiplier
+            + Double(output) / 1e6 * price.output * outputMultiplier
     }
 
     /// Longest matching pattern. Claude keeps its dated-snapshot rule so

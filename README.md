@@ -130,7 +130,7 @@ Development and screenshots:
 
 - **One collection loop** — scans every second while the panel is open, every 5 seconds in the background, every 30 seconds when nothing changed, and every 60 seconds on low power. Sleep pauses the loop. Files are read incrementally, keyed on size, nanosecond mtime and inode, so an idle scan is only `stat` calls. Large JSONL and DeepSeek Harness logs are streamed in bounded chunks rather than loaded whole.
 - **One SQLite store** — `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL).
-- **Cost estimates** — a built-in price table for common models; unknown models count tokens without a price, and OpenCode's own cost is used when present. A cost is priced once: a later price change applies to new usage, not to history. Value is the exception, and always shows today's list price.
+- **Cost estimates** — a built-in price table for common models; unknown models count tokens without a price, and OpenCode's own cost is used when present. A cost is priced once: a later price change applies to new usage, not to history. Value is the exception, and always shows today's list price. Above 272K input tokens, GPT models with a long-context rate charge it on the whole request. That is an estimate, because OpenAI doesn't specify.
 - **DeepSeek Harness** — parses the zstd-compressed session logs when the `zstd` CLI is installed, otherwise falls back to the projection cache (no model or per-call timing). The mode never switches once chosen, so the two can't double-count.
 
 ## Privacy and security
