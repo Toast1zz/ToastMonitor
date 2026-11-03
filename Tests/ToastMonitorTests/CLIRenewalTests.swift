@@ -137,6 +137,13 @@ final class CLIRenewalTests: XCTestCase {
         XCTAssertTrue(ClaudeCLIRefresher.compact(Array("─ Logged in".utf8).dropFirst().map { $0 }).contains("loggedin"))
     }
 
+    func testUnansweredKeychainReadRestsInsteadOfStoppingForGood() {
+        defer { ClaudeQuotaClient.clearSecurityToolBlock() }
+        ClaudeQuotaClient.markSecurityToolBlocked(now: 1000)
+        XCTAssertTrue(ClaudeQuotaClient.securityToolBlocked(now: 1000 + ClaudeQuotaClient.securityToolRest - 1))
+        XCTAssertFalse(ClaudeQuotaClient.securityToolBlocked(now: 1000 + ClaudeQuotaClient.securityToolRest))
+    }
+
     func testClaudeRenewsAnExpiredOrRejectedToken() {
         let valid = ClaudeQuotaClient.Credentials(accessToken: "a", expiresAt: 2000, subscriptionType: nil)
         let expired = ClaudeQuotaClient.Credentials(accessToken: "a", expiresAt: 1000, subscriptionType: nil)

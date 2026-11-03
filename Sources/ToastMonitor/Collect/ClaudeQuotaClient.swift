@@ -408,15 +408,16 @@ final class ClaudeQuotaClient: ObservableObject {
     ///
     /// The secret comes back on stdout; nothing secret is ever in argv.
     private nonisolated static func securityToolCredentials() -> Data? {
-        guard !securityToolBlocked else { return nil }
+        guard !securityToolBlocked() else { return nil }
         let result = runCapturing(path: securityToolPath,
                                   arguments: ["find-generic-password", "-s", claudeKeychainService, "-w"],
                                   timeout: securityToolTimeout,
                                   maxBytes: maxCredentialBytes)
         if result.timedOut {
-            // The only reason `security` outlives the timeout is that it is
-            // sitting on a password sheet of its own — the very thing we are
-            // here to avoid. Kill the route for the rest of this launch.
+            // `security` outlives the timeout when it sits on a password sheet
+            // of its own — the very thing we are here to avoid — or when the
+            // Mac is briefly busy. Rest the route for a while, not for the
+            // rest of this launch: that left the login unreadable for days.
             markSecurityToolBlocked()
             return nil
         }
@@ -432,12 +433,16 @@ final class ClaudeQuotaClient: ObservableObject {
     nonisolated static let securityToolTimeout: TimeInterval = 3
 
     nonisolated private static let securityToolLock = NSLock()
-    nonisolated(unsafe) private static var _securityToolBlocked = false
-    private nonisolated static var securityToolBlocked: Bool {
-        securityToolLock.lock(); defer { securityToolLock.unlock() }; return _securityToolBlocked
+    nonisolated(unsafe) private static var securityToolBlockedUntil: TimeInterval = 0
+    nonisolated static let securityToolRest: TimeInterval = 15 * 60
+    nonisolated static func securityToolBlocked(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        securityToolLock.lock(); defer { securityToolLock.unlock() }; return now < securityToolBlockedUntil
     }
-    private nonisolated static func markSecurityToolBlocked() {
-        securityToolLock.lock(); _securityToolBlocked = true; securityToolLock.unlock()
+    nonisolated static func markSecurityToolBlocked(now: TimeInterval = Date().timeIntervalSince1970) {
+        securityToolLock.lock(); securityToolBlockedUntil = now + securityToolRest; securityToolLock.unlock()
+    }
+    nonisolated static func clearSecurityToolBlock() {
+        securityToolLock.lock(); securityToolBlockedUntil = 0; securityToolLock.unlock()
     }
 
     /// Runs `path` and returns its stdout, or `timedOut` if it is still alive
