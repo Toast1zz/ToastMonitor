@@ -511,14 +511,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
         // fields and everywhere else, not just while the dashboard is open.
         WindowManager.shared.ensureMainMenu()
-        Database.shared.openInBackground { [weak self] in
-            self?.startInteractiveServices(arguments: args)
+        Database.shared.openInBackground {
+            AppDelegate.startInteractiveServices(arguments: args)
         }
     }
 
     /// Starts collectors, quota clients, and the first snapshot after the
     /// store is open. Called on the main queue.
-    private func startInteractiveServices(arguments: [String]) {
+    private static func startInteractiveServices(arguments: [String]) {
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()

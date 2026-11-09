@@ -102,7 +102,7 @@ final class Database: @unchecked Sendable {
     func openInBackground(
         path: String? = nil,
         queue: DispatchQueue = DispatchQueue.global(qos: .userInitiated),
-        completion: @escaping () -> Void
+        completion: @escaping @Sendable () -> Void
     ) {
         queue.async { [self] in
             if let path, !path.isEmpty {
