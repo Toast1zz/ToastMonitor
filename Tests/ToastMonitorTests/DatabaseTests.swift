@@ -1246,7 +1246,10 @@ extension DatabaseTests {
                 try? FileManager.default.removeItem(atPath: path + suffix)
             }
         }
-        let db = Database()
+        // init is private; start from a closed test instance so the
+        // background open is what actually creates the handle.
+        let db = Database.testInstance(path: path)
+        db.close()
         let opened = expectation(description: "opened on main")
         var finished = false
         db.openInBackground(path: path) {
