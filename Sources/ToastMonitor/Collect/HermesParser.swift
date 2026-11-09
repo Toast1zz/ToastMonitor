@@ -62,7 +62,7 @@ enum HermesParser {
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table';", -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                let name = String(cString: sqlite3_column_text(stmt, 0))
+                guard let name = SQLiteText.column(stmt, 0) else { continue }
                 if name == "messages" { hasMessages = true }
                 if name == "sessions" { hasSessions = true }
                 if name == "session_model_usage" { hasUsage = true }
@@ -106,8 +106,8 @@ enum HermesParser {
                 let sql = "SELECT \(idCol), \(titleCol), \(createdCol), \(updatedCol) FROM sessions;"
                 if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
                     while sqlite3_step(stmt) == SQLITE_ROW {
-                        let sid = String(cString: sqlite3_column_text(stmt, 0))
-                        let title = sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 1))
+                        guard let sid = SQLiteText.column(stmt, 0) else { continue }
+                        let title = SQLiteText.column(stmt, 1)
                         let created = sec(sqlite3_column_int64(stmt, 2))
                         let updated = sec(sqlite3_column_int64(stmt, 3))
                         sessions.append(SessionInfo(tool: .hermes, sessionID: sid, title: title,
@@ -136,7 +136,7 @@ enum HermesParser {
             var perSession: [String: (input: Int64, output: Int64, lastTs: Int64)] = [:]
             if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
                 while sqlite3_step(stmt) == SQLITE_ROW {
-                    let sid = String(cString: sqlite3_column_text(stmt, 0))
+                    guard let sid = SQLiteText.column(stmt, 0) else { continue }
                     // Corrupt/partially migrated rows must never create
                     // negative token deltas downstream.
                     let input = FileScanner.tokenCount(sqlite3_column_int64(stmt, 1))
@@ -205,7 +205,7 @@ enum HermesParser {
         defer { sqlite3_finalize(stmt) }
 
         func text(_ i: Int32) -> String? {
-            sqlite3_column_type(stmt, i) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, i))
+            SQLiteText.column(stmt, i)
         }
         func seconds(_ i: Int32) -> Int64 {
             let v = sqlite3_column_double(stmt, i)
@@ -324,7 +324,7 @@ enum HermesParser {
         let sql = "PRAGMA table_info(\(table));"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
         while sqlite3_step(stmt) == SQLITE_ROW {
-            out.append(String(cString: sqlite3_column_text(stmt, 1)))
+            if let name = SQLiteText.column(stmt, 1) { out.append(name) }
         }
         sqlite3_finalize(stmt)
         return out

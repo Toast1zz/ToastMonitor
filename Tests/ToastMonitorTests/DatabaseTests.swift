@@ -1206,4 +1206,34 @@ extension DatabaseTests {
         XCTAssertEqual(remaining.first?.ts, now)
     }
 
+
+    func testSQLiteTextColumnDoesNotCrashOnNULL() {
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(":memory:", &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        XCTAssertEqual(sqlite3_exec(raw, "CREATE TABLE t (a TEXT); INSERT INTO t VALUES (NULL); INSERT INTO t VALUES ('ok');", nil, nil, nil), SQLITE_OK)
+        var stmt: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(raw, "SELECT a FROM t ORDER BY rowid;", -1, &stmt, nil), SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        XCTAssertEqual(sqlite3_step(stmt), SQLITE_ROW)
+        XCTAssertNil(SQLiteText.column(stmt, 0))
+        XCTAssertEqual(sqlite3_step(stmt), SQLITE_ROW)
+        XCTAssertEqual(SQLiteText.column(stmt, 0), "ok")
+    }
+
+    func testOpenRouterSpendUsesPrePeriodCreditsBaseline() {
+        db.setSetting("snapshot_prune_last", "9999999999")
+        func snap(_ ts: Int64, used: Double) -> Database.ORSnapshot {
+            Database.ORSnapshot(ts: ts, usage: used, usageDaily: 0, usageWeekly: 0,
+                                usageMonthly: 0, limit: nil, limitRemaining: nil, limitReset: nil,
+                                isFreeTier: false, creditsTotal: used + 1, creditsUsage: used,
+                                accountUsage: used, accountBalance: 1, isManagementKey: false)
+        }
+        XCTAssertTrue(db.insertORSnapshot(snap(1_000, used: 10)))
+        XCTAssertTrue(db.insertORSnapshot(snap(2_000, used: 13)))
+        XCTAssertEqual(db.openRouterSpend(since: 1_500), 3)
+        XCTAssertEqual(db.openRouterSpend(since: 1_500, current: 14), 4)
+        XCTAssertEqual(db.openRouterSpend(since: 0), 13)
+    }
+
 }

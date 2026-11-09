@@ -1136,8 +1136,7 @@ final class Database: @unchecked Sendable {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT tool, session_id, input, output, reasoning, cache_read, cache_write, cost FROM session_totals;", -1, &stmt, nil) == SQLITE_OK else { return out }
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let tool = String(cString: sqlite3_column_text(stmt, 0))
-            let sid = String(cString: sqlite3_column_text(stmt, 1))
+            guard let tool = SQLiteText.column(stmt, 0), let sid = SQLiteText.column(stmt, 1) else { continue }
             let k = "\(tool)|\(sid)"
             out[k] = (tool, sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3),
                       sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
@@ -1197,11 +1196,10 @@ final class Database: @unchecked Sendable {
         guard sqlite3_prepare_v2(db, "SELECT source, size, mtime, identity, context FROM scan_state;", -1, &stmt, nil) == SQLITE_OK else { return [:] }
         var out: [String: ScanState] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let source = String(cString: sqlite3_column_text(stmt, 0))
+            guard let source = SQLiteText.column(stmt, 0) else { continue }
             out[source] = (sqlite3_column_int64(stmt, 1), sqlite3_column_int64(stmt, 2),
                            sqlite3_column_int64(stmt, 3),
-                           sqlite3_column_type(stmt, 4) == SQLITE_NULL
-                               ? nil : String(cString: sqlite3_column_text(stmt, 4)))
+                           SQLiteText.column(stmt, 4))
         }
         sqlite3_finalize(stmt)
         scanStatesCache = out
@@ -1663,7 +1661,7 @@ final class Database: @unchecked Sendable {
         // token row but zero its cost so it cannot appear as API spend.
         let codexCovered = codexBilledBySubscription()
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let tool = String(cString: sqlite3_column_text(stmt, 0))
+            guard let tool = SQLiteText.column(stmt, 0) else { continue }
             let cost = (codexCovered && tool == "codex") ? 0.0 : sqlite3_column_double(stmt, 5)
             out.append(ToolTotals(
                 tool: tool,
@@ -1695,7 +1693,7 @@ final class Database: @unchecked Sendable {
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(DayAgg(
                 day: sqlite3_column_int64(stmt, 0),
-                tool: String(cString: sqlite3_column_text(stmt, 1)),
+                tool: SQLiteText.column(stmt, 1) ?? "",
                 input: sqlite3_column_int64(stmt, 2),
                 output: sqlite3_column_int64(stmt, 3),
                 cacheRead: sqlite3_column_int64(stmt, 4),
@@ -1719,8 +1717,8 @@ final class Database: @unchecked Sendable {
         bindUsageRange(stmt, from: from, to: to)
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(ModelAgg(
-                tool: String(cString: sqlite3_column_text(stmt, 0)),
-                model: String(cString: sqlite3_column_text(stmt, 1)),
+                tool: SQLiteText.column(stmt, 0) ?? "",
+                model: SQLiteText.column(stmt, 1) ?? "",
                 input: sqlite3_column_int64(stmt, 2),
                 output: sqlite3_column_int64(stmt, 3),
                 cacheRead: sqlite3_column_int64(stmt, 4),
@@ -1771,8 +1769,8 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_int64(stmt, idx, Int64(limit))
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(SessionRow(
-                tool: String(cString: sqlite3_column_text(stmt, 0)),
-                sessionID: String(cString: sqlite3_column_text(stmt, 1)),
+                tool: SQLiteText.column(stmt, 0) ?? "",
+                sessionID: SQLiteText.column(stmt, 1) ?? "",
                 title: colStr(stmt, 2),
                 project: colStr(stmt, 3),
                 model: colStr(stmt, 4),
@@ -2199,13 +2197,13 @@ final class Database: @unchecked Sendable {
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(Subscription(
                 id: sqlite3_column_int64(stmt, 0),
-                name: String(cString: sqlite3_column_text(stmt, 1)),
-                plan: String(cString: sqlite3_column_text(stmt, 2)),
+                name: SQLiteText.column(stmt, 1) ?? "",
+                plan: SQLiteText.column(stmt, 2) ?? "",
                 startDate: sqlite3_column_int64(stmt, 3),
                 endDate: sqlite3_column_int64(stmt, 4),
-                cycle: String(cString: sqlite3_column_text(stmt, 5)),
+                cycle: SQLiteText.column(stmt, 5) ?? "",
                 price: sqlite3_column_double(stmt, 6),
-                currency: String(cString: sqlite3_column_text(stmt, 7))))
+                currency: SQLiteText.column(stmt, 7) ?? ""))
         }
         sqlite3_finalize(stmt)
         return out
@@ -2284,22 +2282,23 @@ final class Database: @unchecked Sendable {
         return true
     }
 
-    /// OpenRouter spend since a timestamp: sum of per-UTC-day maxima from the
-    /// snapshot history. For a cycle that starts mid-day, subtract the latest
-    /// pre-cycle cumulative value from that first day's maximum so a complete
-    /// day's usage is not incorrectly attributed to the cycle. The baseline is
-    /// the most recent snapshot with ts < start (any day — on the first day of
-    /// a cycle there may be no same-day snapshot yet); when none exists the
-    /// baseline is 0.
-    /// Account-level OpenRouter credit used (cumulative): the oldest and the
-    /// newest reading since `start`. Covers spend from every key, unlike
-    /// `usage_daily`; a cumulative counter only needs its two ends.
+    /// Ends of the cumulative `credits_usage` series at or after `start`.
+    /// Used for spend-pace estimates, not for a local day's total (that
+    /// needs a pre-period baseline — see `openRouterSpend`).
     func orCreditUsage(since start: Int64) -> [(ts: Int64, value: Double)] {
         seriesLock.lock(); defer { seriesLock.unlock() }
         let rows = orCreditSeries.filter { $0.ts >= start }
         guard let first = rows.first, let last = rows.last else { return [] }
         if first.ts == last.ts { return [first] }
         return [first, last]
+    }
+
+    /// Account credit spent after `start` on the local clock. Uses the last
+    /// reading before `start` as the baseline so a local Today/Week/Month is
+    /// not mixed with OpenRouter's UTC `usage_daily` windows.
+    func openRouterSpend(since start: Int64, current: Double? = nil) -> Double {
+        seriesLock.lock(); defer { seriesLock.unlock() }
+        return OpenRouterSpend.since(start, samples: orCreditSeries, current: current)
     }
 
     /// Records a DeepSeek balance reading. Unchanged readings are stored at
@@ -2353,7 +2352,7 @@ final class Database: @unchecked Sendable {
         var out: [(Int64, String, Int64, Int64, Int64, Double, Int64, Int64)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append((sqlite3_column_int64(stmt, 0),
-                        String(cString: sqlite3_column_text(stmt, 1)),
+                        SQLiteText.column(stmt, 1) ?? "(unknown)",
                         sqlite3_column_int64(stmt, 2),
                         sqlite3_column_int64(stmt, 3),
                         sqlite3_column_int64(stmt, 4),
@@ -2419,7 +2418,7 @@ final class Database: @unchecked Sendable {
         }
         var total = 0.0
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let model = sqlite3_column_type(stmt, 0) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 0))
+            let model = SQLiteText.column(stmt, 0)
             let cacheWrite = sqlite3_column_int64(stmt, 4)
             let write1h = min(sqlite3_column_int64(stmt, 6), cacheWrite)
             guard let cost = Pricing.estimate(model: model,
@@ -2427,7 +2426,7 @@ final class Database: @unchecked Sendable {
                                               output: sqlite3_column_int64(stmt, 2),
                                               cacheRead: sqlite3_column_int64(stmt, 3),
                                               cacheWrite: cacheWrite - write1h,
-                                              inputIncludesCache: String(cString: sqlite3_column_text(stmt, 5)) == "codex",
+                                              inputIncludesCache: SQLiteText.column(stmt, 5) == "codex",
                                               cacheWrite1h: write1h,
                                               longPrompt: sqlite3_column_int(stmt, 7) != 0) else { continue }
             total += cost
@@ -2715,8 +2714,8 @@ final class Database: @unchecked Sendable {
         defer { sqlite3_finalize(statement) }
         var columns: [String: String] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
-            columns[String(cString: sqlite3_column_text(statement, 1))] =
-                String(cString: sqlite3_column_text(statement, 2)).uppercased()
+            guard let name = SQLiteText.column(statement, 1) else { continue }
+            columns[name] = (SQLiteText.column(statement, 2) ?? "").uppercased()
         }
         return columns
     }
@@ -2729,7 +2728,7 @@ final class Database: @unchecked Sendable {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &statement, nil) == SQLITE_OK else { return false }
         let valid = sqlite3_step(statement) == SQLITE_ROW
-            && String(cString: sqlite3_column_text(statement, 0)) == "ok"
+            && SQLiteText.column(statement, 0) == "ok"
         sqlite3_finalize(statement)
         guard valid else { return false }
         for table in Self.restoreTables {
@@ -2825,7 +2824,7 @@ final class Database: @unchecked Sendable {
         var models: [[String: Any]] = []
         if sqlite3_prepare_v2(db, "SELECT COALESCE(model,'(nil)'), COUNT(*) FROM turns GROUP BY model ORDER BY 2 DESC LIMIT 10;", -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                models.append(["model": String(cString: sqlite3_column_text(stmt, 0)),
+                models.append(["model": SQLiteText.column(stmt, 0) ?? "(nil)",
                                "count": Int(sqlite3_column_int64(stmt, 1))])
             }
             sqlite3_finalize(stmt)
@@ -2835,7 +2834,7 @@ final class Database: @unchecked Sendable {
         var quality: [String: Int] = [:]
         if sqlite3_prepare_v2(db, "SELECT cost_quality, COUNT(*) FROM turns GROUP BY cost_quality;", -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                quality[String(cString: sqlite3_column_text(stmt, 0))] = Int(sqlite3_column_int64(stmt, 1))
+                quality[SQLiteText.column(stmt, 0) ?? ""] = Int(sqlite3_column_int64(stmt, 1))
             }
             sqlite3_finalize(stmt)
         }
@@ -2844,7 +2843,7 @@ final class Database: @unchecked Sendable {
         var keys: [String] = []
         if sqlite3_prepare_v2(db, "SELECT k FROM settings ORDER BY k;", -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                keys.append(String(cString: sqlite3_column_text(stmt, 0)))
+                if let key = SQLiteText.column(stmt, 0) { keys.append(key) }
             }
             sqlite3_finalize(stmt)
         }
@@ -2855,8 +2854,7 @@ final class Database: @unchecked Sendable {
     // MARK: - helpers
 
     private func colStr(_ stmt: OpaquePointer?, _ idx: Int32) -> String? {
-        guard let c = sqlite3_column_text(stmt, idx) else { return nil }
-        return String(cString: c)
+        SQLiteText.column(stmt, idx)
     }
 
     private func startOfDay(daysAgo: Int) -> Int64 {
@@ -3281,8 +3279,8 @@ final class Database: @unchecked Sendable {
             let tps = sqlite3_column_type(stmt, 4) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 4)
             guard ttft != nil || tps != nil else { continue }
             out.append(PerfPoint(day: sqlite3_column_int64(stmt, 0),
-                                 tool: String(cString: sqlite3_column_text(stmt, 1)),
-                                 model: String(cString: sqlite3_column_text(stmt, 2)),
+                                 tool: SQLiteText.column(stmt, 1) ?? "",
+                                 model: SQLiteText.column(stmt, 2) ?? "",
                                  ttftMs: ttft, tokensPerSecond: tps))
         }
         return out

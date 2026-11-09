@@ -378,10 +378,10 @@ enum PerfCollector {
             // A tool call's execution starts once its arguments finished
             // streaming; `completed` would include the tool's run time.
             let last = int(9).map { max($0, int(8) ?? $0) } ?? int(4)
-            let model = sqlite3_column_type(stmt, 2) == SQLITE_NULL
-                ? nil : String(cString: sqlite3_column_text(stmt, 2))
+            let model = SQLiteText.column(stmt, 2)
+            guard let key = SQLiteText.column(stmt, 0) else { continue }
             samples.append(PerfSample(tool: .opencode,
-                                      key: String(cString: sqlite3_column_text(stmt, 0)),
+                                      key: key,
                                       model: model, requestMs: int(3), firstTokenMs: first,
                                       lastMs: last, outputTokens: int(5) ?? 0))
         }
