@@ -391,13 +391,11 @@ struct PopoverHomeView: View {
     }
 
     private var periodOrUsage: Double {
-        switch period {
-        case .today: orClient.state.usageDaily
-        case .week: orClient.state.usageWeekly
-        case .month: orClient.state.usageMonthly
-        // OpenRouter only reports a monthly window; All uses the latest month.
-        case .all: orClient.state.usageMonthly
-        }
+        // OpenRouter's usage_daily/weekly/monthly fields are UTC windows.
+        // Local billed spend uses the user's calendar period, so the actual
+        // chip takes the rise in cumulative credits_usage since that start.
+        let range = periodSettings.configuration.range(for: period.slot, now: now)
+        return Database.shared.openRouterSpend(since: range.start, current: orClient.state.creditsUsage)
     }
 
     private var subsAmortized: Double {

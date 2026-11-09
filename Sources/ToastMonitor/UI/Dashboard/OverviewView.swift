@@ -166,13 +166,8 @@ struct OverviewView: View {
 
     /// Actual spend = billed/direct cost + OpenRouter + amortized subscriptions.
     private var actualSpend: Double {
-        let orUsage: Double
-        switch period {
-        case .today: orUsage = orClient.state.usageDaily
-        case .week: orUsage = orClient.state.usageWeekly
-        case .month: orUsage = orClient.state.usageMonthly
-        case .all: orUsage = orClient.state.usageMonthly // OpenRouter has only a monthly window
-        }
+        let range = periodSettings.configuration.range(for: period.slot, now: Date())
+        let orUsage = Database.shared.openRouterSpend(since: range.start, current: orClient.state.creditsUsage)
         return periodCost.actual + orUsage
             + SubscriptionMath.amortized(slot: period.slot, configuration: periodSettings.configuration,
                                          subscriptions: app.subscriptions)
@@ -190,7 +185,6 @@ struct OverviewView: View {
     }
 
     private var actualSpendLabel: String {
-        if period == .all { return "Actual Spend · OR recent month" }
         return "Actual Spend"
     }
 

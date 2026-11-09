@@ -178,9 +178,15 @@ struct PlansView: View {
                            isLoading: or.isLoading && or.lastOK <= 0, error: or.error, lastSync: or.lastOK,
                            refresh: { orClient.refresh() }) {
             if or.lastOK > 0 {
+                let periods = UsagePeriodConfiguration(mode: .calendar)
+                let now = Date()
                 FigureColumn(label: "Balance", value: or.accountBalance.map(Format.money) ?? "—")
-                FigureColumn(label: "Today", value: Format.money(or.usageDaily))
-                FigureColumn(label: "This month", value: Format.money(or.usageMonthly))
+                FigureColumn(label: "Today", value: Format.money(
+                    Database.shared.openRouterSpend(since: periods.range(for: .today, now: now).start,
+                                                    current: or.creditsUsage)))
+                FigureColumn(label: "This month", value: Format.money(
+                    Database.shared.openRouterSpend(since: periods.range(for: .month, now: now).start,
+                                                    current: or.creditsUsage)))
                 if let remaining = or.limitRemaining, let limit = or.limit, limit > 0 {
                     // Pass what is used; quotaColumn applies the used/remaining mode.
                     quotaColumn("Key", usedPercent: (limit - remaining) / limit * 100,
