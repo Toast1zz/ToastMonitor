@@ -38,10 +38,10 @@ final class OmpParserTests: XCTestCase {
         XCTAssertEqual(first.cacheRead, 0)
         XCTAssertEqual(first.model, "deepseek-v4-flash")
         XCTAssertEqual(first.cost, 0.0027, accuracy: 0.0001)
-        XCTAssertEqual(first.costQuality, "estimated")
+        XCTAssertEqual(first.costQuality, "actual")
         // Session id derives from the transcript's session event UUID.
         XCTAssertEqual(first.sessionID, "019f0000-0000-7000-0000-000000000001")
-        XCTAssertEqual(first.project, "Fixtures") // encoded parent dir last component
+        XCTAssertEqual(first.project, "MyProject") // session cwd last component, not the encoded parent dir
         // The second turn carries cacheRead separately from input.
         XCTAssertEqual(turns[1].cacheRead, 18816)
         XCTAssertEqual(turns[1].inputTokens, 22)
@@ -231,6 +231,96 @@ final class OmpParserTests: XCTestCase {
             XCTAssertEqual(turns.first?.inputTokens, 0, "Invalid count: \(value)")
             XCTAssertEqual(turns.first?.outputTokens, 1)
         }
+    }
+
+    func testKeepsGreaterUsageWhenTheSameMessageIsRewritten() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-stream-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try """
+        {"type":"session","id":"s1","timestamp":"2026-08-07T10:00:00.000Z","cwd":"/Users/test/MyProject"}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5}}}
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+        let first = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(first.turns.count, 1)
+        XCTAssertTrue(db.insertTurns(first.turns))
+
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data(("\n" + """
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","model":"m","usage":{"input":40,"output":8,"cost":{"total":0.012}}}}
+        """).utf8))
+        try fh.close()
+
+        let second = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(second.turns.count, 1)
+        XCTAssertEqual(second.turns[0].inputTokens, 40)
+        XCTAssertEqual(second.turns[0].outputTokens, 8)
+        XCTAssertEqual(second.turns[0].cost, 0.012, accuracy: 0.0001)
+        XCTAssertEqual(second.turns[0].usageMerge, .keepGreater)
+        XCTAssertTrue(db.insertTurns(second.turns))
+        let stored = db.totals(from: 0, to: Int64.max, tool: .omp)
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored.input, 40)
+        XCTAssertEqual(stored.output, 8)
+    }
+
+    func testSameScanMergesStreamingUpdatesToOneTurn() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-same-scan-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try """
+        {"type":"session","id":"s1","timestamp":"2026-08-07T10:00:00.000Z"}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10,"output":1}}}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","usage":{"input":25,"output":4}}}
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+        let turns = OmpParser.scan(knownPaths: [path], database: db).turns
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns[0].inputTokens, 25)
+        XCTAssertEqual(turns[0].outputTokens, 4)
+    }
+
+    func testPersistsSessionCwdForAppendOnlyScans() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-cwd-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let initial = """
+        {"type":"session","id":"stable-session","timestamp":"2026-08-07T10:00:00.000Z","cwd":"/Users/test/RealApp"}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","usage":{"input":10,"output":5}}}
+        """ + "\n"
+        try initial.write(toFile: path, atomically: true, encoding: .utf8)
+        let first = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(first.turns[0].project, "RealApp")
+        XCTAssertEqual(first.sessions[0].project, "RealApp")
+
+        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try fh.seekToEnd()
+        try fh.write(contentsOf: Data("""
+        {"type":"message","id":"a2","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","usage":{"input":11,"output":6}}}
+        """.utf8))
+        try fh.close()
+
+        let appended = OmpParser.scan(knownPaths: [path], database: db)
+        XCTAssertEqual(appended.turns.count, 1)
+        XCTAssertEqual(appended.turns[0].project, "RealApp")
+        XCTAssertEqual(appended.sessions[0].project, "RealApp")
+    }
+
+    func testMissingProviderCostFallsBackToListPrice() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omp-est-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try """
+        {"type":"session","id":"s1","timestamp":"2026-08-07T10:00:00.000Z"}
+        {"type":"message","id":"a1","timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"assistant","model":"claude-sonnet-4-5","usage":{"input":1000000,"output":1000000}}}
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+        let turns = OmpParser.scan(knownPaths: [path], database: db).turns
+        XCTAssertEqual(turns.count, 1)
+        let expected = Pricing.estimate(model: "claude-sonnet-4-5", input: 1_000_000,
+                                        output: 1_000_000, cacheRead: 0, cacheWrite: 0)
+        XCTAssertNotNil(expected)
+        XCTAssertEqual(turns[0].cost, expected!)
+        XCTAssertEqual(turns[0].costQuality, "estimated")
     }
 
 }

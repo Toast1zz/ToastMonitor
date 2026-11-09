@@ -36,15 +36,23 @@ enum OmpParser {
             var foundSessionID = false
             let fileName = (file as NSString).lastPathComponent
             let persistedContext = pendingRewrite ? nil : prev.context
-            var sessionID = persistedContext.flatMap { ctxData in
+            let persisted = persistedContext.flatMap { ctxData in
                 (try? JSONSerialization.jsonObject(with: Data(ctxData.utf8))) as? [String: Any]
-            }?["sid"] as? String ?? (fileName as NSString).deletingPathExtension
+            }
+            var sessionID = persisted?["sid"] as? String ?? (fileName as NSString).deletingPathExtension
+            var sessionCwd = persisted?["cwd"] as? String
+            // First pass: session identity and cwd may appear after the
+            // byte offset, so every new line is inspected before turns
+            // are built with the resolved identity.
             let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
                 objectCount += 1
-                if !foundSessionID, item.obj["type"] as? String == "session",
-                   let sid = item.obj["id"] as? String, !sid.isEmpty {
+                guard item.obj["type"] as? String == "session" else { return }
+                if !foundSessionID, let sid = item.obj["id"] as? String, !sid.isEmpty {
                     sessionID = sid
                     foundSessionID = true
+                }
+                if let cwd = item.obj["cwd"] as? String, !cwd.isEmpty {
+                    sessionCwd = cwd
                 }
             }
             if objectCount == 0 {
@@ -56,8 +64,8 @@ enum OmpParser {
             }
 
 
-            let project = FileScanner.lastComponentOfEncodedPath(
-                ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+            let encodedDir = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            let project = FileScanner.projectName(cwd: sessionCwd, encodedDirectory: encodedDir)
             // Full relative path disambiguates subagent transcripts across
             // sessions; the message id is only 32-bit, so the path prefix is
             // what makes the composite id globally unique.
@@ -67,6 +75,7 @@ enum OmpParser {
             var firstTs: Int64 = 0
             var lastTs: Int64 = 0
             var sessionModel: String?
+            var turnIndex: [String: Int] = [:]
 
             _ = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
                 let obj = item.obj
@@ -83,15 +92,19 @@ enum OmpParser {
                     ?? st.mtime / 1_000_000_000
                 guard ts > 0 else { return }
                 let model = msg["model"] as? String
-                let cost = (usage["cost"] as? [String: Any])?["total"] as? NSNumber
+                let messageID = obj["id"] as? String
                 let eventID = EventIdentity.omp(relativePath: relKey, sessionID: sessionID,
                                                 object: obj, usage: usage)
-                turns.append(TurnRecord(tool: .omp, sessionID: sessionID, project: project,
-                                        model: model, ts: ts,
-                                        inputTokens: input, outputTokens: output,
-                                        cacheRead: cacheRead, cacheWrite: cacheWrite,
-                                        cost: cost?.doubleValue ?? 0,
-                                        eventID: eventID, costQuality: "estimated"))
+                let (cost, quality) = billedOrEstimatedCost(model: model, usage: usage,
+                                                             input: input, output: output,
+                                                             cacheRead: cacheRead, cacheWrite: cacheWrite)
+                appendTurn(TurnRecord(tool: .omp, sessionID: sessionID, project: project,
+                                      model: model, ts: ts,
+                                      inputTokens: input, outputTokens: output,
+                                      cacheRead: cacheRead, cacheWrite: cacheWrite,
+                                      cost: cost, eventID: eventID, costQuality: quality,
+                                      usageMerge: messageID == nil || messageID?.isEmpty == true ? .ignore : .keepGreater),
+                           into: &turns, index: &turnIndex)
                 if firstTs == 0 || ts < firstTs { firstTs = ts }
                 if ts > lastTs { lastTs = ts }
                 if sessionModel == nil { sessionModel = model }
@@ -103,6 +116,7 @@ enum OmpParser {
                                             created: firstTs, updated: lastTs))
             }
             var ctx: [String: Any] = ["sid": sessionID]
+            if let sessionCwd, !sessionCwd.isEmpty { ctx["cwd"] = sessionCwd }
             if st.size < prev.size {
                 ctx["_full_rescan"] = true
             }
@@ -112,5 +126,35 @@ enum OmpParser {
                                  identity: st.identity, context: ctxJSON)
         }
         return (turns, sessions)
+    }
+
+    /// Provider `usage.cost.total` is the billed amount. When it is missing
+    /// or not a finite number, fall back to the list-price estimate.
+    static func billedOrEstimatedCost(model: String?, usage: [String: Any],
+                                      input: Int64, output: Int64,
+                                      cacheRead: Int64, cacheWrite: Int64) -> (Double, String) {
+        if let billed = (usage["cost"] as? [String: Any])?["total"] as? NSNumber {
+            let value = billed.doubleValue
+            if value.isFinite { return (value, "actual") }
+        }
+        if let estimated = Pricing.estimate(model: model, input: input, output: output,
+                                            cacheRead: cacheRead, cacheWrite: cacheWrite) {
+            return (estimated, "estimated")
+        }
+        return (0, "unknown")
+    }
+
+    private static func appendTurn(_ record: TurnRecord, into turns: inout [TurnRecord],
+                                   index: inout [String: Int]) {
+        guard let eventID = record.eventID, !eventID.isEmpty else {
+            turns.append(record)
+            return
+        }
+        if let idx = index[eventID] {
+            turns[idx] = TurnRecord.keepingGreater(turns[idx], record)
+        } else {
+            index[eventID] = turns.count
+            turns.append(record)
+        }
     }
 }
