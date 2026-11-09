@@ -60,15 +60,17 @@ enum ToastMonitorMain {
 
 @MainActor
 /// Process-lifetime flag: not isolated to the app delegate, so the
-/// background-open cancellation check can be Sendable.
-enum LaunchCancel: Sendable {
-    private static let lock = NSLock()
-    private static var cancelled = false
-    nonisolated static var isCancelled: Bool {
+/// background-open cancellation check can be Sendable. Instance state
+/// rather than a static var, which the concurrency gate would flag.
+final class LaunchCancel: @unchecked Sendable {
+    static let shared = LaunchCancel()
+    private let lock = NSLock()
+    private var cancelled = false
+    var isCancelled: Bool {
         lock.lock(); defer { lock.unlock() }
         return cancelled
     }
-    nonisolated static func cancel() {
+    func cancel() {
         lock.lock(); cancelled = true; lock.unlock()
     }
 }
@@ -525,7 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
         // fields and everywhere else, not just while the dashboard is open.
         WindowManager.shared.ensureMainMenu()
-        Database.shared.openInBackground(isCancelled: { LaunchCancel.isCancelled }) {
+        Database.shared.openInBackground(isCancelled: { LaunchCancel.shared.isCancelled }) {
             AppDelegate.startInteractiveServices(arguments: args)
         }
     }
@@ -533,7 +535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Starts collectors, quota clients, and the first snapshot after the
     /// store is open. Called on the main queue. Skipped if the user already quit.
     private static func startInteractiveServices(arguments: [String]) {
-        guard !LaunchCancel.isCancelled else { return }
+        guard !LaunchCancel.shared.isCancelled else { return }
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()
@@ -836,7 +838,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // The background open may still be running; do not start collectors
         // or quota clients after the user has already asked to quit.
-        LaunchCancel.cancel()
+        LaunchCancel.shared.cancel()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
