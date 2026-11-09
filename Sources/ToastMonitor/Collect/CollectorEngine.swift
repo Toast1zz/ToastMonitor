@@ -228,6 +228,10 @@ final class CollectorEngine: @unchecked Sendable {
                       completion: (@MainActor @Sendable (ScanReceipt) -> Void)? = nil) -> UUID {
         let requestID = UUID()
         queue.async { [self] in
+            // A menu-bar refresh can arrive before interactive launch has
+            // finished opening the store. open() waits on the same lock as
+            // a background open, then is a no-op once the handle exists.
+            if !Database.shared.isOpen { Database.shared.open() }
             // Every caller is a user refresh: retry failing sources now.
             sourceRetry.retryNow()
             if force {

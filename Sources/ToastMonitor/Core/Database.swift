@@ -102,6 +102,7 @@ final class Database: @unchecked Sendable {
     func openInBackground(
         path: String? = nil,
         queue: DispatchQueue = DispatchQueue.global(qos: .userInitiated),
+        isCancelled: @escaping @Sendable () -> Bool = { false },
         completion: @escaping @MainActor @Sendable () -> Void
     ) {
         queue.async { [self] in
@@ -111,9 +112,18 @@ final class Database: @unchecked Sendable {
                 self.open()
             }
             Task { @MainActor in
+                guard !isCancelled() else { return }
                 completion()
             }
         }
+    }
+
+    /// True once a handle is open. Writers already no-op when this is false;
+    /// collectors that can run before the interactive launch finishes should
+    /// call `open()` first, which waits if a background open holds the lock.
+    var isOpen: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return db != nil
     }
 
     /// Test helper: isolated instance on a throwaway path.
@@ -190,6 +200,9 @@ final class Database: @unchecked Sendable {
             """)
             setSetting("model_json_normalized", "1")
         }
+        // Relabel before ensureRollup so a one-time rebuild picks up the
+        // new cost_quality groups instead of firing per-row triggers.
+        _ = relabelOmpProviderCostsLocked()
         // Last: every migration above may rebuild or rewrite `turns`, and a
         // restored file may carry a stale rollup. Install, then verify.
         ensureRollup()
@@ -1360,7 +1373,32 @@ final class Database: @unchecked Sendable {
     /// five-minute rate would understate them. Unknown models are stamped so a
     /// cost of zero is not selected again until the table changes; a known
     /// model whose computed price is also zero gets `Pricing.zeroCostStamp`.
+    /// One-time, idempotent: older Oh My Pi rows stored the provider's
+    /// `usage.cost.total` but always labelled it `estimated`. Only rows with
+    /// a stored positive cost are relabelled; cost values are not changed
+    /// and no rows are deleted. Zero-cost estimated rows stay estimated
+    /// because the old parser used 0 both for "no bill" and "missing".
+    @discardableResult
+    func relabelOmpProviderCosts(force: Bool = false) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return relabelOmpProviderCostsLocked(force: force)
+    }
+
+    private func relabelOmpProviderCostsLocked(force: Bool = false) -> Int {
+        guard let db else { return 0 }
+        if !force, setting("omp_actual_cost_quality_v1") == "1" { return 0 }
+        let sql = """
+        UPDATE turns SET cost_quality = 'actual'
+        WHERE tool = 'omp' AND cost_quality = 'estimated' AND cost > 0;
+        """
+        guard execChecked(sql) else { return 0 }
+        let changed = Int(sqlite3_changes(db))
+        _ = setSetting("omp_actual_cost_quality_v1", "1")
+        return changed
+    }
+
     func backfillCosts() {
+
         lock.lock(); defer { lock.unlock() }
         guard let db else { return }
         let now = Int64(Date().timeIntervalSince1970)
@@ -2327,8 +2365,21 @@ final class Database: @unchecked Sendable {
     /// reading before `start` as the baseline so a local Today/Week/Month is
     /// not mixed with OpenRouter's UTC `usage_daily` windows.
     func openRouterSpend(since start: Int64, current: Double? = nil) -> Double {
-        seriesLock.lock(); defer { seriesLock.unlock() }
-        return OpenRouterSpend.since(start, samples: orCreditSeries, current: current)
+        let epoch = Int64(setting(Self.openRouterCreditsEpochKey) ?? "0") ?? 0
+        seriesLock.lock()
+        let samples = epoch > 0 ? orCreditSeries.filter { $0.ts >= epoch } : orCreditSeries
+        seriesLock.unlock()
+        return OpenRouterSpend.since(start, samples: samples, current: current)
+    }
+
+    static let openRouterCreditsEpochKey = "or_credits_epoch"
+
+    /// Starts a new credits_usage series, typically when the OpenRouter
+    /// key set is replaced. Earlier samples belong to a previous account
+    /// and must not be subtracted from (or added to) the new total.
+    @discardableResult
+    func beginOpenRouterCreditSeries(at ts: Int64 = Int64(Date().timeIntervalSince1970)) -> Bool {
+        setSetting(Self.openRouterCreditsEpochKey, "\(max(ts, 0))")
     }
 
     /// Records a DeepSeek balance reading. Unchanged readings are stored at

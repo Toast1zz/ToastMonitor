@@ -1282,4 +1282,67 @@ extension DatabaseTests {
         db.close()
     }
 
+
+
+    func testOpenInBackgroundSkipsCompletionWhenCancelled() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("open-cancel-\(UUID().uuidString).sqlite").path
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: path + suffix)
+            }
+        }
+        let db = Database.testInstance(path: path)
+        db.close()
+        let opened = expectation(description: "cancelled open settled")
+        opened.isInverted = true
+        db.openInBackground(path: path, isCancelled: { true }) {
+            XCTFail("completion must not run after cancel")
+            opened.fulfill()
+        }
+        wait(for: [opened], timeout: 0.4)
+        // The store itself may still have opened; only the completion is skipped.
+        db.close()
+    }
+
+    func testRelabelOmpProviderCostsIsIdempotentAndLeavesOtherRowsAlone() {
+        let omp = TurnRecord(tool: .omp, sessionID: "s", project: "P", model: "m",
+                             ts: 1_000, inputTokens: 10, outputTokens: 5,
+                             cacheRead: 0, cacheWrite: 0,
+                             cost: 0.0027, eventID: "omp:a", costQuality: "estimated")
+        let ompZero = TurnRecord(tool: .omp, sessionID: "s", project: "P", model: "m",
+                                 ts: 1_001, inputTokens: 2, outputTokens: 1,
+                                 cacheRead: 0, cacheWrite: 0,
+                                 cost: 0, eventID: "omp:b", costQuality: "estimated")
+        let claude = TurnRecord(tool: .claude, sessionID: "c", project: "P", model: "claude-sonnet-4-5",
+                                ts: 1_002, inputTokens: 10, outputTokens: 5,
+                                cacheRead: 0, cacheWrite: 0,
+                                cost: 0.01, eventID: "claude:a", costQuality: "estimated")
+        XCTAssertTrue(db.insertTurns([omp, ompZero, claude]))
+        XCTAssertEqual(db.relabelOmpProviderCosts(force: true), 1)
+        XCTAssertEqual(db.relabelOmpProviderCosts(force: true), 0, "already labelled rows are not touched")
+        let breakdown = db.costBreakdown(from: 0, to: Int64.max)
+        XCTAssertEqual(breakdown.actual, 0.0027, accuracy: 0.0000001)
+        XCTAssertEqual(breakdown.estimated, 0.01, accuracy: 0.0000001)
+    }
+
+    func testOpenRouterCreditSeriesEpochIgnoresEarlierAccount() {
+        db.setSetting("snapshot_prune_last", "9999999999")
+        func snap(_ ts: Int64, used: Double) -> Database.ORSnapshot {
+            Database.ORSnapshot(ts: ts, usage: used, usageDaily: 0, usageWeekly: 0,
+                                usageMonthly: 0, limit: nil, limitRemaining: nil, limitReset: nil,
+                                isFreeTier: false, creditsTotal: used + 1, creditsUsage: used,
+                                accountUsage: used, accountBalance: 1, isManagementKey: false)
+        }
+        XCTAssertTrue(db.insertORSnapshot(snap(1_000, used: 10)))
+        XCTAssertTrue(db.insertORSnapshot(snap(2_000, used: 12)))
+        XCTAssertTrue(db.beginOpenRouterCreditSeries(at: 2_500))
+        XCTAssertTrue(db.insertORSnapshot(snap(3_000, used: 5_000)))
+        XCTAssertTrue(db.insertORSnapshot(snap(4_000, used: 5_002)))
+        // Without an epoch this would look like thousands of spend today.
+        XCTAssertEqual(db.openRouterSpend(since: 1_500), 2)
+        XCTAssertEqual(db.openRouterSpend(since: 1_500, current: 5_003), 3)
+        XCTAssertEqual(db.openRouterSpend(since: 0), 5_002)
+    }
+
 }

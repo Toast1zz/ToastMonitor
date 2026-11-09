@@ -511,14 +511,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
         // fields and everywhere else, not just while the dashboard is open.
         WindowManager.shared.ensureMainMenu()
-        Database.shared.openInBackground {
+        Database.shared.openInBackground(isCancelled: { AppDelegate.isLaunchCancelled }) {
             AppDelegate.startInteractiveServices(arguments: args)
         }
     }
 
+    private static let launchCancelLock = NSLock()
+    private static var launchCancelled = false
+    static var isLaunchCancelled: Bool {
+        launchCancelLock.lock(); defer { launchCancelLock.unlock() }
+        return launchCancelled
+    }
+    static func cancelLaunch() {
+        launchCancelLock.lock(); launchCancelled = true; launchCancelLock.unlock()
+    }
+
     /// Starts collectors, quota clients, and the first snapshot after the
-    /// store is open. Called on the main queue.
+    /// store is open. Called on the main queue. Skipped if the user already quit.
     private static func startInteractiveServices(arguments: [String]) {
+        guard !isLaunchCancelled else { return }
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()
@@ -816,6 +827,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func menuRefreshNow() {
         AppState.shared.refreshAllSources()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // The background open may still be running; do not start collectors
+        // or quota clients after the user has already asked to quit.
+        AppDelegate.cancelLaunch()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

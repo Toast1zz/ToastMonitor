@@ -249,6 +249,7 @@ final class OpenRouterClient: ObservableObject {
             cleared.error = "API key not configured"
             state = cleared
         }
+        database.beginOpenRouterCreditSeries()
         invalidateInFlight()
         refresh()
         return true
