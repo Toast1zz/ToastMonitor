@@ -58,7 +58,6 @@ enum ToastMonitorMain {
     }
 }
 
-@MainActor
 /// Process-lifetime flag: not isolated to the app delegate, so the
 /// background-open cancellation check can be Sendable. Instance state
 /// rather than a static var, which the concurrency gate would flag.
@@ -75,6 +74,7 @@ final class LaunchCancel: @unchecked Sendable {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private var statusItem: NSStatusItem?
     @MainActor private var panelController: PanelController?
