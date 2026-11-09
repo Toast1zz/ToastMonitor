@@ -835,7 +835,8 @@ final class DatabaseTests: XCTestCase {
                               cost: cost, eventID: "\(tool.rawValue):s:\(i)")
         }
         let models = ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
-                      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "openai/GPT-6.1-Sol"]
+                      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6", "gpt-5.5",
+                      "gpt-5.4", "openai/GPT-6.1-Sol"]
         var rows: [TurnRecord] = []
         for model in models {
             let i = rows.count

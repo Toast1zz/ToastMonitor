@@ -7,8 +7,10 @@ final class PricingTests: XCTestCase {
         // Standard USD/MTok, 2026-10-03: platform.claude.com/docs/en/about-claude/pricing
         // and developers.openai.com/api/docs/models/gpt-5.4; cache writes use five minutes.
         let fixtures: [(String, Double, Double, Double, Double)] = [
+            ("claude-fable-5-2", 8, 40, 0.20, 10),
             ("claude-fable-5-1", 10, 50, 0.25, 12.5),
             ("claude-fable-5", 10, 50, 1, 12.5),
+            ("claude-mythos-5-2", 8, 40, 0.20, 10),
             ("claude-mythos-5-1", 10, 50, 0.25, 12.5),
             ("claude-mythos-5", 10, 50, 1, 12.5),
             ("claude-opus-5-5", 4, 20, 0.2, 5),
@@ -108,6 +110,8 @@ final class PricingTests: XCTestCase {
             ("gpt-5.6-sol", 4, 0.40, 5, 20, 8, 0.80, 10, 30),
             ("gpt-5.6-terra", 2, 0.20, 2.50, 12, 4, 0.40, 5, 18),
             ("gpt-5.6-luna", 0.20, 0.02, 0.25, 1.20, 0.40, 0.04, 0.50, 1.80),
+            ("gpt-5.6", 4, 0.40, 5, 20, 8, 0.80, 10, 30),
+            ("gpt-5.5", 5, 0.50, 6.25, 30, 10, 1.00, 12.50, 45),
             ("gpt-5.4", 2.50, 0.25, 1.875, 15, 5, 0.50, 3.75, 22.50)
         ]
         for (model, input, read, write, output, longInput, longRead, longWrite, longOutput) in fixtures {
@@ -137,7 +141,8 @@ final class PricingTests: XCTestCase {
     }
 
     func testModelsWithoutAPublishedLongRateKeepTheirRate() throws {
-        for (model, rate) in [("gpt-5.4-mini", 0.25), ("gpt-5.6", 1.25), ("gpt-5.6-cyber", 1.25), ("gpt-5", 1.25),
+        for (model, rate) in [("gpt-5.4-mini", 0.75), ("gpt-5.4-nano", 0.20), ("gpt-5.6-cyber", 12.50),
+                              ("gpt-5.2", 1.75), ("gpt-5", 1.25),
                               ("gpt-5.1-codex-mini", 0.25), ("gpt-4o", 2.5), ("o4", 2.0)] {
             XCTAssertEqual(try cost(model, input: 1_000_000), rate, accuracy: 0.00001, model)
         }
@@ -145,21 +150,46 @@ final class PricingTests: XCTestCase {
     }
 
     func testFirstMatchWinsGPT54MiniOverBase() throws {
-        // "gpt-5.4-mini" sits BEFORE "gpt-5.4"/"gpt-5" in the table: a mini
-        // model must hit the mini rate (0.25/2), not the base rate (1.25/10).
-        XCTAssertEqual(try cost("gpt-5.4-mini", input: 1_000_000), 0.25, accuracy: 0.0001)
-        XCTAssertEqual(try cost("gpt-5.4-mini", output: 1_000_000), 2.0, accuracy: 0.0001)
+        // Official mini/nano rates, not the gpt-5.4 flagship rate.
+        // https://developers.openai.com/api/docs/pricing
+        XCTAssertEqual(try cost("gpt-5.4-mini", input: 1_000_000), 0.75, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5.4-mini", output: 1_000_000), 4.50, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5.4-mini", cacheRead: 1_000_000), 0.075, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5.4-nano", input: 1_000_000), 0.20, accuracy: 0.0001)
+        XCTAssertEqual(try cost("gpt-5.4-nano", output: 1_000_000), 1.25, accuracy: 0.0001)
     }
 
     func testGPT54ResolvesBeforeGPT5() throws {
-        // "gpt-5.4" precedes "gpt-5": a gpt-5.4.x model resolves to the
-        // gpt-5 family rate via the "gpt-5.4" entry and never falls through
-        // to unknown (or to the mini rate).
         XCTAssertEqual(try cost("gpt-5.4-pro", input: 1_000_000, output: 1_000_000, longPrompt: false),
-                       2.5 + 15, accuracy: 0.0001)
+                       30 + 180, accuracy: 0.0001)
         XCTAssertEqual(try cost("gpt-5.4", input: 1_000_000, longPrompt: false), 2.5, accuracy: 0.0001)
         XCTAssertEqual(try cost("gpt-5.1", input: 1_000_000), 1.25, accuracy: 0.0001,
-                       "other gpt-5.x models resolve via the gpt-5 entry")
+                       "gpt-5.1 has the same official rate as gpt-5")
+    }
+
+    /// Official standard rates, developers.openai.com/api/docs/pricing, 2026-11-09.
+    func testOfficialGPT55AndAliasRates() throws {
+        XCTAssertEqual(try cost("gpt-5.5", input: 1_000_000, longPrompt: false), 5, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.5", output: 1_000_000, longPrompt: false), 30, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.5", cacheRead: 1_000_000, longPrompt: false), 0.50, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.5", input: 1, output: 1_000_000, cacheRead: 300_000),
+                       1.0 / 1e6 * 10 + 45 + 0.3 * 1.00, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.5-pro", input: 1_000_000, output: 1_000_000, longPrompt: false),
+                       30 + 180, accuracy: 0.00001)
+        // The gpt-5.6 alias routes to gpt-5.6-sol and uses the same rate.
+        XCTAssertEqual(try cost("gpt-5.6", input: 1_000_000, longPrompt: false), 4, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.6", output: 1_000_000, longPrompt: false), 20, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.6", input: 300_000, output: 1_000_000),
+                       0.3 * 8 + 30, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.6-cyber", input: 1_000_000, output: 1_000_000),
+                       12.50 + 75, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.6-cyber", input: 300_000, output: 1_000_000),
+                       0.3 * 12.50 + 75, accuracy: 0.00001, "cyber has no long-context SKU")
+        XCTAssertEqual(try cost("gpt-5.2", input: 1_000_000), 1.75, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.2-pro", input: 1_000_000, output: 1_000_000), 21 + 168, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5-pro", input: 1_000_000, output: 1_000_000), 15 + 120, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-5.3-codex", input: 1_000_000, output: 1_000_000), 1.75 + 14, accuracy: 0.00001)
+        XCTAssertEqual(try cost("gpt-4.1-mini", cacheRead: 1_000_000), 0.10, accuracy: 0.00001)
     }
 
     func testDeepseekFlashMatchesFlashEntry() throws {
@@ -220,7 +250,7 @@ final class PricingTests: XCTestCase {
     }
 
     func testModelLookupIsCaseInsensitive() throws {
-        XCTAssertEqual(try cost("GPT-5.4-MINI", input: 1_000_000), 0.25, accuracy: 0.0001)
+        XCTAssertEqual(try cost("GPT-5.4-MINI", input: 1_000_000), 0.75, accuracy: 0.0001)
         XCTAssertEqual(try cost("CLAUDE-3-5-HAIKU", input: 1_000_000), 0.8, accuracy: 0.0001)
     }
 

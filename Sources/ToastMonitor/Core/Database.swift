@@ -2936,7 +2936,7 @@ final class Database: @unchecked Sendable {
     /// day grouping stays exact in any time zone.
     static let rollupBucketSeconds: Int64 = 900
     /// Bump when the rollup table or trigger definitions change.
-    private static let rollupSchemaVersion = "3"
+    private static let rollupSchemaVersion = "4"
 
     /// Test hook: false routes every aggregate through raw `turns` rows, the
     /// reference the rollup path must match exactly.

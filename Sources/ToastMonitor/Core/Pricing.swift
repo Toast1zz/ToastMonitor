@@ -20,27 +20,37 @@ enum Pricing {
     /// Labels the table that priced a row. Bumping it does not touch stored
     /// costs: a price change applies to new usage, and history keeps what it
     /// was priced at. Only `correctedModels` below are ever repriced.
-    static let version = "2026-10-31"
+    static let version = "2026-11-10"
     /// A row priced before this revision by a model in `correctedModels` was
     /// priced from a wrong table entry, so its stored cost is an error rather
     /// than history. Add to this only when the table itself was wrong.
-    static let correctionRevision = "2026-10-31"
-    static let correctedModels = ["%sonnet-5-5%", "%sonnet-5.5%", "%haiku-5-5%", "%haiku-5.5%", "gpt-5.6-%"]
+    static let correctionRevision = "2026-11-10"
+    static let correctedModels = ["%sonnet-5-5%", "%sonnet-5.5%", "%haiku-5-5%", "%haiku-5.5%",
+                                    "%gpt-5.6%", "%gpt-5.5%", "%gpt-5.4-mini%", "%gpt-5.4-nano%",
+                                    "%gpt-5.4-pro%", "%gpt-5.2%", "%gpt-5-pro%", "%gpt-5.3-codex%",
+                                    "%gpt-4.1-mini%"]
     /// Claude Haiku 5.5 only: a prompt counts input, cache reads and writes.
     static let longPromptThreshold: Int64 = 100_000
     /// OpenAI's long context starts above this many input tokens.
     static let longContextThreshold: Int64 = 272_000
     /// Models with a long-context entry below, for matching stored rows in SQL.
+    // Ends-with patterns (`%gpt-5.4`) plus dated snapshots (`%gpt-5.4-20%`).
+    // A trailing % on `gpt-5.4` would also mark mini and nano, which have no
+    // long-context rate.
     static let longContextModels = ["%gpt-6.1-sol%", "%gpt-6.1-terra%", "%gpt-6-astra%", "%gpt-6-sol%", "%gpt-6-luna%",
-                                    "%gpt-5.6-sol%", "%gpt-5.6-terra%", "%gpt-5.6-luna%", "%gpt-5.4%"]
+                                    "%gpt-5.6-sol%", "%gpt-5.6-terra%", "%gpt-5.6-luna%", "%gpt-5.6-20%", "%gpt-5.6",
+                                    "%gpt-5.5-pro%", "%gpt-5.5-20%", "%gpt-5.5",
+                                    "%gpt-5.4-pro%", "%gpt-5.4-20%", "%gpt-5.4"]
     /// Marks an estimated row whose computed price is zero, so the 60s
     /// backfill does not select it again until this revision changes.
     static let zeroCostStamp = version + "#0"
     static let table: [(pattern: String, price: ModelPrice)] = [
         // Claude
         // Five-minute cache writes only; one-hour writes cost twice the input rate.
+        ("claude-fable-5-2", ModelPrice(input: 8, output: 40, cacheRead: 0.20, cacheWrite: 10)),
         ("claude-fable-5-1", ModelPrice(input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5)),
         ("claude-fable-5", ModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5)),
+        ("claude-mythos-5-2", ModelPrice(input: 8, output: 40, cacheRead: 0.20, cacheWrite: 10)),
         ("claude-mythos-5-1", ModelPrice(input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5)),
         ("claude-mythos-5", ModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5)),
         ("claude-opus-5-5", ModelPrice(input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5)),
@@ -82,21 +92,33 @@ enum Pricing {
         ("gpt-6-luna", longContext(ModelPrice(input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125))),
         // GPT-5 family. Longer names are listed before the family so a reader
         // can see the intended rate; matching itself picks the longest prefix.
-        // Only the 5.6 tiers and 5.4 carry a long rate here. gpt-5.5 publishes one
-        // but has no entry of its own, and the rest have none on the page or are
-        // fallbacks that also price models without one, so they stay unmodeled.
+        // `gpt-5.6` is the official alias for gpt-5.6-sol and uses Sol's rate.
+        // Cyber models have no long-context SKU. Pro models list no cache SKU.
+        // Where the page omits a 30-minute write, cacheWrite is 1.25× input,
+        // the published family rule for GPT-5.6 and later.
+        // https://developers.openai.com/api/docs/pricing
+        ("gpt-5.6-cyber", ModelPrice(input: 12.50, output: 75, cacheRead: 1.25, cacheWrite: 15.625)),
         ("gpt-5.6-sol", longContext(ModelPrice(input: 4, output: 20, cacheRead: 0.40, cacheWrite: 5))),
         ("gpt-5.6-terra", longContext(ModelPrice(input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50))),
         ("gpt-5.6-luna", longContext(ModelPrice(input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25))),
-        ("gpt-5.6", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),
-        ("gpt-5.4-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
+        ("gpt-5.6", longContext(ModelPrice(input: 4, output: 20, cacheRead: 0.40, cacheWrite: 5))),
+        ("gpt-5.5-cyber", ModelPrice(input: 12.50, output: 75, cacheRead: 1.25, cacheWrite: 15.625)),
+        ("gpt-5.5-pro", longContext(ModelPrice(input: 30, output: 180, cacheRead: 0, cacheWrite: 0))),
+        ("gpt-5.5", longContext(ModelPrice(input: 5, output: 30, cacheRead: 0.50, cacheWrite: 6.25))),
+        ("gpt-5.4-mini", ModelPrice(input: 0.75, output: 4.50, cacheRead: 0.075, cacheWrite: 0.9375)),
+        ("gpt-5.4-nano", ModelPrice(input: 0.20, output: 1.25, cacheRead: 0.02, cacheWrite: 0.25)),
+        ("gpt-5.4-pro", longContext(ModelPrice(input: 30, output: 180, cacheRead: 0, cacheWrite: 0))),
         ("gpt-5.4", longContext(ModelPrice(input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 1.875))),
+        ("gpt-5.3-codex", ModelPrice(input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 2.1875)),
+        ("gpt-5.2-pro", ModelPrice(input: 21, output: 168, cacheRead: 0, cacheWrite: 0)),
+        ("gpt-5.2", ModelPrice(input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 2.1875)),
         ("gpt-5.1-codex-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
+        ("gpt-5-pro", ModelPrice(input: 15, output: 120, cacheRead: 0, cacheWrite: 0)),
         ("gpt-5-nano", ModelPrice(input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0.075)),
         ("gpt-5-mini", ModelPrice(input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.375)),
         ("gpt-5", ModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.875)),
         ("gpt-4.1-nano", ModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.15)),
-        ("gpt-4.1-mini", ModelPrice(input: 0.4, output: 1.6, cacheRead: 0.05, cacheWrite: 0.6)),
+        ("gpt-4.1-mini", ModelPrice(input: 0.4, output: 1.6, cacheRead: 0.10, cacheWrite: 0.6)),
         ("gpt-4.1", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
         ("gpt-4o-mini", ModelPrice(input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15)),
         ("gpt-4o", ModelPrice(input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 2.5)),

@@ -210,7 +210,7 @@ final class TurnRollupTests: XCTestCase {
         XCTAssertTrue(db.insertTurns(randomTurns(100, seed: 8)))
         assertRollupMatchesRaw("after upgrade")
         reopen()
-        XCTAssertEqual(db.setting("turn_rollup_schema"), "3")
+        XCTAssertEqual(db.setting("turn_rollup_schema"), "4")
     }
 
     func testLegacyStoreWithoutRollupIsBackfilled() {
