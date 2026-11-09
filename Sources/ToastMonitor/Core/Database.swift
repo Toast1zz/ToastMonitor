@@ -76,7 +76,12 @@ final class Database: @unchecked Sendable {
             return
         }
         let fm = FileManager.default
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            let message = "Could not locate the Application Support directory."
+            NSLog("[ToastMonitor] DB open failed: %@", message)
+            openProblem = .damaged(message)
+            return
+        }
         let dir = base.appendingPathComponent("ToastMonitor", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         openLocked(dir.appendingPathComponent("toastmonitor.db").path)
@@ -87,6 +92,26 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard db == nil else { return }
         openLocked(path)
+    }
+
+    /// Opens the store on a background queue, then invokes `completion` on
+    /// the main queue. Interactive launch uses this so migrations and a
+    /// rollup rebuild do not freeze the menu bar. CLI flags and screenshot
+    /// hooks keep the synchronous `open()` / `openAt(_:)`. Idempotent: a
+    /// second call while already open still delivers `completion` on main.
+    func openInBackground(
+        path: String? = nil,
+        queue: DispatchQueue = DispatchQueue.global(qos: .userInitiated),
+        completion: @escaping () -> Void
+    ) {
+        queue.async { [self] in
+            if let path, !path.isEmpty {
+                self.openAt(path)
+            } else {
+                self.open()
+            }
+            DispatchQueue.main.async(execute: completion)
+        }
     }
 
     /// Test helper: isolated instance on a throwaway path.
@@ -102,7 +127,10 @@ final class Database: @unchecked Sendable {
     func close() {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return }
-        sqlite3_close(db)
+        // close_v2 returns immediately and finishes the close once any
+        // leftover statements are finalized, instead of failing with
+        // SQLITE_BUSY and leaving a live handle after we drop our pointer.
+        sqlite3_close_v2(db)
         self.db = nil
         seriesLock.lock()
         orCreditSeries = []

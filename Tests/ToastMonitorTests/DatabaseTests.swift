@@ -1236,4 +1236,47 @@ extension DatabaseTests {
         XCTAssertEqual(db.openRouterSpend(since: 0), 13)
     }
 
+
+
+    func testOpenInBackgroundCompletesOnMainAndDoesNotBlockTheCaller() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("open-bg-\(UUID().uuidString).sqlite").path
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: path + suffix)
+            }
+        }
+        let db = Database()
+        let opened = expectation(description: "opened on main")
+        var finished = false
+        db.openInBackground(path: path) {
+            XCTAssertTrue(Thread.isMainThread, "completion must hop to the main queue")
+            XCTAssertNil(db.openProblem)
+            XCTAssertTrue(db.setSetting("opened-off-main", "1"))
+            XCTAssertEqual(db.setting("opened-off-main"), "1")
+            finished = true
+            opened.fulfill()
+        }
+        XCTAssertFalse(finished, "openInBackground must return before the store is ready")
+        wait(for: [opened], timeout: 5)
+        XCTAssertTrue(finished)
+        db.close()
+    }
+
+    func testCloseAllowsReopenOnTheSamePath() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reopen-\(UUID().uuidString).sqlite").path
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: path + suffix)
+            }
+        }
+        let db = Database.testInstance(path: path)
+        XCTAssertTrue(db.setSetting("keep", "yes"))
+        db.close()
+        db.openAt(path)
+        XCTAssertEqual(db.setting("keep"), "yes")
+        db.close()
+    }
+
 }

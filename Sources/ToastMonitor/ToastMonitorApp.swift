@@ -431,13 +431,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
         NSApp.setActivationPolicy(.accessory)
-        Database.shared.open() // synchronous — needed before any DB reads
 
         // UI verification must be hermetic. A directly executed development
         // binary has no stable code-signing requirement, so starting the
         // OpenRouter and OpenCode Go clients here would ask for three login
         // Keychain items while we're only inspecting toolbar/panel geometry.
         if isDashboardVerification || isPanelVerification {
+            // Screenshots and geometry checks need a ready store on this
+            // thread so the first paint already has numbers.
+            Database.shared.open()
             if DemoMode.requested(args) {
                 guard DemoMode.install() else {
                     print("--demo requires an isolated TM_DATABASE_PATH")
@@ -502,6 +504,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         KeychainStore.migrateLegacyVaultIfNeeded() // one-time: legacy vault file → login keychain
         UpdateManager.shared.consumeInstallFailure()
+        // The icon and Edit menu should appear immediately. Opening the
+        // store can run migrations and a rollup rebuild, which would
+        // freeze the menu bar if done on this thread.
+        setupMenuBar()
+        // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
+        // fields and everywhere else, not just while the dashboard is open.
+        WindowManager.shared.ensureMainMenu()
+        Database.shared.openInBackground { [weak self] in
+            self?.startInteractiveServices(arguments: args)
+        }
+    }
+
+    /// Starts collectors, quota clients, and the first snapshot after the
+    /// store is open. Called on the main queue.
+    private func startInteractiveServices(arguments: [String]) {
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()
@@ -513,14 +530,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DeepSeekBillingClient.shared.start()
         HermesRemoteClient.shared.start()
         QuotaAlertManager.shared.start()
-        setupMenuBar()
-        // Main menu at launch so Cmd+V/C/X/W/Q work in the popover's secure
-        // fields and everywhere else, not just while the dashboard is open.
-        WindowManager.shared.ensureMainMenu()
         UpdateManager.shared.startAutoCheckIfEnabled()
         // Only acknowledge the replacement after normal startup completes.
         // The detached installer retains the previous bundle until this point.
-        UpdateManager.acknowledgeLaunch(arguments: args)
+        UpdateManager.acknowledgeLaunch(arguments: arguments)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             AppState.shared.refresh()
         }
