@@ -19,20 +19,29 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-# Only an exact tag hit is a release version (see build-app.sh); untagged
-# commits package as 1.0 rather than impersonating the last release.
+# Only an exact tag hit is a release version (see build-app.sh). Packaging an
+# untagged commit as 1.0 would hand existing users a downgrade if those zips
+# were signed into a manifest, so that path is refused unless overridden.
 TAG_VERSION="$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
 RAW_VERSION="${TM_VERSION:-${TAG_VERSION#v}}"
 VERSION="${RAW_VERSION#v}"
 if [[ -z "$VERSION" ]]; then
-    VERSION="1.0"
-    # Zips built here are what sign-update-manifest.sh points released users
-    # at, so an untagged package is almost never what was intended.
     NEAREST_TAG="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
-    if [[ -n "$NEAREST_TAG" ]]; then
-        echo "warning: HEAD is not tagged — packaging as $VERSION, not ${NEAREST_TAG#v}." >&2
-        echo "         Signing a manifest from these zips would hand ${NEAREST_TAG}'s users a 1.0 build." >&2
-        echo "         Build the tag instead: git checkout $NEAREST_TAG && ./scripts/package-release.sh" >&2
+    if [[ "${TM_ALLOW_UNTAGGED:-0}" == "1" ]]; then
+        VERSION="1.0"
+        echo "warning: HEAD is not tagged — packaging as $VERSION${NEAREST_TAG:+, not ${NEAREST_TAG#v}}." >&2
+    else
+        echo "error: HEAD is not an exact v* tag; refusing to package as 1.0." >&2
+        if [[ -n "$NEAREST_TAG" ]]; then
+            echo "       Build the tag: git checkout $NEAREST_TAG && ./scripts/package-release.sh" >&2
+        fi
+        echo "       Or set TM_VERSION, or TM_ALLOW_UNTAGGED=1 for a local 1.0 package." >&2
+        exit 1
+    fi
+fi
+if [[ -n "$TAG_VERSION" ]]; then
+    if [[ "$(git cat-file -t "$TAG_VERSION" 2>/dev/null || true)" != "tag" ]]; then
+        echo "warning: $TAG_VERSION is a lightweight tag; prefer an annotated tag (git tag -a)." >&2
     fi
 fi
 if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
