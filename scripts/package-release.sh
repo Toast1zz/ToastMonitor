@@ -66,6 +66,9 @@ for arch in $ARCHS; do
     esac
     TM_VERSION="$VERSION" TM_APP_PATH="$APP" TM_ARCHS="$TM_ARCHS" TM_SKIP_INSTALL=1 ./scripts/build-app.sh
     file "$APP/Contents/MacOS/ToastMonitor"
+    # build-app.sh already scanned the bundle; check again here so a packaging
+    # change cannot ship a zip without going through the same gate.
+    "$ROOT/scripts/assert-no-build-paths.sh" "$APP" "$ROOT"
     ZIP="$RELEASE_DIR/ToastMonitor-${VERSION}-${arch}.zip"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
     echo "== $ZIP ($(du -sh "$ZIP" | cut -f1)) =="
