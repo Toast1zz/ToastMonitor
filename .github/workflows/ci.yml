@@ -66,6 +66,18 @@ jobs:
       - name: Release performance smoke gate
         run: swift test -c release --filter FileScannerTests
 
+      # Assemble a one-arch unsigned app and refuse leaked checkout/$HOME paths
+      # (OSO notes from SwiftPM's -g on release builds). arm64-only to keep
+      # the gate cheaper than a full universal package.
+      - name: Release path leak gate
+        env:
+          TM_SKIP_INSTALL: "1"
+          TM_ALLOW_UNSIGNED: "1"
+          TM_VERSION: "0.0.0"
+          TM_ARCHS: "arm64"
+          TM_CODESIGN_TIMESTAMP: "none"
+        run: ./scripts/build-app.sh
+
       - name: Strict concurrency gate
         # A cached debug build ignores new frontend flags, so this step uses
         # its own scratch path and actually recompiles.

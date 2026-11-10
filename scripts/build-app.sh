@@ -12,9 +12,13 @@ cd "$ROOT"
 # Glass on macOS 26/27. Lowering the deployment target does not change that:
 # glass adoption follows the recorded SDK, not the minimum OS.
 SWIFT_BUILD=(swift build --build-system native)
-# Rewrite this checkout's absolute path out of every release binary.
+# These rewrite DWARF (and #filePath, if the compiler honors the flag). They
+# do not rewrite the OSO / object-file notes ld embeds when SwiftPM passes -g
+# even on -c release; those are stripped just before signing, below.
 SWIFT_BUILD+=(-Xswiftc -file-prefix-map -Xswiftc "$ROOT=.")
 SWIFT_BUILD+=(-Xswiftc -debug-prefix-map -Xswiftc "$ROOT=.")
+SWIFT_BUILD+=(-Xcc -ffile-prefix-map="$ROOT=.")
+SWIFT_BUILD+=(-Xcc -fdebug-prefix-map="$ROOT=.")
 BUILD_ROOT="${TM_BUILD_PATH:-$ROOT/.build}"
 if [[ -n "${TM_BUILD_PATH:-}" ]]; then SWIFT_BUILD+=(--scratch-path "$BUILD_ROOT"); fi
 if [[ -n "${TM_CACHE_PATH:-}" ]]; then SWIFT_BUILD+=(--cache-path "$TM_CACHE_PATH"); fi
@@ -162,6 +166,18 @@ if [[ -z "$ICON_SOURCE" || ! -f "$ICON_SOURCE" ]]; then
 fi
 cp "$ICON_SOURCE" "$APP/Contents/Resources/AppIcon.icns"
 echo "icon: $ICON_SOURCE"
+
+# SwiftPM's release configuration still compiles with -g. ld then writes OSO
+# records that name every .swift file and the absolute .build object path.
+# -file-prefix-map/-debug-prefix-map remap DWARF but leave those notes alone;
+# this project also has no #file/#filePath literals in Sources. strip -S
+# drops the OSO notes. It must run before codesign.
+echo "== stripping debug symbols =="
+xcrun strip -S "$APP/Contents/MacOS/ToastMonitor"
+
+echo "== checking for leaked build paths =="
+"$ROOT/scripts/assert-no-build-paths.sh" "$APP" "$ROOT"
+
 echo "== code signing =="
 if [[ "${TM_ALLOW_UNSIGNED:-0}" == "1" ]]; then
     # Explicit opt-in for a release shipped with no signing identity. An
