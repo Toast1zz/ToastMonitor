@@ -177,13 +177,8 @@ enum CodexParser {
     private static func loadThreads() -> [String: ThreadMeta]? {
         var out: [String: ThreadMeta] = [:]
         guard FileManager.default.fileExists(atPath: stateDBPath) else { return out }
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(stateDBPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            if let db { sqlite3_close(db) }
-            return nil
-        }
+        guard let db = SQLiteReadOnly.open(stateDBPath) else { return nil }
         defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT id, model, model_provider, title, cwd FROM threads;", -1, &stmt, nil) == SQLITE_OK else {
             return nil

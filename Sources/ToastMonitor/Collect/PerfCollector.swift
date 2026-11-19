@@ -394,11 +394,7 @@ enum PerfCollector {
     static func scanOpenCode(database: Database, path: String = OpenCodeParser.dbPath) {
         guard FileManager.default.fileExists(atPath: path) else { return }
         let watermark = database.perfCursor(path)?.size ?? 0
-        var src: OpaquePointer?
-        guard sqlite3_open_v2(path, &src, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            sqlite3_close(src)
-            return
-        }
+        guard let src = SQLiteReadOnly.open(path) else { return }
         defer { sqlite3_close(src) }
         let sql = """
         WITH m AS (

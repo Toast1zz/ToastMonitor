@@ -131,20 +131,15 @@ enum AntigravityParser {
     /// file cannot be opened. A conversation created moments ago may not
     /// have the table yet, which reads as no rows.
     static func readGenerations(path: String, after watermark: Int64) -> [Row]? {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            sqlite3_close(db)
-            return nil
-        }
+        guard let db = SQLiteReadOnly.open(path) else { return nil }
         defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
 
         var raw: [(idx: Int64, gen: Generation)] = []
         var stmt: OpaquePointer?
         let prepRC = sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx;",
                                         -1, &stmt, nil)
         guard prepRC == SQLITE_OK else {
-            let msg = db.map { String(cString: sqlite3_errmsg($0)) } ?? ""
+            let msg = String(cString: sqlite3_errmsg(db))
             sqlite3_finalize(stmt)
             // Only a missing table is a genuinely empty brand-new conversation;
             // SQLITE_BUSY / I/O errors must return nil so the caller retries.
@@ -193,14 +188,9 @@ enum AntigravityParser {
 
     /// cascade id → title and workspace folder name.
     static func loadSummaries() -> [String: Summary] {
-        var db: OpaquePointer?
         guard FileManager.default.fileExists(atPath: summariesPath),
-              sqlite3_open_v2(summariesPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            sqlite3_close(db)
-            return [:]
-        }
+              let db = SQLiteReadOnly.open(summariesPath) else { return [:] }
         defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT conversation_id, title, workspace_uris FROM conversation_summaries;",
                                  -1, &stmt, nil) == SQLITE_OK else {

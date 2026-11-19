@@ -12,6 +12,50 @@ enum SQLiteText {
     }
 }
 
+/// Read-only connection to another app's SQLite database.
+///
+/// A WAL database whose owner has quit has no `-wal`/`-shm` files (SQLite
+/// deletes them on the last close). A read-only connection cannot create
+/// `-shm`, so every query then fails with SQLITE_CANTOPEN. With nothing left
+/// in a WAL there is nothing to miss, so reopening with `immutable=1` reads
+/// the main file directly. A writer that starts mid-read at worst makes this
+/// read fail, and the next scan reads normally through its WAL.
+enum SQLiteReadOnly {
+    static func open(_ path: String) -> OpaquePointer? {
+        guard let db = connect(path, flags: SQLITE_OPEN_READONLY) else { return nil }
+        guard probe(db) == SQLITE_CANTOPEN else { return db }
+        sqlite3_close(db)
+        let uri = URL(fileURLWithPath: path).absoluteString + "?immutable=1"
+        guard let immutable = connect(uri, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_URI) else { return nil }
+        guard probe(immutable) != SQLITE_CANTOPEN else {
+            sqlite3_close(immutable)
+            return nil
+        }
+        return immutable
+    }
+
+    private static func connect(_ name: String, flags: Int32) -> OpaquePointer? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(name, &db, flags, nil) == SQLITE_OK, let db else {
+            sqlite3_close(db)
+            return nil
+        }
+        sqlite3_busy_timeout(db, 2000)
+        return db
+    }
+
+    /// The first statement is what touches the WAL index, so opening alone
+    /// cannot tell a readable file from one missing its `-shm`.
+    private static func probe(_ db: OpaquePointer) -> Int32 {
+        var stmt: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master LIMIT 1;", -1, &stmt, nil)
+        defer { sqlite3_finalize(stmt) }
+        guard prepared == SQLITE_OK else { return prepared }
+        let rc = sqlite3_step(stmt)
+        return rc == SQLITE_ROW ? SQLITE_DONE : rc
+    }
+}
+
 /// Thread-safe SQLite store. WAL mode, single writer, batched transactions.
 final class Database: @unchecked Sendable {
     static let shared = Database()
