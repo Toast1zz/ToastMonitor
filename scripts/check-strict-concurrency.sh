@@ -4,9 +4,16 @@
 # existing ones are worked down. Lower the baseline whenever the count falls.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRATCH="${1:-$(mktemp -d)}"
+OWNED_SCRATCH=""
+if [[ -n "${1:-}" ]]; then
+    SCRATCH="$1"
+else
+    SCRATCH="$(mktemp -d)"
+    OWNED_SCRATCH="$SCRATCH"
+fi
 BASELINE_FILE="$ROOT/scripts/strict-concurrency-baseline.txt"
 LOG="$(mktemp)"
+trap 'rm -f "$LOG"; if [[ -n "$OWNED_SCRATCH" ]]; then rm -rf "$OWNED_SCRATCH"; fi' EXIT
 swift build -c debug --package-path "$ROOT" --scratch-path "$SCRATCH" \
     -Xswiftc -strict-concurrency=complete > "$LOG" 2>&1 || { tail -30 "$LOG"; exit 1; }
 # The compiler colors its diagnostics even when the output is a file.
