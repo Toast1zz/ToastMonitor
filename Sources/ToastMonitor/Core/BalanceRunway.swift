@@ -15,7 +15,13 @@ enum BalanceRunway {
     static func dailySpend(cumulative samples: [(ts: Int64, value: Double)]) -> Double? {
         guard let first = samples.first, let last = samples.last,
               last.ts - first.ts >= minCoverage else { return nil }
-        return max(last.value - first.value, 0) / Double(last.ts - first.ts) * 86_400
+        // Sum positive deltas so an account/key switch that lowers the counter
+        // does not cancel out real spend.
+        let spent = zip(samples, samples.dropFirst()).reduce(0.0) { total, pair in
+            let delta = pair.1.value - pair.0.value
+            return delta.isFinite && delta > 0 ? total + delta : total
+        }
+        return spent / Double(last.ts - first.ts) * 86_400
     }
 
     /// Daily spend from balance readings. Only drops count, so a top-up

@@ -31,7 +31,12 @@ final class Database: @unchecked Sendable {
         case damaged(String)
         case readOnly(String)
     }
-    private(set) var openProblem: OpenProblem?
+    private let stateLock = NSLock()
+    private var _openProblem: OpenProblem?
+    private(set) var openProblem: OpenProblem? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _openProblem }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _openProblem = newValue }
+    }
     private struct SettingCacheChange {
         let value: String?
     }
@@ -40,7 +45,11 @@ final class Database: @unchecked Sendable {
     private var pendingSeriesOps: [() -> Void]?
     typealias ScanState = (size: Int64, mtime: Int64, identity: Int64, context: String?)
     private var scanStatesCache: [String: ScanState]?
-    private(set) var dbPath: String = ""
+    private var _dbPath: String = ""
+    private(set) var dbPath: String {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _dbPath }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _dbPath = newValue }
+    }
     /// In-memory mirror of the `settings` key/value table. A UI-thread read
     /// (a Toggle's Binding.get evaluated every body pass, a stale check on
     /// window resign, an onAppear batch) would otherwise acquire `lock` and
@@ -83,7 +92,8 @@ final class Database: @unchecked Sendable {
             return
         }
         let dir = base.appendingPathComponent("ToastMonitor", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
         openLocked(dir.appendingPathComponent("toastmonitor.db").path)
     }
 
@@ -144,6 +154,7 @@ final class Database: @unchecked Sendable {
         // SQLITE_BUSY and leaving a live handle after we drop our pointer.
         sqlite3_close_v2(db)
         self.db = nil
+        totalsCache = nil
         seriesLock.lock()
         orCreditSeries = []
         deepSeekSeries = [:]
@@ -153,6 +164,7 @@ final class Database: @unchecked Sendable {
     private func openLocked(_ path: String) {
         startupHadError = false
         scanStatesCache = nil
+        totalsCache = nil
         let fm = FileManager.default
         let dir = (path as NSString).deletingLastPathComponent
         // Create with the private mode up front (attributesForDirectory) so
@@ -373,7 +385,7 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return }
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
-            setUserVersion(0)
+            startupHadError = true
             return
         }
         // Databases created by versions before event_id/cost_quality existed
@@ -391,7 +403,7 @@ final class Database: @unchecked Sendable {
             let check = "SELECT COUNT(*) FROM pragma_table_info('turns') WHERE name='\(name)';"
             guard sqlite3_prepare_v2(db, check, -1, &colStmt, nil) == SQLITE_OK else {
                 rollbackOrPoison()
-                setUserVersion(0)
+                startupHadError = true
                 return
             }
             var exists = false
@@ -399,7 +411,7 @@ final class Database: @unchecked Sendable {
             sqlite3_finalize(colStmt)
             if !exists && !execChecked("ALTER TABLE turns ADD COLUMN \(name) \(decl);") {
                 rollbackOrPoison()
-                setUserVersion(0)
+                startupHadError = true
                 return
             }
         }
@@ -434,10 +446,10 @@ final class Database: @unchecked Sendable {
             if !execChecked(repairDuplicates)
                 || !execChecked("CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_event ON turns(tool, event_id) WHERE event_id IS NOT NULL;") {
                 rollbackOrPoison()
-                setUserVersion(0)
+                startupHadError = true
             } else if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
                 rollbackOrPoison()
-                setUserVersion(0)
+                startupHadError = true
             }
             return
         }
@@ -500,16 +512,13 @@ final class Database: @unchecked Sendable {
                 NSLog("[ToastMonitor] turns rebuild step failed: %@ (rolling back)", msg)
                 if let err { sqlite3_free(err) }
                 rollbackOrPoison()
-                // Keep the database at the pre-migration version so the next
-                // launch retries the migration instead of treating a partial
-                // schema as current.
-                setUserVersion(0)
+                startupHadError = true
                 return
             }
         }
         if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
             rollbackOrPoison()
-            setUserVersion(0)
+            startupHadError = true
             return
         }
         NSLog("[ToastMonitor] turns table rebuilt without legacy UNIQUE")
@@ -666,10 +675,13 @@ final class Database: @unchecked Sendable {
         // Old stores can lack tables the steps below alter, and a failed step
         // now stops the run, so recreate them first.
         ensureBaseTables()
-        let previousVersion = userVersion()
-        if previousVersion < 3 {
+        var currentVersion = userVersion()
+        if currentVersion < 3 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             transactionWriteError = false
             ensureColumn("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0", table: "turns")
             ensureColumn("provider", "TEXT", table: "turns")
@@ -684,9 +696,10 @@ final class Database: @unchecked Sendable {
                 && setUserVersion(3)
             if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
                 transactionWriteError = false
+                currentVersion = 3
             } else {
                 rollbackOrPoison()
-                setUserVersion(previousVersion)
+                setUserVersion(currentVersion)
                 transactionWriteError = false
                 startupHadError = true
                 return
@@ -694,9 +707,12 @@ final class Database: @unchecked Sendable {
         }
         // v4: openrouter_snapshots account columns, added here once rather
         // than probed on every snapshot insert.
-        if previousVersion < 4 {
+        if currentVersion < 4 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             transactionWriteError = false
             ensureColumn("credits_total", "REAL", table: "openrouter_snapshots")
             ensureColumn("credits_usage", "REAL", table: "openrouter_snapshots")
@@ -706,9 +722,10 @@ final class Database: @unchecked Sendable {
             let ok = !transactionWriteError && setUserVersion(4)
             if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
                 transactionWriteError = false
+                currentVersion = 4
             } else {
                 rollbackOrPoison()
-                setUserVersion(previousVersion)
+                setUserVersion(currentVersion)
                 transactionWriteError = false
                 startupHadError = true
                 return
@@ -717,9 +734,12 @@ final class Database: @unchecked Sendable {
         // v5: per-call timing (time to first token, output speed). Kept apart
         // from `turns` so its merge-by-request upserts never touch usage rows,
         // with its own cursors so a first run backfills existing transcripts.
-        if previousVersion < 5 {
+        if currentVersion < 5 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             let ok = execChecked("""
             CREATE TABLE IF NOT EXISTS perf_samples (
               tool TEXT NOT NULL,
@@ -738,18 +758,23 @@ final class Database: @unchecked Sendable {
               identity INTEGER NOT NULL DEFAULT 0
             );
             """) && setUserVersion(5)
-            if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
+            if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                currentVersion = 5
+            } else {
                 rollbackOrPoison()
-                setUserVersion(previousVersion)
+                setUserVersion(currentVersion)
                 startupHadError = true
                 return
             }
         }
         // v6: DeepSeek balance history. Its API has no spend history for
         // API-key logins, so the burn rate comes from how the balance falls.
-        if previousVersion < 6 {
+        if currentVersion < 6 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             let ok = execChecked("""
             CREATE TABLE IF NOT EXISTS deepseek_balance_samples (
               ts INTEGER NOT NULL,
@@ -758,9 +783,11 @@ final class Database: @unchecked Sendable {
               PRIMARY KEY (ts, currency)
             ) WITHOUT ROWID;
             """) && setUserVersion(6)
-            if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
+            if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                currentVersion = 6
+            } else {
                 rollbackOrPoison()
-                setUserVersion(previousVersion)
+                setUserVersion(currentVersion)
                 startupHadError = true
                 return
             }
@@ -769,9 +796,12 @@ final class Database: @unchecked Sendable {
         // whose logs are still on disk. `usage_recount_v7` stays pending
         // until that rescan runs. Codex and Grok quota were on for every
         // database that already existed; a fresh install leaves them unset.
-        if previousVersion < 7 {
+        if currentVersion < 7 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             var sql = """
             CREATE TABLE IF NOT EXISTS settings (
               k TEXT PRIMARY KEY,
@@ -789,9 +819,11 @@ final class Database: @unchecked Sendable {
                 """
             }
             let ok = execChecked(sql) && setUserVersion(7)
-            if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
+            if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                currentVersion = 7
+            } else {
                 rollbackOrPoison()
-                setUserVersion(previousVersion)
+                setUserVersion(currentVersion)
                 startupHadError = true
                 return
             }
@@ -799,18 +831,24 @@ final class Database: @unchecked Sendable {
         // v8: the one-hour share of Claude cache writes. NULL means not known
         // yet; `cache_split_replay` has the collector read logs still on disk
         // to fill it. Rows whose log is gone stay NULL and keep their cost.
-        if previousVersion < 8 {
+        if currentVersion < 8 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             transactionWriteError = false
             ensureColumn("cache_write_1h", "INTEGER", table: "turns")
             let ok = !transactionWriteError && execChecked("""
             INSERT INTO settings (k, v) VALUES ('cache_split_replay', 'pending')
             ON CONFLICT(k) DO UPDATE SET v=excluded.v;
             """) && setUserVersion(8)
-            if !(ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK) {
+            if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+                transactionWriteError = false
+                currentVersion = 8
+            } else {
                 rollbackOrPoison()
-                setUserVersion(previousVersion)
+                setUserVersion(currentVersion)
                 transactionWriteError = false
                 startupHadError = true
                 return
@@ -943,14 +981,17 @@ final class Database: @unchecked Sendable {
           cost = excluded.cost,
           provider = COALESCE(excluded.provider, turns.provider),
           pricing_version = excluded.pricing_version,
-          cost_quality = excluded.cost_quality
+          cost_quality = excluded.cost_quality,
+          cache_write_1h = COALESCE(excluded.cache_write_1h, turns.cache_write_1h)
         WHERE excluded.input_tokens != turns.input_tokens
            OR excluded.output_tokens != turns.output_tokens
            OR excluded.reasoning_tokens != turns.reasoning_tokens
            OR excluded.cache_read != turns.cache_read
            OR excluded.cache_write != turns.cache_write
            OR excluded.cost != turns.cost
-           OR COALESCE(excluded.model, '') != COALESCE(turns.model, '');
+           OR COALESCE(excluded.model, '') != COALESCE(turns.model, '')
+           OR (turns.cache_write_1h IS NULL AND excluded.cache_write_1h IS NOT NULL)
+           OR (excluded.cache_write_1h IS NOT NULL AND turns.cache_write_1h IS NOT NULL AND excluded.cache_write_1h != turns.cache_write_1h);
         """
         let removeDerivedSQL = """
         DELETE FROM turns
@@ -1323,9 +1364,11 @@ final class Database: @unchecked Sendable {
         }
         if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
             settingsCache.set("usage_recount_v7", "done")
+            transactionWriteError = false
             return
         }
-        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+        rollbackOrPoison()
+        transactionWriteError = false
     }
 
     /// One-shot after the v8 migration: rewinds every Claude log so its rows
@@ -1477,10 +1520,11 @@ final class Database: @unchecked Sendable {
         sqlite3_finalize(pricedStmt)
         sqlite3_finalize(stampStmt)
         if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
+            if !rows.isEmpty { bumpDataVersion() }
             _ = setSetting("backfill_costs_last", "\(now)")
             return
         }
-        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+        rollbackOrPoison()
     }
 
     // MARK: - Settings
@@ -1719,18 +1763,21 @@ final class Database: @unchecked Sendable {
         var out: [ToolTotals] = []
         guard let db else { return out }
         var stmt: OpaquePointer?
-        let sql = """
-        SELECT tool, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), SUM(cost), SUM(n)
-        FROM (\(Self.usageSource)) GROUP BY tool ORDER BY SUM(cost) DESC;
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
-        bindUsageRange(stmt, from: from, to: to)
         // Codex cost is covered by a ChatGPT/Codex subscription: keep the
         // token row but zero its cost so it cannot appear as API spend.
         let codexCovered = codexBilledBySubscription()
+        let costSum = codexCovered
+            ? "SUM(CASE WHEN tool = 'codex' THEN 0.0 ELSE cost END)"
+            : "SUM(cost)"
+        let sql = """
+        SELECT tool, SUM(input_tokens), SUM(output_tokens), SUM(cache_read), SUM(cache_write), \(costSum), SUM(n)
+        FROM (\(Self.usageSource)) GROUP BY tool ORDER BY \(costSum) DESC;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
+        bindUsageRange(stmt, from: from, to: to)
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let tool = SQLiteText.column(stmt, 0) else { continue }
-            let cost = (codexCovered && tool == "codex") ? 0.0 : sqlite3_column_double(stmt, 5)
+            let cost = sqlite3_column_double(stmt, 5)
             out.append(ToolTotals(
                 tool: tool,
                 input: sqlite3_column_int64(stmt, 1),
@@ -2354,8 +2401,10 @@ final class Database: @unchecked Sendable {
     /// Used for spend-pace estimates, not for a local day's total (that
     /// needs a pre-period baseline — see `openRouterSpend`).
     func orCreditUsage(since start: Int64) -> [(ts: Int64, value: Double)] {
+        let epoch = Int64(setting(Self.openRouterCreditsEpochKey) ?? "0") ?? 0
+        let floorTs = max(start, epoch)
         seriesLock.lock(); defer { seriesLock.unlock() }
-        let rows = orCreditSeries.filter { $0.ts >= start }
+        let rows = orCreditSeries.filter { $0.ts >= floorTs }
         guard let first = rows.first, let last = rows.last else { return [] }
         if first.ts == last.ts { return [first] }
         return [first, last]
@@ -2404,8 +2453,12 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_int64(stmt, 1, ts)
         sqlite3_bind_text(stmt, 2, (currency as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_double(stmt, 3, amount)
-        if sqlite3_step(stmt) != SQLITE_DONE { markTransactionWriteFailure() }
+        let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
+        guard rc == SQLITE_DONE else {
+            markTransactionWriteFailure()
+            return
+        }
         noteDeepSeek(currency: currency, ts: ts, amount: amount)
         pruneSnapshotsIfDue()
     }
@@ -2631,7 +2684,7 @@ final class Database: @unchecked Sendable {
         for table in tables {
             guard sqlite3_exec(db, "DELETE FROM \(table);", nil, nil, nil) == SQLITE_OK else {
                 if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
-                    sqlite3_close(db)
+                    sqlite3_close_v2(db)
                     self.db = nil
                 }
                 return false
@@ -2639,7 +2692,7 @@ final class Database: @unchecked Sendable {
         }
         guard sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK else {
             if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
-                sqlite3_close(db)
+                sqlite3_close_v2(db)
                 self.db = nil
             }
             return false
@@ -2651,6 +2704,10 @@ final class Database: @unchecked Sendable {
         bumpDataVersion()
         scanStatesCache = nil
         totalsCache = nil
+        seriesLock.lock()
+        orCreditSeries = []
+        deepSeekSeries = [:]
+        seriesLock.unlock()
         NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
     }
@@ -2683,10 +2740,7 @@ final class Database: @unchecked Sendable {
             return false
         }
         defer { sqlite3_close(target) }
-        guard let backup = sqlite3_backup_init(target, "main", db, "main") else { return false }
-        let step = sqlite3_backup_step(backup, -1)
-        let finish = sqlite3_backup_finish(backup)
-        guard step == SQLITE_DONE, finish == SQLITE_OK else { return false }
+        guard Self.copyContents(from: db, to: target) else { return false }
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination)
         completed = true
         return true
@@ -2762,12 +2816,15 @@ final class Database: @unchecked Sendable {
         guard candidate.isUsable(comparedTo: reference) else { return false }
         candidate.close()
 
-        let recovery: String
+        // Always stage an uncompressed SQLite copy inside `workspace` for
+        // in-place rollback: `beforeReplace` (DataMaintenance) returns a
+        // compressed `.db.lzfse` archive that sqlite3_open_v2 cannot read.
+        let rollbackPath = workspace.appendingPathComponent("pre-restore-rollback.db").path
+        guard backup(to: rollbackPath) else { return false }
         if let beforeReplace {
-            guard let path = beforeReplace() else { return false }
-            recovery = path
+            guard beforeReplace() != nil else { return false }
         } else {
-            recovery = dbPath + ".pre-restore-\(UUID().uuidString).db"
+            let recovery = dbPath + ".pre-restore-\(UUID().uuidString).db"
             guard backup(to: recovery) else { return false }
         }
         guard replaceContents(from: candidatePath) else {
@@ -2777,7 +2834,7 @@ final class Database: @unchecked Sendable {
         close()
         openLocked(dbPath)
         guard isUsable(comparedTo: reference) else {
-            _ = replaceContents(from: recovery)
+            _ = replaceContents(from: rollbackPath)
             close()
             openLocked(dbPath)
             return false

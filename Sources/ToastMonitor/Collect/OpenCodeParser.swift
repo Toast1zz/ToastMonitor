@@ -49,15 +49,17 @@ enum OpenCodeParser {
         guard FileManager.default.fileExists(atPath: dbPath) else { return (0, watermark, false) }
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            if let db { sqlite3_close(db) }
             database.noteScanProblem("OpenCode database could not be opened")
             return (0, watermark, true)
         }
         defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
         var stmt: OpaquePointer?
         let sql = """
         SELECT id, COALESCE(title,''), COALESCE(directory,''), model, cost,
                tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
-               time_created, time_updated FROM session WHERE time_updated >= ?;
+               time_created, time_updated FROM session WHERE time_updated >= ? ORDER BY time_updated ASC;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             database.noteScanProblem("OpenCode database could not be read")
@@ -67,17 +69,22 @@ enum OpenCodeParser {
         sqlite3_bind_int64(stmt, 1, watermark)
         var count = 0
         var maxUpdated = watermark
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepRC: Int32 = SQLITE_OK
+        while true {
+            stepRC = sqlite3_step(stmt)
+            guard stepRC == SQLITE_ROW else { break }
             guard let id = SQLiteText.column(stmt, 0), !id.isEmpty else { continue }
             let model = SQLiteText.column(stmt, 3)
             let updated = sqlite3_column_int64(stmt, 11)
             if updated > maxUpdated { maxUpdated = updated }
+            let rawCost = sqlite3_column_double(stmt, 4)
+            let safeCost = rawCost.isFinite && rawCost >= 0 ? rawCost : 0
             body(Row(id: id, title: SQLiteText.column(stmt, 1) ?? "",
                      directory: SQLiteText.column(stmt, 2) ?? "",
                      model: normalizeModel(model),
                      provider: normalizeProvider(model),
-                     cost: sqlite3_column_double(stmt, 4),
-                     hasActualCost: sqlite3_column_type(stmt, 4) != SQLITE_NULL,
+                     cost: safeCost,
+                     hasActualCost: sqlite3_column_type(stmt, 4) != SQLITE_NULL && rawCost.isFinite && rawCost >= 0,
                      input: FileScanner.tokenCount(sqlite3_column_int64(stmt, 5)),
                      output: FileScanner.tokenCount(sqlite3_column_int64(stmt, 6)),
                      reasoning: FileScanner.tokenCount(sqlite3_column_int64(stmt, 7)),
@@ -86,6 +93,10 @@ enum OpenCodeParser {
                      timeCreated: sqlite3_column_int64(stmt, 10),
                      timeUpdated: updated))
             count += 1
+        }
+        guard stepRC == SQLITE_DONE else {
+            database.noteScanProblem("OpenCode database read interrupted (SQLite \(stepRC))")
+            return (count, watermark, true)
         }
         return (count, maxUpdated, false)
     }

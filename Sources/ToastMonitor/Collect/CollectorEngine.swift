@@ -303,7 +303,7 @@ final class CollectorEngine: @unchecked Sendable {
                 return
             }
             sourceRetry.succeeded(source)
-            notePartialTails(sourcePaths.filter { $0.hasSuffix(".jsonl") })
+            notePartialTails(sourcePaths.filter { $0.hasSuffix(".jsonl") || $0.hasSuffix(".zstd") })
             for path in [signaturePath].compactMap({ $0 }) + signaturePaths { rememberSource(path) }
             if turnRows == 0 && sessionRows == 0 {
                 Task { @MainActor in

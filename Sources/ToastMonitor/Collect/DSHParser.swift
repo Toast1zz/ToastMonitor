@@ -179,9 +179,11 @@ enum DSHParser {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { handle.closeFile() }
         let data = handle.readData(ofLength: 65_536)
-        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return nil }
-        for line in text.split(whereSeparator: \.isNewline) {
-            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+        guard !data.isEmpty else { return nil }
+        // Split raw bytes on '\n' so a multi-byte UTF-8 sequence straddling
+        // byte 65,536 never invalidates earlier complete lines.
+        for slice in data.split(separator: 0x0a) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(slice)) as? [String: Any],
                   obj["type"] as? String == "session",
                   let id = obj["id"] as? String,
                   !id.isEmpty, !id.contains(":"), !id.contains(";") else { continue }

@@ -23,7 +23,7 @@ enum ModelName {
         "minimax": ("MiniMax", false),
         "deepseek": ("DeepSeek", false),
     ]
-    private static let claudeFamilies: Set<String> = ["opus", "sonnet", "haiku", "fable"]
+    private static let claudeFamilies: Set<String> = ["opus", "sonnet", "haiku", "fable", "mythos"]
 
     static func display(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

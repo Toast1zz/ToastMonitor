@@ -35,7 +35,7 @@ enum OmpParser {
             var objectCount = 0
             var foundSessionID = false
             let fileName = (file as NSString).lastPathComponent
-            let persistedContext = pendingRewrite ? nil : prev.context
+            let persistedContext = sameAppendOnlyFile ? prev.context : nil
             let persisted = persistedContext.flatMap { ctxData in
                 (try? JSONSerialization.jsonObject(with: Data(ctxData.utf8))) as? [String: Any]
             }
@@ -133,9 +133,10 @@ enum OmpParser {
     static func billedOrEstimatedCost(model: String?, usage: [String: Any],
                                       input: Int64, output: Int64,
                                       cacheRead: Int64, cacheWrite: Int64) -> (Double, String) {
-        if let billed = (usage["cost"] as? [String: Any])?["total"] as? NSNumber {
+        if let billed = (usage["cost"] as? [String: Any])?["total"] as? NSNumber,
+           CFGetTypeID(billed) != CFBooleanGetTypeID() {
             let value = billed.doubleValue
-            if value.isFinite { return (value, "actual") }
+            if value.isFinite, value >= 0 { return (value, "actual") }
         }
         if let estimated = Pricing.estimate(model: model, input: input, output: output,
                                             cacheRead: cacheRead, cacheWrite: cacheWrite) {
