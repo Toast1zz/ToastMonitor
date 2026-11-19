@@ -47,14 +47,11 @@ enum OpenCodeParser {
     private static func forEachRow(since watermark: Int64, database: any ParserStateStore,
                                    _ body: (Row) -> Void) -> (count: Int, maxUpdated: Int64, failed: Bool) {
         guard FileManager.default.fileExists(atPath: dbPath) else { return (0, watermark, false) }
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            if let db { sqlite3_close(db) }
+        guard let db = SQLiteReadOnly.open(dbPath) else {
             database.noteScanProblem("OpenCode database could not be opened")
             return (0, watermark, true)
         }
         defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
         var stmt: OpaquePointer?
         let sql = """
         SELECT id, COALESCE(title,''), COALESCE(directory,''), model, cost,

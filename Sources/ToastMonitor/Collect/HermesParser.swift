@@ -49,14 +49,11 @@ enum HermesParser {
     }
 
     private static func scan(path: String, database: any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            if let db { sqlite3_close(db) }
+        guard let db = SQLiteReadOnly.open(path) else {
             database.noteScanProblem("Hermes database could not be opened")
             return ([], [])
         }
         defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
 
         var hasMessages = false
         var hasSessions = false
