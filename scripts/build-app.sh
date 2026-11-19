@@ -253,6 +253,7 @@ else
         done
     fi
     mkdir -p "$(dirname "$INSTALL_APP")"
+    rm -rf "$INSTALL_APP"
     ditto "$APP" "$INSTALL_APP"
     echo "installed: $INSTALL_APP"
     if [[ "$WAS_RUNNING" == "1" ]]; then

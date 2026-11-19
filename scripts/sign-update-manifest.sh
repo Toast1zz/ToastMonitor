@@ -55,6 +55,7 @@ else
     LEGACY_ARCHIVE="$ARCHIVE"
 fi
 [[ "$LEGACY_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
+[[ "$LEGACY_URL" != *'"'* && "$LEGACY_URL" != *'\\'* ]] || { echo "download URL contains illegal JSON characters" >&2; exit 1; }
 
 SHA256="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
 if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
@@ -98,12 +99,15 @@ SIGN="$(swift -e '
 import CryptoKit
 import Foundation
 extension Data {
-    init(hex: String) {
+    init?(hex: String) {
+        guard hex.count % 2 == 0 else { return nil }
         var bytes = [UInt8]()
+        bytes.reserveCapacity(hex.count / 2)
         var i = hex.startIndex
         while i < hex.endIndex {
-            let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
-            bytes.append(UInt8(hex[i..<j], radix: 16) ?? 0)
+            let j = hex.index(i, offsetBy: 2)
+            guard let byte = UInt8(hex[i..<j], radix: 16) else { return nil }
+            bytes.append(byte)
             i = j
         }
         self.init(bytes)
@@ -113,7 +117,11 @@ let keyPath = CommandLine.arguments[1]
 let inputPath = CommandLine.arguments[2]
 let hex = try! String(contentsOfFile: keyPath, encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines)
-let key = try! Curve25519.Signing.PrivateKey(rawRepresentation: Data(hex: hex))
+guard let rawKey = Data(hex: hex) else {
+    fputs("error: update key is not valid hex\n", stderr)
+    exit(3)
+}
+let key = try! Curve25519.Signing.PrivateKey(rawRepresentation: rawKey)
 let payload = try! String(contentsOfFile: inputPath, encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines)
 // Loop-back: verify the signature with the derived public key so a broken
@@ -129,4 +137,4 @@ print(signature.base64EncodedString())
 mkdir -p "$(dirname "$OUT")"
 printf '{"payload":"%s","signature":"%s"}\n' "$B64" "$SIGN" > "$OUT"
 echo "== $OUT written =="
-python3 -c "import json; d=json.load(open('$OUT')); print('payload bytes:', len(d['payload']), '| signature bytes:', len(d['signature']))"
+python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print("payload bytes:", len(d["payload"]), "| signature bytes:", len(d["signature"]))' "$OUT"
