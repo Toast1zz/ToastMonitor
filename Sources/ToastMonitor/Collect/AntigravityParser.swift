@@ -11,7 +11,8 @@ import SQLite3
 /// Protobuf field numbers (stable wire contract, verified against the
 /// language server's JSON API for the same rows):
 ///   GeneratorMetadata: 1 chatModel, 2 stepIndices (packed)
-///   ChatModelMetadata: 4 usage, 19 responseModel
+///   ChatModelMetadata: 4 usage, 11 timeToFirstToken, 12 streamingDuration
+///                      (Duration: 1 seconds, 2 nanos), 19 responseModel
 ///   ModelUsageStats:   2 input, 3 output (thinking + response), 5 cacheRead,
 ///                      7 messageId, 9 thinking, 11 responseId
 ///   Step metadata:     1 createdAt (Timestamp: 1 seconds)
@@ -49,6 +50,8 @@ enum AntigravityParser {
         var usage: Usage?
         var model: String?
         var stepIndices: [Int64] = []
+        var timeToFirstTokenMs: Int64?
+        var streamingMs: Int64?
     }
 
     struct Summary {
@@ -106,7 +109,7 @@ enum AntigravityParser {
         sqlite3_finalize(stmt)
         guard let last = rows.last?.idx else { return ([], nil) }
 
-        let fallbackTs = FileScanner.fileStat(path).map(\.mtime) ?? Int64(Date().timeIntervalSince1970)
+        let fallbackTs = FileScanner.fileStat(path).map { $0.mtime / 1_000_000_000 } ?? Int64(Date().timeIntervalSince1970)
         var turns: [TurnRecord] = []
         var firstTs: Int64?
         var lastTs: Int64 = 0
@@ -138,7 +141,7 @@ enum AntigravityParser {
         return (turns, session)
     }
 
-    private static func stepCreatedAt(db: OpaquePointer?, index: Int64) -> Int64? {
+    static func stepCreatedAt(db: OpaquePointer?, index: Int64) -> Int64? {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT metadata FROM steps WHERE idx = ?;", -1, &stmt, nil) == SQLITE_OK else {
             sqlite3_finalize(stmt)
@@ -202,6 +205,8 @@ enum AntigravityParser {
                 Proto.forEachField(chat) { f, v in
                     switch (f, v) {
                     case (4, .bytes(let usage)): gen.usage = parseUsage(usage)
+                    case (11, .bytes(let d)): gen.timeToFirstTokenMs = parseDurationMs(d)
+                    case (12, .bytes(let d)): gen.streamingMs = parseDurationMs(d)
                     case (19, .bytes(let model)): gen.model = cleanModel(model)
                     default: break
                     }
@@ -230,6 +235,18 @@ enum AntigravityParser {
             }
         }
         return usage
+    }
+
+    static func parseDurationMs(_ data: Data) -> Int64? {
+        var seconds: UInt64 = 0
+        var nanos: UInt64 = 0
+        Proto.forEachField(data) { field, value in
+            guard case .varint(let v) = value else { return }
+            if field == 1 { seconds = v } else if field == 2 { nanos = v }
+        }
+        // Anything past a day is a corrupt row, not a real call.
+        guard seconds < 86_400, nanos < 1_000_000_000 else { return nil }
+        return Int64(seconds) * 1000 + Int64(nanos) / 1_000_000
     }
 
     static func parseStepCreatedAt(_ data: Data) -> Int64? {

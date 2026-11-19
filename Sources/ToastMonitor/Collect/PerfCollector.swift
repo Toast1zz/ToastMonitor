@@ -18,6 +18,9 @@ import SQLite3
 /// - Oh My Pi records each assistant message's send time, time to first
 ///   token and duration.
 ///
+/// - Antigravity stores each call's time to first token and streaming
+///   duration next to its token counts.
+///
 /// Hermes logs only whole-call latency, so it is not measured.
 enum PerfCollector {
     static let interval: CFAbsoluteTime = 60
@@ -42,6 +45,9 @@ enum PerfCollector {
         scan(.dsh, DSHParser.listSessionFiles()) { scanDSH(file: $0, database: database) }
         if !ToolKind.opencode.sourceIsRemote {
             scanOpenCode(database: database)
+        }
+        for path in AntigravityParser.conversationPaths() {
+            scanAntigravity(path: path, database: database)
         }
         let hourAgoMs = Int64(Date().timeIntervalSince1970 * 1000) - 3_600_000
         database.pruneIncompletePerfSamples(before: hourAgoMs)
@@ -325,6 +331,61 @@ enum PerfCollector {
                           requestMs: sent, firstTokenMs: sent + Int64(ttft.rounded()),
                           lastMs: sent + Int64(duration.rounded()),
                           outputTokens: FileScanner.tokenCount(usage?["output"]))
+    }
+
+    // MARK: - Antigravity
+
+    /// The cursor holds the next unread `gen_metadata` index. Rows are
+    /// written once the call finished, so every row is complete.
+    static func scanAntigravity(path: String, database: Database) {
+        let next = database.perfCursor(path)?.size ?? 0
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx >= ? ORDER BY idx;",
+                                 -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return
+        }
+        sqlite3_bind_int64(stmt, 1, next)
+        var rows: [(idx: Int64, gen: AntigravityParser.Generation)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let blob = sqlite3_column_blob(stmt, 1) else { continue }
+            let count = Int(sqlite3_column_bytes(stmt, 1))
+            guard count > 0, count <= 64_000_000 else { continue }
+            rows.append((sqlite3_column_int64(stmt, 0),
+                         AntigravityParser.parseGeneration(Data(bytes: blob, count: count))))
+        }
+        sqlite3_finalize(stmt)
+        guard let last = rows.last?.idx else { return }
+        let cascade = AntigravityParser.cascadeID(path)
+        let fallbackMs = FileScanner.fileStat(path).map { $0.mtime / 1_000_000 } ?? Int64(Date().timeIntervalSince1970 * 1000)
+        let samples = rows.compactMap { row -> PerfSample? in
+            let sentMs = row.gen.stepIndices.first
+                .flatMap { AntigravityParser.stepCreatedAt(db: db, index: $0) }.map { $0 * 1000 } ?? fallbackMs
+            return antigravitySample(row.gen, key: "\(cascade):\(row.idx)", sentMs: sentMs)
+        }
+        _ = database.inTransaction {
+            database.upsertPerfSamples(samples)
+                && database.setPerfCursor(path, size: last + 1, identity: 0)
+        }
+    }
+
+    /// The step time only dates the call; both figures come from the
+    /// recorded durations.
+    static func antigravitySample(_ gen: AntigravityParser.Generation, key: String,
+                                  sentMs: Int64) -> PerfSample? {
+        guard let ttft = gen.timeToFirstTokenMs, let usage = gen.usage else { return nil }
+        let first = sentMs + ttft
+        return PerfSample(tool: .antigravity, key: key, model: gen.model,
+                          requestMs: sentMs, firstTokenMs: first,
+                          lastMs: gen.streamingMs.map { first + $0 },
+                          outputTokens: usage.output)
     }
 
     // MARK: - OpenCode

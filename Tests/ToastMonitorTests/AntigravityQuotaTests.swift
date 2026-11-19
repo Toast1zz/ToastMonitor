@@ -156,6 +156,20 @@ final class AntigravityParserTests: XCTestCase {
                                         messageID: "bot-1", responseID: "resp-1"))
     }
 
+    func testTimingBecomesPerfSample() {
+        let usage = field(2, 3220) + field(3, 307)
+        let chat = field(4, usage) + field(11, field(1, 5) + field(2, 15_177_709))
+            + field(12, field(1, 1) + field(2, 479_201_500)) + field(19, "gemini-4-neon")
+        let gen = AntigravityParser.parseGeneration(Data(field(1, chat)))
+        XCTAssertEqual(gen.timeToFirstTokenMs, 5015)
+        XCTAssertEqual(gen.streamingMs, 1479)
+        let sample = PerfCollector.antigravitySample(gen, key: "c:1", sentMs: 1_000_000)
+        XCTAssertEqual(sample, PerfSample(tool: .antigravity, key: "c:1", model: "gemini-4-neon",
+                                          requestMs: 1_000_000, firstTokenMs: 1_005_015,
+                                          lastMs: 1_006_494, outputTokens: 307))
+        XCTAssertNil(PerfCollector.antigravitySample(.init(usage: .init()), key: "c:2", sentMs: 0))
+    }
+
     func testStepCreatedAtAndMalformedInput() {
         let ts = field(1, 1_795_089_596) + field(2, 190_266_000)
         XCTAssertEqual(AntigravityParser.parseStepCreatedAt(Data(field(1, ts) + field(3, 2))), 1_795_089_596)
