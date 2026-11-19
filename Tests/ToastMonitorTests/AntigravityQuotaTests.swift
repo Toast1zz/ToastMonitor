@@ -19,7 +19,7 @@ final class AntigravityQuotaTests: XCTestCase {
           ]}}}
         """))
         XCTAssertEqual(s.planName, "Google AI Pro")
-        XCTAssertEqual(s.models.map(\.name), ["Gemini 4 Neon", "Claude Opus 5.5"])
+        XCTAssertEqual(s.models.map(\.name), ["Neon", "Others"])
         XCTAssertEqual(s.models[0].remaining, 60, accuracy: 0.001)
         XCTAssertEqual(s.models[0].resetAt,
                        Int64(GrokQuotaClient.isoDate("2026-11-19T16:46:32Z")!.timeIntervalSince1970))
@@ -86,7 +86,7 @@ final class AntigravityQuotaTests: XCTestCase {
           {"label":"GPT-OSS 120B (Medium)","quotaInfo":{"remainingFraction":1,"resetTime":"2026-11-19T17:02:52Z"}}
         ]}}}
         """))
-        XCTAssertEqual(s.models.map(\.name), ["Gemini", "Gemini 4 Argon", "Claude · GPT-OSS"])
+        XCTAssertEqual(s.models.map(\.name), ["Gemini", "Argon", "Others"])
         XCTAssertEqual(s.models[0].families, ["Gemini 4 Neon", "Gemini 4 Hydrogen", "Gemini 3.8 Flash"])
     }
 }
@@ -129,5 +129,14 @@ final class AntigravityParserTests: XCTestCase {
         XCTAssertEqual(AntigravityParser.project(fromWorkspaceURIs: "file:///Users/me/Work%20Dir"), "Work Dir")
         XCTAssertNil(AntigravityParser.project(fromWorkspaceURIs: "[]"))
         XCTAssertNil(AntigravityParser.project(fromWorkspaceURIs: ""))
+    }
+
+    func testDuplicateLabelsFallBackToBrands() {
+        let pools = AntigravityQuotaClient.pools([
+            .init(name: "Claude Opus 5.5", remaining: 50, resetAt: 1),
+            .init(name: "GPT-OSS 120B", remaining: 90, resetAt: 2),
+            .init(name: "Gemini 3.8 Flash", remaining: 70, resetAt: 3),
+        ])
+        XCTAssertEqual(pools.map(\.name), ["Claude", "GPT-OSS", "Flash"])
     }
 }

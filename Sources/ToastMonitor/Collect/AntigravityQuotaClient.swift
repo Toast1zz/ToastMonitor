@@ -29,7 +29,7 @@ final class AntigravityQuotaClient: ObservableObject {
     /// One shared pool. `remaining` is 0…100; `name` is the brand when
     /// several model families share it ("Gemini"), else the family.
     struct ModelQuota: Equatable {
-        let name: String
+        var name: String
         var families: [String] = []
         let remaining: Double
         let resetAt: Int64?
@@ -311,24 +311,40 @@ final class AntigravityQuotaClient: ObservableObject {
             if members[key] == nil { order.append(key) }
             members[key, default: []].append(quota)
         }
-        return order.compactMap { key in
+        let pools: [ModelQuota] = order.compactMap { key in
             guard let group = members[key], let first = group.first else { return nil }
             let names = group.map(\.name)
             return ModelQuota(name: poolName(names), families: names,
                               remaining: first.remaining, resetAt: first.resetAt)
         }
+        // Two pools must never share a label; fall back to brand names.
+        let labels = pools.map(\.name)
+        return pools.map { pool in
+            guard labels.filter({ $0 == pool.name }).count > 1 else { return pool }
+            var renamed = pool
+            renamed.name = brands(pool.families).joined(separator: " · ")
+            return renamed
+        }
     }
 
-    /// One family keeps its name; several are named by their brands
-    /// ("Gemini", "Claude · GPT-OSS").
+    /// Short labels: a lone Gemini model by its codename ("Argon", "Flash"),
+    /// several Gemini models as "Gemini", and a pool without Gemini as "Others".
     nonisolated static func poolName(_ families: [String]) -> String {
-        guard families.count > 1 else { return families.first ?? "" }
-        var brands: [String] = []
+        let gemini = families.filter { $0.hasPrefix("Gemini") }
+        if gemini.isEmpty { return families.isEmpty ? "" : "Others" }
+        guard families.count == 1, let only = families.first else { return "Gemini" }
+        // "Gemini 4 Argon" → "Argon": drop the brand and its version.
+        let words = only.split(separator: " ").dropFirst().drop { $0.first?.isNumber == true }
+        return words.isEmpty ? only : words.joined(separator: " ")
+    }
+
+    private nonisolated static func brands(_ families: [String]) -> [String] {
+        var out: [String] = []
         for family in families {
             let brand = family.split(separator: " ").first.map(String.init) ?? family
-            if !brands.contains(brand) { brands.append(brand) }
+            if !out.contains(brand) { out.append(brand) }
         }
-        return brands.joined(separator: " · ")
+        return out
     }
 
     /// "Claude Opus 5.5 (High)" → "Claude Opus 5.5".
