@@ -55,11 +55,14 @@ final class WindowManager {
                 NotificationCenter.default.post(name: TMNotifications.popoverVisibility, object: false)
             }
             NSApp.setActivationPolicy(.accessory)
-            // Demoting is asynchronous on some macOS versions; without this
-            // the app icon can linger in the app switcher for a second or two.
-            // Hiding with no visible windows is a no-op for the menu-bar
-            // surface but forces the switcher to drop us now.
-            NSApp.hide(nil)
+            // Only hide when no other visible regular window (such as Settings)
+            // is open, otherwise closing the Dashboard would unexpectedly hide it.
+            let hasOtherVisibleWindow = NSApp.windows.contains {
+                $0 !== window && $0.isVisible && !($0 is NSPanel) && $0.className != "NSStatusBarWindow"
+            }
+            if !hasOtherVisibleWindow {
+                NSApp.hide(nil)
+            }
         }
     }
 

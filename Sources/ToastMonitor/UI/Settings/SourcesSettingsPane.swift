@@ -181,6 +181,7 @@ struct SourcesSettingsPane: View {
                             sourceSaved[tool] = nil
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            guard sourceGeneration[tool] == generation else { return }
                             sourceSaved[tool] = nil
                             sourceFailed[tool] = nil
                         }

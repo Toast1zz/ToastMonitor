@@ -141,7 +141,8 @@ final class UsageQueryService: @unchecked Sendable {
 
     func loadDailyAggs(days: Int, completion: @escaping @MainActor @Sendable ([Database.DayAgg]) -> Void) {
         queue.async {
-            let key = "\(self.database.dataVersionKey())|days=\(days)"
+            let todayKey = Self.localDayKey(self.currentDate())
+            let key = "\(self.database.dataVersionKey())|day=\(todayKey)|days=\(days)"
             if let c = self.cachedDailyAggs, c.key == key {
                 DispatchQueue.main.async { completion(c.aggs) }
                 return
@@ -151,6 +152,11 @@ final class UsageQueryService: @unchecked Sendable {
             self.cachedDailyAggs = (key, aggs)
             DispatchQueue.main.async { completion(aggs) }
         }
+    }
+
+    private static func localDayKey(_ date: Date) -> Int {
+        let comps = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return (comps.year ?? 0) * 10_000 + (comps.month ?? 0) * 100 + (comps.day ?? 0)
     }
 
     /// One year of day (yyyymmdd) -> primary tokens for the popover. The

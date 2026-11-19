@@ -58,10 +58,13 @@ final class LaunchAtLoginSettings: ObservableObject {
 /// Persists a boolean setting off the main thread. The shared database lock
 /// can be held by a background scan, and a synchronous write made switches
 /// feel about a second late.
-private func persistFlag(_ key: String, _ on: Bool) {
+private func persistFlag(_ key: String, _ on: Bool, onComplete: (@MainActor @Sendable () -> Void)? = nil) {
     let value = on ? "1" : "0"
     DispatchQueue.global(qos: .userInitiated).async {
         _ = Database.shared.setSetting(key, value)
+        if let onComplete {
+            Task { @MainActor in onComplete() }
+        }
     }
 }
 
@@ -247,10 +250,11 @@ struct UpdatesSettingsPane: View {
         Section {
             Toggle("Check for updates automatically", isOn: $autoCheckOn)
                 .onChange(of: autoCheckOn) { on in
-                    persistFlag(UpdateManager.autoCheckSetting, on)
-                    // Turning auto-check on starts the launch + 24h cadence
-                    // immediately (including one check right away).
-                    if on { UpdateManager.shared.startAutoCheckIfEnabled() }
+                    persistFlag(UpdateManager.autoCheckSetting, on) {
+                        // Start the cadence / run an immediate check only after
+                        // the setting is persisted so Self.autoCheckEnabled sees true.
+                        if on { UpdateManager.shared.enableAutoCheckAndCheckNow() }
+                    }
                 }
         }
     }

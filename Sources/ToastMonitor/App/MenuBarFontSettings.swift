@@ -80,7 +80,9 @@ struct MenuBarTextFont: Equatable, Codable {
 @MainActor
 final class MenuBarFontSettings: ObservableObject {
     static let shared = MenuBarFontSettings()
-    static let settingKey = "menu_bar_font"
+    nonisolated static let settingKey = "menu_bar_font"
+
+    private static let writeQueue = DispatchQueue(label: "toastmonitor.menubar-font.write", qos: .userInitiated)
 
     @Published private(set) var selection: MenuBarTextFont
 
@@ -88,14 +90,22 @@ final class MenuBarFontSettings: ObservableObject {
         selection = MenuBarTextFont.decode(Database.shared.setting(Self.settingKey))
     }
 
+    func reloadFromDatabase() {
+        let loaded = MenuBarTextFont.decode(Database.shared.setting(Self.settingKey))
+        if selection != loaded {
+            selection = loaded
+        }
+    }
+
     func set(_ font: MenuBarTextFont) {
         guard font != selection else { return }
         selection = font
-        // Synchronous, like UsagePeriodSettings: the font panel emits a
-        // stream of picks while the size control is dragged, and ordered
-        // writes keep the stored value matching the last pick.
+        // Serial off-main write preserves pick ordering during font-panel drags
+        // without blocking @MainActor on Database.lock.
         if let encoded = font.encoded {
-            _ = Database.shared.setSetting(Self.settingKey, encoded)
+            Self.writeQueue.async {
+                _ = Database.shared.setSetting(Self.settingKey, encoded)
+            }
         }
     }
 

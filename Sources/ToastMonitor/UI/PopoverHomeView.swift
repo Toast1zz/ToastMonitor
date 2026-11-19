@@ -649,7 +649,14 @@ struct PopoverHomeView: View {
     /// instead of an empty Activity/Trend card.
     private static let heatmapCacheKey = "popoverHeatmapCache"
 
+    private static var shouldPersistHeatmapCache: Bool {
+        let env = ProcessInfo.processInfo.environment
+        let args = ProcessInfo.processInfo.arguments
+        return env["TM_DATABASE_PATH"] == nil && !args.contains("--demo")
+    }
+
     private func cachedHeatmap() -> [Int64: Int64]? {
+        guard Self.shouldPersistHeatmapCache else { return nil }
         guard let data = UserDefaults.standard.data(forKey: Self.heatmapCacheKey),
               let dict = try? JSONDecoder().decode([String: Int64].self, from: data) else { return nil }
         var out: [Int64: Int64] = [:]
@@ -660,6 +667,7 @@ struct PopoverHomeView: View {
     }
 
     private func saveHeatmapCache(_ map: [Int64: Int64]) {
+        guard Self.shouldPersistHeatmapCache else { return }
         let dict = Dictionary(uniqueKeysWithValues: map.map { (String($0.key), $0.value) })
         if let data = try? JSONEncoder().encode(dict) {
             UserDefaults.standard.set(data, forKey: Self.heatmapCacheKey)

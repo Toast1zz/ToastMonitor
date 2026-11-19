@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Deterministic state machine for AppState snapshot requests. Keeping time
@@ -180,6 +181,14 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(forName: TMNotifications.usagePeriodSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
+        NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
     }
 
     func start() {
@@ -317,6 +326,9 @@ final class AppState: ObservableObject {
 
     /// Re-reads everything after the store was replaced.
     func databaseWasReplaced() {
+        MenuBarFontSettings.shared.reloadFromDatabase()
+        UsagePeriodSettings.shared.reloadFromDatabase()
+        QuotaAlertManager.shared.reloadFromDatabase()
         databaseProblem = Database.shared.openProblem
         refresh(manual: true)
         CollectorEngine.shared.scheduleScan(force: true)

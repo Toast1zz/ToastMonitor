@@ -1,6 +1,6 @@
 import Combine
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
 enum QuotaAlertPolicy {
     struct BadgeState: Codable, Equatable {
@@ -68,7 +68,10 @@ final class QuotaAlertManager: ObservableObject {
     private let readingProvider: (() -> [Reading])?
     private var badgeStates: [String: QuotaAlertPolicy.BadgeState] = [:]
     private static let badgeStateKey = "quota_alert_badge_states"
+    private static let writeQueue = DispatchQueue(label: "toastmonitor.quota-alerts.write", qos: .utility)
     private var cancellables: Set<AnyCancellable> = []
+    private var pendingEvaluation: DispatchWorkItem?
+    private var alertStates: [String: String] = [:]
     /// Direct SwiftPM/headless render binaries have no application bundle
     /// proxy, and UserNotifications throws an Objective-C exception if its
     /// center is created there. Resolve it only when normal app startup or an
@@ -77,19 +80,44 @@ final class QuotaAlertManager: ObservableObject {
 
     init(readingProvider: (() -> [Reading])? = nil) {
         self.readingProvider = readingProvider
+        self.enabled = false
+        self.threshold = 20
+        loadFromDatabase()
+    }
+
+    func reloadFromDatabase() {
+        loadFromDatabase()
+        if started {
+            evaluate()
+            scheduleRenewalReminders()
+        }
+    }
+
+    private func loadFromDatabase() {
+        alertStates = [:]
         enabled = Database.shared.setting(Self.enabledKey) == "1"
         let saved = Double(Database.shared.setting(Self.thresholdKey) ?? "") ?? 20
         threshold = Self.thresholdChoices.contains(saved) ? saved : 20
         if let raw = Database.shared.setting(Self.badgeStateKey), let data = raw.data(using: .utf8),
-           let saved = try? JSONDecoder().decode([String: QuotaAlertPolicy.BadgeState].self, from: data) {
-            badgeStates = saved
+           let decoded = try? JSONDecoder().decode([String: QuotaAlertPolicy.BadgeState].self, from: data) {
+            badgeStates = decoded
+        } else {
+            badgeStates = [:]
+        }
+    }
+
+    private func persistSetting(_ key: String, _ value: String?) {
+        Self.writeQueue.async {
+            _ = Database.shared.setSetting(key, value)
         }
     }
 
     func start() {
         guard !started else { return }
         started = true
+        loadFromDatabase()
         NotificationCenter.default.publisher(for: PanelController.visibilityNotification)
+            .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 guard let self, let visible = notification.object as? Bool else { return }
                 self.panelVisible = visible
@@ -121,7 +149,7 @@ final class QuotaAlertManager: ObservableObject {
     func setThreshold(_ newValue: Double) {
         guard newValue != threshold, Self.thresholdChoices.contains(newValue) else { return }
         threshold = newValue
-        _ = Database.shared.setSetting(Self.thresholdKey, "\(Int(newValue))")
+        persistSetting(Self.thresholdKey, "\(Int(newValue))")
         evaluate()
     }
 
@@ -129,15 +157,15 @@ final class QuotaAlertManager: ObservableObject {
         guard newValue != enabled else { return }
         if !newValue {
             enabled = false
-            _ = Database.shared.setSetting(Self.enabledKey, nil)
-            center.removePendingNotificationRequests(withIdentifiers: renewalIdentifiers())
+            persistSetting(Self.enabledKey, nil)
+            clearPendingRenewalReminders()
             return
         }
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.enabled = granted
-                _ = Database.shared.setSetting(Self.enabledKey, granted ? "1" : nil)
+                self.persistSetting(Self.enabledKey, granted ? "1" : nil)
                 if granted {
                     self.evaluate()
                     self.scheduleRenewalReminders()
@@ -163,34 +191,42 @@ final class QuotaAlertManager: ObservableObject {
         if badgeStates != previousBadges,
            let data = try? JSONEncoder().encode(badgeStates),
            let raw = String(data: data, encoding: .utf8) {
-            _ = Database.shared.setSetting(Self.badgeStateKey, raw)
+            persistSetting(Self.badgeStateKey, raw)
         }
         guard enabled else { return }
         for reading in readings {
             let key = "quota_alert_state_\(reading.id)"
-            let previous = Database.shared.setting(key)
+            let previous = alertStates[reading.id] ?? Database.shared.setting(key)
             guard let event = QuotaAlertPolicy.transition(previous: previous,
                                                           remaining: reading.remaining,
                                                           threshold: threshold) else { continue }
             switch event {
             case .low:
+                alertStates[reading.id] = "low"
                 post(identifier: "quota-low-\(reading.id)",
                      title: "\(reading.name) quota is low",
                      body: "\(Int(reading.remaining.rounded()))% remaining")
-                _ = Database.shared.setSetting(key, "low")
+                persistSetting(key, "low")
             case .recovered:
+                alertStates[reading.id] = "ok"
                 post(identifier: "quota-reset-\(reading.id)",
                      title: "\(reading.name) quota reset",
                      body: "Capacity is back to \(Int(reading.remaining.rounded()))% remaining")
-                _ = Database.shared.setSetting(key, "ok")
+                persistSetting(key, "ok")
             }
         }
     }
 
     private func scheduleEvaluation() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.evaluate()
+        pendingEvaluation?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.pendingEvaluation = nil
+                self?.evaluate()
+            }
         }
+        pendingEvaluation = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
     }
 
     private func currentReadings() -> [Reading] {
@@ -235,32 +271,48 @@ final class QuotaAlertManager: ObservableObject {
         return readings
     }
 
-    private func scheduleRenewalReminders() {
-        guard enabled else { return }
-        let subscriptions = Database.shared.subscriptions()
-        center.removePendingNotificationRequests(withIdentifiers: renewalIdentifiers())
-        let now = Date()
-        for subscription in subscriptions {
-            guard let cycle = SubscriptionMath.cycleInfo(start: subscription.startDate,
-                                                         end: subscription.endDate,
-                                                         cycle: subscription.cycle,
-                                                         now: now) else { continue }
-            let fireDate = cycle.end.addingTimeInterval(-86400)
-            guard fireDate > now else { continue }
-            let content = UNMutableNotificationContent()
-            content.title = "Subscription renews tomorrow"
-            content.body = "\(subscription.name) renews for \(Format.money(subscription.price))"
-            content.sound = .default
-            let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute],
-                                                              from: fireDate)
-            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
-            center.add(UNNotificationRequest(identifier: "renewal-\(subscription.id)",
-                                             content: content, trigger: trigger))
+    private func clearPendingRenewalReminders(then: (@MainActor @Sendable () -> Void)? = nil) {
+        let center = self.center
+        center.getPendingNotificationRequests { requests in
+            let stale = requests.map(\.identifier).filter { $0.hasPrefix("renewal-") }
+            if !stale.isEmpty {
+                center.removePendingNotificationRequests(withIdentifiers: stale)
+            }
+            if let then {
+                Task { @MainActor in then() }
+            }
         }
     }
 
-    private func renewalIdentifiers() -> [String] {
-        Database.shared.subscriptions().map { "renewal-\($0.id)" }
+    private func scheduleRenewalReminders() {
+        guard enabled else { return }
+        Self.writeQueue.async { [weak self] in
+            let subscriptions = Database.shared.subscriptions()
+            Task { @MainActor [weak self] in
+                guard let self, self.enabled else { return }
+                self.clearPendingRenewalReminders { [weak self] in
+                    guard let self, self.enabled else { return }
+                    let now = Date()
+                    for subscription in subscriptions {
+                        guard let cycle = SubscriptionMath.cycleInfo(start: subscription.startDate,
+                                                                     end: subscription.endDate,
+                                                                     cycle: subscription.cycle,
+                                                                     now: now) else { continue }
+                        let fireDate = cycle.end.addingTimeInterval(-86400)
+                        guard fireDate > now else { continue }
+                        let content = UNMutableNotificationContent()
+                        content.title = "Subscription renews tomorrow"
+                        content.body = "\(subscription.name) renews for \(Format.money(subscription.price))"
+                        content.sound = .default
+                        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute],
+                                                                          from: fireDate)
+                        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+                        self.center.add(UNNotificationRequest(identifier: "renewal-\(subscription.id)",
+                                                              content: content, trigger: trigger))
+                    }
+                }
+            }
+        }
     }
 
     private func post(identifier: String, title: String, body: String) {

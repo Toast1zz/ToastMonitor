@@ -536,6 +536,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// store is open. Called on the main queue. Skipped if the user already quit.
     private static func startInteractiveServices(arguments: [String]) {
         guard !LaunchCancel.shared.isCancelled else { return }
+        // Reload persisted UI settings now that Database.shared.openInBackground
+        // has populated settingsCache (setupMenuBar initializes these singletons
+        // before the store is open so the status item appears immediately).
+        MenuBarFontSettings.shared.reloadFromDatabase()
+        UsagePeriodSettings.shared.reloadFromDatabase()
+        QuotaAlertManager.shared.reloadFromDatabase()
         AppState.shared.start()
         CollectorEngine.shared.start()
         OpenRouterClient.shared.start()
