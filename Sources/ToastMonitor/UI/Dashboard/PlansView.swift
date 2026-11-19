@@ -147,7 +147,7 @@ struct PlansView: View {
         }
     }
 
-    /// The three tightest model pools, then the plan.
+    /// The tightest limits, then the plan.
     private var antigravityCard: some View {
         let a = antigravity.state
         let plan = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: a.planName)
@@ -157,8 +157,8 @@ struct PlansView: View {
                            error: a.lastSync > 0 && a.error == AntigravityQuotaClient.notRunning ? nil : a.error,
                            lastSync: a.lastSync,
                            refresh: { antigravity.refresh() }) {
-            ForEach(Array(models), id: \.name) { model in
-                quotaColumn(model.name, usedPercent: 100 - model.remaining,
+            ForEach(Array(models), id: \.label) { model in
+                quotaColumn(model.label, usedPercent: 100 - model.remaining,
                             captions: [resetText(absolute: model.resetAt)].compactMap { $0 },
                             color: TMDesign.antigravity)
             }

@@ -89,6 +89,29 @@ final class AntigravityQuotaTests: XCTestCase {
         XCTAssertEqual(s.models.map(\.name), ["Gemini", "Argon", "Others"])
         XCTAssertEqual(s.models[0].families, ["Gemini 4 Neon", "Gemini 4 Hydrogen", "Gemini 3.8 Flash"])
     }
+
+    func testParsesQuotaSummaryGroupsAndWindows() throws {
+        let json = """
+        {"response":{"groups":[
+          {"displayName":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash",
+           "buckets":[
+             {"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.97,"resetTime":"2026-11-26T11:59:52Z"},
+             {"bucketId":"gemini-5h","window":"5h","remainingFraction":0.9,"resetTime":"2026-11-19T16:59:52Z"}]},
+          {"displayName":"Claude and GPT models","description":"Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+           "buckets":[{"window":"5h","resetTime":"2026-11-19T17:24:26Z"}]},
+          {"displayName":"Gemini 4 Argon","description":"For paid Pro plans, Argon quota is separate.",
+           "buckets":[{"window":"weekly","remainingFraction":1,"resetTime":"2026-11-26T12:24:26Z"}]}
+        ]}}
+        """
+        let buckets = try XCTUnwrap(AntigravityQuotaClient.parseQuotaSummary(Data(json.utf8)))
+        XCTAssertEqual(buckets.map(\.label), ["Gemini 5h", "Gemini Weekly", "Others 5h", "Argon Weekly"])
+        XCTAssertEqual(buckets[0].windowSeconds, 5 * 3600)
+        XCTAssertEqual(buckets[1].windowSeconds, 7 * 86400)
+        XCTAssertEqual(buckets[1].remaining, 97, accuracy: 0.001)
+        XCTAssertEqual(buckets[2].remaining, 0, "an omitted fraction with a reset time is exhausted")
+        XCTAssertEqual(buckets[0].families, ["Gemini 4 Neon", "Gemini 4 Hydrogen", "Gemini 3.8 Flash"])
+        XCTAssertNil(AntigravityQuotaClient.parseQuotaSummary(Data("{}".utf8)))
+    }
 }
 
 final class AntigravityParserTests: XCTestCase {

@@ -5,34 +5,39 @@ import Combine
 /// server that Antigravity — standalone or inside Gemini.app — runs on this
 /// Mac. The server writes a discovery file to
 /// ~/.gemini/antigravity/daemon/hub_<port>.json with its loopback HTTP port
-/// and a CSRF token; ToastMonitor POSTs
-/// `exa.language_server_pb.LanguageServerService/GetUserStatus` there.
+/// and a CSRF token. ToastMonitor POSTs two of its RPCs there:
+/// `RetrieveUserQuotaSummary` for the quota and `GetUserStatus` for the plan.
 ///
 /// EXPERIMENTAL: this is the app's own local API, not a documented one.
 /// Nothing leaves the Mac, and the token is held in memory only for the
 /// request. When Antigravity isn't running there is no server to ask, so the
 /// last reading stays on screen with its age.
 ///
-/// Quota is reported per model, but models share pools: today Gemini 4 Neon,
-/// Hydrogen and 3.8 Flash draw on one five-hour pool, Argon has a weekly one,
-/// and Claude and GPT-OSS share another. The API has no pool id; models in
-/// one pool report the exact same remaining fraction and reset time, so
-/// readings are grouped on that pair.
+/// The summary lists model groups (today: Gemini, Claude and GPT, Argon), each
+/// with a five-hour and/or a weekly bucket. When it is unavailable, the
+/// per-model quota in GetUserStatus is the fallback: it shows one bucket per
+/// model, and models in one group report the exact same remaining fraction
+/// and reset time, so readings are grouped on that pair.
 @MainActor
 final class AntigravityQuotaClient: ObservableObject {
     static let shared = AntigravityQuotaClient()
     nonisolated static let maxResponseBytes = 10_000_000
     nonisolated static let statusPath = "/exa.language_server_pb.LanguageServerService/GetUserStatus"
+    nonisolated static let summaryPath = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
     nonisolated static let enabledSettingKey = "antigravity_quota_enabled"
     nonisolated static let notRunning = "Antigravity isn't running"
 
-    /// One shared pool. `remaining` is 0…100; `name` is the brand when
-    /// several model families share it ("Gemini"), else the family.
+    /// One limit of one model group. `remaining` is 0…100; `name` is the
+    /// group ("Gemini", "Argon", "Others"); `window` is "5h" or "Weekly".
     struct ModelQuota: Equatable {
         var name: String
         var families: [String] = []
         let remaining: Double
         let resetAt: Int64?
+        var window: String? = nil
+        var windowSeconds: Int64? = nil
+
+        var label: String { window.map { "\(name) \($0)" } ?? name }
     }
 
     struct Snapshot: Equatable {
@@ -188,52 +193,75 @@ final class AntigravityQuotaClient: ObservableObject {
 
     private func request(hub: Hub, generation: UInt64) {
         state.isLoading = true
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = "127.0.0.1"
-        components.port = hub.httpPort
-        components.path = Self.statusPath
-        guard let url = components.url else {
+        func makeRequest(_ path: String) -> URLRequest? {
+            var components = URLComponents()
+            components.scheme = "http"
+            components.host = "127.0.0.1"
+            components.port = hub.httpPort
+            components.path = path
+            guard let url = components.url else { return nil }
+            var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
+            req.setValue(hub.csrfToken, forHTTPHeaderField: "X-Codeium-Csrf-Token")
+            req.httpBody = Data(#"{"metadata":{"ideName":"antigravity","extensionName":"antigravity","locale":"en"}}"#.utf8)
+            return req
+        }
+        guard let statusRequest = makeRequest(Self.statusPath),
+              let summaryRequest = makeRequest(Self.summaryPath) else {
             inFlight = false
             return
         }
-        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
-        req.setValue(hub.csrfToken, forHTTPHeaderField: "X-Codeium-Csrf-Token")
-        req.httpBody = Data(#"{"metadata":{"ideName":"antigravity","extensionName":"antigravity","locale":"en"}}"#.utf8)
 
-        let task = redirectBlocker.boundedDataTask(in: session, request: req,
-                                                   maxBytes: Self.maxResponseBytes) { [weak self] data, resp, err in
-            let result = CommandCodeQuotaClient.validate(data: data, response: resp, error: err)
-            let snapshot: Snapshot? = {
-                if case .success(let data) = result { return AntigravityQuotaClient.parseUserStatus(data) }
-                return nil
-            }()
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.inFlight = false
-                guard self.refreshGeneration == generation else { return }
-                self.state.isLoading = false
-                switch result {
-                case .success:
-                    if let snapshot {
-                        self.apply(snapshot)
-                    } else {
-                        self.state.error = "Failed to parse Antigravity status"
-                        self.backoff.failed()
-                    }
-                case .failure(.transport):
-                    // The server exited between discovery and the request.
-                    self.state.error = Self.notRunning
-                case .failure(let error):
-                    self.state.error = Self.message(for: error)
+        let group = DispatchGroup()
+        var statusResult: Result<Data, CommandCodeQuotaClient.HTTPError>?
+        var summaryData: Data?
+        group.enter()
+        let statusTask = redirectBlocker.boundedDataTask(in: session, request: statusRequest,
+                                                         maxBytes: Self.maxResponseBytes) { data, resp, err in
+            statusResult = CommandCodeQuotaClient.validate(data: data, response: resp, error: err)
+            group.leave()
+        }
+        // The summary is preferred but optional: older servers lack it.
+        group.enter()
+        let summaryTask = redirectBlocker.boundedDataTask(in: session, request: summaryRequest,
+                                                          maxBytes: Self.maxResponseBytes) { data, resp, err in
+            if case .success(let data) = CommandCodeQuotaClient.validate(data: data, response: resp, error: err) {
+                summaryData = data
+            }
+            group.leave()
+        }
+        statusTask.resume()
+        summaryTask.resume()
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.inFlight = false
+            guard self.refreshGeneration == generation else { return }
+            self.state.isLoading = false
+            switch statusResult {
+            case .success(let data)?:
+                guard var snapshot = Self.parseUserStatus(data) else {
+                    self.state.error = "Failed to parse Antigravity status"
                     self.backoff.failed()
+                    return
                 }
+                if let buckets = summaryData.flatMap(Self.parseQuotaSummary), !buckets.isEmpty {
+                    snapshot.models = buckets
+                }
+                self.apply(snapshot)
+            case .failure(.transport)?:
+                // The server exited between discovery and the request.
+                self.state.error = Self.notRunning
+            case .failure(let error)?:
+                self.state.error = Self.message(for: error)
+                self.backoff.failed()
+            case nil:
+                self.state.error = "Antigravity status request failed"
+                self.backoff.failed()
             }
         }
-        task.resume()
     }
 
     private func apply(_ snapshot: Snapshot) {
@@ -299,6 +327,62 @@ final class AntigravityQuotaClient: ObservableObject {
         snapshot.models = pools(order.compactMap { byFamily[$0] })
         guard snapshot.planName != nil || !snapshot.models.isEmpty else { return nil }
         return snapshot
+    }
+
+    /// `response.groups[].buckets[]`: each bucket has `window` ("5h" or
+    /// "weekly"), `remainingFraction` (omitted when zero) and `resetTime`.
+    /// A group's models are listed in its description; the group is named
+    /// from them like the fallback pools.
+    nonisolated static func parseQuotaSummary(_ data: Data) -> [ModelQuota]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let groups = (root["response"] as? [String: Any])?["groups"] as? [[String: Any]] else { return nil }
+        var out: [ModelQuota] = []
+        for group in groups {
+            let display = (group["displayName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var families = memberFamilies(group["description"] as? String)
+            if families.isEmpty, !display.isEmpty { families = [display] }
+            guard !families.isEmpty else { continue }
+            let name = poolName(families)
+            var buckets: [ModelQuota] = []
+            for bucket in group["buckets"] as? [[String: Any]] ?? [] {
+                let reset = (bucket["resetTime"] as? String).flatMap(GrokQuotaClient.isoDate)
+                let fraction: Double
+                if let n = bucket["remainingFraction"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+                   n.doubleValue.isFinite {
+                    fraction = n.doubleValue
+                } else if reset != nil {
+                    fraction = 0
+                } else {
+                    continue
+                }
+                let (window, seconds): (String?, Int64?) = {
+                    switch (bucket["window"] as? String)?.lowercased() {
+                    case "5h": return ("5h", 5 * 3600)
+                    case "weekly": return ("Weekly", 7 * 86400)
+                    default: return (nil, nil)
+                    }
+                }()
+                buckets.append(ModelQuota(name: name, families: families,
+                                          remaining: min(max(fraction * 100, 0), 100),
+                                          resetAt: reset.map { Int64($0.timeIntervalSince1970) },
+                                          window: window, windowSeconds: seconds))
+            }
+            // Shorter window first, as Claude's 5h then Weekly.
+            out += buckets.sorted { ($0.windowSeconds ?? .max) < ($1.windowSeconds ?? .max) }
+        }
+        return out
+    }
+
+    /// "Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen" → the names.
+    nonisolated static func memberFamilies(_ description: String?) -> [String] {
+        guard let description, let colon = description.range(of: "group:") else { return [] }
+        // The list ends at a sentence break; "3.8" has no space after its dot.
+        var list = String(description[colon.upperBound...])
+        if let end = list.range(of: ". ") { list = String(list[..<end.lowerBound]) }
+        if list.hasSuffix(".") { list.removeLast() }
+        return list.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= 64 && $0.rangeOfCharacter(from: .controlCharacters) == nil }
     }
 
     /// Families with the same remaining fraction and reset time are one pool,

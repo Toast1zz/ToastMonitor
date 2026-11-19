@@ -1046,13 +1046,12 @@ struct PopoverHomeView: View {
         } else if state.error != nil {
             status = state.error == AntigravityQuotaClient.notRunning ? "Not running" : "Error"
         }
-        let windows = state.models
-            .sorted { $0.remaining < $1.remaining }
-            .prefix(3)
-            .compactMap { model in
-                window(model.name, 100 - model.remaining, reset: model.resetAt,
-                       duration: AntigravityQuotaClient.windowSeconds(resetAt: model.resetAt, now: nowSeconds))
-            }
+        // Every limit, grouped as the API lists them (5h before Weekly).
+        let windows = state.models.compactMap { model in
+            window(model.label, 100 - model.remaining, reset: model.resetAt,
+                   duration: model.windowSeconds
+                       ?? AntigravityQuotaClient.windowSeconds(resetAt: model.resetAt, now: nowSeconds))
+        }
         // "Not running" with a cached reading is not a problem worth a banner.
         let problem = state.error.flatMap { error -> RowProblem? in
             if error == AntigravityQuotaClient.notRunning && state.lastSync > 0 { return nil }
