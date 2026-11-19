@@ -1046,9 +1046,8 @@ struct PopoverHomeView: View {
         } else if state.error != nil {
             status = state.error == AntigravityQuotaClient.notRunning ? "Not running" : "Error"
         }
-        // Every limit, grouped as the API lists them (5h before Weekly).
-        let windows = state.models.compactMap { model in
-            window(model.label, 100 - model.remaining, reset: model.resetAt,
+        let windows = state.displayLimits.compactMap { label, model in
+            window(label, 100 - model.remaining, reset: model.resetAt,
                    duration: model.windowSeconds
                        ?? AntigravityQuotaClient.windowSeconds(resetAt: model.resetAt, now: nowSeconds))
         }

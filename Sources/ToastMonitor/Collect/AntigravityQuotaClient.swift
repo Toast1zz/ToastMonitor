@@ -53,6 +53,30 @@ final class AntigravityQuotaClient: ObservableObject {
         var error: String?
         var isLoading = false
 
+        /// What the popover and card draw, as short as Claude's row: the main
+        /// Gemini group's limits as "5h" / "Weekly", then each other group as
+        /// one line under its own name with its tightest limit. A group
+        /// nothing has touched yet is left out.
+        var displayLimits: [(label: String, quota: ModelQuota)] {
+            var order: [String] = []
+            var groups: [String: [ModelQuota]] = [:]
+            for quota in models {
+                if groups[quota.name] == nil { order.append(quota.name) }
+                groups[quota.name, default: []].append(quota)
+            }
+            let main = order.first { $0 == "Gemini" } ?? order.first
+            var out: [(String, ModelQuota)] = []
+            if let main, let limits = groups[main] {
+                out += limits.map { ($0.window ?? $0.name, $0) }
+            }
+            for name in order where name != main {
+                guard let limits = groups[name], limits.contains(where: { $0.remaining < 100 }),
+                      let tightest = limits.min(by: { $0.remaining < $1.remaining }) else { continue }
+                out.append((name, tightest))
+            }
+            return out
+        }
+
         /// The tightest pool: lowest remaining, earliest reset on a tie.
         var tightest: ModelQuota? {
             models.min { ($0.remaining, $0.resetAt ?? .max) < ($1.remaining, $1.resetAt ?? .max) }

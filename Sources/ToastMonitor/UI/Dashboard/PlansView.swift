@@ -147,18 +147,18 @@ struct PlansView: View {
         }
     }
 
-    /// The tightest limits, then the plan.
+    /// The same limits as the popover row, then the plan.
     private var antigravityCard: some View {
         let a = antigravity.state
         let plan = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: a.planName)
-        let models = a.models.sorted { $0.remaining < $1.remaining }.prefix(plan == nil ? 3 : 2)
+        let limits = a.displayLimits.prefix(plan == nil ? 3 : 2)
         return accountCard(title: "Antigravity", symbol: "a.circle.fill", color: TMDesign.antigravity,
                            isLoading: a.isLoading && a.lastSync <= 0,
                            error: a.lastSync > 0 && a.error == AntigravityQuotaClient.notRunning ? nil : a.error,
                            lastSync: a.lastSync,
                            refresh: { antigravity.refresh() }) {
-            ForEach(Array(models), id: \.label) { model in
-                quotaColumn(model.label, usedPercent: 100 - model.remaining,
+            ForEach(Array(limits), id: \.label) { label, model in
+                quotaColumn(label, usedPercent: 100 - model.remaining,
                             captions: [resetText(absolute: model.resetAt)].compactMap { $0 },
                             color: TMDesign.antigravity)
             }

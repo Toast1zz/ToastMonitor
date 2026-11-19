@@ -112,6 +112,22 @@ final class AntigravityQuotaTests: XCTestCase {
         XCTAssertEqual(buckets[0].families, ["Gemini 4 Neon", "Gemini 4 Hydrogen", "Gemini 3.8 Flash"])
         XCTAssertNil(AntigravityQuotaClient.parseQuotaSummary(Data("{}".utf8)))
     }
+
+    func testDisplayLimitsKeepMainGroupAndHideUntouchedGroups() {
+        var state = AntigravityQuotaClient.State()
+        state.models = [
+            .init(name: "Gemini", remaining: 89, resetAt: 10, window: "5h", windowSeconds: 18000),
+            .init(name: "Gemini", remaining: 97, resetAt: 20, window: "Weekly", windowSeconds: 604800),
+            .init(name: "Others", remaining: 100, resetAt: 30, window: "5h"),
+            .init(name: "Others", remaining: 100, resetAt: 40, window: "Weekly"),
+            .init(name: "Argon", remaining: 100, resetAt: 50, window: "Weekly"),
+        ]
+        XCTAssertEqual(state.displayLimits.map(\.label), ["5h", "Weekly"])
+        state.models[3] = .init(name: "Others", remaining: 60, resetAt: 40, window: "Weekly")
+        state.models[2] = .init(name: "Others", remaining: 80, resetAt: 30, window: "5h")
+        XCTAssertEqual(state.displayLimits.map(\.label), ["5h", "Weekly", "Others"])
+        XCTAssertEqual(state.displayLimits.last?.quota.remaining, 60)
+    }
 }
 
 final class AntigravityParserTests: XCTestCase {
