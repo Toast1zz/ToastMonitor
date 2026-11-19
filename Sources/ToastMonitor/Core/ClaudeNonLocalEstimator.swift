@@ -108,7 +108,14 @@ enum ClaudeNonLocalEstimator {
         let local: LocalIntervalTotals
 
         func event(points: Double, tokensPerPoint: Double) -> TokenEvent {
-            TokenEvent(ts: start + (end - start) / 2, tokens: Int64((points * tokensPerPoint).rounded()))
+            let raw = (points * tokensPerPoint).rounded()
+            let clamped: Int64
+            if raw.isFinite, raw > 0 {
+                clamped = Int64(min(raw, Double(TurnRecord.maxTokens)))
+            } else {
+                clamped = 0
+            }
+            return TokenEvent(ts: start + (end - start) / 2, tokens: clamped)
         }
     }
 

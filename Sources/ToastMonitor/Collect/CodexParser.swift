@@ -16,13 +16,16 @@ enum CodexParser {
             .appendingPathComponent(".codex/state_5.sqlite").path
     }
 
+    private static let rolloutNameRegex = try! NSRegularExpression(
+        pattern: #"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)$"#
+    )
+
     /// Map rollout filename -> session UUID.
     /// Format: rollout-<YYYY-MM-DDTHH-MM-SS>-<uuid...>.jsonl
     /// The timestamp is fixed-width (19 chars); everything after is the UUID.
     static func sessionID(fromRolloutName name: String) -> String? {
         let stem = (name as NSString).deletingPathExtension
-        guard let regex = try? NSRegularExpression(pattern: #"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)$"#),
-              let match = regex.firstMatch(in: stem, range: NSRange(stem.startIndex..., in: stem)),
+        guard let match = rolloutNameRegex.firstMatch(in: stem, range: NSRange(stem.startIndex..., in: stem)),
               let r = Range(match.range(at: 1), in: stem)
         else { return nil }
         return String(stem[r])
@@ -124,25 +127,46 @@ enum CodexParser {
     }
 
     private typealias ThreadMeta = (model: String?, provider: String?, title: String?, cwd: String?)
+    private struct ThreadsCacheKey: Equatable {
+        let identity: Int64
+        let mtime: Int64
+        let walSize: Int64
+        let walMtime: Int64
+    }
     private static let threadsLock = NSLock()
-    private static var threadsCache: (identity: Int64, mtime: Int64, value: [String: ThreadMeta])?
+    private static var threadsCache: (key: ThreadsCacheKey, value: [String: ThreadMeta])?
+
+    private static func currentThreadsKey() -> ThreadsCacheKey? {
+        guard let st = FileScanner.fileStat(stateDBPath) else { return nil }
+        let wal = FileScanner.fileStat(stateDBPath + "-wal")
+        return ThreadsCacheKey(identity: st.identity, mtime: st.mtime,
+                               walSize: wal?.size ?? 0, walMtime: wal?.mtime ?? 0)
+    }
 
     /// Reads threads table into [sessionID: model] plus session metadata.
-    /// The result is reused until the database inode or mtime changes.
+    /// Reused until the database or WAL changes; transient read errors are
+    /// never cached.
     private static func readThreads() -> [String: ThreadMeta] {
-        if let st = FileScanner.fileStat(stateDBPath) {
+        let keyBefore = currentThreadsKey()
+        if let keyBefore {
             threadsLock.lock()
-            if let cache = threadsCache, cache.identity == st.identity, cache.mtime == st.mtime {
+            if let cache = threadsCache, cache.key == keyBefore {
                 let value = cache.value
                 threadsLock.unlock()
                 return value
             }
             threadsLock.unlock()
         }
-        let value = loadThreads()
+        guard let value = loadThreads() else {
+            threadsLock.lock()
+            let fallback = threadsCache?.value ?? [:]
+            threadsLock.unlock()
+            return fallback
+        }
+        let keyAfter = currentThreadsKey()
         threadsLock.lock()
-        if let st = FileScanner.fileStat(stateDBPath) {
-            threadsCache = (st.identity, st.mtime, value)
+        if let keyAfter {
+            threadsCache = (keyAfter, value)
         } else {
             threadsCache = nil
         }
@@ -150,20 +174,30 @@ enum CodexParser {
         return value
     }
 
-    private static func loadThreads() -> [String: ThreadMeta] {
+    private static func loadThreads() -> [String: ThreadMeta]? {
         var out: [String: ThreadMeta] = [:]
         guard FileManager.default.fileExists(atPath: stateDBPath) else { return out }
         var db: OpaquePointer?
-        guard sqlite3_open_v2(stateDBPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return out }
+        guard sqlite3_open_v2(stateDBPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            if let db { sqlite3_close(db) }
+            return nil
+        }
         defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT id, model, model_provider, title, cwd FROM threads;", -1, &stmt, nil) == SQLITE_OK else { return out }
+        guard sqlite3_prepare_v2(db, "SELECT id, model, model_provider, title, cwd FROM threads;", -1, &stmt, nil) == SQLITE_OK else {
+            return nil
+        }
         defer { sqlite3_finalize(stmt) }
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var rc: Int32 = SQLITE_OK
+        while true {
+            rc = sqlite3_step(stmt)
+            guard rc == SQLITE_ROW else { break }
             guard let id = SQLiteText.column(stmt, 0), !id.isEmpty else { continue }
             out[id] = (SQLiteText.column(stmt, 1), SQLiteText.column(stmt, 2),
                        SQLiteText.column(stmt, 3), SQLiteText.column(stmt, 4))
         }
+        guard rc == SQLITE_DONE else { return nil }
         return out
     }
 
@@ -276,16 +310,24 @@ enum CodexParser {
                     guard let counted, let usageForID,
                           [counted.input, counted.output, counted.reasoning, counted.cacheRead, counted.cacheWrite]
                             .contains(where: { $0 > 0 }) else { return }
-                    let ts = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO) ?? fallbackTs
+                    let parsedTs = (obj["timestamp"] as? String).flatMap(FileScanner.parseISO)
+                    let ts = parsedTs ?? fallbackTs
                     guard ts > 0 else { return }
                     let eventModel = model ?? threadMeta[sid]?.model ?? threadMeta[sid]?.provider
                     let est = Pricing.estimate(model: eventModel, input: counted.input, output: counted.output,
                                                cacheRead: counted.cacheRead, cacheWrite: counted.cacheWrite,
                                                inputIncludesCache: true)
+                    // Hash only the line's own timestamp (0 when missing), never
+                    // file mtime, so later full rescans keep stable event IDs.
                     let eventID = EventIdentity.codex(
-                        sessionID: sid, timestamp: ts, model: eventModel,
+                        sessionID: sid, timestamp: parsedTs ?? 0, model: eventModel,
                         usage: usageForID, offset: item.offset)
-                    turns.append(TurnRecord(tool: .codex, sessionID: sid, project: nil,
+                    let effectiveCwd = cwd ?? threadMeta[sid]?.cwd
+                    let project = effectiveCwd.flatMap { path -> String? in
+                        let name = (path as NSString).lastPathComponent
+                        return name.isEmpty || name == "/" ? nil : name
+                    }
+                    turns.append(TurnRecord(tool: .codex, sessionID: sid, project: project,
                                             model: eventModel, ts: ts,
                                             inputTokens: counted.input, outputTokens: counted.output,
                                             reasoningTokens: counted.reasoning,

@@ -72,7 +72,7 @@ enum PerfCollector {
             database.upsertPerfSamples(Array(samples.values))
                 && database.setPerfCursor(file, size: end, identity: st.identity)
         }
-        return end - offset
+        return max(end - offset, 0)
     }
 
     static func claudeSample(_ obj: [String: Any]) -> PerfSample? {
@@ -100,14 +100,23 @@ enum PerfCollector {
         return sample
     }
 
+    private static let isoLock = NSLock()
     private static let isoFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
+    private static let isoBasic: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     static func parseMillis(_ s: String) -> Int64? {
-        guard let date = isoFractional.date(from: s) else { return nil }
+        isoLock.lock()
+        let date = isoFractional.date(from: s) ?? isoBasic.date(from: s)
+        isoLock.unlock()
+        guard let date else { return nil }
         return Int64((date.timeIntervalSince1970 * 1000).rounded())
     }
 
@@ -142,7 +151,7 @@ enum PerfCollector {
             database.upsertPerfSamples(samples)
                 && database.setPerfCursor(file, size: cursor, identity: st.identity)
         }
-        return end - offset
+        return max(end - offset, 0)
     }
 
     /// Folds rollout lines into one sample per model response.
@@ -246,7 +255,7 @@ enum PerfCollector {
             database.upsertPerfSamples(Array(samples.values))
                 && database.setPerfCursor(file, size: pass.newOffset, identity: st.identity)
         }
-        return pass.newOffset - offset
+        return max(pass.newOffset - offset, 0)
     }
 
     static func dshSample(_ obj: [String: Any], sessionID: String) -> PerfSample? {
@@ -314,7 +323,7 @@ enum PerfCollector {
             database.upsertPerfSamples(samples)
                 && database.setPerfCursor(file, size: end, identity: st.identity)
         }
-        return end - offset
+        return max(end - offset, 0)
     }
 
     static func ompSample(_ obj: [String: Any]) -> PerfSample? {
@@ -324,12 +333,18 @@ enum PerfCollector {
               let sent = (message["timestamp"] as? NSNumber)?.int64Value,
               let ttft = (message["ttft"] as? NSNumber)?.doubleValue,
               let duration = (message["duration"] as? NSNumber)?.doubleValue,
+              ttft.isFinite, duration.isFinite,
+              ttft >= 0, duration >= 0,
+              ttft < 86_400_000, duration < 86_400_000,
               let key = (message["responseId"] as? String) ?? (obj["id"] as? String), !key.isEmpty
         else { return nil }
+        let (firstTokenMs, firstOverflow) = sent.addingReportingOverflow(Int64(ttft.rounded()))
+        let (lastMs, lastOverflow) = sent.addingReportingOverflow(Int64(duration.rounded()))
+        guard !firstOverflow, !lastOverflow else { return nil }
         let usage = message["usage"] as? [String: Any]
         return PerfSample(tool: .omp, key: key, model: message["model"] as? String,
-                          requestMs: sent, firstTokenMs: sent + Int64(ttft.rounded()),
-                          lastMs: sent + Int64(duration.rounded()),
+                          requestMs: sent, firstTokenMs: firstTokenMs,
+                          lastMs: lastMs,
                           outputTokens: FileScanner.tokenCount(usage?["output"]))
     }
 

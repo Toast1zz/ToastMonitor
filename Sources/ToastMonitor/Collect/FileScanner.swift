@@ -119,6 +119,10 @@ enum FileScanner {
         } catch {
             return fromOffset
         }
+        // Hard ceiling on a single unterminated JSON line so a corrupt or
+        // binary file without newlines cannot exhaust process memory.
+        let maxLineBytes = 64 * 1024 * 1024
+        var skippingOversizedLine = false
         var pending = Data()
         pending.reserveCapacity(64 * 1024)
         var consumed: UInt64 = 0
@@ -135,7 +139,21 @@ enum FileScanner {
                 break
             }
             guard let chunk, !chunk.isEmpty else { break }
-            pending.append(chunk)
+            if skippingOversizedLine {
+                if let nl = chunk.firstIndex(of: 0x0a) {
+                    let dropped = chunk.distance(from: chunk.startIndex, to: nl) + 1
+                    consumed += UInt64(dropped)
+                    skippingOversizedLine = false
+                    let tail = chunk[chunk.index(after: nl)...]
+                    if !tail.isEmpty { pending.append(tail) }
+                    scanned = 0
+                } else {
+                    consumed += UInt64(chunk.count)
+                    continue
+                }
+            } else {
+                pending.append(chunk)
+            }
             var lineStart = 0
             var searchFrom = scanned
             while let newline = pending[searchFrom...].firstIndex(of: 0x0a) {
@@ -155,7 +173,14 @@ enum FileScanner {
                 pending.removeSubrange(0..<lineStart)
                 consumed += UInt64(lineStart)
             }
-            scanned = pending.count
+            if pending.count > maxLineBytes {
+                consumed += UInt64(pending.count)
+                pending.removeAll(keepingCapacity: false)
+                skippingOversizedLine = true
+                scanned = 0
+            } else {
+                scanned = pending.count
+            }
         }
         if !pending.isEmpty {
             autoreleasepool {

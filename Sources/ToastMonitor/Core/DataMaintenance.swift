@@ -159,6 +159,7 @@ enum DataMaintenance {
     static func recover(from backup: URL?, database: Database = .shared) -> Bool {
         guard let backup else { return database.replaceUnusableStore(with: nil) }
         guard backup.pathExtension == compressedExtension else {
+            guard isSQLiteFile(backup) else { return false }
             return database.replaceUnusableStore(with: backup.path)
         }
         let fm = FileManager.default
@@ -348,8 +349,8 @@ enum DataMaintenance {
     }
 
     private static func isManagedBackup(_ path: String, in directory: URL = DataMaintenance.directory) -> Bool {
-        let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
-        let root = directory.standardizedFileURL.path + "/"
+        let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         return candidate.hasPrefix(root)
     }
 

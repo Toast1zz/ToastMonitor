@@ -116,9 +116,10 @@ enum Format {
     }
 
     static func moneyShort(_ v: Double) -> String {
+        guard v.isFinite else { return "$0.00" }
         if v == 0 { return "$0.00" }
+        if v < 0 { return "-" + moneyShort(-v) }
         if v >= 1000 { return String(format: "$%.1fk", v / 1000) }
-        if v >= 1 { return String(format: "$%.2f", v) }
         if v >= 0.01 { return String(format: "$%.2f", v) }
         return String(format: "$%.3f", v)
     }

@@ -51,24 +51,36 @@ enum HermesParser {
     private static func scan(path: String, database: any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            sqlite3_close(db)
+            if let db { sqlite3_close(db) }
+            database.noteScanProblem("Hermes database could not be opened")
             return ([], [])
         }
         defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
 
         var hasMessages = false
         var hasSessions = false
         var hasUsage = false
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table';", -1, &stmt, nil) == SQLITE_OK {
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                guard let name = SQLiteText.column(stmt, 0) else { continue }
-                if name == "messages" { hasMessages = true }
-                if name == "sessions" { hasSessions = true }
-                if name == "session_model_usage" { hasUsage = true }
-            }
+        guard sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table';", -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            database.noteScanProblem("Hermes database schema could not be read")
+            return ([], [])
+        }
+        var schemaRC: Int32 = SQLITE_OK
+        while true {
+            schemaRC = sqlite3_step(stmt)
+            guard schemaRC == SQLITE_ROW else { break }
+            guard let name = SQLiteText.column(stmt, 0) else { continue }
+            if name == "messages" { hasMessages = true }
+            if name == "sessions" { hasSessions = true }
+            if name == "session_model_usage" { hasUsage = true }
         }
         sqlite3_finalize(stmt)
+        guard schemaRC == SQLITE_DONE else {
+            database.noteScanProblem("Hermes database schema read interrupted (SQLite \(schemaRC))")
+            return ([], [])
+        }
         guard hasMessages || hasSessions || hasUsage else { return ([], []) }
 
         // Column introspection for messages.
@@ -229,13 +241,22 @@ enum HermesParser {
             var lastSeen: Int64
         }
         var routes: [String: Route] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepRC: Int32 = SQLITE_OK
+        while true {
+            stepRC = sqlite3_step(stmt)
+            guard stepRC == SQLITE_ROW else { break }
             guard let sid = text(0), !sid.isEmpty else { continue }
             let model = text(1)
             let provider = text(2)
             let key = HermesUsageBaseline.key(session: sid, model: model, provider: provider, baseURL: text(3))
+            let firstRaw = seconds(9)
             let last = seconds(10)
-            let first = min(seconds(9), last)
+            let first: Int64
+            if firstRaw > 0 && last > 0 {
+                first = min(firstRaw, last)
+            } else {
+                first = firstRaw > 0 ? firstRaw : last
+            }
             var route = routes[key] ?? Route(sid: sid, model: model, provider: provider, input: 0, output: 0,
                                              reasoning: 0, cacheRead: 0, cacheWrite: 0, firstSeen: first, lastSeen: last)
             func add(_ total: Int64, _ column: Int32) -> Int64 {
@@ -249,6 +270,10 @@ enum HermesParser {
             route.firstSeen = first > 0 && (route.firstSeen == 0 || first < route.firstSeen) ? first : route.firstSeen
             route.lastSeen = max(route.lastSeen, last)
             routes[key] = route
+        }
+        guard stepRC == SQLITE_DONE else {
+            database.noteScanProblem("Hermes usage read interrupted (SQLite \(stepRC))")
+            return []
         }
 
         var turns: [TurnRecord] = []

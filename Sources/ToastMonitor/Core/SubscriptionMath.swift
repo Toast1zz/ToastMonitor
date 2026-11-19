@@ -18,6 +18,7 @@ enum SubscriptionMath {
         guard cycle == "yearly" || cycle == "monthly" || cycle == "weekly" else { return nil }
         let cal = Calendar.current
         let startDate = Date(timeIntervalSince1970: TimeInterval(start))
+        guard now >= startDate else { return nil }
         let endDate = end > 0 ? Date(timeIntervalSince1970: TimeInterval(end)) : nil
         if let endDate, now >= endDate { return nil } // ended subscription: no active cycle
         // Every boundary is anchored to the original billing date so short

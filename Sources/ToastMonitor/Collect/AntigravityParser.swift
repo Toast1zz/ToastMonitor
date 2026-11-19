@@ -108,7 +108,10 @@ enum AntigravityParser {
                                     eventID: "antigravity:\(identity)",
                                     costQuality: cost == nil ? "unknown" : "estimated"))
         }
-        let next = readThrough(rows, previous: watermark) { $0.usage != nil }
+        let next = readThrough(rows, previous: watermark) { gen in
+            guard let usage = gen.usage else { return false }
+            return usage.input + usage.output + usage.cacheRead > 0
+        }
         if next != watermark { database.setSetting(key, "\(next)") }
         let session = firstTs.map {
             SessionInfo(tool: .antigravity, sessionID: cascade, title: summary?.title,
@@ -138,19 +141,27 @@ enum AntigravityParser {
 
         var raw: [(idx: Int64, gen: Generation)] = []
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx;",
-                                 -1, &stmt, nil) == SQLITE_OK else {
+        let prepRC = sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx;",
+                                        -1, &stmt, nil)
+        guard prepRC == SQLITE_OK else {
+            let msg = db.map { String(cString: sqlite3_errmsg($0)) } ?? ""
             sqlite3_finalize(stmt)
-            return []
+            // Only a missing table is a genuinely empty brand-new conversation;
+            // SQLITE_BUSY / I/O errors must return nil so the caller retries.
+            return (prepRC == SQLITE_ERROR && msg.contains("no such table")) ? [] : nil
         }
         sqlite3_bind_int64(stmt, 1, watermark)
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepRC: Int32 = SQLITE_OK
+        while true {
+            stepRC = sqlite3_step(stmt)
+            guard stepRC == SQLITE_ROW else { break }
             guard let blob = sqlite3_column_blob(stmt, 1) else { continue }
             let count = Int(sqlite3_column_bytes(stmt, 1))
             guard count > 0, count <= 64_000_000 else { continue }
             raw.append((sqlite3_column_int64(stmt, 0), parseGeneration(Data(bytes: blob, count: count))))
         }
         sqlite3_finalize(stmt)
+        guard stepRC == SQLITE_DONE else { return nil }
         guard !raw.isEmpty else { return [] }
 
         let fallback = FileScanner.fileStat(path).map { $0.mtime / 1_000_000_000 }
@@ -173,8 +184,9 @@ enum AntigravityParser {
         }
     }
 
-    /// The new watermark: the last row that is complete. Rows after it are
-    /// read again next time, in case they are still being filled in.
+    /// The new watermark: the last row that is complete. Earlier rows without
+    /// usage (e.g. cancelled/non-usage steps) must not pin the watermark
+    /// forever, while trailing incomplete rows stay unread until they finish.
     static func readThrough(_ rows: [Row], previous: Int64, isComplete: (Generation) -> Bool) -> Int64 {
         rows.last { isComplete($0.gen) }.map { max($0.idx, previous) } ?? previous
     }
