@@ -2247,7 +2247,7 @@ final class Database: @unchecked Sendable {
     struct Subscription: Identifiable, Equatable, Sendable {
         let id: Int64
         var name: String
-        var plan: String      // "" | "go" | "openrouter" | "claude" | "openai" | "grok"
+        var plan: String      // "" | "go" | "openrouter" | "claude" | "openai" | "grok" | "google"
         var startDate: Int64  // unix seconds
         var endDate: Int64 = 0 // 0 = active; unix seconds when it ended/stops
         var cycle: String     // "monthly" | "yearly"

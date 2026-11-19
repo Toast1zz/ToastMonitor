@@ -43,6 +43,13 @@ enum AccountConnection {
         return state.configured || state.lastSync > 0
     }
 
+    /// Connected once Antigravity has run on this Mac; a closed app stays
+    /// connected so its card keeps the last reading.
+    static var antigravity: Bool {
+        let client = AntigravityQuotaClient.shared
+        return client.enabled && (client.state.configured || client.state.lastSync > 0)
+    }
+
     static var openRouter: Bool { OpenRouterClient.shared.hasKey }
 
     static var deepSeek: Bool { DeepSeekBillingClient.shared.state.kind != nil }

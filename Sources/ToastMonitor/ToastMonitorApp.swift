@@ -544,6 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ClaudeQuotaClient.shared.start()
         CommandCodeQuotaClient.shared.start()
         GrokQuotaClient.shared.start()
+        AntigravityQuotaClient.shared.start()
         DeepSeekBillingClient.shared.start()
         HermesRemoteClient.shared.start()
         QuotaAlertManager.shared.start()

@@ -12,6 +12,7 @@ struct PlansView: View {
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var grokQuota = GrokQuotaClient.shared
+    @ObservedObject private var antigravity = AntigravityQuotaClient.shared
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
 
@@ -31,10 +32,11 @@ struct PlansView: View {
     private var deepseekConnected: Bool { AccountConnection.deepSeek }
     private var ccConnected: Bool { AccountConnection.commandCode }
     private var grokConnected: Bool { AccountConnection.grok }
+    private var antigravityConnected: Bool { AccountConnection.antigravity }
 
     private var unconnected: [String] {
         [(claudeConnected, "Claude"), (goConnected, "OpenCode Go"), (ccConnected, "Command Code"),
-         (grokConnected, "Grok"),
+         (grokConnected, "Grok"), (antigravityConnected, "Antigravity"),
          (orConnected, "OpenRouter"), (deepseekConnected, "DeepSeek")]
             .filter { !$0.0 }.map(\.1)
     }
@@ -44,6 +46,7 @@ struct PlansView: View {
         if claudeConnected { out.append(AnyView(claudeCard)) }
         if ccConnected { out.append(AnyView(ccCard)) }
         if grokConnected { out.append(AnyView(grokCard)) }
+        if antigravityConnected { out.append(AnyView(antigravityCard)) }
         if goConnected { out.append(AnyView(goCard)) }
         if orConnected { out.append(AnyView(orCard)) }
         if deepseekConnected { out.append(AnyView(deepseekCard)) }
@@ -139,6 +142,27 @@ struct PlansView: View {
                 FigureColumn(label: "Extra credits", value: Format.money(balance))
             }
             if let plan = GrokQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: g.planName) {
+                FigureColumn(label: "Plan", value: plan)
+            }
+        }
+    }
+
+    /// The three tightest model pools, then the plan.
+    private var antigravityCard: some View {
+        let a = antigravity.state
+        let plan = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: a.planName)
+        let models = a.models.sorted { $0.remaining < $1.remaining }.prefix(plan == nil ? 3 : 2)
+        return accountCard(title: "Antigravity", symbol: "a.circle.fill", color: TMDesign.antigravity,
+                           isLoading: a.isLoading && a.lastSync <= 0,
+                           error: a.lastSync > 0 && a.error == AntigravityQuotaClient.notRunning ? nil : a.error,
+                           lastSync: a.lastSync,
+                           refresh: { antigravity.refresh() }) {
+            ForEach(Array(models), id: \.family) { model in
+                quotaColumn(model.family, usedPercent: 100 - model.remaining,
+                            captions: [resetText(absolute: model.resetAt)].compactMap { $0 },
+                            color: TMDesign.antigravity)
+            }
+            if let plan {
                 FigureColumn(label: "Plan", value: plan)
             }
         }

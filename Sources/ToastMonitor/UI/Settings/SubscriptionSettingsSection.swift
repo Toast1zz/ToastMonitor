@@ -152,6 +152,7 @@ struct SubscriptionSettingsSection: View {
                     Text("Claude Pro").tag("claude")
                     Text("ChatGPT / Codex").tag("openai")
                     Text("Grok / X Subscription").tag("grok")
+                    Text("Google AI / Antigravity").tag("google")
                 }
                 DatePicker("Start date", selection: $startDate, displayedComponents: .date)
                 Toggle("Has end date", isOn: $hasEndDate)
@@ -252,6 +253,7 @@ struct SubscriptionSettingsSection: View {
         case "claude": return ToolKind.claude.symbol
         case "openai", "chatgpt", "codex": return ToolKind.codex.symbol
         case "grok": return "x.circle.fill"
+        case "google": return "a.circle.fill"
         default: return "calendar"
         }
     }
@@ -263,6 +265,7 @@ struct SubscriptionSettingsSection: View {
         case "claude": return ToolKind.claude.color
         case "openai", "chatgpt", "codex": return ToolKind.codex.color
         case "grok": return TMDesign.grok
+        case "google": return TMDesign.antigravity
         default: return .gray
         }
     }

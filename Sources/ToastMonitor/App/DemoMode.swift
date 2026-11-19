@@ -74,7 +74,7 @@ enum DemoMode {
             cycle: "monthly", price: 30, currency: "USD"))
         // Accounts the demo does not fill would otherwise fold into a
         // "Not connected" line.
-        for key in ["go", "codex", "cc"] {
+        for key in ["go", "codex", "cc", "antigravity"] {
             _ = db.setSetting("hide_quota_row_\(key)", "1")
         }
     }

@@ -107,6 +107,8 @@ enum TMDesign {
     /// xAI's brand is black on white (white on black in dark), so Grok
     /// follows the label color and stays monochrome in both appearances.
     static let grok = Color(nsColor: .labelColor)
+    /// Google blue, lightened in dark mode as Google's own dark themes do.
+    static let antigravity = brand(0x4285F4, dark: 0x8AB4F8)
 
     /// A row in a per-source breakdown. The estimated row reuses Claude's hue,
     /// faded, so it reads as "more Claude, but not measured".

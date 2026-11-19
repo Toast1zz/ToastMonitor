@@ -101,6 +101,7 @@ final class QuotaAlertManager: ObservableObject {
             OpenCodeGoClient.shared.objectWillChange.eraseToAnyPublisher(),
             CommandCodeQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
             GrokQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
+            AntigravityQuotaClient.shared.objectWillChange.eraseToAnyPublisher(),
             OpenRouterClient.shared.objectWillChange.eraseToAnyPublisher(),
             AppState.shared.objectWillChange.eraseToAnyPublisher(),
         ]
@@ -221,6 +222,10 @@ final class QuotaAlertManager: ObservableObject {
         if let used = GrokQuotaClient.shared.state.usedPercent {
             readings.append(.init(id: "supergrok-weekly", name: "Grok weekly",
                                   remaining: 100 - used, resetAt: GrokQuotaClient.shared.state.resetAt))
+        }
+        for model in AntigravityQuotaClient.shared.state.models {
+            readings.append(.init(id: "antigravity-\(model.family)", name: "Antigravity \(model.family)",
+                                  remaining: model.remaining, resetAt: model.resetAt))
         }
         let router = OpenRouterClient.shared.state
         if let limit = router.limit, limit > 0, let remaining = router.limitRemaining {

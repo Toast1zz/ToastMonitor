@@ -311,6 +311,7 @@ final class AppState: ObservableObject {
         ClaudeQuotaClient.shared.refresh(force: true)
         if AccountConnection.commandCode { CommandCodeQuotaClient.shared.refresh() }
         GrokQuotaClient.shared.refresh()
+        AntigravityQuotaClient.shared.refresh()
         HermesRemoteClient.shared.maybePoll()
     }
 

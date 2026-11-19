@@ -78,6 +78,7 @@ struct PopoverHomeView: View {
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var grokQuota = GrokQuotaClient.shared
+    @ObservedObject private var antigravity = AntigravityQuotaClient.shared
     @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
     @ObservedObject private var deepseek: DeepSeekBillingClient
     @AppStorage(DeepSeekBilling.exchangeRateKey) private var cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
@@ -556,6 +557,7 @@ struct PopoverHomeView: View {
         case "codex": codexStatusRow
         case "cc": commandCodeStatusRow
         case "grok": grokStatusRow
+        case "antigravity": antigravityStatusRow
         case "router": routerStatusRow
         default: deepseekStatusRow
         }
@@ -580,6 +582,7 @@ struct PopoverHomeView: View {
             ("codex", "Codex", .quota, AccountConnection.codex(subscriptions: app.subscriptions)),
             ("cc", "Command Code", .quota, AccountConnection.commandCode),
             ("grok", "Grok", .quota, AccountConnection.grok),
+            ("antigravity", "Antigravity", .quota, AccountConnection.antigravity),
             ("router", "OpenRouter", .balance, AccountConnection.openRouter),
             ("deepseek", "DeepSeek", .balance, AccountConnection.deepSeek),
         ]
@@ -1020,6 +1023,47 @@ struct PopoverHomeView: View {
                          staleBadge: staleBadge,
                          windows: [window("Weekly", state.usedPercent, reset: state.resetAt, duration: 7 * 86400)].compactMap { $0 },
                          problem: state.error.map { RowProblem.from(service: name, error: $0) })
+    }
+
+    /// Antigravity's tightest model pool takes the value column; each model
+    /// family gets a bar, tightest first, at most three.
+    private var antigravityStatusRow: some View {
+        let state = antigravity.state
+        let name = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: state.planName)
+            ?? "Antigravity"
+        let nowSeconds = Int64(now.timeIntervalSince1970)
+        let stale = state.lastSync > 0 && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
+        var status = state.configured ? "Loading" : (antigravity.enabled ? "Not configured" : "Off")
+        var resetSuffix: String?
+        var staleBadge: String?
+        if let tight = state.tightest {
+            status = "\(Int(tight.remaining.rounded()))% left"
+            resetSuffix = resetText(tight.resetAt)
+            if stale {
+                staleBadge = "\(Format.remaining(Int64(now.timeIntervalSince1970) - state.lastSync)) ago"
+            }
+        } else if state.error != nil {
+            status = state.error == AntigravityQuotaClient.notRunning ? "Not running" : "Error"
+        }
+        let windows = state.models
+            .sorted { $0.remaining < $1.remaining }
+            .prefix(3)
+            .compactMap { model in
+                window(model.family, 100 - model.remaining, reset: model.resetAt,
+                       duration: AntigravityQuotaClient.windowSeconds(resetAt: model.resetAt, now: nowSeconds))
+            }
+        // "Not running" with a cached reading is not a problem worth a banner.
+        let problem = state.error.flatMap { error -> RowProblem? in
+            if error == AntigravityQuotaClient.notRunning && state.lastSync > 0 { return nil }
+            return RowProblem.from(service: "Antigravity", error: error)
+        }
+        return statusRow(name: name, status: status, tint: TMDesign.antigravity,
+                         statusColor: .primary,
+                         critical: state.tightest.map { $0.remaining < 20 } ?? false,
+                         resetSuffix: resetSuffix,
+                         staleBadge: staleBadge,
+                         windows: Array(windows),
+                         problem: problem)
     }
 
     private var routerStatusRow: some View {

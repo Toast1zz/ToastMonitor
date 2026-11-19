@@ -58,7 +58,7 @@ final class CodexBillingModeCoordinator {
 enum PopoverAccountRows {
     static let accounts: [(key: String, title: String)] = [
         ("claude", "Claude"), ("go", "OpenCode Go"), ("codex", "Codex"),
-        ("cc", "Command Code"), ("grok", "Grok"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
+        ("cc", "Command Code"), ("grok", "Grok"), ("antigravity", "Antigravity"), ("router", "OpenRouter"), ("deepseek", "DeepSeek"),
     ]
 
     static var keys: [String] { accounts.map(\.key) }
@@ -99,6 +99,7 @@ struct AccountsSettingsSection: View {
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
     @ObservedObject private var codexQuota = CodexQuotaClient.shared
     @ObservedObject private var grokQuota = GrokQuotaClient.shared
+    @ObservedObject private var antigravity = AntigravityQuotaClient.shared
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @AppStorage(CodexPlanName.customNameKey) private var codexName = ""
 
@@ -171,6 +172,18 @@ struct AccountsSettingsSection: View {
                         Text("Grok CLI")
                     } else {
                         Text("Run `grok login` in Terminal")
+                    }
+                }
+            }
+            account("antigravity", "Antigravity", symbol: "a.circle.fill", color: TMDesign.antigravity,
+                    status: antigravityStatus) {
+                Toggle("Read Antigravity quota", isOn: Binding(
+                    get: { antigravity.enabled },
+                    set: { antigravity.setEnabled($0) }
+                ))
+                if !antigravity.state.configured {
+                    LabeledContent("Login") {
+                        Text("Open Antigravity or Gemini and sign in")
                     }
                 }
             }
@@ -281,6 +294,13 @@ struct AccountsSettingsSection: View {
         if state.error != nil && state.configured { return "Error" }
         guard state.configured else { return "Not signed in" }
         return GrokQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: state.planName) ?? "Connected"
+    }
+
+    private var antigravityStatus: String {
+        guard antigravity.enabled else { return "Not connected" }
+        let state = antigravity.state
+        guard state.configured || state.lastSync > 0 else { return "Not connected" }
+        return AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: state.planName) ?? "Connected"
     }
 
     private var keyCountText: String {
