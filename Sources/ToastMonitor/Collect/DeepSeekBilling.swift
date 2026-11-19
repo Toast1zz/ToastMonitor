@@ -100,7 +100,9 @@ enum DeepSeekBilling {
     static func combinedSpend(localUSD: Double, coveredLocalUSD: Double = 0, spend: Spend?,
                               cnyPerUSD: Double = defaultCNYPerUSD) -> String {
         var amounts: [String: Decimal] = [:]
-        let local = max(0, localUSD - (spend == nil ? 0 : coveredLocalUSD))
+        let safeLocalUSD = localUSD.isFinite ? localUSD : 0
+        let safeCoveredUSD = coveredLocalUSD.isFinite ? coveredLocalUSD : 0
+        let local = max(0, safeLocalUSD - (spend == nil ? 0 : safeCoveredUSD))
         amounts["USD"] = Decimal(local)
         let rate = Decimal(validExchangeRate(cnyPerUSD) ? cnyPerUSD : defaultCNYPerUSD)
         for money in spend?.amounts ?? [] {
@@ -361,6 +363,10 @@ final class DeepSeekBillingTransport: @unchecked Sendable {
             return try await withCheckedThrowingContinuation { continuation in
                 let task = blocker.boundedDataTask(in: session, request: request,
                                                    maxBytes: DeepSeekBilling.maxResponseBytes) { data, response, error in
+                    if let urlError = error as? URLError, urlError.code == .cancelled {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     guard error == nil, let http = response as? HTTPURLResponse, let data else {
                         continuation.resume(throwing: DeepSeekBilling.Failure.network)
                         return

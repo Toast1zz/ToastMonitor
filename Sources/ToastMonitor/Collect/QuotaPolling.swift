@@ -15,7 +15,10 @@ struct RefreshBackoff {
         delay *= 2
     }
 
-    mutating func succeeded() { delay = 0 }
+    mutating func succeeded() {
+        delay = 0
+        nextAllowed = 0
+    }
 
     /// Lifts the current wait but keeps the delay, so another failure
     /// continues the schedule instead of starting over.
@@ -31,10 +34,11 @@ final class ForegroundPoller {
     private var foreground = false
     private var timer: Timer?
     private var tick: (() -> Void)?
+    private var observers: [NSObjectProtocol] = []
 
     init() {
         for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let self else { return }
                 let visible = (note.object as? Bool) ?? false
                 if name == TMNotifications.popoverVisibility {
@@ -44,6 +48,13 @@ final class ForegroundPoller {
                 }
                 self.update()
             }
+            observers.append(token)
+        }
+    }
+
+    deinit {
+        for token in observers {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 

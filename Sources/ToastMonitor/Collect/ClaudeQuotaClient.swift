@@ -99,6 +99,8 @@ final class ClaudeQuotaClient: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
         enabled = Database.shared.setting(Self.enabledSettingKey) == "1"
         if let raw = Database.shared.setting(Self.lastAttemptSettingKey), let v = TimeInterval(raw) {
@@ -114,7 +116,7 @@ final class ClaudeQuotaClient: ObservableObject {
 
     // MARK: - Enable/disable
 
-    static let enabledSettingKey = "claude_quota_enabled"
+    nonisolated static let enabledSettingKey = "claude_quota_enabled"
 
     func setEnabled(_ on: Bool) {
         guard on != enabled else { return }
@@ -462,25 +464,54 @@ final class ClaudeQuotaClient: ObservableObject {
         process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { return (nil, false) }
 
-        // Draining on another queue: a child parked on a sheet would
-        // otherwise wedge this thread inside read(2), past any timeout.
-        var output = Data()
-        let outputLock = NSLock()
+        // Draining on another queue with an incremental byte cap: a child
+        // parked on a sheet would otherwise wedge this thread inside read(2),
+        // and oversized stdout is rejected without buffering unbounded memory.
+        final class OutputBox: @unchecked Sendable {
+            private let lock = NSLock()
+            var data = Data()
+            var overflowed = false
+            func set(_ data: Data, overflowed: Bool) {
+                lock.lock(); self.data = data; self.overflowed = overflowed; lock.unlock()
+            }
+            func get() -> (Data, Bool) {
+                lock.lock(); defer { lock.unlock() }; return (data, overflowed)
+            }
+        }
+        let box = OutputBox()
         let drained = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .utility).async {
-            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-            outputLock.lock(); output = data; outputLock.unlock()
+            let reader = pipe.fileHandleForReading
+            var collected = Data()
+            var exceeded = false
+            while let chunk = try? reader.read(upToCount: 65_536), !chunk.isEmpty {
+                if collected.count + chunk.count > maxBytes {
+                    exceeded = true
+                    if process.isRunning {
+                        process.terminate()
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                    }
+                    try? reader.close()
+                    break
+                }
+                collected.append(chunk)
+            }
+            box.set(collected, overflowed: exceeded)
             drained.signal()
         }
         if drained.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            _ = drained.wait(timeout: .now() + 1)
+            if drained.wait(timeout: .now() + 1) == .timedOut {
+                if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
+                _ = drained.wait(timeout: .now() + 1)
+            }
+            process.waitUntilExit()
             return (nil, true)
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return (nil, false) }
-        outputLock.lock(); let data = output; outputLock.unlock()
-        guard !data.isEmpty, data.count <= maxBytes else { return (nil, false) }
+        let (data, wasOverflowed) = box.get()
+        guard !wasOverflowed, !data.isEmpty, data.count <= maxBytes else { return (nil, false) }
         return (data, false)
     }
 
@@ -534,10 +565,8 @@ final class ClaudeQuotaClient: ObservableObject {
             // This completion runs on a URLSession delegate queue; all
             // state mutations below are @MainActor-isolated.
             DispatchQueue.main.async {
-                // Always clear inFlight — even for a stale generation —
-                // or the guard would never recover from an old response.
-                self.inFlight = false
                 guard self.refreshGeneration == generation else { return }
+                self.inFlight = false
                 if let err {
                     self.state.error = err.localizedDescription
                     self.applyBackoff(retryAfterHeader: nil)

@@ -272,8 +272,8 @@ final class AntigravityQuotaClient: ObservableObject {
 
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
-            self.inFlight = false
             guard self.refreshGeneration == generation else { return }
+            self.inFlight = false
             self.state.isLoading = false
             switch statusResult {
             case .success(let data)?:

@@ -30,7 +30,7 @@ final class CLIRenewalGate: @unchecked Sendable {
 /// not anyone is looking at the numbers. Nothing runs once the login is good.
 @MainActor
 final class CLIRenewalRetry {
-    static let defaultInterval: TimeInterval = 60
+    nonisolated static let defaultInterval: TimeInterval = 60
     /// A renewal can fail for a moment after waking or upgrading the CLI, so
     /// the row only asks for attention after this many failures in a row.
     static let failuresBeforeReporting = 5

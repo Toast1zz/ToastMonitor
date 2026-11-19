@@ -63,15 +63,20 @@ final class UpdateCheckerTests: XCTestCase {
         // Same-or-older version: normal no-op, no signature error.
         XCTAssertNil(try UpdateChecker.parseEnvelope(envelope, publicKey: publicKey, current: [9, 9, 9]))
 
-        // Tampered signature must fail.
+        // Tampered signature must fail even when the claimed version is not newer.
         let forged = UpdateChecker.Envelope(payload: b64,
                                             signature: Data(base64Encoded: "AAAA")!.base64EncodedString())
         XCTAssertThrowsError(try UpdateChecker.parseEnvelope(forged, publicKey: publicKey, current: [1, 2])) { error in
             XCTAssertEqual(error as? UpdateChecker.CheckError, .invalidSignature)
         }
+        XCTAssertThrowsError(try UpdateChecker.parseEnvelope(forged, publicKey: publicKey, current: [9, 9, 9])) { error in
+            XCTAssertEqual(error as? UpdateChecker.CheckError, .invalidSignature)
+        }
 
-        // Non-base64 payload must fail as malformed, not crash.
-        let broken = UpdateChecker.Envelope(payload: "not-base64!!", signature: signature)
+        // Validly signed non-base64 payload must fail as malformed, not crash.
+        let brokenPayload = "not-base64!!"
+        let brokenSignature = try key.signature(for: Data(brokenPayload.utf8)).base64EncodedString()
+        let broken = UpdateChecker.Envelope(payload: brokenPayload, signature: brokenSignature)
         XCTAssertThrowsError(try UpdateChecker.parseEnvelope(broken, publicKey: publicKey, current: [1, 2])) { error in
             XCTAssertEqual(error as? UpdateChecker.CheckError, .malformedManifest)
         }
