@@ -19,7 +19,7 @@ final class AntigravityQuotaTests: XCTestCase {
           ]}}}
         """))
         XCTAssertEqual(s.planName, "Google AI Pro")
-        XCTAssertEqual(s.models.map(\.family), ["Gemini 4 Neon", "Claude Opus 5.5"])
+        XCTAssertEqual(s.models.map(\.name), ["Gemini 4 Neon", "Claude Opus 5.5"])
         XCTAssertEqual(s.models[0].remaining, 60, accuracy: 0.001)
         XCTAssertEqual(s.models[0].resetAt,
                        Int64(GrokQuotaClient.isoDate("2026-11-19T16:46:32Z")!.timeIntervalSince1970))
@@ -42,10 +42,10 @@ final class AntigravityQuotaTests: XCTestCase {
 
     func testTightestPicksLowestThenEarliestReset() {
         var state = AntigravityQuotaClient.State()
-        state.models = [.init(family: "A", remaining: 50, resetAt: 200),
-                        .init(family: "B", remaining: 50, resetAt: 100),
-                        .init(family: "C", remaining: 90, resetAt: 50)]
-        XCTAssertEqual(state.tightest?.family, "B")
+        state.models = [.init(name: "A", remaining: 50, resetAt: 200),
+                        .init(name: "B", remaining: 50, resetAt: 100),
+                        .init(name: "C", remaining: 90, resetAt: 50)]
+        XCTAssertEqual(state.tightest?.name, "B")
     }
 
     func testFamilyStripsEffortSuffixOnly() {
@@ -73,5 +73,61 @@ final class AntigravityQuotaTests: XCTestCase {
         XCTAssertEqual(AntigravityQuotaClient.plan(subscriptions: [sub], apiPlan: "Google AI Pro"),
                        "Google AI Pro (CN)")
         XCTAssertEqual(AntigravityQuotaClient.plan(subscriptions: [], apiPlan: "Google AI Pro"), "Google AI Pro")
+    }
+
+    func testModelsWithSameFractionAndResetShareOnePool() throws {
+        let s = try XCTUnwrap(parse("""
+        {"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":[
+          {"label":"Gemini 4 Neon (High)","quotaInfo":{"remainingFraction":0.98753834,"resetTime":"2026-11-19T16:59:52Z"}},
+          {"label":"Gemini 4 Argon (High)","quotaInfo":{"remainingFraction":1,"resetTime":"2026-11-26T12:02:52Z"}},
+          {"label":"Gemini 4 Hydrogen (Low)","quotaInfo":{"remainingFraction":0.98753834,"resetTime":"2026-11-19T16:59:52Z"}},
+          {"label":"Gemini 3.8 Flash (Low)","quotaInfo":{"remainingFraction":0.98753834,"resetTime":"2026-11-19T16:59:52Z"}},
+          {"label":"Claude Opus 5.5 (Low)","quotaInfo":{"remainingFraction":1,"resetTime":"2026-11-19T17:02:52Z"}},
+          {"label":"GPT-OSS 120B (Medium)","quotaInfo":{"remainingFraction":1,"resetTime":"2026-11-19T17:02:52Z"}}
+        ]}}}
+        """))
+        XCTAssertEqual(s.models.map(\.name), ["Gemini", "Gemini 4 Argon", "Claude · GPT-OSS"])
+        XCTAssertEqual(s.models[0].families, ["Gemini 4 Neon", "Gemini 4 Hydrogen", "Gemini 3.8 Flash"])
+    }
+}
+
+final class AntigravityParserTests: XCTestCase {
+    /// Minimal protobuf encoder for building fixtures.
+    private func varint(_ v: UInt64) -> [UInt8] {
+        var v = v, out: [UInt8] = []
+        repeat {
+            var b = UInt8(v & 0x7f); v >>= 7
+            if v != 0 { b |= 0x80 }
+            out.append(b)
+        } while v != 0
+        return out
+    }
+    private func field(_ n: Int, _ v: UInt64) -> [UInt8] { varint(UInt64(n << 3)) + varint(v) }
+    private func field(_ n: Int, _ bytes: [UInt8]) -> [UInt8] { varint(UInt64(n << 3 | 2)) + varint(UInt64(bytes.count)) + bytes }
+    private func field(_ n: Int, _ s: String) -> [UInt8] { field(n, Array(s.utf8)) }
+
+    func testParsesUsageModelAndStepIndices() {
+        let usage = field(1, 1532) + field(2, 3220) + field(3, 307) + field(5, 8194) + field(6, 24)
+            + field(7, "bot-1") + field(9, 97) + field(10, 210) + field(11, "resp-1")
+        let chat = field(3, 1532) + field(4, usage) + field(19, "gemini-4-neon")
+        let gen = AntigravityParser.parseGeneration(Data(field(1, chat) + field(2, [4, 5, 6]) + field(4, "exec")))
+        XCTAssertEqual(gen.model, "gemini-4-neon")
+        XCTAssertEqual(gen.stepIndices, [4, 5, 6])
+        XCTAssertEqual(gen.usage, .init(input: 3220, output: 307, thinking: 97, cacheRead: 8194,
+                                        messageID: "bot-1", responseID: "resp-1"))
+    }
+
+    func testStepCreatedAtAndMalformedInput() {
+        let ts = field(1, 1_795_089_596) + field(2, 190_266_000)
+        XCTAssertEqual(AntigravityParser.parseStepCreatedAt(Data(field(1, ts) + field(3, 2))), 1_795_089_596)
+        XCTAssertNil(AntigravityParser.parseStepCreatedAt(Data([0xff, 0xff])))
+        XCTAssertNil(AntigravityParser.parseGeneration(Data([0x0a, 0x50, 0x01])).usage)
+    }
+
+    func testProjectFromWorkspaceURIs() {
+        XCTAssertEqual(AntigravityParser.project(fromWorkspaceURIs: #"["file:///Users/me/Projects/App"]"#), "App")
+        XCTAssertEqual(AntigravityParser.project(fromWorkspaceURIs: "file:///Users/me/Work%20Dir"), "Work Dir")
+        XCTAssertNil(AntigravityParser.project(fromWorkspaceURIs: "[]"))
+        XCTAssertNil(AntigravityParser.project(fromWorkspaceURIs: ""))
     }
 }

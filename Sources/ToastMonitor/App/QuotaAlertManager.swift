@@ -224,7 +224,7 @@ final class QuotaAlertManager: ObservableObject {
                                   remaining: 100 - used, resetAt: GrokQuotaClient.shared.state.resetAt))
         }
         for model in AntigravityQuotaClient.shared.state.models {
-            readings.append(.init(id: "antigravity-\(model.family)", name: "Antigravity \(model.family)",
+            readings.append(.init(id: "antigravity-\(model.name)", name: "Antigravity \(model.name)",
                                   remaining: model.remaining, resetAt: model.resetAt))
         }
         let router = OpenRouterClient.shared.state

@@ -13,8 +13,11 @@ import Combine
 /// request. When Antigravity isn't running there is no server to ask, so the
 /// last reading stays on screen with its age.
 ///
-/// Quota is per model, but the variants of one model (Low / Medium / High
-/// effort) share a pool, so readings are grouped by model family.
+/// Quota is reported per model, but models share pools: today Gemini 4 Neon,
+/// Hydrogen and 3.8 Flash draw on one five-hour pool, Argon has a weekly one,
+/// and Claude and GPT-OSS share another. The API has no pool id; models in
+/// one pool report the exact same remaining fraction and reset time, so
+/// readings are grouped on that pair.
 @MainActor
 final class AntigravityQuotaClient: ObservableObject {
     static let shared = AntigravityQuotaClient()
@@ -23,9 +26,11 @@ final class AntigravityQuotaClient: ObservableObject {
     nonisolated static let enabledSettingKey = "antigravity_quota_enabled"
     nonisolated static let notRunning = "Antigravity isn't running"
 
-    /// One model family's pool. `remaining` is 0…100.
+    /// One shared pool. `remaining` is 0…100; `name` is the brand when
+    /// several model families share it ("Gemini"), else the family.
     struct ModelQuota: Equatable {
-        let family: String
+        let name: String
+        var families: [String] = []
         let remaining: Double
         let resetAt: Int64?
     }
@@ -280,7 +285,7 @@ final class AntigravityQuotaClient: ObservableObject {
             } else {
                 continue
             }
-            let reading = ModelQuota(family: family,
+            let reading = ModelQuota(name: family,
                                      remaining: min(max(fraction * 100, 0), 100),
                                      resetAt: reset.map { Int64($0.timeIntervalSince1970) })
             if let existing = byFamily[family] {
@@ -291,9 +296,39 @@ final class AntigravityQuotaClient: ObservableObject {
                 byFamily[family] = reading
             }
         }
-        snapshot.models = order.compactMap { byFamily[$0] }
+        snapshot.models = pools(order.compactMap { byFamily[$0] })
         guard snapshot.planName != nil || !snapshot.models.isEmpty else { return nil }
         return snapshot
+    }
+
+    /// Families with the same remaining fraction and reset time are one pool,
+    /// in first-seen order.
+    nonisolated static func pools(_ families: [ModelQuota]) -> [ModelQuota] {
+        var order: [String] = []
+        var members: [String: [ModelQuota]] = [:]
+        for quota in families {
+            let key = "\(quota.remaining)|\(quota.resetAt.map(String.init) ?? "-")"
+            if members[key] == nil { order.append(key) }
+            members[key, default: []].append(quota)
+        }
+        return order.compactMap { key in
+            guard let group = members[key], let first = group.first else { return nil }
+            let names = group.map(\.name)
+            return ModelQuota(name: poolName(names), families: names,
+                              remaining: first.remaining, resetAt: first.resetAt)
+        }
+    }
+
+    /// One family keeps its name; several are named by their brands
+    /// ("Gemini", "Claude · GPT-OSS").
+    nonisolated static func poolName(_ families: [String]) -> String {
+        guard families.count > 1 else { return families.first ?? "" }
+        var brands: [String] = []
+        for family in families {
+            let brand = family.split(separator: " ").first.map(String.init) ?? family
+            if !brands.contains(brand) { brands.append(brand) }
+        }
+        return brands.joined(separator: " · ")
     }
 
     /// "Claude Opus 5.5 (High)" → "Claude Opus 5.5".

@@ -9,6 +9,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
     case omp = "omp"
     case dsh = "dsh"
     case openrouter = "openrouter"
+    case antigravity = "antigravity"
 
     var id: String { rawValue }
 
@@ -21,6 +22,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .omp: return "Oh My Pi"
         case .dsh: return "DeepSeek Harness"
         case .openrouter: return "OpenRouter"
+        case .antigravity: return "Antigravity"
         }
     }
 
@@ -33,6 +35,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .omp: return "cpu"
         case .dsh: return "atom"
         case .openrouter: return "arrow.triangle.2.circlepath"
+        case .antigravity: return "a.circle.fill"
         }
     }
 
@@ -48,6 +51,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .opencode: return Color(nsColor: .systemGreen)
         case .hermes: return Color(nsColor: .systemPurple)
         case .omp: return Color(nsColor: .systemTeal)
+        case .antigravity: return TMDesign.antigravity
         }
     }
 
@@ -64,7 +68,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
     /// for them creates a configuration that can never produce data.
     var supportsRemoteSource: Bool {
         switch self {
-        case .omp, .dsh, .openrouter:
+        case .omp, .dsh, .openrouter, .antigravity:
             return false
         case .claude, .codex, .opencode, .hermes:
             return true

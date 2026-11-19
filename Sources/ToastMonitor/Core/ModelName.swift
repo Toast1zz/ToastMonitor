@@ -18,6 +18,7 @@ enum ModelName {
         "glm": ("GLM", false),
         "qwen": ("Qwen", false),
         "grok": ("Grok", false),
+        "gemini": ("Gemini", false),
         "mimo": ("MiMo", false),
         "minimax": ("MiniMax", false),
         "deepseek": ("DeepSeek", false),

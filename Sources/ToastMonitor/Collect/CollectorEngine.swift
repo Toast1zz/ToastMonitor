@@ -358,6 +358,15 @@ final class CollectorEngine: @unchecked Sendable {
             OmpParser.scan(knownPaths: ompFiles, database: state)
         }
 
+        let antigravityDBs = AntigravityParser.conversationPaths()
+        ingest("antigravity", preflight: {
+                   antigravityDBs.contains { self.sourceChanged($0) }
+                       || self.sourceChanged(AntigravityParser.summariesPath)
+               },
+               sourcePaths: antigravityDBs.flatMap { [$0, $0 + "-wal"] },
+               scan: { AntigravityParser.scan(database: $0) },
+               signaturePaths: antigravityDBs + [AntigravityParser.summariesPath])
+
         // DeepSeek Harness: incremental raw event logs when a zstd CLI is
         // available, otherwise the JSON projection cache. The mode is sticky
         // (see DSHParser.resolveMode) so the two accounting paths never mix.

@@ -478,6 +478,7 @@ struct PopoverHomeView: View {
             if fm.fileExists(atPath: OmpParser.root) { tools.append(.omp) }
             if fm.fileExists(atPath: DSHParser.projCachePath)
                 || !DSHParser.listSessionFiles().isEmpty { tools.append(.dsh) }
+            if fm.fileExists(atPath: AntigravityParser.conversationsDir) { tools.append(.antigravity) }
             DispatchQueue.main.async { detectedTools = tools }
         }
     }
@@ -1049,7 +1050,7 @@ struct PopoverHomeView: View {
             .sorted { $0.remaining < $1.remaining }
             .prefix(3)
             .compactMap { model in
-                window(model.family, 100 - model.remaining, reset: model.resetAt,
+                window(model.name, 100 - model.remaining, reset: model.resetAt,
                        duration: AntigravityQuotaClient.windowSeconds(resetAt: model.resetAt, now: nowSeconds))
             }
         // "Not running" with a cached reading is not a problem worth a banner.
