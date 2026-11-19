@@ -80,50 +80,25 @@ enum AntigravityParser {
         let cascade = cascadeID(path)
         let key = watermarkKey(cascade)
         let watermark = Int64(database.setting(key) ?? "") ?? -1
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            sqlite3_close(db)
+        guard let rows = readGenerations(path: path, after: watermark) else {
             database.noteScanProblem("Antigravity conversation could not be opened")
             return ([], nil)
         }
-        defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
-
-        var rows: [(idx: Int64, gen: Generation)] = []
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx;",
-                                 -1, &stmt, nil) == SQLITE_OK else {
-            sqlite3_finalize(stmt)
-            // A conversation created moments ago may not have the table yet.
-            return ([], nil)
-        }
-        sqlite3_bind_int64(stmt, 1, watermark)
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let idx = sqlite3_column_int64(stmt, 0)
-            guard let blob = sqlite3_column_blob(stmt, 1) else { continue }
-            let count = Int(sqlite3_column_bytes(stmt, 1))
-            guard count > 0, count <= 64_000_000 else { continue }
-            let data = Data(bytes: blob, count: count)
-            rows.append((idx, parseGeneration(data)))
-        }
-        sqlite3_finalize(stmt)
-        guard let last = rows.last?.idx else { return ([], nil) }
-
-        let fallbackTs = FileScanner.fileStat(path).map { $0.mtime / 1_000_000_000 } ?? Int64(Date().timeIntervalSince1970)
         var turns: [TurnRecord] = []
         var firstTs: Int64?
         var lastTs: Int64 = 0
         var lastModel: String?
-        for (idx, gen) in rows {
+        for row in rows {
+            let gen = row.gen
             guard let usage = gen.usage,
                   usage.input + usage.output + usage.cacheRead > 0 else { continue }
-            let ts = gen.stepIndices.first.flatMap { stepCreatedAt(db: db, index: $0) } ?? fallbackTs
+            let ts = row.sentAt
             firstTs = firstTs.map { min($0, ts) } ?? ts
             lastTs = max(lastTs, ts)
             lastModel = gen.model ?? lastModel
             let cost = Pricing.estimate(model: gen.model, input: usage.input, output: usage.output,
                                         cacheRead: usage.cacheRead, cacheWrite: 0)
-            let identity = usage.responseID ?? usage.messageID ?? "\(cascade):\(idx)"
+            let identity = usage.responseID ?? usage.messageID ?? "\(cascade):\(row.idx)"
             turns.append(TurnRecord(tool: .antigravity, sessionID: cascade, project: summary?.project,
                                     model: gen.model, ts: ts,
                                     inputTokens: usage.input, outputTokens: usage.output,
@@ -133,7 +108,8 @@ enum AntigravityParser {
                                     eventID: "antigravity:\(identity)",
                                     costQuality: cost == nil ? "unknown" : "estimated"))
         }
-        database.setSetting(key, "\(last)")
+        let next = readThrough(rows, previous: watermark) { $0.usage != nil }
+        if next != watermark { database.setSetting(key, "\(next)") }
         let session = firstTs.map {
             SessionInfo(tool: .antigravity, sessionID: cascade, title: summary?.title,
                         project: summary?.project, model: lastModel, created: $0, updated: lastTs)
@@ -141,17 +117,66 @@ enum AntigravityParser {
         return (turns, session)
     }
 
-    static func stepCreatedAt(db: OpaquePointer?, index: Int64) -> Int64? {
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT metadata FROM steps WHERE idx = ?;", -1, &stmt, nil) == SQLITE_OK else {
-            sqlite3_finalize(stmt)
+    struct Row {
+        let idx: Int64
+        let gen: Generation
+        /// Unix seconds of the step the call produced, else the file's mtime.
+        let sentAt: Int64
+    }
+
+    /// `gen_metadata` rows after `watermark`, oldest first; nil when the
+    /// file cannot be opened. A conversation created moments ago may not
+    /// have the table yet, which reads as no rows.
+    static func readGenerations(path: String, after watermark: Int64) -> [Row]? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
             return nil
         }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, index)
-        guard sqlite3_step(stmt) == SQLITE_ROW, let blob = sqlite3_column_blob(stmt, 0) else { return nil }
-        let data = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
-        return parseStepCreatedAt(data)
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
+
+        var raw: [(idx: Int64, gen: Generation)] = []
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx;",
+                                 -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return []
+        }
+        sqlite3_bind_int64(stmt, 1, watermark)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let blob = sqlite3_column_blob(stmt, 1) else { continue }
+            let count = Int(sqlite3_column_bytes(stmt, 1))
+            guard count > 0, count <= 64_000_000 else { continue }
+            raw.append((sqlite3_column_int64(stmt, 0), parseGeneration(Data(bytes: blob, count: count))))
+        }
+        sqlite3_finalize(stmt)
+        guard !raw.isEmpty else { return [] }
+
+        let fallback = FileScanner.fileStat(path).map { $0.mtime / 1_000_000_000 }
+            ?? Int64(Date().timeIntervalSince1970)
+        var step: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT metadata FROM steps WHERE idx = ?;", -1, &step, nil) != SQLITE_OK {
+            sqlite3_finalize(step)
+            step = nil
+        }
+        defer { sqlite3_finalize(step) }
+        func createdAt(_ index: Int64) -> Int64? {
+            guard let step else { return nil }
+            sqlite3_reset(step)
+            sqlite3_bind_int64(step, 1, index)
+            guard sqlite3_step(step) == SQLITE_ROW, let blob = sqlite3_column_blob(step, 0) else { return nil }
+            return parseStepCreatedAt(Data(bytes: blob, count: Int(sqlite3_column_bytes(step, 0))))
+        }
+        return raw.map { row in
+            Row(idx: row.idx, gen: row.gen, sentAt: row.gen.stepIndices.first.flatMap(createdAt) ?? fallback)
+        }
+    }
+
+    /// The new watermark: the last row that is complete. Rows after it are
+    /// read again next time, in case they are still being filled in.
+    static func readThrough(_ rows: [Row], previous: Int64, isComplete: (Generation) -> Bool) -> Int64 {
+        rows.last { isComplete($0.gen) }.map { max($0.idx, previous) } ?? previous
     }
 
     /// cascade id → title and workspace folder name.

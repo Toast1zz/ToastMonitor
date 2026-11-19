@@ -1026,8 +1026,8 @@ struct PopoverHomeView: View {
                          problem: state.error.map { RowProblem.from(service: name, error: $0) })
     }
 
-    /// Antigravity's tightest model pool takes the value column; each model
-    /// family gets a bar, tightest first, at most three.
+    /// Antigravity's tightest pool takes the value column; the bars are
+    /// `displayLimits`: Gemini's 5h and Weekly, then one per used group.
     private var antigravityStatusRow: some View {
         let state = antigravity.state
         let name = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: state.planName)

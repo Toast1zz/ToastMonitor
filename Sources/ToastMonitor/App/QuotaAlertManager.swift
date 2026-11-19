@@ -223,7 +223,7 @@ final class QuotaAlertManager: ObservableObject {
             readings.append(.init(id: "supergrok-weekly", name: "Grok weekly",
                                   remaining: 100 - used, resetAt: GrokQuotaClient.shared.state.resetAt))
         }
-        for model in AntigravityQuotaClient.shared.state.models {
+        for model in AntigravityQuotaClient.shared.state.current() {
             readings.append(.init(id: "antigravity-\(model.label)", name: "Antigravity \(model.label)",
                                   remaining: model.remaining, resetAt: model.resetAt))
         }

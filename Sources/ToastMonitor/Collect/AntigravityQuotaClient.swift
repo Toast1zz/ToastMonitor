@@ -60,7 +60,7 @@ final class AntigravityQuotaClient: ObservableObject {
         var displayLimits: [(label: String, quota: ModelQuota)] {
             var order: [String] = []
             var groups: [String: [ModelQuota]] = [:]
-            for quota in models {
+            for quota in current() {
                 if groups[quota.name] == nil { order.append(quota.name) }
                 groups[quota.name, default: []].append(quota)
             }
@@ -77,9 +77,20 @@ final class AntigravityQuotaClient: ObservableObject {
             return out
         }
 
+        /// The readings as of `now`: a limit whose reset time has passed
+        /// has refilled, even if Antigravity was closed when it did.
+        func current(now: Date = Date()) -> [ModelQuota] {
+            let nowSeconds = Int64(now.timeIntervalSince1970)
+            return models.map { quota in
+                guard let reset = quota.resetAt, reset <= nowSeconds else { return quota }
+                return ModelQuota(name: quota.name, families: quota.families, remaining: 100, resetAt: nil,
+                                  window: quota.window, windowSeconds: quota.windowSeconds)
+            }
+        }
+
         /// The tightest pool: lowest remaining, earliest reset on a tie.
         var tightest: ModelQuota? {
-            models.min { ($0.remaining, $0.resetAt ?? .max) < ($1.remaining, $1.resetAt ?? .max) }
+            current().min { ($0.remaining, $0.resetAt ?? .max) < ($1.remaining, $1.resetAt ?? .max) }
         }
     }
 
@@ -327,19 +338,8 @@ final class AntigravityQuotaClient: ObservableObject {
             let family = Self.family(of: label)
             guard !family.isEmpty, family.count <= 64,
                   family.rangeOfCharacter(from: .controlCharacters) == nil else { continue }
-            let reset = (quota["resetTime"] as? String).flatMap(GrokQuotaClient.isoDate)
-            let fraction: Double
-            if let n = quota["remainingFraction"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
-               n.doubleValue.isFinite {
-                fraction = n.doubleValue
-            } else if reset != nil {
-                fraction = 0
-            } else {
-                continue
-            }
-            let reading = ModelQuota(name: family,
-                                     remaining: min(max(fraction * 100, 0), 100),
-                                     resetAt: reset.map { Int64($0.timeIntervalSince1970) })
+            guard let (remaining, resetAt) = reading(quota) else { continue }
+            let reading = ModelQuota(name: family, remaining: remaining, resetAt: resetAt)
             if let existing = byFamily[family] {
                 // Variants share a pool; keep the most conservative reading.
                 if reading.remaining < existing.remaining { byFamily[family] = reading }
@@ -369,16 +369,7 @@ final class AntigravityQuotaClient: ObservableObject {
             let name = poolName(families)
             var buckets: [ModelQuota] = []
             for bucket in group["buckets"] as? [[String: Any]] ?? [] {
-                let reset = (bucket["resetTime"] as? String).flatMap(GrokQuotaClient.isoDate)
-                let fraction: Double
-                if let n = bucket["remainingFraction"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
-                   n.doubleValue.isFinite {
-                    fraction = n.doubleValue
-                } else if reset != nil {
-                    fraction = 0
-                } else {
-                    continue
-                }
+                guard let (remaining, resetAt) = reading(bucket) else { continue }
                 let (window, seconds): (String?, Int64?) = {
                     switch (bucket["window"] as? String)?.lowercased() {
                     case "5h": return ("5h", 5 * 3600)
@@ -387,14 +378,42 @@ final class AntigravityQuotaClient: ObservableObject {
                     }
                 }()
                 buckets.append(ModelQuota(name: name, families: families,
-                                          remaining: min(max(fraction * 100, 0), 100),
-                                          resetAt: reset.map { Int64($0.timeIntervalSince1970) },
+                                          remaining: remaining, resetAt: resetAt,
                                           window: window, windowSeconds: seconds))
             }
             // Shorter window first, as Claude's 5h then Weekly.
             out += buckets.sorted { ($0.windowSeconds ?? .max) < ($1.windowSeconds ?? .max) }
         }
-        return out
+        return uniqueNames(out)
+    }
+
+    /// `remainingFraction` (0…1) as 0…100 and `resetTime` as unix seconds.
+    /// proto3 JSON omits a zero fraction, so a reset time alone means empty.
+    nonisolated static func reading(_ quota: [String: Any]) -> (remaining: Double, resetAt: Int64?)? {
+        let reset = (quota["resetTime"] as? String).flatMap(GrokQuotaClient.isoDate)
+        let fraction: Double
+        if let n = quota["remainingFraction"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+           n.doubleValue.isFinite {
+            fraction = n.doubleValue
+        } else if reset != nil {
+            fraction = 0
+        } else {
+            return nil
+        }
+        return (min(max(fraction * 100, 0), 100), reset.map { Int64($0.timeIntervalSince1970) })
+    }
+
+    /// Two groups must never share a name; those that would fall back to
+    /// their models' brands ("Claude", "GPT-OSS").
+    nonisolated static func uniqueNames(_ quotas: [ModelQuota]) -> [ModelQuota] {
+        var familiesByName: [String: Set<[String]>] = [:]
+        for quota in quotas { familiesByName[quota.name, default: []].insert(quota.families) }
+        return quotas.map { quota in
+            guard (familiesByName[quota.name]?.count ?? 0) > 1 else { return quota }
+            var renamed = quota
+            renamed.name = brands(quota.families).joined(separator: " · ")
+            return renamed
+        }
     }
 
     /// "Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen" → the names.
@@ -425,14 +444,7 @@ final class AntigravityQuotaClient: ObservableObject {
             return ModelQuota(name: poolName(names), families: names,
                               remaining: first.remaining, resetAt: first.resetAt)
         }
-        // Two pools must never share a label; fall back to brand names.
-        let labels = pools.map(\.name)
-        return pools.map { pool in
-            guard labels.filter({ $0 == pool.name }).count > 1 else { return pool }
-            var renamed = pool
-            renamed.name = brands(pool.families).joined(separator: " · ")
-            return renamed
-        }
+        return uniqueNames(pools)
     }
 
     /// Short labels: a lone Gemini model by its codename ("Argon", "Flash"),

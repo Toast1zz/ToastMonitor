@@ -42,9 +42,9 @@ final class AntigravityQuotaTests: XCTestCase {
 
     func testTightestPicksLowestThenEarliestReset() {
         var state = AntigravityQuotaClient.State()
-        state.models = [.init(name: "A", remaining: 50, resetAt: 200),
-                        .init(name: "B", remaining: 50, resetAt: 100),
-                        .init(name: "C", remaining: 90, resetAt: 50)]
+        state.models = [.init(name: "A", remaining: 50, resetAt: 4_000_000_200),
+                        .init(name: "B", remaining: 50, resetAt: 4_000_000_100),
+                        .init(name: "C", remaining: 90, resetAt: 4_000_000_050)]
         XCTAssertEqual(state.tightest?.name, "B")
     }
 
@@ -116,17 +116,42 @@ final class AntigravityQuotaTests: XCTestCase {
     func testDisplayLimitsKeepMainGroupAndHideUntouchedGroups() {
         var state = AntigravityQuotaClient.State()
         state.models = [
-            .init(name: "Gemini", remaining: 89, resetAt: 10, window: "5h", windowSeconds: 18000),
-            .init(name: "Gemini", remaining: 97, resetAt: 20, window: "Weekly", windowSeconds: 604800),
-            .init(name: "Others", remaining: 100, resetAt: 30, window: "5h"),
-            .init(name: "Others", remaining: 100, resetAt: 40, window: "Weekly"),
-            .init(name: "Argon", remaining: 100, resetAt: 50, window: "Weekly"),
+            .init(name: "Gemini", remaining: 89, resetAt: 4_000_000_010, window: "5h", windowSeconds: 18000),
+            .init(name: "Gemini", remaining: 97, resetAt: 4_000_000_020, window: "Weekly", windowSeconds: 604800),
+            .init(name: "Others", remaining: 100, resetAt: 4_000_000_030, window: "5h"),
+            .init(name: "Others", remaining: 100, resetAt: 4_000_000_040, window: "Weekly"),
+            .init(name: "Argon", remaining: 100, resetAt: 4_000_000_050, window: "Weekly"),
         ]
         XCTAssertEqual(state.displayLimits.map(\.label), ["5h", "Weekly"])
-        state.models[3] = .init(name: "Others", remaining: 60, resetAt: 40, window: "Weekly")
-        state.models[2] = .init(name: "Others", remaining: 80, resetAt: 30, window: "5h")
+        state.models[3] = .init(name: "Others", remaining: 60, resetAt: 4_000_000_040, window: "Weekly")
+        state.models[2] = .init(name: "Others", remaining: 80, resetAt: 4_000_000_030, window: "5h")
         XCTAssertEqual(state.displayLimits.map(\.label), ["5h", "Weekly", "Others"])
         XCTAssertEqual(state.displayLimits.last?.quota.remaining, 60)
+    }
+
+    func testReadingsPastTheirResetHaveRefilled() {
+        var state = AntigravityQuotaClient.State()
+        state.models = [
+            .init(name: "Gemini", remaining: 0, resetAt: 1_000, window: "5h", windowSeconds: 18000),
+            .init(name: "Gemini", remaining: 40, resetAt: 5_000, window: "Weekly", windowSeconds: 604800),
+        ]
+        let now = Date(timeIntervalSince1970: 2_000)
+        XCTAssertEqual(state.current(now: now).map(\.remaining), [100, 40])
+        XCTAssertNil(state.current(now: now)[0].resetAt)
+    }
+
+    func testSummaryGroupsWithTheSameNameFallBackToBrands() throws {
+        let json = """
+        {"response":{"groups":[
+          {"description":"Models within this group: Claude Opus 5.5, Claude Sonnet 5.5",
+           "buckets":[{"window":"5h","remainingFraction":0.5,"resetTime":"2026-11-19T17:24:26Z"}]},
+          {"description":"Models within this group: GPT-OSS 120B",
+           "buckets":[{"window":"5h","remainingFraction":0.8,"resetTime":"2026-11-19T17:24:26Z"},
+                      {"window":"weekly","remainingFraction":0.9,"resetTime":"2026-11-26T17:24:26Z"}]}
+        ]}}
+        """
+        let buckets = try XCTUnwrap(AntigravityQuotaClient.parseQuotaSummary(Data(json.utf8)))
+        XCTAssertEqual(buckets.map(\.label), ["Claude 5h", "GPT-OSS 5h", "GPT-OSS Weekly"])
     }
 }
 
@@ -168,6 +193,16 @@ final class AntigravityParserTests: XCTestCase {
                                           requestMs: 1_000_000, firstTokenMs: 1_005_015,
                                           lastMs: 1_006_494, outputTokens: 307))
         XCTAssertNil(PerfCollector.antigravitySample(.init(usage: .init()), key: "c:2", sentMs: 0))
+    }
+
+    func testWatermarkStopsBeforeTrailingIncompleteRows() {
+        func row(_ idx: Int64, done: Bool) -> AntigravityParser.Row {
+            .init(idx: idx, gen: .init(usage: done ? .init(output: 1) : nil), sentAt: 0)
+        }
+        let rows = [row(3, done: true), row(4, done: false), row(5, done: true), row(6, done: false)]
+        XCTAssertEqual(AntigravityParser.readThrough(rows, previous: 2) { $0.usage != nil }, 5)
+        XCTAssertEqual(AntigravityParser.readThrough([row(7, done: false)], previous: 6) { $0.usage != nil }, 6)
+        XCTAssertEqual(AntigravityParser.readThrough([], previous: 6) { $0.usage != nil }, 6)
     }
 
     func testStepCreatedAtAndMalformedInput() {

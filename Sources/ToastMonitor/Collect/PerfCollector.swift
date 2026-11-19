@@ -335,45 +335,28 @@ enum PerfCollector {
 
     // MARK: - Antigravity
 
-    /// The cursor holds the next unread `gen_metadata` index. Rows are
-    /// written once the call finished, so every row is complete.
+    /// Signature of each conversation file at its last read, so unchanged
+    /// files are not opened every minute. Only touched on the collector queue.
+    nonisolated(unsafe) private static var antigravitySignatures: [String: String] = [:]
+
+    /// The cursor holds the next unread `gen_metadata` index.
     static func scanAntigravity(path: String, database: Database) {
+        let wal = FileScanner.fileStat(path + "-wal")
+        guard let st = FileScanner.fileStat(path) else { return }
+        let signature = "\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)"
+        guard antigravitySignatures[path] != signature else { return }
         let next = database.perfCursor(path)?.size ?? 0
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            sqlite3_close(db)
-            return
-        }
-        defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 2000)
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT idx, data FROM gen_metadata WHERE idx >= ? ORDER BY idx;",
-                                 -1, &stmt, nil) == SQLITE_OK else {
-            sqlite3_finalize(stmt)
-            return
-        }
-        sqlite3_bind_int64(stmt, 1, next)
-        var rows: [(idx: Int64, gen: AntigravityParser.Generation)] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            guard let blob = sqlite3_column_blob(stmt, 1) else { continue }
-            let count = Int(sqlite3_column_bytes(stmt, 1))
-            guard count > 0, count <= 64_000_000 else { continue }
-            rows.append((sqlite3_column_int64(stmt, 0),
-                         AntigravityParser.parseGeneration(Data(bytes: blob, count: count))))
-        }
-        sqlite3_finalize(stmt)
-        guard let last = rows.last?.idx else { return }
+        guard let rows = AntigravityParser.readGenerations(path: path, after: next - 1) else { return }
         let cascade = AntigravityParser.cascadeID(path)
-        let fallbackMs = FileScanner.fileStat(path).map { $0.mtime / 1_000_000 } ?? Int64(Date().timeIntervalSince1970 * 1000)
-        let samples = rows.compactMap { row -> PerfSample? in
-            let sentMs = row.gen.stepIndices.first
-                .flatMap { AntigravityParser.stepCreatedAt(db: db, index: $0) }.map { $0 * 1000 } ?? fallbackMs
-            return antigravitySample(row.gen, key: "\(cascade):\(row.idx)", sentMs: sentMs)
+        let samples = rows.compactMap {
+            antigravitySample($0.gen, key: "\(cascade):\($0.idx)", sentMs: $0.sentAt * 1000)
         }
-        _ = database.inTransaction {
+        let read = AntigravityParser.readThrough(rows, previous: next - 1) { $0.timeToFirstTokenMs != nil }
+        let saved = database.inTransaction {
             database.upsertPerfSamples(samples)
-                && database.setPerfCursor(path, size: last + 1, identity: 0)
+                && (read + 1 == next || database.setPerfCursor(path, size: read + 1, identity: 0))
         }
+        if saved { antigravitySignatures[path] = signature }
     }
 
     /// The step time only dates the call; both figures come from the
