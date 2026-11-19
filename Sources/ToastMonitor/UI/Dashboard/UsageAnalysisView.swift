@@ -501,6 +501,7 @@ struct UsageAnalysisView: View {
                                 .onContinuousHover { phase in
                                     switch phase {
                                     case .active(let location):
+                                        guard dayWidth > 0 else { hoveredDay = nil; return }
                                         let index = Int(floor((location.x - plot.origin.x) / dayWidth))
                                         let next = Self.dayKey(forIndex: index, in: data)
                                             .flatMap { byDay[$0] != nil ? $0 : nil }

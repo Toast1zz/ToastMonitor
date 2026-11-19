@@ -291,6 +291,7 @@ struct PerformanceView: View {
                                 .onContinuousHover { phase in
                                     switch phase {
                                     case .active(let location):
+                                        guard dayWidth > 0 else { hoveredDay = nil; return }
                                         let index = Int(floor((location.x - plot.origin.x) / dayWidth))
                                         let next = Calendar.current
                                             .date(byAdding: .day, value: index, to: data.xDomain.lowerBound)

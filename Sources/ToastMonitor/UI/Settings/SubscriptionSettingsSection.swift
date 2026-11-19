@@ -178,6 +178,11 @@ struct SubscriptionSettingsSection: View {
                     .font(TMType.regular(TMType.caption))
                     .foregroundStyle(TMDesign.danger)
             }
+            if let databaseError {
+                Text(databaseError)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+            }
 
             HStack {
                 Spacer()

@@ -138,8 +138,10 @@ struct UsagePeriodConfiguration: Equatable {
 final class UsagePeriodSettings: ObservableObject {
     static let shared = UsagePeriodSettings()
 
-    private static let modeKey = "usage_period_mode"
-    private static let weekStartKey = "usage_period_week_start"
+    nonisolated private static let modeKey = "usage_period_mode"
+    nonisolated private static let weekStartKey = "usage_period_week_start"
+
+    private static let writeQueue = DispatchQueue(label: "toastmonitor.usage-period.write", qos: .userInitiated)
 
     @Published private(set) var mode: UsagePeriodMode
     @Published private(set) var weekStart: UsageWeekStart
@@ -149,6 +151,17 @@ final class UsagePeriodSettings: ObservableObject {
         weekStart = UsageWeekStart(rawValue: Database.shared.setting(Self.weekStartKey) ?? "") ?? .monday
     }
 
+    func reloadFromDatabase() {
+        let loadedMode = UsagePeriodMode(rawValue: Database.shared.setting(Self.modeKey) ?? "") ?? .recent
+        let loadedWeekStart = UsageWeekStart(rawValue: Database.shared.setting(Self.weekStartKey) ?? "") ?? .monday
+        let changed = (loadedMode != mode) || (loadedWeekStart != weekStart)
+        mode = loadedMode
+        weekStart = loadedWeekStart
+        if changed {
+            notifyChanged()
+        }
+    }
+
     var configuration: UsagePeriodConfiguration {
         UsagePeriodConfiguration(mode: mode, weekStart: weekStart)
     }
@@ -156,14 +169,20 @@ final class UsagePeriodSettings: ObservableObject {
     func setMode(_ mode: UsagePeriodMode) {
         guard self.mode != mode else { return }
         self.mode = mode
-        _ = Database.shared.setSetting(Self.modeKey, mode.rawValue)
+        let raw = mode.rawValue
+        Self.writeQueue.async {
+            _ = Database.shared.setSetting(Self.modeKey, raw)
+        }
         notifyChanged()
     }
 
     func setWeekStart(_ weekStart: UsageWeekStart) {
         guard self.weekStart != weekStart else { return }
         self.weekStart = weekStart
-        _ = Database.shared.setSetting(Self.weekStartKey, weekStart.rawValue)
+        let raw = weekStart.rawValue
+        Self.writeQueue.async {
+            _ = Database.shared.setSetting(Self.weekStartKey, raw)
+        }
         notifyChanged()
     }
 
