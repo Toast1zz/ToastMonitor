@@ -141,10 +141,19 @@ enum UpdateChecker {
         current: [Int],
         architecture: Architecture = .current
     ) throws -> AvailableUpdate? {
+        // Verify-then-parse: validate envelope size and Ed25519 signature before
+        // decoding untrusted JSON or comparing versions, so a tampered feed is
+        // never silently treated as "up to date".
+        guard validText(envelope.payload, maxBytes: 128 * 1024) else {
+            throw CheckError.malformedManifest
+        }
+        guard let signature = Data(base64Encoded: envelope.signature),
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKey),
+              key.isValidSignature(signature, for: Data(envelope.payload.utf8)) else {
+            throw CheckError.invalidSignature
+        }
         let payload: Payload
         do {
-            // The release script base64-encodes the JSON payload; decoding the
-            // base64 first is what makes the manifest parse at all.
             guard let payloadData = Data(base64Encoded: envelope.payload) else {
                 throw CheckError.malformedManifest
             }
@@ -154,18 +163,12 @@ enum UpdateChecker {
         } catch {
             throw CheckError.malformedManifest
         }
-        guard validText(envelope.payload, maxBytes: 128 * 1024),
-              validText(payload.version, maxBytes: 64),
+        guard validText(payload.version, maxBytes: 64),
               let candidate = semanticVersion(payload.version) else {
             throw CheckError.invalidVersion
         }
-        // A known current release is a normal no-op, not a signature error.
+        // A known current release is a normal no-op.
         guard isNewer(candidate, than: current) else { return nil }
-        guard let signature = Data(base64Encoded: envelope.signature),
-              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKey),
-              key.isValidSignature(signature, for: Data(envelope.payload.utf8)) else {
-            throw CheckError.invalidSignature
-        }
         let fallback = Artifact(downloadURL: payload.downloadURL, sha256: payload.sha256)
         guard isValidArtifact(fallback) else {
             throw CheckError.invalidDownloadURL

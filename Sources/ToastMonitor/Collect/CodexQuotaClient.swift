@@ -12,7 +12,7 @@ import Combine
 final class CodexQuotaClient: ObservableObject {
     static let shared = CodexQuotaClient()
     static let maxResponseBytes = 10_000_000
-    static let enabledSettingKey = "codex_quota_enabled"
+    nonisolated static let enabledSettingKey = "codex_quota_enabled"
     struct State {
         var planType: String?
         var primaryPct: Int?       // primary_window used_percent
@@ -58,6 +58,8 @@ final class CodexQuotaClient: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
     }
 
@@ -151,10 +153,8 @@ final class CodexQuotaClient: ObservableObject {
             // This completion runs on a URLSession delegate queue; all
             // state mutations below are @MainActor-isolated.
             DispatchQueue.main.async {
-                // Always clear inFlight — even for a stale generation —
-                // or the guard would never recover from an old response.
-                self.inFlight = false
                 guard self.refreshGeneration == generation else { return }
+                self.inFlight = false
                 if let err {
                     self.state.error = err.localizedDescription
                     self.backoff.failed()

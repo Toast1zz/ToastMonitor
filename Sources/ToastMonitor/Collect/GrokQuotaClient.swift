@@ -23,7 +23,7 @@ final class GrokQuotaClient: ObservableObject {
     /// `grok login` writes one entry per scope; the OIDC scope is SuperGrok.
     nonisolated static let oidcScopePrefix = "https://auth.x.ai::"
     nonisolated static let legacySessionScope = "https://accounts.x.ai/sign-in"
-    static let enabledSettingKey = "grok_quota_enabled"
+    nonisolated static let enabledSettingKey = "grok_quota_enabled"
     static let notConfigured = "Grok login not found (run grok login)"
     nonisolated static let expired = "Grok login expired — run grok once"
 
@@ -94,6 +94,8 @@ final class GrokQuotaClient: ObservableObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
     }
 
@@ -293,9 +295,8 @@ final class GrokQuotaClient: ObservableObject {
 
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
-            // Always clear inFlight — even for a stale generation.
-            self.inFlight = false
             guard self.refreshGeneration == generation else { return }
+            self.inFlight = false
             self.state.isLoading = false
             switch billingResult {
             case .success(let data)?:

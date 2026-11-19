@@ -58,6 +58,8 @@ final class OpenCodeGoClient: ObservableObject {
         let cfg = configuration ?? URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 40
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
         // Credential-bearing request (auth cookie) — never follow redirects.
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
         // Credential lookup may wait for the login/keychain agent. It is
@@ -87,8 +89,12 @@ final class OpenCodeGoClient: ObservableObject {
     /// is unavailable the app reports unconfigured instead of serving
     /// plaintext SQLite values to live API calls.
     private func credentials() -> (value: (workspaceId: String, cookie: String)?, locked: Bool) {
-        var ws = KeychainStore.get(account: "go-workspace-id")
-        var ck = KeychainStore.get(account: "go-auth-cookie")
+        let (wsRead, wsStatus) = KeychainStore.getWithStatus(account: "go-workspace-id")
+        let (ckRead, ckStatus) = KeychainStore.getWithStatus(account: "go-auth-cookie")
+        var ws = wsRead
+        var ck = ckRead
+        let readLocked = KeychainStore.authorizationFailures.contains(wsStatus)
+            || KeychainStore.authorizationFailures.contains(ckStatus)
         if ws != nil && ck != nil {
             database.setSetting("go_workspace_id", nil)
             database.setSetting("go_auth_cookie", nil)
@@ -111,7 +117,7 @@ final class OpenCodeGoClient: ObservableObject {
                 // unconfigured. Plaintext stays as a recovery copy but is
                 // never used for requests.
                 database.setSetting("go_cred_storage", "keychain-unavailable")
-                return (nil, KeychainStore.lastWasInteractionNotAllowed)
+                return (nil, readLocked || KeychainStore.lastWasInteractionNotAllowed)
             }
         }
         guard let ws = ws.flatMap(Self.normalizedWorkspaceID),
@@ -119,7 +125,7 @@ final class OpenCodeGoClient: ObservableObject {
             // Nothing usable: genuinely unconfigured, or the keychain is
             // locked (reads then return nil indistinguishably). Remember the
             // lock so the error message is actionable.
-            return (nil, KeychainStore.lastWasInteractionNotAllowed)
+            return (nil, readLocked)
         }
         return ((ws, ck), false)
     }

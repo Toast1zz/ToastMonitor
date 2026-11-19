@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Darwin
 
@@ -29,6 +30,14 @@ enum Zstd {
         "/usr/bin/zstd",          // system image (rare)
     ]
 
+    private static func isRegularExecutableFile(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else {
+            return false
+        }
+        return FileManager.default.isExecutableFile(atPath: path)
+    }
+
     /// Absolute path to a `zstd` executable, or nil.
     /// The lookup runs once per process; installs/uninstalls of the CLI are
     /// picked up after a restart (the mode decision is sticky anyway).
@@ -36,17 +45,17 @@ enum Zstd {
         lock.lock(); defer { lock.unlock() }
         if checked { return cachedExecutable }
         checked = true
+        for candidate in fixedCandidates where isRegularExecutableFile(candidate) {
+            cachedExecutable = candidate
+            return candidate
+        }
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for dir in path.split(separator: ":") where !dir.isEmpty {
+        for dir in path.split(separator: ":") where dir.hasPrefix("/") {
             let candidate = (String(dir) as NSString).appendingPathComponent("zstd")
-            if FileManager.default.isExecutableFile(atPath: candidate) {
+            if isRegularExecutableFile(candidate) {
                 cachedExecutable = candidate
                 return candidate
             }
-        }
-        for candidate in fixedCandidates where FileManager.default.isExecutableFile(atPath: candidate) {
-            cachedExecutable = candidate
-            return candidate
         }
         cachedExecutable = nil
         return nil
@@ -69,10 +78,16 @@ enum Zstd {
         return cache
     }()
 
+    /// Ceiling on a single decompressed zstd batch so a corrupt or malicious
+    /// frame cannot exhaust process memory.
+    static let maxDecompressedBytes = 128 * 1024 * 1024
+
     static func decompress(_ data: Data) -> Data? {
-        // Whole-input cache: key on a cheap content hash. NSCache is
-        // thread-safe and evicts under memory pressure.
-        let key = NSString(string: "\(data.count):\(data.hashValue)")
+        // Whole-input cache keyed on SHA-256 so two same-length frames that
+        // share their first 80 bytes (Foundation Data.hashValue's prefix
+        // window) can never collide.
+        let digest = SHA256.hash(data: data)
+        let key = NSString(string: "\(data.count):\(digest.map { String(format: "%02x", $0) }.joined())")
         if let hit = cache.object(forKey: key) {
             return hit as Data
         }
@@ -83,7 +98,12 @@ enum Zstd {
         return out
     }
 
-    static func decompressUncached(_ data: Data, executable: String? = nil, timeout: TimeInterval = 30) -> Data? {
+    static func decompressUncached(
+        _ data: Data,
+        executable: String? = nil,
+        timeout: TimeInterval = 30,
+        maxBytes: Int = maxDecompressedBytes
+    ) -> Data? {
         guard let executable = executable ?? executablePath() else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -116,11 +136,29 @@ enum Zstd {
         watchdog.resume()
         defer { watchdog.cancel() }
 
-        var outData = Data()
+        final class DrainBox: @unchecked Sendable {
+            var data = Data()
+            var overflowed = false
+        }
+        let drainBox = DrainBox()
         let drainDone = DispatchGroup()
         drainDone.enter()
         DispatchQueue.global(qos: .utility).async {
-            outData = stdout.fileHandleForReading.readDataToEndOfFile()
+            let reader = stdout.fileHandleForReading
+            var collected = Data()
+            while let chunk = try? reader.read(upToCount: 65_536), !chunk.isEmpty {
+                if collected.count + chunk.count > maxBytes {
+                    drainBox.overflowed = true
+                    if process.isRunning {
+                        process.terminate()
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                    }
+                    try? reader.close()
+                    break
+                }
+                collected.append(chunk)
+            }
+            drainBox.data = collected
             drainDone.leave()
         }
         let writeDone = DispatchGroup()
@@ -134,9 +172,10 @@ enum Zstd {
         drainDone.wait()
         process.waitUntilExit()
         writeDone.wait()
-        guard timedOut.wait(timeout: .now()) == .timedOut,
+        guard !drainBox.overflowed,
+              timedOut.wait(timeout: .now()) == .timedOut,
               process.terminationStatus == 0 else { return nil }
-        return outData
+        return drainBox.data
     }
 
     // MARK: - Frame boundaries

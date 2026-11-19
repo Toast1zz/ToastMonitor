@@ -89,6 +89,21 @@ enum KeychainStore {
         return body()
     }
 
+    /// Runs `body` with user interaction explicitly enabled under
+    /// `interactionLock`, preventing a concurrent `withoutUserInteraction`
+    /// background read from suppressing an intentional user prompt.
+    static func withUserInteraction<T>(_ body: () -> T) -> T {
+        interactionLock.lock()
+        var previous: DarwinBoolean = true
+        let readPrevious = SecKeychainGetUserInteractionAllowed(&previous)
+        SecKeychainSetUserInteractionAllowed(true)
+        defer {
+            SecKeychainSetUserInteractionAllowed(readPrevious == errSecSuccess ? previous.boolValue : true)
+            interactionLock.unlock()
+        }
+        return body()
+    }
+
     private static func query(account: String, allowPrompt: Bool) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -117,7 +132,7 @@ enum KeychainStore {
         guard allowPrompt else {
             return withoutUserInteraction { setLocked(data, account: account, allowPrompt: false) }
         }
-        return setLocked(data, account: account, allowPrompt: true)
+        return withUserInteraction { setLocked(data, account: account, allowPrompt: true) }
     }
 
     private static func setLocked(_ data: Data, account: String, allowPrompt: Bool) -> Bool {
@@ -148,11 +163,11 @@ enum KeychainStore {
         return false
     }
 
-    static func get(account: String, allowPrompt: Bool = false) -> String? {
+    static func getWithStatus(account: String, allowPrompt: Bool = false) -> (value: String?, status: OSStatus) {
         if let readImpl {
             let (status, value) = readImpl(account, allowPrompt)
             recordStatus(status)
-            return status == errSecSuccess ? value : nil
+            return (status == errSecSuccess ? value : nil, status)
         }
         var query = query(account: account, allowPrompt: allowPrompt)
         query[kSecReturnData as String] = true
@@ -162,17 +177,21 @@ enum KeychainStore {
             let status = SecItemCopyMatching(query as CFDictionary, &result)
             return (status, result)
         }
-        let (status, result) = allowPrompt ? read() : withoutUserInteraction(read)
+        let (status, result) = allowPrompt ? withUserInteraction(read) : withoutUserInteraction(read)
         recordStatus(status)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard status == errSecSuccess, let data = result as? Data else { return (nil, status) }
+        return (String(data: data, encoding: .utf8), status)
+    }
+
+    static func get(account: String, allowPrompt: Bool = false) -> String? {
+        getWithStatus(account: account, allowPrompt: allowPrompt).value
     }
 
     @discardableResult
     static func delete(account: String, allowPrompt: Bool = false) -> Bool {
         let query = query(account: account, allowPrompt: allowPrompt)
         let remove = { deleteImpl?(account, allowPrompt) ?? SecItemDelete(query as CFDictionary) }
-        let status = allowPrompt ? remove() : withoutUserInteraction(remove)
+        let status = allowPrompt ? withUserInteraction(remove) : withoutUserInteraction(remove)
         recordStatus(status)
         return status == errSecSuccess || status == errSecItemNotFound
     }

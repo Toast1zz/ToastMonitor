@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import Security
 
 /// In-app update flow on top of `UpdateChecker`.
 ///
@@ -119,6 +120,17 @@ final class UpdateManager: ObservableObject {
         }
     }
 
+    /// Invoked after the user toggles automatic updates ON and the setting has
+    /// been persisted, ensuring an immediate check even when the 24h loop was
+    /// already started at launch while auto-check was disabled.
+    func enableAutoCheckAndCheckNow() {
+        if !autoCheckStarted {
+            startAutoCheckIfEnabled()
+        } else {
+            Task { await check(silentFailure: true) }
+        }
+    }
+
     /// Manual or automatic check. `force` bypasses the auto setting for the
     /// manual button; `silentFailure` keeps errors from reaching the UI
     /// (auto-checks), while a manual check explains what happened.
@@ -226,7 +238,8 @@ final class UpdateManager: ObservableObject {
         let fm = FileManager.default
         let staging = fm.temporaryDirectory
             .appendingPathComponent("tm-update-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
         var handedOff = false
         defer {
             try? fm.removeItem(at: archive)
@@ -251,13 +264,14 @@ final class UpdateManager: ObservableObject {
 
         // Re-verify identity beyond the archive hash: signature, bundle id and
         // the manifest version must all match before anything is replaced.
-        guard let runningTeamID = Self.teamIdentifier(Bundle.main.bundleURL),
-              Self.verifyCodesign(candidate, expectedTeamID: runningTeamID) else {
+        let runningBundleID = Bundle.main.bundleIdentifier
+        guard let runningBundleID,
+              let runningTeamID = Self.teamIdentifier(Bundle.main.bundleURL),
+              Self.verifyCodesign(candidate, expectedTeamID: runningTeamID, expectedBundleID: runningBundleID) else {
             throw UpdateChecker.CheckError.invalidSignature
         }
         let candidateBundleID = Bundle(path: candidate.path)?.bundleIdentifier
-        let runningBundleID = Bundle.main.bundleIdentifier
-        guard let runningBundleID, candidateBundleID == runningBundleID else {
+        guard candidateBundleID == runningBundleID else {
             throw UpdateChecker.CheckError.invalidSignature
         }
         let candidateVersion = Bundle(path: candidate.path)?
@@ -311,6 +325,7 @@ final class UpdateManager: ObservableObject {
     static let installerScript = """
     #!/bin/bash
     set -euo pipefail
+    export PATH="/usr/bin:/bin"
     target="$1"
     candidate="$2"
     old_pid="$3"
@@ -346,7 +361,7 @@ final class UpdateManager: ObservableObject {
         report 'Update failed: app location is read-only. Move ToastMonitor to a writable folder.'
         exit 1
     fi
-    if ! ditto "$candidate" "$incoming"; then
+    if ! /usr/bin/ditto "$candidate" "$incoming"; then
         rm -rf "$incoming"
         report 'Update failed while copying the new app; the original app was not changed.'
         exit 1
@@ -388,37 +403,50 @@ final class UpdateManager: ObservableObject {
     exit 1
     """
 
-    private static func verifyCodesign(_ app: URL, expectedTeamID: String) -> Bool {
-        let verify = Process()
-        verify.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        let requirement = "=designated => anchor apple generic and certificate leaf[subject.OU] = \"\(expectedTeamID)\""
-        verify.arguments = ["--verify", "--deep", "--strict", "--requirement", requirement, app.path]
-        do {
-            try verify.run()
-            verify.waitUntilExit()
-            return verify.terminationStatus == 0
-        } catch {
+    nonisolated static func verifyCodesign(_ app: URL, expectedTeamID: String, expectedBundleID: String) -> Bool {
+        guard expectedTeamID.count == 10,
+              expectedTeamID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }),
+              !expectedBundleID.isEmpty,
+              expectedBundleID.allSatisfy({ $0.isASCII && !$0.isWhitespace && $0 != "\"" && $0 != "\\" }) else {
             return false
         }
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(app as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else {
+            return false
+        }
+        let requirementString = "anchor apple generic and identifier \"\(expectedBundleID)\" and certificate leaf[subject.OU] = \"\(expectedTeamID)\""
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(requirementString as CFString, [], &requirement) == errSecSuccess,
+              let requirement else {
+            return false
+        }
+        let flags = SecCSFlags(rawValue:
+            kSecCSCheckAllArchitectures | kSecCSCheckNestedCode | kSecCSStrictValidate
+        )
+        return SecStaticCodeCheckValidity(staticCode, flags, requirement) == errSecSuccess
     }
 
-    private static func teamIdentifier(_ app: URL) -> String? {
-        let inspect = Process()
-        inspect.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        inspect.arguments = ["--display", "--verbose=4", app.path]
-        let pipe = Pipe()
-        inspect.standardError = pipe
-        inspect.standardOutput = pipe
-        do {
-            try inspect.run()
-            inspect.waitUntilExit()
-            guard inspect.terminationStatus == 0 else { return nil }
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                                encoding: .utf8) ?? ""
-            return parseTeamIdentifier(output)
-        } catch {
+    nonisolated static func teamIdentifier(_ app: URL) -> String? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(app as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else {
             return nil
         }
+        var infoRef: CFDictionary?
+        let status = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &infoRef
+        )
+        guard status == errSecSuccess,
+              let info = infoRef as? [String: Any],
+              let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String,
+              teamID.count == 10,
+              teamID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) else {
+            return nil
+        }
+        return teamID
     }
 
     nonisolated static func parseTeamIdentifier(_ output: String) -> String? {

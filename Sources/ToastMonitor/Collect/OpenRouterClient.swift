@@ -111,6 +111,8 @@ final class OpenRouterClient: ObservableObject {
         let cfg = configuration ?? URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
         // Credential-bearing requests must never be redirected: a downgrade
         // or cross-host redirect would forward the Bearer token.
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
@@ -373,20 +375,29 @@ final class OpenRouterClient: ObservableObject {
         var results: [String: [String: Any]] = [:]
         var failures: [String] = []
 
-        // Concurrency cap: URLSession would otherwise queue all keys and
-        // time out the tail; a semaphore bounds simultaneous requests so a
-        // 64-key config never fires 66 requests at once.
-        let semaphore = DispatchSemaphore(value: 6)
-        for key in keys {
-            group.enter()
-            semaphore.wait()
-            fetch("/api/v1/key", key: key) { json, err in
-                if let json { results[key] = json }
-                if let err { failures.append(err) }
-                semaphore.signal()
-                group.leave()
+        // Non-blocking concurrency cap on the main queue: at most 6 requests are
+        // in flight at once, and each completion starts the next key before
+        // leaving the group (never blocking the main thread with a semaphore).
+        let maxConcurrent = 6
+        var nextIndex = 0
+        var activeCount = 0
+        func launchNext() {
+            while activeCount < maxConcurrent, nextIndex < keys.count {
+                let key = keys[nextIndex]
+                nextIndex += 1
+                activeCount += 1
+                group.enter()
+                self.fetch("/api/v1/key", key: key) { [weak self] json, err in
+                    defer { group.leave() }
+                    if let json { results[key] = json }
+                    if let err { failures.append(err) }
+                    activeCount -= 1
+                    guard let self, self.refreshGeneration == generation else { return }
+                    launchNext()
+                }
             }
         }
+        launchNext()
 
         // Resolve privilege from the response belonging to that exact key.
         // `/api/v1/credits` is account-level and may work with a regular key;

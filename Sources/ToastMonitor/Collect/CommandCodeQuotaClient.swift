@@ -61,13 +61,14 @@ final class CommandCodeQuotaClient: ObservableObject {
     private let session: URLSession
     /// Retained because URLSession delegates are weak.
     private let redirectBlocker = NoRedirectDelegate()
-    private var cachedCookie: String?
     private var keychainLocked = false
 
     init(configuration: URLSessionConfiguration? = nil) {
         let cfg = configuration ?? URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
     }
 
@@ -94,7 +95,6 @@ final class CommandCodeQuotaClient: ObservableObject {
         }
         if KeychainStore.set(normalized, account: Self.keychainAccount, allowPrompt: true) {
             invalidateInFlight()
-            cachedCookie = normalized
             state.configured = true
             state.error = nil
             keychainLocked = false
@@ -114,7 +114,6 @@ final class CommandCodeQuotaClient: ObservableObject {
             state.error = "Keychain delete failed — cookie still stored"
             return
         }
-        cachedCookie = nil
         state = State()
         state.error = "Not configured"
         keychainLocked = false
@@ -168,8 +167,8 @@ final class CommandCodeQuotaClient: ObservableObject {
     }
 
     private nonisolated func loadCookie() -> (cookie: String?, locked: Bool) {
-        let ck = KeychainStore.get(account: Self.keychainAccount)
-        let locked = KeychainStore.lastWasInteractionNotAllowed
+        let (ck, status) = KeychainStore.getWithStatus(account: Self.keychainAccount)
+        let locked = KeychainStore.authorizationFailures.contains(status)
         return (ck, locked)
     }
 
