@@ -60,13 +60,14 @@ final class ClaudeQuotaClient: ObservableObject {
     /// moment it's built. Given the ToS ambiguity around third-party use of
     /// that login, requiring an explicit switch makes "this is running"
     /// something the user chose, not something that shipped on by default.
-    @Published private(set) var enabled: Bool
+    @Published private(set) var enabled = false
     @Published private(set) var state = State()
 
     /// README screenshots only (`--demo`): shows made-up numbers instead of
     /// fetching anything.
     func showDemo(_ demo: State) {
         isDemo = true
+        loadedPersistedState = true
         enabled = true
         state = demo
     }
@@ -102,6 +103,17 @@ final class ClaudeQuotaClient: ObservableObject {
         cfg.httpCookieStorage = nil
         cfg.httpShouldSetCookies = false
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
+        observeForeground()
+    }
+
+    /// The store opens in the background at launch, and anything that touches
+    /// `shared` before then would read an empty settings cache. Saved state is
+    /// read on first start/toggle instead, like the other quota clients.
+    private var loadedPersistedState = false
+
+    private func loadPersistedStateIfNeeded() {
+        guard !loadedPersistedState else { return }
+        loadedPersistedState = true
         enabled = Database.shared.setting(Self.enabledSettingKey) == "1"
         if let raw = Database.shared.setting(Self.lastAttemptSettingKey), let v = TimeInterval(raw) {
             lastAttemptAt = v
@@ -111,7 +123,6 @@ final class ClaudeQuotaClient: ObservableObject {
             state.retryAt = v
         }
         loadCache()
-        observeForeground()
     }
 
     // MARK: - Enable/disable
@@ -119,6 +130,7 @@ final class ClaudeQuotaClient: ObservableObject {
     nonisolated static let enabledSettingKey = "claude_quota_enabled"
 
     func setEnabled(_ on: Bool) {
+        loadPersistedStateIfNeeded()
         guard on != enabled else { return }
         enabled = on
         DispatchQueue.global(qos: .utility).async {
@@ -180,6 +192,7 @@ final class ClaudeQuotaClient: ObservableObject {
     }
 
     func start() {
+        loadPersistedStateIfNeeded()
         guard enabled, !started else { return }
         started = true
         refresh()
