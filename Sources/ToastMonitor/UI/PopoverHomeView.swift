@@ -290,6 +290,10 @@ struct PopoverHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: AccountsSettingsSection.quotaRowsChanged)) { _ in
             loadQuotaRowHidden()
         }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
+            loadQuotaRowHidden()
+            reloadHeatmap()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
             guard let raw = note.object as? String else { return }
             switch raw {

@@ -6,6 +6,7 @@ import SwiftUI
 /// median of every measured call, one line per model.
 struct PerformanceView: View {
     @EnvironmentObject var app: AppState
+    @Environment(\.dashboardActiveTab) private var activeTab
 
     enum Metric: String, CaseIterable, Identifiable {
         case speed = "Speed"
@@ -21,6 +22,7 @@ struct PerformanceView: View {
     @State private var renderState = ChartRenderState.empty
     @State private var isLoading = true
     @State private var loadID = UUID()
+    @State private var needsReload = false
     @State private var hoveredDay: Int64?
     @State private var hoveredModel: String?
     @State private var pinnedModel: String?
@@ -121,9 +123,17 @@ struct PerformanceView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear { load() }
-        .onChange(of: range) { _ in load() }
-        .onChange(of: app.lastScan) { _ in load() }
+        .onAppear { load(showSpinner: data == nil) }
+        .onChange(of: range) { _ in load(showSpinner: true) }
+        .onChange(of: app.lastScan) { _ in handleExternalUpdate() }
+        .onReceive(NotificationCenter.default.publisher(for: PerfCollector.didUpdate)) { _ in
+            handleExternalUpdate()
+        }
+        .onChange(of: activeTab) { _ in
+            if isTabActive, needsReload {
+                load(showSpinner: data == nil)
+            }
+        }
         .onChange(of: metric) { _ in rebuildRenderState() }
         .onChange(of: hiddenProvidersRaw) { _ in rebuildRenderState() }
         .alert("Export failed", isPresented: Binding(
@@ -168,10 +178,23 @@ struct PerformanceView: View {
         }
     }
 
-    private func load() {
+    private var isTabActive: Bool {
+        activeTab == nil || activeTab == .performance
+    }
+
+    private func handleExternalUpdate() {
+        guard isTabActive else {
+            needsReload = true
+            return
+        }
+        load(showSpinner: data == nil)
+    }
+
+    private func load(showSpinner: Bool) {
         let requestID = UUID()
         loadID = requestID
-        isLoading = true
+        needsReload = false
+        if showSpinner { isLoading = true }
         let range = self.range
         UsageQueryService.shared.loadPerfPoints(days: range.days) { points in
             guard loadID == requestID else { return }
@@ -180,7 +203,7 @@ struct PerformanceView: View {
                 DispatchQueue.main.async {
                     guard loadID == requestID else { return }
                     isLoading = false
-                    hoveredDay = nil
+                    if showSpinner { hoveredDay = nil }
                     data = built
                     rebuildRenderState()
                 }
@@ -208,6 +231,9 @@ struct PerformanceView: View {
         if let hovered = hoveredModel, !shownSet.contains(hovered) {
             hoveredModel = nil
         }
+        if let day = hoveredDay, byDay[day]?.isEmpty ?? true {
+            hoveredDay = nil
+        }
         renderState = ChartRenderState(
             shownRows: shownRows,
             models: models,
@@ -222,15 +248,18 @@ struct PerformanceView: View {
     nonisolated static func build(_ rawPoints: [PerfPoint], range: Range, now: Date = Date()) -> PerfData {
         // Group by the name the reader sees, so one model logged under
         // several ids is one line and one table row.
-        var callsByProvider: [String: Int] = [:]
         var providerByModel: [String: String] = [:]
         let points = rawPoints.map { raw -> PerfPoint in
             let provider = ModelProvider.name(for: raw.model)
             let model = ModelName.display(raw.model)
-            callsByProvider[provider, default: 0] += 1
             if providerByModel[model] == nil { providerByModel[model] = provider }
             return PerfPoint(day: raw.day, tool: raw.tool, model: model,
                              ttftMs: raw.ttftMs, tokensPerSecond: raw.tokensPerSecond)
+        }
+        var callsByProvider: [String: Int] = [:]
+        for p in points {
+            let provider = providerByModel[p.model] ?? ModelProvider.other
+            callsByProvider[provider, default: 0] += 1
         }
         var callsByModel: [String: Int] = [:]
         var speedByModel: [String: [Double]] = [:]

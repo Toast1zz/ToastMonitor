@@ -2,10 +2,14 @@ import SwiftUI
 
 /// Sessions: everything the collectors saw, newest first, grouped by day.
 struct SessionsView: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.dashboardActiveTab) private var activeTab
     @State private var rows: [Database.SessionRow] = []
+    @State private var dayGroups: [SessionDayGroup] = []
     @State private var selectedTool = "all"
     @State private var selectedSession: Database.SessionRow?
     @State private var loading = false
+    @State private var needsReload = false
     @State private var loadGeneration = 0
     @State private var total = 0
     @State private var limit = Self.pageSize
@@ -49,7 +53,7 @@ struct SessionsView: View {
                 } else {
                     ScrollView(.vertical) {
                         LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                            ForEach(SessionDayGroup.groups(rows)) { group in
+                            ForEach(dayGroups) { group in
                                 Section {
                                     ForEach(group.rows) { row in
                                         SessionRowView(row: row) { selectedSession = row }
@@ -83,10 +87,27 @@ struct SessionsView: View {
         .onAppear(perform: load)
         .onChange(of: selectedTool) { _ in
             rows = []
+            dayGroups = []
             limit = Self.pageSize
             load()
         }
+        .onChange(of: app.lastScan) { _ in
+            guard isTabActive else {
+                needsReload = true
+                return
+            }
+            load()
+        }
+        .onChange(of: activeTab) { _ in
+            if isTabActive, needsReload {
+                load()
+            }
+        }
         .sheet(item: $selectedSession) { SessionDetailView(session: $0) }
+    }
+
+    private var isTabActive: Bool {
+        activeTab == nil || activeTab == .sessions
     }
 
     /// A pull-down button rather than a pop-up: the pop-up's bezel is the
@@ -120,11 +141,13 @@ struct SessionsView: View {
     private func load() {
         let generation = loadGeneration &+ 1
         loadGeneration = generation
+        needsReload = false
         loading = true
         let tool = selectedTool == "all" ? nil : ToolKind(rawValue: selectedTool)
         UsageQueryService.shared.loadSessions(tool: tool, limit: limit) { sessions, count in
             guard generation == loadGeneration else { return }
             rows = sessions
+            dayGroups = SessionDayGroup.groups(sessions)
             total = count
             loading = false
         }
@@ -158,9 +181,10 @@ enum SessionTitle {
 
 /// Sessions of one calendar day, headed "Today" / "Yesterday" / "Fri, Sep 26".
 struct SessionDayGroup: Identifiable {
+    let day: Date
     let title: String
     let rows: [Database.SessionRow]
-    var id: String { title }
+    var id: Date { day }
 
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -169,9 +193,17 @@ struct SessionDayGroup: Identifiable {
         return f
     }()
 
+    private static let dayWithYearFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d, yyyy"
+        return f
+    }()
+
     /// Rows arrive newest first, so consecutive rows of one day form a group.
     static func groups(_ rows: [Database.SessionRow]) -> [SessionDayGroup] {
         let calendar = Calendar.current
+        let currentYear = calendar.component(.year, from: Date())
         var out: [SessionDayGroup] = []
         var currentDay: Date?
         var current: [Database.SessionRow] = []
@@ -180,8 +212,12 @@ struct SessionDayGroup: Identifiable {
             let title: String
             if calendar.isDateInToday(day) { title = "Today" }
             else if calendar.isDateInYesterday(day) { title = "Yesterday" }
-            else { title = dayFormatter.string(from: day) }
-            out.append(SessionDayGroup(title: title, rows: current))
+            else if calendar.component(.year, from: day) == currentYear {
+                title = dayFormatter.string(from: day)
+            } else {
+                title = dayWithYearFormatter.string(from: day)
+            }
+            out.append(SessionDayGroup(day: day, title: title, rows: current))
         }
         for row in rows {
             let day = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(row.updated)))

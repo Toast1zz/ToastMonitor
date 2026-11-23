@@ -114,7 +114,10 @@ enum HermesParser {
                 if let name = ["last_activity_at", "updated_at"].first(where: cols.contains) { updatedCol = name }
                 let sql = "SELECT \(idCol), \(titleCol), \(createdCol), \(updatedCol) FROM sessions;"
                 if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                    while sqlite3_step(stmt) == SQLITE_ROW {
+                    var stepRC: Int32 = SQLITE_OK
+                    while true {
+                        stepRC = sqlite3_step(stmt)
+                        guard stepRC == SQLITE_ROW else { break }
                         guard let sid = SQLiteText.column(stmt, 0) else { continue }
                         let title = SQLiteText.column(stmt, 1)
                         let created = sec(sqlite3_column_int64(stmt, 2))
@@ -122,6 +125,15 @@ enum HermesParser {
                         sessions.append(SessionInfo(tool: .hermes, sessionID: sid, title: title,
                                                     project: nil, model: nil, created: created, updated: updated))
                     }
+                    if stepRC != SQLITE_DONE {
+                        database.noteScanProblem("Hermes sessions read interrupted (SQLite \(stepRC))")
+                        sqlite3_finalize(stmt)
+                        return ([], [])
+                    }
+                } else {
+                    database.noteScanProblem("Hermes sessions query prepare failed")
+                    sqlite3_finalize(stmt)
+                    return ([], [])
                 }
                 sqlite3_finalize(stmt)
             }
@@ -144,7 +156,10 @@ enum HermesParser {
             let sql = "SELECT \(sCol), \(inCol), \(outCol), \(timeCol) FROM messages WHERE (\(inCol) IS NOT NULL AND \(inCol) > 0) OR (\(outCol) IS NOT NULL AND \(outCol) > 0);"
             var perSession: [String: (input: Int64, output: Int64, lastTs: Int64)] = [:]
             if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                while sqlite3_step(stmt) == SQLITE_ROW {
+                var stepRC: Int32 = SQLITE_OK
+                while true {
+                    stepRC = sqlite3_step(stmt)
+                    guard stepRC == SQLITE_ROW else { break }
                     guard let sid = SQLiteText.column(stmt, 0) else { continue }
                     // Corrupt/partially migrated rows must never create
                     // negative token deltas downstream.
@@ -157,6 +172,15 @@ enum HermesParser {
                     if ts > agg.lastTs { agg.lastTs = ts }
                     perSession[sid] = agg
                 }
+                if stepRC != SQLITE_DONE {
+                    database.noteScanProblem("Hermes messages read interrupted (SQLite \(stepRC))")
+                    sqlite3_finalize(stmt)
+                    return ([], [])
+                }
+            } else {
+                database.noteScanProblem("Hermes messages query prepare failed")
+                sqlite3_finalize(stmt)
+                return ([], [])
             }
             sqlite3_finalize(stmt)
 
@@ -198,7 +222,11 @@ enum HermesParser {
     /// feed exports. Baselines are shared with the remote importer, so
     /// switching the Hermes source never recounts a session.
     private static func scanUsage(db: OpaquePointer?, database: any ParserStateStore) -> [TurnRecord] {
-        let cols = Set(columns(of: "session_model_usage", db: db))
+        guard let colList = columnsChecked(of: "session_model_usage", db: db) else {
+            database.noteScanProblem("Hermes session_model_usage schema read failed")
+            return []
+        }
+        let cols = Set(colList)
         let required = ["session_id", "input_tokens", "output_tokens", "last_seen"]
         guard required.allSatisfy(cols.contains) else { return [] }
         func col(_ name: String, _ fallback: String) -> String { cols.contains(name) ? name : fallback }
@@ -210,7 +238,10 @@ enum HermesParser {
         FROM session_model_usage;
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            database.noteScanProblem("Hermes usage query prepare failed")
+            return []
+        }
         defer { sqlite3_finalize(stmt) }
 
         func text(_ i: Int32) -> String? {
@@ -341,14 +372,22 @@ enum HermesParser {
     }
 
     private static func columns(of table: String, db: OpaquePointer?) -> [String] {
+        columnsChecked(of: table, db: db) ?? []
+    }
+
+    private static func columnsChecked(of table: String, db: OpaquePointer?) -> [String]? {
         var out: [String] = []
         var stmt: OpaquePointer?
         let sql = "PRAGMA table_info(\(table));"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return out }
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        var stepRC: Int32 = SQLITE_OK
+        while true {
+            stepRC = sqlite3_step(stmt)
+            guard stepRC == SQLITE_ROW else { break }
             if let name = SQLiteText.column(stmt, 1) { out.append(name) }
         }
         sqlite3_finalize(stmt)
+        guard stepRC == SQLITE_DONE else { return nil }
         return out
     }
 }

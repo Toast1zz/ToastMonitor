@@ -24,6 +24,7 @@ import SQLite3
 /// Hermes logs only whole-call latency, so it is not measured.
 enum PerfCollector {
     static let interval: CFAbsoluteTime = 60
+    static let didUpdate = Notification.Name("ToastMonitorPerfDidUpdate")
     private static var lastRun: CFAbsoluteTime = 0
 
     /// Called from the collector queue on every tick.
@@ -32,6 +33,7 @@ enum PerfCollector {
         let now = CFAbsoluteTimeGetCurrent()
         guard now - lastRun >= interval else { return }
         lastRun = now
+        let beforeVersion = database.dataVersionKey()
         // The first run backfills every transcript; spread that over
         // several runs so one tick never holds the collector for long.
         var budget: Int64 = 128 * 1024 * 1024
@@ -51,6 +53,11 @@ enum PerfCollector {
         }
         let hourAgoMs = Int64(Date().timeIntervalSince1970 * 1000) - 3_600_000
         database.pruneIncompletePerfSamples(before: hourAgoMs)
+        if database.dataVersionKey() != beforeVersion {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: didUpdate, object: nil)
+            }
+        }
     }
 
     // MARK: - Claude Code
@@ -62,7 +69,10 @@ enum PerfCollector {
         let prev = database.perfCursor(file)
         if let prev, prev.size == st.size, prev.identity == st.identity { return 0 }
         // Upserts are idempotent, so anything but plain growth replays the file.
-        let offset = prev.map { $0.identity == st.identity && $0.size < st.size ? $0.size : 0 } ?? 0
+        let offset = prev.flatMap {
+            $0.identity == st.identity && $0.size < st.size
+                && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
+        } ?? 0
         var samples: [String: PerfSample] = [:]
         let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
             guard let sample = claudeSample(item.obj) else { return }
@@ -100,23 +110,29 @@ enum PerfCollector {
         return sample
     }
 
-    private static let isoLock = NSLock()
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-    private static let isoBasic: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
+    private final class ISOFormatterCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private let isoFractional: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f
+        }()
+        private let isoBasic: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime]
+            return f
+        }()
+
+        func parse(_ s: String) -> Date? {
+            lock.lock(); defer { lock.unlock() }
+            return isoFractional.date(from: s) ?? isoBasic.date(from: s)
+        }
+    }
+
+    private static let isoCache = ISOFormatterCache()
 
     static func parseMillis(_ s: String) -> Int64? {
-        isoLock.lock()
-        let date = isoFractional.date(from: s) ?? isoBasic.date(from: s)
-        isoLock.unlock()
-        guard let date else { return nil }
+        guard let date = isoCache.parse(s) else { return nil }
         return Int64((date.timeIntervalSince1970 * 1000).rounded())
     }
 
@@ -131,7 +147,10 @@ enum PerfCollector {
         guard let st = FileScanner.fileStat(file) else { return 0 }
         let prev = database.perfCursor(file)
         if let prev, prev.size == st.size, prev.identity == st.identity { return 0 }
-        let offset = prev.map { $0.identity == st.identity && $0.size < st.size ? $0.size : 0 } ?? 0
+        let offset = prev.flatMap {
+            $0.identity == st.identity && $0.size < st.size
+                && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
+        } ?? 0
         // A resumed read can start after the turn's model line; the usage
         // parser's context holds the file's latest model.
         var state = CodexResponseState()
@@ -244,7 +263,10 @@ enum PerfCollector {
         guard let st = FileScanner.fileStat(file) else { return 0 }
         let prev = database.perfCursor(file)
         if let prev, prev.size == st.size, prev.identity == st.identity { return 0 }
-        let offset = prev.map { $0.identity == st.identity && $0.size < st.size ? $0.size : 0 } ?? 0
+        let offset = prev.flatMap {
+            $0.identity == st.identity && $0.size < st.size
+                && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
+        } ?? 0
         let sessionID = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
         var samples: [String: PerfSample] = [:]
         let pass = DSHParser.forEachObject(path: file, fromOffset: offset, decompress: decompress) { item in
@@ -314,7 +336,10 @@ enum PerfCollector {
         guard let st = FileScanner.fileStat(file) else { return 0 }
         let prev = database.perfCursor(file)
         if let prev, prev.size == st.size, prev.identity == st.identity { return 0 }
-        let offset = prev.map { $0.identity == st.identity && $0.size < st.size ? $0.size : 0 } ?? 0
+        let offset = prev.flatMap {
+            $0.identity == st.identity && $0.size < st.size
+                && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
+        } ?? 0
         var samples: [PerfSample] = []
         let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
             if let sample = ompSample(item.obj) { samples.append(sample) }
@@ -350,16 +375,40 @@ enum PerfCollector {
 
     // MARK: - Antigravity
 
+    private final class SignatureCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var map: [String: String] = [:]
+
+        func get(_ path: String) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            return map[path]
+        }
+
+        func set(_ path: String, _ value: String) {
+            lock.lock(); defer { lock.unlock() }
+            map[path] = value
+        }
+
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            map.removeAll()
+        }
+    }
+
     /// Signature of each conversation file at its last read, so unchanged
-    /// files are not opened every minute. Only touched on the collector queue.
-    nonisolated(unsafe) private static var antigravitySignatures: [String: String] = [:]
+    /// files are not opened every minute.
+    private static let antigravitySignatures = SignatureCache()
+
+    static func resetCaches() {
+        antigravitySignatures.reset()
+    }
 
     /// The cursor holds the next unread `gen_metadata` index.
     static func scanAntigravity(path: String, database: Database) {
         let wal = FileScanner.fileStat(path + "-wal")
         guard let st = FileScanner.fileStat(path) else { return }
         let signature = "\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)"
-        guard antigravitySignatures[path] != signature else { return }
+        guard antigravitySignatures.get(path) != signature else { return }
         let next = database.perfCursor(path)?.size ?? 0
         guard let rows = AntigravityParser.readGenerations(path: path, after: next - 1) else { return }
         let cascade = AntigravityParser.cascadeID(path)
@@ -371,7 +420,7 @@ enum PerfCollector {
             database.upsertPerfSamples(samples)
                 && (read + 1 == next || database.setPerfCursor(path, size: read + 1, identity: 0))
         }
-        if saved { antigravitySignatures[path] = signature }
+        if saved { antigravitySignatures.set(path, signature) }
     }
 
     /// The step time only dates the call; both figures come from the
@@ -399,7 +448,7 @@ enum PerfCollector {
         let sql = """
         WITH m AS (
           SELECT id, time_updated, data FROM message
-          WHERE time_updated > ? AND json_extract(data, '$.role') = 'assistant'
+          WHERE time_updated >= ? AND json_extract(data, '$.role') = 'assistant'
             AND json_extract(data, '$.time.completed') IS NOT NULL
         ), p AS (
           SELECT p.message_id, json_extract(p.data, '$.type') AS type,
@@ -416,7 +465,8 @@ enum PerfCollector {
                (SELECT MIN(start) FROM p WHERE p.message_id = m.id AND type IN ('reasoning', 'text')),
                (SELECT MAX(stop) FROM p WHERE p.message_id = m.id AND type IN ('reasoning', 'text')),
                (SELECT MAX(tool_start) FROM p WHERE p.message_id = m.id AND type = 'tool')
-        FROM m;
+        FROM m
+        ORDER BY m.time_updated ASC;
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(src, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -427,20 +477,23 @@ enum PerfCollector {
         }
         var samples: [PerfSample] = []
         var high = watermark
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepRC = sqlite3_step(stmt)
+        while stepRC == SQLITE_ROW {
             high = max(high, sqlite3_column_int64(stmt, 1))
-            guard int(6) == 1, let first = int(7) else { continue }
-            // A tool call's execution starts once its arguments finished
-            // streaming; `completed` would include the tool's run time.
-            let last = int(9).map { max($0, int(8) ?? $0) } ?? int(4)
-            let model = SQLiteText.column(stmt, 2)
-            guard let key = SQLiteText.column(stmt, 0) else { continue }
-            samples.append(PerfSample(tool: .opencode,
-                                      key: key,
-                                      model: model, requestMs: int(3), firstTokenMs: first,
-                                      lastMs: last, outputTokens: int(5) ?? 0))
+            if int(6) == 1, let first = int(7), let key = SQLiteText.column(stmt, 0) {
+                // A tool call's execution starts once its arguments finished
+                // streaming; `completed` would include the tool's run time.
+                let last = int(9).map { max($0, int(8) ?? $0) } ?? int(4)
+                let model = SQLiteText.column(stmt, 2)
+                samples.append(PerfSample(tool: .opencode,
+                                          key: key,
+                                          model: model, requestMs: int(3), firstTokenMs: first,
+                                          lastMs: last, outputTokens: int(5) ?? 0))
+            }
+            stepRC = sqlite3_step(stmt)
         }
-        guard high > watermark else { return }
+        guard stepRC == SQLITE_DONE else { return }
+        guard high > watermark || !samples.isEmpty else { return }
         _ = database.inTransaction {
             database.upsertPerfSamples(samples)
                 && database.setPerfCursor(path, size: high, identity: 0)

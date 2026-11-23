@@ -31,13 +31,13 @@ jobs:
     runs-on: xcode-27
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # SwiftPM builds are expensive (~minutes); cache the build dir keyed on
       # the manifest and source hashes so the repeated gate steps reuse the
       # compiled product.
       - name: Cache SwiftPM build
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .build
           key: swift-${{ runner.os }}-${{ hashFiles('Package.swift') }}-${{ hashFiles('Sources/**/*.swift', 'Tests/**/*.swift') }}
@@ -93,7 +93,7 @@ jobs:
 
       - name: Upload failing scene captures and hashes
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: visual-regression-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/visual-regression-failure/*
@@ -110,7 +110,7 @@ jobs:
       TM_SIGNING_IDENTITY: ${{ secrets.TM_SIGNING_IDENTITY }}
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -131,7 +131,7 @@ jobs:
 
       - name: Upload app bundle
         if: ${{ env.TM_SIGNING_IDENTITY != '' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ToastMonitor-${{ github.ref_name }}
           path: dist/ToastMonitor.app

@@ -48,6 +48,12 @@ if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
     echo "error: invalid release version: $VERSION" >&2
     exit 1
 fi
+if [[ "${TM_ALLOW_DEV_SIGNING:-0}" != "1" && "${TM_ALLOW_UNSIGNED:-0}" != "1" ]]; then
+    if [[ -z "${TM_SIGNING_IDENTITY:-}" || "${TM_SIGNING_IDENTITY}" != Developer\ ID\ Application:* ]]; then
+        echo "error: TM_SIGNING_IDENTITY must be a 'Developer ID Application: ...' identity (or set TM_ALLOW_DEV_SIGNING=1 for local dev)" >&2
+        exit 1
+    fi
+fi
 RELEASE_DIR="${TM_RELEASE_PATH:-$ROOT/dist/release}"
 APP="${TM_APP_PATH:-$ROOT/dist/ToastMonitor.app}"
 echo "== packaging ToastMonitor v$VERSION =="
@@ -69,6 +75,9 @@ for arch in $ARCHS; do
     # build-app.sh already scanned the bundle; check again here so a packaging
     # change cannot ship a zip without going through the same gate.
     "$ROOT/scripts/assert-no-build-paths.sh" "$APP" "$ROOT"
+    if [[ "${TM_ALLOW_UNSIGNED:-0}" != "1" ]]; then
+        codesign --verify --deep --strict --verbose=2 "$APP"
+    fi
     ZIP="$RELEASE_DIR/ToastMonitor-${VERSION}-${arch}.zip"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
     echo "== $ZIP ($(du -sh "$ZIP" | cut -f1)) =="

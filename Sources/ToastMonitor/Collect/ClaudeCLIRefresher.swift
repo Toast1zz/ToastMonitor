@@ -64,13 +64,21 @@ enum ClaudeCLIRefresher {
         // ~/.grok/bin is where Grok's own installer puts it; an app opened
         // from Finder doesn't get the PATH line that installer adds.
         let candidates = ["\(home)/.local/bin/\(name)", "\(home)/.\(name)/bin/\(name)"] + fixed
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+        func isUsableExecutable(_ path: String) -> Bool {
+            var isDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+                && !isDir.boolValue
+                && FileManager.default.isExecutableFile(atPath: path)
+        }
+        for path in candidates where isUsableExecutable(path) {
             return path
         }
         guard let pathVar = env["PATH"] else { return nil }
-        for dir in pathVar.split(separator: ":") {
+        for rawDir in pathVar.split(separator: ":") {
+            let dir = String(rawDir)
+            guard dir.hasPrefix("/") else { continue }
             let candidate = "\(dir)/\(name)"
-            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+            if isUsableExecutable(candidate) { return candidate }
         }
         return nil
     }
@@ -160,14 +168,24 @@ enum ClaudeCLIRefresher {
         // the user's real projects (wrong trust prompts, wrong CLAUDE.md,
         // wrong git context). The marker file suppresses the one-time
         // deep-link registration prompt so it can't block the PTY probe.
-        let probeDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("toastmonitor-claude-probe", isDirectory: true)
+        let fm = FileManager.default
+        let probeDir = fm.temporaryDirectory
+            .appendingPathComponent("tm-claude-probe-\(UUID().uuidString)", isDirectory: true)
         let claudeDir = probeDir.appendingPathComponent(".claude", isDirectory: true)
-        try? FileManager.default.createDirectory(at: claudeDir, withIntermediateDirectories: true)
-        let settingsPath = claudeDir.appendingPathComponent("settings.local.json")
-        if !FileManager.default.fileExists(atPath: settingsPath.path) {
-            try? Data("{\"disableDeepLinkRegistration\":\"disable\"}\n".utf8).write(to: settingsPath)
+        do {
+            try fm.createDirectory(at: probeDir, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+            try fm.createDirectory(at: claudeDir, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+        } catch {
+            close(masterFD)
+            close(slaveFD)
+            return .failed("probe dir: \(error.localizedDescription)")
         }
+        defer { try? fm.removeItem(at: probeDir) }
+        let settingsPath = claudeDir.appendingPathComponent("settings.local.json")
+        try? Data("{\"disableDeepLinkRegistration\":\"disable\"}\n".utf8)
+            .write(to: settingsPath, options: .atomic)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
@@ -215,6 +233,11 @@ enum ClaudeCLIRefresher {
                 let n = read(masterFD, &chunk, chunk.count)
                 if n > 0 {
                     buffer.append(contentsOf: chunk[0..<n])
+                    if buffer.count > 128 * 1024 {
+                        let drop = buffer.count - 64 * 1024
+                        buffer.removeFirst(drop)
+                        scanFrom = max(0, scanFrom - drop)
+                    }
                     gotOutput = true
                 }
             }
@@ -254,7 +277,10 @@ enum ClaudeCLIRefresher {
             process.terminate()
             for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.1) }
         }
-        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        if process.isRunning, process.processIdentifier > 0 {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
         close(masterFD)
         if succeeded { return .completed }
         return .failed(exitedEarly ? "exited with status \(process.terminationStatus)"

@@ -19,6 +19,7 @@ enum TMNotifications {
     static let popoverVisibility = Notification.Name("tmPopoverVisibility")
     static let dashboardVisibility = Notification.Name("tmDashboardVisibility")
     static let usagePeriodSettingsChanged = Notification.Name("tmUsagePeriodSettingsChanged")
+    static let databaseReplaced = Notification.Name("tmDatabaseReplaced")
 }
 
 /// Shared refresh cadence. Foreground values preserve the existing live UI

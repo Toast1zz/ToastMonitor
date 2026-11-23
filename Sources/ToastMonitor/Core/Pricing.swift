@@ -165,16 +165,23 @@ enum Pricing {
                          longPrompt: Bool? = nil) -> Double? {
         guard let model = model?.lowercased(), !model.isEmpty else { return nil }
         guard let price = price(for: model) else { return nil }
-        let billableInput = inputIncludesCache ? max(input - cacheRead, 0) : input
-        let prompt = billableInput + cacheRead + cacheWrite + cacheWrite1h
-        let isLong = longPrompt ?? (price.longPromptThreshold.map { prompt > $0 } ?? false)
+        let safeInput = max(input, 0)
+        let safeOutput = max(output, 0)
+        let safeCacheRead = max(cacheRead, 0)
+        let safeCacheWrite = max(cacheWrite, 0)
+        let safeCacheWrite1h = max(cacheWrite1h, 0)
+        let billableInput = inputIncludesCache ? max(safeInput - safeCacheRead, 0) : safeInput
+        let isLong = longPrompt ?? (price.longPromptThreshold.map { threshold in
+            let prompt = Double(billableInput) + Double(safeCacheRead) + Double(safeCacheWrite) + Double(safeCacheWrite1h)
+            return prompt > Double(threshold)
+        } ?? false)
         let multiplier = isLong ? price.longPromptMultiplier : 1
         let outputMultiplier = isLong ? price.longPromptOutputMultiplier ?? multiplier : 1
         return (Double(billableInput) / 1e6 * price.input
-            + Double(cacheRead) / 1e6 * price.cacheRead
-            + Double(cacheWrite) / 1e6 * price.cacheWrite
-            + Double(cacheWrite1h) / 1e6 * price.input * 2) * multiplier
-            + Double(output) / 1e6 * price.output * outputMultiplier
+            + Double(safeCacheRead) / 1e6 * price.cacheRead
+            + Double(safeCacheWrite) / 1e6 * price.cacheWrite
+            + Double(safeCacheWrite1h) / 1e6 * price.input * 2) * multiplier
+            + Double(safeOutput) / 1e6 * price.output * outputMultiplier
     }
 
     /// Longest matching pattern. Claude keeps its dated-snapshot rule so
@@ -183,7 +190,8 @@ enum Pricing {
     /// substring (`gpt-5` must not price `gpt-5-mini`).
     static func price(for model: String) -> ModelPrice? {
         let lowered = model.lowercased()
-        let leaf = lowered.split(separator: "/").last.map(String.init) ?? lowered
+        let rawLeaf = lowered.split(separator: "/").last.map(String.init) ?? lowered
+        let leaf = stripRouterSuffix(rawLeaf)
         var best: (length: Int, price: ModelPrice)?
         for entry in table {
             let candidate = entry.pattern.hasPrefix("claude-")
@@ -207,5 +215,22 @@ enum Pricing {
         }
         guard let boundary = suffix.first else { return true }
         return "-._:@".contains(boundary)
+    }
+
+    private static func stripRouterSuffix(_ model: String) -> String {
+        var s = model
+        if let dot = s.range(of: "anthropic."),
+           dot.lowerBound == s.startIndex || s[s.index(before: dot.lowerBound)] == "." {
+            s.removeSubrange(s.startIndex..<dot.upperBound)
+        }
+        if let bracket = s.range(of: "\\[[0-9]+[mk]\\]$", options: .regularExpression) {
+            s.removeSubrange(bracket)
+        }
+        if let bedrock = s.range(of: "-v[0-9]+:[0-9]+$", options: .regularExpression) {
+            s.removeSubrange(bedrock)
+        } else if let colon = s.range(of: ":[a-z0-9._-]+$", options: .regularExpression) {
+            s.removeSubrange(colon)
+        }
+        return s
     }
 }

@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import ToastMonitor
 
 final class AuditFixRegressionTests: XCTestCase {
@@ -213,5 +214,237 @@ final class AuditFixRegressionTests: XCTestCase {
         service.loadDailyAggs(days: 7) { _ in exp3.fulfill() }
         wait(for: [exp3], timeout: 5)
         XCTAssertEqual(service.cacheDiagnostics().dailyComputations, 2)
+    }
+
+    /// P0: A scan problem reported to StagedParserStateStore must abort commit so
+    /// partial session_totals baselines cannot advance without their turns.
+    func testStagedParserStateStoreRejectsCommitAfterScanProblem() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-audit-staged-\(UUID().uuidString).db").path
+        let db = Database.testInstance(path: path)
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: path + "-wal")
+            try? FileManager.default.removeItem(atPath: path + "-shm")
+        }
+
+        let result = CollectorEngine.prepareAndCommit(database: db, sourcePaths: []) { state in
+            _ = state.setSessionTotals("opencode|s1", tool: "opencode",
+                                       input: 100, output: 50, reasoning: 0,
+                                       cacheRead: 0, cacheWrite: 0, cost: 0.1, updated: 10)
+            state.noteScanProblem("SQLite BUSY mid-scan")
+            return ([], [])
+        }
+        XCTAssertFalse(result.committed)
+        XCTAssertEqual(result.problem, "SQLite BUSY mid-scan")
+        XCTAssertTrue(db.sessionTotals().isEmpty)
+    }
+
+    /// P1: Routine cost backfill and recount session deletion must use their
+    /// SQLite indexes instead of full-scanning `turns`.
+    func testBackfillAndDeleteRecountedSessionsUseIndexes() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-audit-plan-\(UUID().uuidString).db").path
+        let db = Database.testInstance(path: path)
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: path + "-wal")
+            try? FileManager.default.removeItem(atPath: path + "-shm")
+        }
+
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(path, &raw, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+
+        func explain(_ sql: String) -> [String] {
+            var stmt: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(raw, "EXPLAIN QUERY PLAN " + sql, -1, &stmt, nil), SQLITE_OK)
+            defer { sqlite3_finalize(stmt) }
+            var details: [String] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let cStr = sqlite3_column_text(stmt, 3) {
+                    details.append(String(cString: cStr))
+                }
+            }
+            return details
+        }
+
+        let backfillPlan = explain(Database.routineBackfillSelectSQL)
+        XCTAssertTrue(backfillPlan.contains { $0.contains("idx_turns_backfill") },
+                      "Expected idx_turns_backfill in query plan, got: \(backfillPlan)")
+
+        let deletePlan = explain("DELETE FROM turns WHERE tool = ? AND event_id >= ? AND event_id < ?;")
+        XCTAssertTrue(deletePlan.contains { $0.contains("idx_turns_event") },
+                      "Expected idx_turns_event in query plan, got: \(deletePlan)")
+    }
+
+    /// P1: CommandCodeQuotaClient must not advance lastSync or reset backoff on parse failure.
+    @MainActor
+    func testCommandCodeApplyFailureActivatesBackoffAndKeepsLastSyncZero() {
+        let client = CommandCodeQuotaClient()
+        XCTAssertEqual(client.state.lastSync, 0)
+        XCTAssertFalse(client.isBackoffWaitingForTesting)
+
+        client.applyForTesting(.failure(.parse))
+        XCTAssertEqual(client.state.lastSync, 0)
+        XCTAssertTrue(client.isBackoffWaitingForTesting)
+        XCTAssertNotNil(client.state.error)
+
+        let parsed = CommandCodeQuotaClient.Parsed(
+            monthlyCreditsRemaining: 50,
+            purchasedCredits: nil,
+            planID: "individual-goat",
+            subscriptionStatus: "active",
+            billingPeriodEnd: nil
+        )
+        client.applyForTesting(.success(parsed))
+        XCTAssertGreaterThan(client.state.lastSync, 0)
+        XCTAssertFalse(client.isBackoffWaitingForTesting)
+        XCTAssertNil(client.state.error)
+    }
+
+    /// P1: ClaudeQuotaClient must treat HTTP 403 as denied + backoff rather than
+    /// marking the token rejected and looping CLI renewal.
+    @MainActor
+    func testClaudeQuotaHTTP403AppliesBackoffWithoutRejectingToken() {
+        final class Stub403Protocol: URLProtocol {
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 403,
+                    httpVersion: nil,
+                    headerFields: ["Retry-After": "120"]
+                )!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data())
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            override func stopLoading() {}
+        }
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [Stub403Protocol.self]
+        let client = ClaudeQuotaClient(forTestingWithConfiguration: cfg)
+        client.requestUsageForTesting(accessToken: "sk-ant-test-token")
+
+        let deadline = Date().addingTimeInterval(3)
+        while client.state.error == nil && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+
+        XCTAssertEqual(client.state.error, "Claude usage API denied (HTTP 403)")
+        XCTAssertNil(client.rejectedTokenForTesting)
+        XCTAssertGreaterThan(client.state.retryAt, Date().timeIntervalSince1970 + 60)
+    }
+
+    func testPricingClampsNegativesAvoidsOverflowAndStripsRouterSuffixes() throws {
+        let clamped = try XCTUnwrap(Pricing.estimate(
+            model: "claude-sonnet-4-5",
+            input: -500, output: -10, cacheRead: -20, cacheWrite: -30, cacheWrite1h: -40
+        ))
+        XCTAssertEqual(clamped, 0, accuracy: 0.00001)
+
+        // Large aggregate token counts with explicit longPrompt must not trap Int64 addition.
+        let huge = try XCTUnwrap(Pricing.estimate(
+            model: "claude-sonnet-4-5",
+            input: Int64.max / 2, output: 0, cacheRead: Int64.max / 2,
+            cacheWrite: 1_000_000, cacheWrite1h: 1_000_000, longPrompt: false
+        ))
+        XCTAssertGreaterThan(huge, 0)
+
+        XCTAssertEqual(
+            try XCTUnwrap(Pricing.estimate(model: "claude-sonnet-4-5:thinking", input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0)),
+            3.0, accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(Pricing.estimate(model: "claude-sonnet-4-5[1m]", input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0)),
+            3.0, accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(Pricing.estimate(model: "anthropic.claude-sonnet-4-5-20250929-v1:0", input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0)),
+            3.0, accuracy: 0.0001
+        )
+    }
+
+    func testEventIdentityCanonicalJSONHandlesTopLevelScalars() {
+        XCTAssertEqual(EventIdentity.canonicalJSON("hello"), "str:hello")
+        XCTAssertNotEqual(EventIdentity.canonicalJSON("a"), EventIdentity.canonicalJSON("b"))
+        XCTAssertEqual(EventIdentity.canonicalJSON(NSNumber(value: true)), "bool:true")
+        XCTAssertEqual(EventIdentity.canonicalJSON(NSNumber(value: false)), "bool:false")
+        XCTAssertEqual(EventIdentity.canonicalJSON(NSNumber(value: 42)), "num:42")
+    }
+
+    func testBalanceRunwayAndOrCreditUsagePreserveCounterResetsAndFilterInfinity() {
+        let balSamples: [(ts: Int64, value: Double)] = [
+            (0, .infinity),
+            (43_200, 100),
+            (86_400, 90),
+        ]
+        let balDaily = BalanceRunway.dailySpend(balances: balSamples)
+        XCTAssertEqual(balDaily ?? -1, 10, accuracy: 0.01)
+
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-audit-orseries-\(UUID().uuidString).db").path
+        let db = Database.testInstance(path: path)
+        defer {
+            db.close()
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: path + "-wal")
+            try? FileManager.default.removeItem(atPath: path + "-shm")
+        }
+        func snap(_ ts: Int64, _ usage: Double) -> Database.ORSnapshot {
+            Database.ORSnapshot(
+                ts: ts, usage: usage, usageDaily: 0, usageWeekly: 0, usageMonthly: 0,
+                limit: nil, limitRemaining: nil, limitReset: nil, isFreeTier: false,
+                creditsTotal: 100, creditsUsage: usage, accountUsage: usage, accountBalance: 100 - usage,
+                isManagementKey: false
+            )
+        }
+        let baseTs = Int64(Date().timeIntervalSince1970) - 86_400
+        db.insertORSnapshot(snap(baseTs, 100))
+        db.insertORSnapshot(snap(baseTs + 43_200, 110))
+        db.insertORSnapshot(snap(baseTs + 43_201, 2))
+        db.insertORSnapshot(snap(baseTs + 86_400, 12))
+        let series = db.orCreditUsage(since: 0)
+        XCTAssertEqual(series.count, 4)
+        XCTAssertEqual(BalanceRunway.dailySpend(cumulative: series) ?? -1, 20, accuracy: 0.01)
+    }
+
+    func testPerfStatsPercentileIgnoresNonFiniteAndModelProviderMapsO3O4() {
+        XCTAssertEqual(PerfStats.percentile([10, .nan, 30, .infinity, 20], p: 0.5), 20)
+        XCTAssertNil(PerfStats.percentile([.nan, .infinity], p: 0.5))
+
+        XCTAssertEqual(ModelProvider.name(for: "o3"), "OpenAI")
+        XCTAssertEqual(ModelProvider.name(for: "o3-mini"), "OpenAI")
+        XCTAssertEqual(ModelProvider.name(for: "o4"), "OpenAI")
+        XCTAssertEqual(ModelProvider.name(for: "o4-mini"), "OpenAI")
+    }
+
+    func testSQLiteReadOnlyRefusesImmutableFallbackWhenNonEmptyWALExists() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-audit-wal-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let dbPath = dir.appendingPathComponent("live.db").path
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbPath, &raw), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw, "PRAGMA journal_mode=WAL; CREATE TABLE t(x INT); INSERT INTO t VALUES(1);", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+
+        // Simulate missing -shm with non-empty -wal (e.g. uncheckpointed live WAL).
+        try? FileManager.default.removeItem(atPath: dbPath + "-shm")
+        try Data("uncheckpointed-wal-bytes".utf8).write(to: URL(fileURLWithPath: dbPath + "-wal"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path) }
+
+        if let opened = SQLiteReadOnly.open(dbPath) {
+            sqlite3_close(opened)
+            XCTFail("SQLiteReadOnly.open must not fall back to immutable=1 when non-empty -wal exists")
+        }
     }
 }

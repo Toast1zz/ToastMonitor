@@ -266,9 +266,10 @@ struct DeepSeekLoginWebView: NSViewRepresentable {
         coordinator.webView = nil
     }
 
+    @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
-        nonisolated(unsafe) var timer: Timer?
+        var timer: Timer?
         private var lastToken: String?
         private var reading = false
         private var routedToBrowser = false
@@ -278,9 +279,6 @@ struct DeepSeekLoginWebView: NSViewRepresentable {
         init(onToken: @escaping (String) -> Void, onError: @escaping (String) -> Void,
              onBrowserRequired: @escaping () -> Void) {
             self.onToken = onToken; self.onError = onError; self.onBrowserRequired = onBrowserRequired
-        }
-        deinit {
-            timer?.invalidate()
         }
         func start() {
             timer?.invalidate()

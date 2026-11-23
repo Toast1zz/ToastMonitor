@@ -246,6 +246,7 @@ final class AntigravityQuotaClient: ObservableObject {
         guard let statusRequest = makeRequest(Self.statusPath),
               let summaryRequest = makeRequest(Self.summaryPath) else {
             inFlight = false
+            state.isLoading = false
             return
         }
 

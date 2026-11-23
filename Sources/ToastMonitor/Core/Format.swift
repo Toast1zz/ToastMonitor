@@ -140,7 +140,9 @@ enum Format {
         c.year = Int(key) / 10_000
         c.month = (Int(key) / 100) % 100
         c.day = Int(key % 100)
-        guard let date = Calendar.current.date(from: c) else { return dayKeyString(key) }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone.current
+        guard let date = cal.date(from: c) else { return dayKeyString(key) }
         return dateFormatterCache.string(date, format: "MMM d")
     }
 

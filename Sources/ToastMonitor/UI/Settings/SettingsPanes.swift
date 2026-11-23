@@ -55,12 +55,16 @@ final class LaunchAtLoginSettings: ObservableObject {
     }
 }
 
+enum SettingsWriteQueue {
+    static let shared = DispatchQueue(label: "toastmonitor.settings.write", qos: .userInitiated)
+}
+
 /// Persists a boolean setting off the main thread. The shared database lock
 /// can be held by a background scan, and a synchronous write made switches
 /// feel about a second late.
 private func persistFlag(_ key: String, _ on: Bool, onComplete: (@MainActor @Sendable () -> Void)? = nil) {
     let value = on ? "1" : "0"
-    DispatchQueue.global(qos: .userInitiated).async {
+    SettingsWriteQueue.shared.async {
         _ = Database.shared.setSetting(key, value)
         if let onComplete {
             Task { @MainActor in onComplete() }
@@ -113,6 +117,17 @@ struct GeneralSettingsPane: View {
 
         UsagePeriodSettingsSection()
             .onAppear { launch.refresh() }
+            .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
+                let newDock = WindowManager.dockIconEnabled
+                if dockIconOn != newDock {
+                    dockIconOn = newDock
+                    WindowManager.shared.applyDockIconSetting(newDock)
+                }
+                let newResign = PanelController.dismissOnResign
+                if closeOnResign != newResign {
+                    closeOnResign = newResign
+                }
+            }
     }
 }
 
@@ -195,6 +210,11 @@ private struct PopoverContentSheet: View {
                 accountVisible[key] = PopoverAccountRows.isVisible(key)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
+            for key in PopoverAccountRows.keys {
+                accountVisible[key] = PopoverAccountRows.isVisible(key)
+            }
+        }
     }
 
     private func accountBinding(_ key: String) -> Binding<Bool> {
@@ -256,6 +276,10 @@ struct UpdatesSettingsPane: View {
                         if on { UpdateManager.shared.enableAutoCheckAndCheckNow() }
                     }
                 }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
+            let enabled = UpdateManager.autoCheckEnabled
+            if autoCheckOn != enabled { autoCheckOn = enabled }
         }
     }
 

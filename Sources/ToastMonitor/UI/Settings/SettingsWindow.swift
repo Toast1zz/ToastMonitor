@@ -79,12 +79,13 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     }
 
     func show(pane: SettingsPane? = nil) {
-        // Decided before makeWindow(): measuring the panes there leaves
-        // `current` on the last pane, which is not the one to restore.
         let target = pane ?? current ?? Self.savedPane
         let window = self.window ?? makeWindow()
         let wasVisible = window.isVisible
         select(target, animated: wasVisible)
+        if !wasVisible {
+            window.center()
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         if !wasVisible {
@@ -118,8 +119,6 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         toolbar.allowsUserCustomization = false
         toolbar.displayMode = .iconAndLabel
         window.toolbar = toolbar
-        self.window = window
-        self.root = root
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
@@ -128,24 +127,10 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
             guard let self, let window else { return }
             self.releaseWindow(window)
         }
-        measureAllPanes(in: window)
+        self.window = window
+        self.root = root
         window.center()
         return window
-    }
-
-    /// Shows every pane once, invisibly, before the window first appears. A
-    /// grouped form only lays out rows that are on screen, so a pane's height
-    /// is an estimate until it has been displayed; without this the window
-    /// resized a second time just after a pane was first opened.
-    private func measureAllPanes(in window: NSWindow) {
-        window.alphaValue = 0
-        window.orderFront(nil)
-        for pane in SettingsPane.allCases {
-            select(pane, animated: false, remember: false)
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        }
-        window.orderOut(nil)
-        window.alphaValue = 1
     }
 
     private func host(for pane: SettingsPane) -> SettingsPaneHost {

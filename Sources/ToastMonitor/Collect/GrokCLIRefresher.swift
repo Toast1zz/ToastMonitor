@@ -50,12 +50,15 @@ enum GrokCLIRefresher {
             return .failed("launch: \(error.localizedDescription)")
         }
         if exited.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            if exited.wait(timeout: .now() + 2) == .timedOut {
+            if process.isRunning { process.terminate() }
+            if exited.wait(timeout: .now() + 2) == .timedOut,
+               process.isRunning, process.processIdentifier > 0 {
                 kill(process.processIdentifier, SIGKILL)
             }
+            process.waitUntilExit()
             return .failed("timed out after \(Int(timeout))s")
         }
+        process.waitUntilExit()
         return process.terminationStatus == 0 ? .completed : .failed("exit \(process.terminationStatus)")
     }
 }

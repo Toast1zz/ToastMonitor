@@ -184,6 +184,12 @@ final class CodexQuotaClient: ObservableObject {
                     self.backoff.failed()
                     return
                 }
+                guard let rl = json["rate_limit"] as? [String: Any],
+                      let pw = rl["primary_window"] as? [String: Any] else {
+                    self.state.error = "Usage API returned no rate-limit window"
+                    self.backoff.failed()
+                    return
+                }
                 if let rawPlan = json["plan_type"] as? String,
                    rawPlan.count <= 128,
                    rawPlan.rangeOfCharacter(from: .controlCharacters) == nil {
@@ -191,15 +197,9 @@ final class CodexQuotaClient: ObservableObject {
                 } else {
                     self.state.planType = nil
                 }
-                self.state.primaryPct = nil
-                self.state.windowSeconds = nil
-                self.state.resetAt = nil
-                if let rl = json["rate_limit"] as? [String: Any],
-                   let pw = rl["primary_window"] as? [String: Any] {
-                    self.state.primaryPct = Self.boundedPercent(pw["used_percent"] as? NSNumber)
-                    self.state.windowSeconds = Self.boundedWindow(pw["limit_window_seconds"] as? NSNumber)
-                    self.state.resetAt = Self.boundedReset(pw["reset_at"] as? NSNumber)
-                }
+                self.state.primaryPct = Self.boundedPercent(pw["used_percent"] as? NSNumber)
+                self.state.windowSeconds = Self.boundedWindow(pw["limit_window_seconds"] as? NSNumber)
+                self.state.resetAt = Self.boundedReset(pw["reset_at"] as? NSNumber)
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)
                 self.state.error = nil
                 self.backoff.succeeded()

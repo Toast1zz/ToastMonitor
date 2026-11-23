@@ -46,8 +46,9 @@ enum PerfStats {
     }
 
     static func percentile(_ values: [Double], p: Double) -> Double? {
-        guard !values.isEmpty else { return nil }
-        let sorted = values.sorted()
+        let finite = values.filter(\.isFinite)
+        guard !finite.isEmpty else { return nil }
+        let sorted = finite.sorted()
         let clamped = min(max(p, 0), 1)
         let pos = clamped * Double(sorted.count - 1)
         let lo = Int(floor(pos))

@@ -6,19 +6,20 @@ import Foundation
 /// data with rollingUsage / weeklyUsage / monthlyUsage (usagePercent +
 /// resetInSec). We fetch it with the session cookie and parse both the
 /// SSR format and the newer data-slot HTML format.
+@MainActor
 final class OpenCodeGoClient: ObservableObject {
-    nonisolated(unsafe) static let shared = OpenCodeGoClient()
-    static let maxWorkspaceIDLength = 128
-    static let maxCookieLength = 16_384
-    static let maxHTMLLength = 10_000_000
-    static let maxHTMLItemLength = 100_000
+    static let shared = OpenCodeGoClient()
+    nonisolated static let maxWorkspaceIDLength = 128
+    nonisolated static let maxCookieLength = 16_384
+    nonisolated static let maxHTMLLength = 10_000_000
+    nonisolated static let maxHTMLItemLength = 100_000
 
     /// Plan caps in USD (from opencode.ai/docs/go).
-    static let rollingLimitUSD: Double = 12
-    static let weeklyLimitUSD: Double = 30
-    static let monthlyLimitUSD: Double = 60
+    nonisolated static let rollingLimitUSD: Double = 12
+    nonisolated static let weeklyLimitUSD: Double = 30
+    nonisolated static let monthlyLimitUSD: Double = 60
     /// Default subscription price ($10 buys $60 of usage); editable in Settings.
-    static let monthlyPriceUSD: Double = 10
+    nonisolated static let monthlyPriceUSD: Double = 10
 
     struct State {
         var rollingPct: Double?
@@ -67,7 +68,16 @@ final class OpenCodeGoClient: ObservableObject {
         configured = false
     }
 
-    private static func normalizedWorkspaceID(_ raw: String) -> String? {
+    private nonisolated static let settingsQueue = DispatchQueue(label: "toastmonitor.opencodego.settings", qos: .utility)
+
+    private func writeSettingAsync(_ key: String, _ value: String?) {
+        let database = self.database
+        Self.settingsQueue.async {
+            _ = database.setSetting(key, value)
+        }
+    }
+
+    nonisolated private static func normalizedWorkspaceID(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
         guard !value.isEmpty,
@@ -76,7 +86,7 @@ final class OpenCodeGoClient: ObservableObject {
         return value
     }
 
-    private static func normalizedCookie(_ raw: String) -> String? {
+    nonisolated private static func normalizedCookie(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty,
               value.count <= maxCookieLength,
@@ -88,7 +98,7 @@ final class OpenCodeGoClient: ObservableObject {
     /// migrated on first read, then erased. Fail closed: when the Keychain
     /// is unavailable the app reports unconfigured instead of serving
     /// plaintext SQLite values to live API calls.
-    private func credentials() -> (value: (workspaceId: String, cookie: String)?, locked: Bool) {
+    nonisolated private static func loadCredentials(database: Database) -> (value: (workspaceId: String, cookie: String)?, locked: Bool) {
         let (wsRead, wsStatus) = KeychainStore.getWithStatus(account: "go-workspace-id")
         let (ckRead, ckStatus) = KeychainStore.getWithStatus(account: "go-auth-cookie")
         var ws = wsRead
@@ -148,9 +158,9 @@ final class OpenCodeGoClient: ObservableObject {
         let okKC = wroteWorkspace && KeychainStore.set(authCookie, account: "go-auth-cookie",
                                                        allowPrompt: true)
         if okKC {
-            database.setSetting("go_workspace_id", nil)
-            database.setSetting("go_auth_cookie", nil)
-            database.setSetting("go_cred_storage", "keychain")
+            writeSettingAsync("go_workspace_id", nil)
+            writeSettingAsync("go_auth_cookie", nil)
+            writeSettingAsync("go_cred_storage", "keychain")
             keychainLocked = false
         } else {
             // Capture before the rollback calls overwrite the SecItem status.
@@ -188,9 +198,9 @@ final class OpenCodeGoClient: ObservableObject {
             state.error = "Keychain delete failed — credentials still stored"
             return
         }
-        database.setSetting("go_workspace_id", nil)
-        database.setSetting("go_auth_cookie", nil)
-        database.setSetting("go_cred_storage", nil)
+        writeSettingAsync("go_workspace_id", nil)
+        writeSettingAsync("go_auth_cookie", nil)
+        writeSettingAsync("go_cred_storage", nil)
         cachedCredentials = nil
         credentialsLoaded = true
         configured = false
@@ -211,7 +221,7 @@ final class OpenCodeGoClient: ObservableObject {
         guard !started else { return }
         started = true
         refresh()
-        poller.start { [weak self] in self?.refresh() }
+        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
     }
 
     func refresh() {
@@ -232,15 +242,16 @@ final class OpenCodeGoClient: ObservableObject {
             return
         }
         let generation = refreshGeneration
+        let database = self.database
         // The login Keychain may synchronously wait on securityd. Resolve the
         // pair once on a utility queue, then keep it in memory for every timer
         // and foreground refresh during this process lifetime.
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let loaded = self?.credentials()
-            DispatchQueue.main.async {
+            let loaded = Self.loadCredentials(database: database)
+            Task { @MainActor [weak self] in
                 guard let self, self.refreshGeneration == generation else { return }
-                let creds = loaded?.value
-                self.keychainLocked = loaded?.locked ?? false
+                let creds = loaded.value
+                self.keychainLocked = loaded.locked
                 self.credentialsLoaded = true
                 self.cachedCredentials = creds
                 guard let creds else {
@@ -372,7 +383,7 @@ final class OpenCodeGoClient: ObservableObject {
         }
     }
 
-    private static func hasDisallowedControl(_ value: String) -> Bool {
+    nonisolated private static func hasDisallowedControl(_ value: String) -> Bool {
         let allowed = CharacterSet(charactersIn: "\t\n\r")
         return value.unicodeScalars.contains {
             CharacterSet.controlCharacters.contains($0) && !allowed.contains($0)
@@ -385,7 +396,7 @@ final class OpenCodeGoClient: ObservableObject {
         let reset: Int64
     }
     /// Returns (rolling, weekly, monthly).
-    static func parse(_ html: String) -> (WindowUsage?, WindowUsage?, WindowUsage?)? {
+    nonisolated static func parse(_ html: String) -> (WindowUsage?, WindowUsage?, WindowUsage?)? {
         guard html.count <= maxHTMLLength, !hasDisallowedControl(html) else { return nil }
         let rolling = parseWindow(html, key: "rollingUsage")
         let weekly = parseWindow(html, key: "weeklyUsage")
@@ -394,19 +405,19 @@ final class OpenCodeGoClient: ObservableObject {
         return (rolling, weekly, monthly)
     }
 
-    private static let numberPattern = "(-?\\d+(?:\\.\\d+)?)"
-    private static func boundedPercent(_ raw: Double) -> Double? {
+    nonisolated private static let numberPattern = "(-?\\d+(?:\\.\\d+)?)"
+    nonisolated private static func boundedPercent(_ raw: Double) -> Double? {
         guard raw.isFinite, raw >= 0, raw <= 100 else { return nil }
         return raw
     }
-    private static func boundedReset(_ raw: Double) -> Int64? {
+    nonisolated private static func boundedReset(_ raw: Double) -> Int64? {
         guard raw.isFinite, raw >= 0, raw <= 366 * 86400 else { return nil }
         return Int64(raw)
     }
 
     /// SolidJS SSR hydration: `rollingUsage:$R[12]={usagePercent:3,resetInSec:8655}`
     /// (field order varies — try both).
-    private static func parseWindow(_ html: String, key: String) -> WindowUsage? {
+    nonisolated private static func parseWindow(_ html: String, key: String) -> WindowUsage? {
         let pctFirst = try? NSRegularExpression(
             pattern: "\(key):\\$R\\[\\d+\\]=\\{[^}]*usagePercent:\(numberPattern)[^}]*resetInSec:\(numberPattern)[^}]*\\}")
         let resetFirst = try? NSRegularExpression(
@@ -440,7 +451,7 @@ final class OpenCodeGoClient: ObservableObject {
         return nil
     }
 
-    private static func parseDataSlot(_ html: String, label: String) -> WindowUsage? {
+    nonisolated private static func parseDataSlot(_ html: String, label: String) -> WindowUsage? {
         let items = html.components(separatedBy: "data-slot=\"usage-item\"")
         for item in items.dropFirst().prefix(256) {
             guard item.count <= maxHTMLItemLength else { continue }
@@ -471,7 +482,7 @@ final class OpenCodeGoClient: ObservableObject {
     }
 
     /// "1 hour 56 minutes" / "6 days 2 hours" / "26 days 17 hours" -> seconds.
-    static func parseHumanDuration(_ text: String) -> Int64 {
+    nonisolated static func parseHumanDuration(_ text: String) -> Int64 {
         guard text.count <= 256, !hasDisallowedControl(text) else { return -1 }
         let t = text.lowercased().trimmingCharacters(in: .whitespaces)
         if t.contains("now") { return 0 }
@@ -484,7 +495,7 @@ final class OpenCodeGoClient: ObservableObject {
         return Int64(total)
     }
 
-    private static func firstNumber(_ text: String, unit: String) -> Double? {
+    nonisolated private static func firstNumber(_ text: String, unit: String) -> Double? {
         let re = try? NSRegularExpression(pattern: "(\\d+(?:\\.\\d+)?)\\s*\(unit)s?")
         guard let m = re?.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let r = Range(m.range(at: 1), in: text),

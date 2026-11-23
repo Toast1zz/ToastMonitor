@@ -6,6 +6,8 @@ import SwiftUI
 /// per-day stacked bar chart and the aggregate table. Charts are Swift Charts,
 /// so axes, grid lines, VoiceOver and Audio Graphs are the system's.
 struct UsageAnalysisView: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.dashboardActiveTab) private var activeTab
     var readinessChanged: ((Bool) -> Void)? = nil
     enum Range: String, CaseIterable, Identifiable {
         case d7 = "7 Days"
@@ -42,6 +44,7 @@ struct UsageAnalysisView: View {
     @State private var loadID = UUID()
     @State private var exportError: String?
     @State private var isLoading = true
+    @State private var needsReload = false
     @State private var hoveredDay: Int64?
     /// Model -> color, assigned by usage rank so distinct models always get
     /// distinct palette entries (hash-based mapping collided).
@@ -126,9 +129,21 @@ struct UsageAnalysisView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear { load() }
-        .onChange(of: range) { _ in load() }
-        .onChange(of: grouping) { _ in load() }
+        .onAppear { load(showSpinner: analysis == nil) }
+        .onChange(of: range) { _ in load(showSpinner: true) }
+        .onChange(of: grouping) { _ in load(showSpinner: true) }
+        .onChange(of: app.lastScan) { _ in
+            guard isTabActive else {
+                needsReload = true
+                return
+            }
+            load(showSpinner: analysis == nil)
+        }
+        .onChange(of: activeTab) { _ in
+            if isTabActive, needsReload {
+                load(showSpinner: analysis == nil)
+            }
+        }
         .alert("Export failed", isPresented: Binding(
             get: { exportError != nil },
             set: { if !$0 { exportError = nil } })) {
@@ -209,21 +224,31 @@ struct UsageAnalysisView: View {
         }
     }
 
-    private func load() {
+    private var isTabActive: Bool {
+        activeTab == nil || activeTab == .analysis
+    }
+
+    private func load(showSpinner: Bool) {
         let requestID = UUID()
         loadID = requestID
-        isLoading = true
-        readinessChanged?(false)
+        needsReload = false
+        if showSpinner {
+            isLoading = true
+            readinessChanged?(false)
+        }
         let grouping = self.grouping
         let range = self.range
         if grouping == .byTool {
             UsageQueryService.shared.loadDailyAggs(days: range.days) { aggs in
                 guard loadID == requestID else { return }
                 isLoading = false
-                self.analysis = Self.build(aggs: aggs, modelAggs: [],
-                                           grouping: grouping, range: range,
-                                           modelColors: self.modelColors)
-                self.hoveredDay = nil
+                let built = Self.build(aggs: aggs, modelAggs: [],
+                                       grouping: grouping, range: range,
+                                       modelColors: self.modelColors)
+                self.analysis = built
+                if showSpinner || (self.hoveredDay.map { built.tokenByDay[$0] == nil && built.costByDay[$0] == nil } ?? false) {
+                    self.hoveredDay = nil
+                }
                 readinessChanged?(true)
             }
         } else {
@@ -232,10 +257,13 @@ struct UsageAnalysisView: View {
                 isLoading = false
                 let colors = Self.assignModelColors(aggs)
                 self.modelColors = colors
-                self.analysis = Self.build(aggs: [], modelAggs: aggs,
-                                           grouping: grouping, range: range,
-                                           modelColors: colors)
-                self.hoveredDay = nil
+                let built = Self.build(aggs: [], modelAggs: aggs,
+                                       grouping: grouping, range: range,
+                                       modelColors: colors)
+                self.analysis = built
+                if showSpinner || (self.hoveredDay.map { built.tokenByDay[$0] == nil && built.costByDay[$0] == nil } ?? false) {
+                    self.hoveredDay = nil
+                }
                 readinessChanged?(true)
             }
         }

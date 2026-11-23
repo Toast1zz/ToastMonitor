@@ -251,14 +251,30 @@ final class UpdateManager: ObservableObject {
         let unzip = Process()
         unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         unzip.arguments = ["-x", "-k", archive.path, staging.path]
+        unzip.standardOutput = FileHandle.nullDevice
+        unzip.standardError = FileHandle.nullDevice
+        let unzipExited = DispatchSemaphore(value: 0)
+        unzip.terminationHandler = { _ in unzipExited.signal() }
         try unzip.run()
+        if unzipExited.wait(timeout: .now() + 60) == .timedOut {
+            if unzip.isRunning { unzip.terminate() }
+            if unzipExited.wait(timeout: .now() + 2) == .timedOut,
+               unzip.isRunning, unzip.processIdentifier > 0 {
+                kill(unzip.processIdentifier, SIGKILL)
+            }
+            unzip.waitUntilExit()
+            throw UpdateChecker.CheckError.malformedManifest
+        }
         unzip.waitUntilExit()
         guard unzip.terminationStatus == 0 else {
             throw UpdateChecker.CheckError.malformedManifest
         }
 
         let candidate = staging.appendingPathComponent("ToastMonitor.app")
-        guard fm.fileExists(atPath: candidate.path) else {
+        let candidateValues = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard fm.fileExists(atPath: candidate.path),
+              candidateValues?.isSymbolicLink != true,
+              candidateValues?.isDirectory == true else {
             throw UpdateChecker.CheckError.malformedManifest
         }
 

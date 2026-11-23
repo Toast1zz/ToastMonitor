@@ -43,6 +43,8 @@ enum ModelProvider {
         let parts = id.split(separator: "/")
         if parts.count > 1, let maker = prefixes[String(parts[0])] { return maker }
         guard let model = parts.last else { return other }
+        let firstToken = model.split { !$0.isLetter && !$0.isNumber }.first
+        if firstToken == "o3" || firstToken == "o4" { return "OpenAI" }
         let first = model.prefix { $0.isLetter }
         return families.first { first == $0.prefix }?.provider ?? other
     }

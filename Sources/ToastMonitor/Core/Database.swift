@@ -25,6 +25,12 @@ enum SQLiteReadOnly {
         guard let db = connect(path, flags: SQLITE_OPEN_READONLY) else { return nil }
         guard probe(db) == SQLITE_CANTOPEN else { return db }
         sqlite3_close(db)
+        // Only fall back to immutable=1 when no non-empty WAL exists; an active
+        // WAL file holds uncheckpointed writes that immutable=1 would ignore.
+        if let walAttrs = try? FileManager.default.attributesOfItem(atPath: path + "-wal"),
+           let walSize = walAttrs[.size] as? Int64, walSize > 0 {
+            return nil
+        }
         let uri = URL(fileURLWithPath: path).absoluteString + "?immutable=1"
         guard let immutable = connect(uri, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_URI) else { return nil }
         guard probe(immutable) != SQLITE_CANTOPEN else {
@@ -248,13 +254,15 @@ final class Database: @unchecked Sendable {
         // turns tables, which stalls startup on large stores if run on every
         // launch.
         if setting("model_json_normalized") != "1" {
-            execChecked("""
+            let normalized = execChecked("""
             UPDATE sessions SET model = json_extract(model, '$.id')
             WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
             UPDATE turns SET model = json_extract(model, '$.id')
             WHERE model IS NOT NULL AND model LIKE '{%' AND json_valid(model) = 1;
             """)
-            setSetting("model_json_normalized", "1")
+            if normalized {
+                setSetting("model_json_normalized", "1")
+            }
         }
         // Relabel before ensureRollup so a one-time rebuild picks up the
         // new cost_quality groups instead of firing per-row triggers.
@@ -295,7 +303,7 @@ final class Database: @unchecked Sendable {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let stamp = formatter.string(from: Date())
+        let stamp = formatter.string(from: Date()) + "-" + String(UUID().uuidString.prefix(8))
         do {
             for suffix in ["", "-wal", "-shm"] where fm.fileExists(atPath: dbPath + suffix) {
                 try fm.moveItem(atPath: dbPath + suffix, toPath: "\(dbPath).damaged-\(stamp)\(suffix)")
@@ -306,7 +314,6 @@ final class Database: @unchecked Sendable {
             }
         } catch {
             NSLog("[ToastMonitor] store replacement failed: %@", error.localizedDescription)
-            openLocked(dbPath)
             return false
         }
         openLocked(dbPath)
@@ -578,7 +585,10 @@ final class Database: @unchecked Sendable {
         let current = versionAtOpen
         if current < 1 {
             guard let db else { return }
-            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+                startupHadError = true
+                return
+            }
             let ok = execChecked("""
             CREATE TABLE IF NOT EXISTS turns (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -709,11 +719,13 @@ final class Database: @unchecked Sendable {
             if ok {
                 if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
                     rollbackOrPoison()
-                    setUserVersion(0)
+                    startupHadError = true
+                    return
                 }
             } else {
                 rollbackOrPoison()
-                setUserVersion(0)
+                startupHadError = true
+                return
             }
         }
         // Old stores can lack tables the steps below alter, and a failed step
@@ -796,6 +808,7 @@ final class Database: @unchecked Sendable {
               PRIMARY KEY (tool, key)
             ) WITHOUT ROWID;
             CREATE INDEX IF NOT EXISTS idx_perf_first ON perf_samples(first_ms) WHERE first_ms IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_perf_incomplete ON perf_samples(request_ms) WHERE first_ms IS NULL;
             CREATE TABLE IF NOT EXISTS perf_cursors (
               source TEXT PRIMARY KEY,
               size INTEGER NOT NULL,
@@ -898,6 +911,7 @@ final class Database: @unchecked Sendable {
                 return
             }
         }
+        exec("CREATE INDEX IF NOT EXISTS idx_perf_incomplete ON perf_samples(request_ms) WHERE first_ms IS NULL;")
     }
 
     /// The user_version the last migration step sets.
@@ -1039,7 +1053,7 @@ final class Database: @unchecked Sendable {
         """
         let removeDerivedSQL = """
         DELETE FROM turns
-        WHERE tool=? AND event_id LIKE 'derived:%' AND event_id<>?
+        WHERE tool=? AND event_id>='derived:' AND event_id<'derived;' AND event_id<>?
           AND session_id=? AND ts=? AND input_tokens=? AND output_tokens=?
           AND cache_read=? AND cache_write=? AND COALESCE(model, '')=?;
         """
@@ -1055,7 +1069,7 @@ final class Database: @unchecked Sendable {
             sqlite3_finalize(greaterStmt)
             sqlite3_finalize(replaceStmt)
             sqlite3_finalize(removeDerivedStmt)
-            if !inTx { sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) }
+            if !inTx { rollbackOrPoison() }
             markTransactionWriteFailure()
             return false
         }
@@ -1081,6 +1095,7 @@ final class Database: @unchecked Sendable {
         }
 
         var ok = true
+        var anyModified = false
         for t in turns {
             let eid = t.eventID ?? "derived:\(t.tool.rawValue):\(t.sessionID):\(t.ts):\(t.inputTokens):\(t.outputTokens):\(t.cacheRead):\(t.cacheWrite):\(t.model ?? "")"
             let stmt: OpaquePointer? = switch t.usageMerge {
@@ -1092,6 +1107,8 @@ final class Database: @unchecked Sendable {
             if sqlite3_step(stmt) != SQLITE_DONE {
                 ok = false
                 markTransactionWriteFailure()
+            } else if t.usageMerge != .ignore && sqlite3_changes(db) > 0 {
+                anyModified = true
             }
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)
@@ -1109,6 +1126,8 @@ final class Database: @unchecked Sendable {
                 if sqlite3_step(removeDerivedStmt) != SQLITE_DONE {
                     ok = false
                     markTransactionWriteFailure()
+                } else if sqlite3_changes(db) > 0 {
+                    anyModified = true
                 }
                 sqlite3_reset(removeDerivedStmt)
                 sqlite3_clear_bindings(removeDerivedStmt)
@@ -1118,11 +1137,12 @@ final class Database: @unchecked Sendable {
         sqlite3_finalize(greaterStmt)
         sqlite3_finalize(replaceStmt)
         sqlite3_finalize(removeDerivedStmt)
+        if ok && anyModified { bumpDataVersion() }
         if !inTx {
             if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
                 return true
             }
-            sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+            rollbackOrPoison()
             return false
         }
         return ok
@@ -1164,7 +1184,7 @@ final class Database: @unchecked Sendable {
                 // so poison the connection instead — subsequent operations
                 // fail loudly until the next open().
                 NSLog("[ToastMonitor] ROLLBACK failed too; poisoning connection")
-                sqlite3_close(db)
+                sqlite3_close_v2(db)
                 self.db = nil
             }
         } else {
@@ -1172,7 +1192,7 @@ final class Database: @unchecked Sendable {
             NSLog("[ToastMonitor] ingestion transaction rolled back")
             if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
                 NSLog("[ToastMonitor] ROLLBACK failed; poisoning connection")
-                sqlite3_close(db)
+                sqlite3_close_v2(db)
                 self.db = nil
             }
         }
@@ -1188,7 +1208,7 @@ final class Database: @unchecked Sendable {
         guard let db else { return }
         if sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) != SQLITE_OK {
             NSLog("[ToastMonitor] ROLLBACK failed; poisoning connection")
-            sqlite3_close(db)
+            sqlite3_close_v2(db)
             self.db = nil
         }
     }
@@ -1218,7 +1238,7 @@ final class Database: @unchecked Sendable {
           updated=MAX(sessions.updated, excluded.updated);
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            if !inTx { sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) }
+            if !inTx { rollbackOrPoison() }
             markTransactionWriteFailure()
             return false
         }
@@ -1242,8 +1262,8 @@ final class Database: @unchecked Sendable {
         sqlite3_finalize(stmt)
         if !inTx {
             if ok {
-                if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK { ok = false; sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) }
-            } else { sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) }
+                if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK { ok = false; rollbackOrPoison() }
+            } else { rollbackOrPoison() }
         }
         return ok
     }
@@ -1388,9 +1408,9 @@ final class Database: @unchecked Sendable {
             dshReset.append(path)
         }
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
-        var ok = deleteRecountedSessions(prefix: "claude:", sessionIDs: claudeSessions)
-            && deleteRecountedSessions(prefix: "codex:", sessionIDs: codexSessions)
-            && deleteRecountedSessions(prefix: "dsh-log:", sessionIDs: dshSessions)
+        var ok = deleteRecountedSessions(tool: "claude", prefix: "claude:", sessionIDs: claudeSessions)
+            && deleteRecountedSessions(tool: "codex", prefix: "codex:", sessionIDs: codexSessions)
+            && deleteRecountedSessions(tool: "dsh", prefix: "dsh-log:", sessionIDs: dshSessions)
         if ok {
             for path in claudePaths + codexReset + dshReset
                 where !setScanState(path, size: 0, mtime: 0, identity: 0, context: nil) {
@@ -1432,10 +1452,10 @@ final class Database: @unchecked Sendable {
     /// Deletes `prefix + session + ":" … ";"` only. `;` is the next byte
     /// after `:`, so a longer session id is outside the range. Caller holds
     /// `lock` and an open transaction.
-    private func deleteRecountedSessions(prefix: String, sessionIDs: Set<String>) -> Bool {
+    private func deleteRecountedSessions(tool: String, prefix: String, sessionIDs: Set<String>) -> Bool {
         guard let db, !sessionIDs.isEmpty else { return true }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "DELETE FROM turns WHERE event_id >= ? AND event_id < ?;", -1, &stmt, nil) == SQLITE_OK else {
+        guard sqlite3_prepare_v2(db, "DELETE FROM turns WHERE tool = ? AND event_id >= ? AND event_id < ?;", -1, &stmt, nil) == SQLITE_OK else {
             return false
         }
         defer { sqlite3_finalize(stmt) }
@@ -1443,8 +1463,9 @@ final class Database: @unchecked Sendable {
             guard !id.isEmpty, !id.contains(":"), !id.contains(";") else { continue }
             let lower = prefix + id + ":"
             let upper = prefix + id + ";"
-            sqlite3_bind_text(stmt, 1, (lower as NSString).utf8String, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 2, (upper as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 1, (tool as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, (lower as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, (upper as NSString).utf8String, -1, SQLITE_TRANSIENT)
             if sqlite3_step(stmt) != SQLITE_DONE { return false }
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)
@@ -1480,51 +1501,83 @@ final class Database: @unchecked Sendable {
         """
         guard execChecked(sql) else { return 0 }
         let changed = Int(sqlite3_changes(db))
+        if changed > 0 { bumpDataVersion() }
         _ = setSetting("omp_actual_cost_quality_v1", "1")
         return changed
     }
 
-    func backfillCosts() {
+    static let routineBackfillSelectSQL = """
+    SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool, cost_quality, cache_write_1h,
+           0
+    FROM turns
+    WHERE cost = 0 AND tool != 'hermes' AND model IS NOT NULL AND model != ''
+      AND (
+        (cost_quality = 'estimated' AND (pricing_version IS NULL OR pricing_version != ?))
+        OR (cost_quality = 'unknown' AND (pricing_version IS NULL OR pricing_version != ?))
+      );
+    """
 
+    func backfillCosts() {
         lock.lock(); defer { lock.unlock() }
         guard let db else { return }
         let now = Int64(Date().timeIntervalSince1970)
         if let last = Int64(setting("backfill_costs_last") ?? "0"), now - last < 60 { return }
+
+        typealias BackfillRow = (id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool, quality: String, cw1h: Int64, alreadyPriced: Bool)
+        var rows: [BackfillRow] = []
+        var seenIDs = Set<Int64>()
+
+        func collectRows(_ stmt: OpaquePointer?) {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_int64(stmt, 0)
+                guard seenIDs.insert(id).inserted, let model = SQLiteText.column(stmt, 1) else { continue }
+                rows.append((id,
+                             model,
+                             sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3),
+                             sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
+                             SQLiteText.column(stmt, 6) == "codex",
+                             SQLiteText.column(stmt, 7) ?? "estimated",
+                             sqlite3_column_int64(stmt, 8),
+                             sqlite3_column_int(stmt, 9) != 0))
+            }
+        }
+
         var stmt: OpaquePointer?
-        let corrected = Pricing.correctedModels.map { "model LIKE '\($0)'" }.joined(separator: " OR ")
-        let select = """
-        SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool, cost_quality, cache_write_1h,
-               pricing_version IS NOT NULL AND cost != 0
-        FROM turns
-        WHERE tool != 'hermes' AND model IS NOT NULL AND model != ''
-          AND (
-            (cost = 0 AND cost_quality = 'estimated'
-               AND (pricing_version IS NULL OR pricing_version != ?))
-            OR (cost = 0 AND cost_quality = 'unknown'
-               AND (pricing_version IS NULL OR pricing_version != ?))
-            OR (cost_quality = 'estimated'
-               AND (tool != 'claude' OR cache_write = 0 OR cache_write_1h IS NOT NULL)
-               AND (pricing_version IS NULL
-                    OR (pricing_version < ? AND (\(corrected)))))
-          );
-        """
-        guard sqlite3_prepare_v2(db, select, -1, &stmt, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(db, Self.routineBackfillSelectSQL, -1, &stmt, nil) == SQLITE_OK else { return }
         sqlite3_bind_text(stmt, 1, (Pricing.zeroCostStamp as NSString).utf8String, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 2, (Pricing.version as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 3, (Pricing.correctionRevision as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        var rows: [(id: Int64, model: String, input: Int64, output: Int64, cr: Int64, cw: Int64, includesCache: Bool, quality: String, cw1h: Int64, alreadyPriced: Bool)] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            guard let model = SQLiteText.column(stmt, 1) else { continue }
-            rows.append((sqlite3_column_int64(stmt, 0),
-                         model,
-                         sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3),
-                         sqlite3_column_int64(stmt, 4), sqlite3_column_int64(stmt, 5),
-                         SQLiteText.column(stmt, 6) == "codex",
-                         SQLiteText.column(stmt, 7) ?? "estimated",
-                         sqlite3_column_int64(stmt, 8),
-                         sqlite3_column_int(stmt, 9) != 0))
-        }
+        collectRows(stmt)
         sqlite3_finalize(stmt)
+
+        let needsCorrectionPass = setting("pricing_correction_applied") != Pricing.correctionRevision
+            && !Pricing.correctedModels.isEmpty
+        if needsCorrectionPass {
+            let corrected = Pricing.correctedModels.map { "model LIKE '\($0)'" }.joined(separator: " OR ")
+            let correctionSelect = """
+            SELECT id, model, input_tokens, output_tokens, cache_read, cache_write, tool, cost_quality, cache_write_1h,
+                   pricing_version IS NOT NULL AND cost != 0
+            FROM turns
+            WHERE tool != 'hermes' AND model IS NOT NULL AND model != ''
+              AND cost != 0
+              AND cost_quality = 'estimated'
+              AND (tool != 'claude' OR cache_write = 0 OR cache_write_1h IS NOT NULL)
+              AND (pricing_version IS NULL
+                   OR (pricing_version < ? AND (\(corrected))));
+            """
+            var corrStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, correctionSelect, -1, &corrStmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(corrStmt, 1, (Pricing.correctionRevision as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            collectRows(corrStmt)
+            sqlite3_finalize(corrStmt)
+        }
+
+        guard !rows.isEmpty else {
+            _ = setSetting("backfill_costs_last", "\(now)")
+            if needsCorrectionPass {
+                _ = setSetting("pricing_correction_applied", Pricing.correctionRevision)
+            }
+            return
+        }
 
         guard sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else { return }
         let priced = "UPDATE turns SET cost=?, pricing_version=?, cost_quality=CASE WHEN cost_quality='unknown' THEN 'estimated' ELSE cost_quality END WHERE id=?;"
@@ -1564,8 +1617,11 @@ final class Database: @unchecked Sendable {
         sqlite3_finalize(pricedStmt)
         sqlite3_finalize(stampStmt)
         if ok && sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK {
-            if !rows.isEmpty { bumpDataVersion() }
+            bumpDataVersion()
             _ = setSetting("backfill_costs_last", "\(now)")
+            if needsCorrectionPass {
+                _ = setSetting("pricing_correction_applied", Pricing.correctionRevision)
+            }
             return
         }
         rollbackOrPoison()
@@ -2040,10 +2096,13 @@ final class Database: @unchecked Sendable {
         if let last = Int64(setting("vacuum_last") ?? "0"), now - last < 7 * 86400 { return }
         // TRUNCATE checkpoint folds the WAL back into the main file.
         exec("PRAGMA wal_checkpoint(TRUNCATE);")
-        if !dbPath.isEmpty,
+        if sqlite3_get_autocommit(db) != 0, !dbPath.isEmpty,
            let size = (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size]) as? Int64,
            size > 32 * 1024 * 1024 {
-            _ = execChecked("VACUUM;")
+            var err: UnsafeMutablePointer<CChar>?
+            if sqlite3_exec(db, "VACUUM;", nil, nil, &err) != SQLITE_OK {
+                if let err { NSLog("[ToastMonitor] VACUUM failed: %s", err); sqlite3_free(err) }
+            }
         }
         _ = setSetting("vacuum_last", "\(now)")
     }
@@ -2088,9 +2147,19 @@ final class Database: @unchecked Sendable {
         guard let db else { return }
         var stmt: OpaquePointer?
         let check = "SELECT COUNT(*) FROM pragma_table_info('\(table)') WHERE name='\(name)';"
-        guard sqlite3_prepare_v2(db, check, -1, &stmt, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(db, check, -1, &stmt, nil) == SQLITE_OK else {
+            markTransactionWriteFailure()
+            return
+        }
         var exists = false
-        if sqlite3_step(stmt) == SQLITE_ROW { exists = sqlite3_column_int(stmt, 0) > 0 }
+        let rc = sqlite3_step(stmt)
+        if rc == SQLITE_ROW {
+            exists = sqlite3_column_int(stmt, 0) > 0
+        } else {
+            markTransactionWriteFailure()
+            sqlite3_finalize(stmt)
+            return
+        }
         sqlite3_finalize(stmt)
         guard !exists else { return }
         if sqlite3_exec(db, "ALTER TABLE \(table) ADD COLUMN \(name) \(decl);", nil, nil, nil) != SQLITE_OK {
@@ -2441,17 +2510,12 @@ final class Database: @unchecked Sendable {
         return true
     }
 
-    /// Ends of the cumulative `credits_usage` series at or after `start`.
-    /// Used for spend-pace estimates, not for a local day's total (that
-    /// needs a pre-period baseline — see `openRouterSpend`).
+    /// Cumulative `credits_usage` series at or after `start` (epoch-filtered).
     func orCreditUsage(since start: Int64) -> [(ts: Int64, value: Double)] {
         let epoch = Int64(setting(Self.openRouterCreditsEpochKey) ?? "0") ?? 0
         let floorTs = max(start, epoch)
         seriesLock.lock(); defer { seriesLock.unlock() }
-        let rows = orCreditSeries.filter { $0.ts >= floorTs }
-        guard let first = rows.first, let last = rows.last else { return [] }
-        if first.ts == last.ts { return [first] }
-        return [first, last]
+        return orCreditSeries.filter { $0.ts >= floorTs }
     }
 
     /// Account credit spent after `start` on the local clock. Uses the last
@@ -2692,8 +2756,8 @@ final class Database: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let targets = rebuildTargets(claudePaths: claudePaths, codexPaths: codexPaths)
         return inTransaction {
-            guard deleteRecountedSessions(prefix: "claude:", sessionIDs: targets.claude),
-                  deleteRecountedSessions(prefix: "codex:", sessionIDs: targets.codex) else {
+            guard deleteRecountedSessions(tool: "claude", prefix: "claude:", sessionIDs: targets.claude),
+                  deleteRecountedSessions(tool: "codex", prefix: "codex:", sessionIDs: targets.codex) else {
                 markTransactionWriteFailure()
                 return false
             }
@@ -2878,13 +2942,36 @@ final class Database: @unchecked Sendable {
         close()
         openLocked(dbPath)
         guard isUsable(comparedTo: reference) else {
-            _ = replaceContents(from: rollbackPath)
-            close()
+            if db != nil {
+                let replaced = replaceContents(from: rollbackPath)
+                close()
+                if !replaced {
+                    Self.replaceFilesFromRollback(rollbackPath: rollbackPath, dbPath: dbPath)
+                }
+            } else {
+                Self.replaceFilesFromRollback(rollbackPath: rollbackPath, dbPath: dbPath)
+            }
             openLocked(dbPath)
             return false
         }
         bumpDataVersion()
+        NotificationCenter.default.post(name: Self.subscriptionsDidChange, object: nil)
         return true
+    }
+
+    private static func replaceFilesFromRollback(rollbackPath: String, dbPath: String) {
+        let fm = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            try? fm.removeItem(atPath: dbPath + suffix)
+        }
+        let staged = dbPath + ".rollback-\(UUID().uuidString)"
+        if fm.fileExists(atPath: rollbackPath),
+           (try? fm.copyItem(atPath: rollbackPath, toPath: staged)) != nil {
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged)
+            if Darwin.rename(staged, dbPath) != 0 {
+                try? fm.removeItem(atPath: staged)
+            }
+        }
     }
 
     private static let restoreTables = ["turns", "sessions", "scan_state", "session_totals",
@@ -2930,11 +3017,7 @@ final class Database: @unchecked Sendable {
     }
 
     private static func copySQLite(from source: String, to destination: String) -> Bool {
-        var origin: OpaquePointer?
-        guard sqlite3_open_v2(source, &origin, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let origin else {
-            if let origin { sqlite3_close(origin) }
-            return false
-        }
+        guard let origin = SQLiteReadOnly.open(source) else { return false }
         defer { sqlite3_close(origin) }
         guard sqlite3_exec(origin, "PRAGMA query_only=ON;", nil, nil, nil) == SQLITE_OK else { return false }
         guard FileManager.default.createFile(atPath: destination, contents: nil,
@@ -2950,11 +3033,7 @@ final class Database: @unchecked Sendable {
 
     private func replaceContents(from source: String) -> Bool {
         guard let db else { return false }
-        var origin: OpaquePointer?
-        guard sqlite3_open_v2(source, &origin, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
-            if let origin { sqlite3_close(origin) }
-            return false
-        }
+        guard let origin = SQLiteReadOnly.open(source) else { return false }
         defer { sqlite3_close(origin) }
         guard sqlite3_exec(origin, "PRAGMA query_only=ON;", nil, nil, nil) == SQLITE_OK else { return false }
         return Self.copyContents(from: origin, to: db)
@@ -3248,6 +3327,8 @@ final class Database: @unchecked Sendable {
                 settingsCache.set("turn_rollup_schema", nil)
                 aggregatesUseRollup = false
                 NSLog("[ToastMonitor] rollup install failed; aggregates read raw turns")
+            } else {
+                settingsCache.set("turn_rollup_schema", Self.rollupSchemaVersion)
             }
             return
         }

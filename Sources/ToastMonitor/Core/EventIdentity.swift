@@ -9,11 +9,24 @@ enum EventIdentity {
     }
 
     static func canonicalJSON(_ value: Any?) -> String {
-        guard let value,
-              JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
-        else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        guard let value else { return "" }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) {
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        if let str = value as? String {
+            return "str:\(str)"
+        }
+        if let num = value as? NSNumber {
+            if CFGetTypeID(num) == CFBooleanGetTypeID() {
+                return num.boolValue ? "bool:true" : "bool:false"
+            }
+            return "num:\(num.stringValue)"
+        }
+        if value is NSNull {
+            return "null"
+        }
+        return ""
     }
 
     static func claude(sessionID: String, object: [String: Any], usage: [String: Any],

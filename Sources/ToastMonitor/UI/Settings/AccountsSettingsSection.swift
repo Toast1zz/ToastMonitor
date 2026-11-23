@@ -19,6 +19,11 @@ final class CodexBillingModeCoordinator {
         self.onCommitted = onCommitted
     }
 
+    func reloadFromDatabase() {
+        generation &+= 1
+        latestSelection = database.setting("codex_billing_mode") ?? "api"
+    }
+
     @discardableResult
     func set(_ value: String, restoreSelection: @escaping @MainActor (String) -> Void,
              completion: @escaping @MainActor () -> Void = {}) -> Bool {
@@ -70,7 +75,7 @@ enum PopoverAccountRows {
     /// Persists off the main thread, then tells the resident popover.
     static func setVisible(_ key: String, _ visible: Bool) {
         let value = visible ? nil : "1"
-        DispatchQueue.global(qos: .userInitiated).async {
+        SettingsWriteQueue.shared.async {
             _ = Database.shared.setSetting("hide_quota_row_\(key)", value)
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: AccountsSettingsSection.quotaRowsChanged, object: nil)
@@ -199,6 +204,13 @@ struct AccountsSettingsSection: View {
             }
         }
         .onAppear {
+            for key in PopoverAccountRows.keys {
+                rowVisible[key] = PopoverAccountRows.isVisible(key)
+            }
+            codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
+            CodexBillingModeCoordinator.shared.reloadFromDatabase()
             for key in PopoverAccountRows.keys {
                 rowVisible[key] = PopoverAccountRows.isVisible(key)
             }

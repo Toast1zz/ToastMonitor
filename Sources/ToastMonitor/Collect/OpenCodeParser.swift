@@ -131,6 +131,8 @@ enum OpenCodeParser {
             return row.hasActualCost ? "actual" : "unknown"
         }
         let watermark = Int64(database.setting(watermarkKey) ?? "") ?? 0
+        var pendingTotals: [(key: String, input: Int64, output: Int64, reasoning: Int64,
+                             cacheRead: Int64, cacheWrite: Int64, cost: Double, updated: Int64)] = []
 
         let read = forEachRow(since: watermark, database: database) { row in
             let key = "opencode|\(row.id)"
@@ -179,17 +181,24 @@ enum OpenCodeParser {
             // adopt the split input/reasoning baseline once so future input growth
             // is not consumed by the old combined value.
             let prev = prevTotals[key]
-            database.setSessionTotals(key, tool: "opencode",
-                                     input: legacyCombinedInput ? row.input : max(prev?.input ?? 0, totalInput),
-                                     output: max(prev?.output ?? 0, row.output),
-                                     reasoning: legacyCombinedInput ? row.reasoning : max(prev?.reasoning ?? 0, row.reasoning),
-                                     cacheRead: max(prev?.cacheRead ?? 0, row.cacheRead),
-                                     cacheWrite: max(prev?.cacheWrite ?? 0, row.cacheWrite),
-                                     cost: max(prev?.cost ?? 0, row.cost),
-                                     updated: sec(row.timeUpdated))
+            pendingTotals.append((key: key,
+                                  input: legacyCombinedInput ? row.input : max(prev?.input ?? 0, totalInput),
+                                  output: max(prev?.output ?? 0, row.output),
+                                  reasoning: legacyCombinedInput ? row.reasoning : max(prev?.reasoning ?? 0, row.reasoning),
+                                  cacheRead: max(prev?.cacheRead ?? 0, row.cacheRead),
+                                  cacheWrite: max(prev?.cacheWrite ?? 0, row.cacheWrite),
+                                  cost: max(prev?.cost ?? 0, row.cost),
+                                  updated: sec(row.timeUpdated)))
         }
         if read.failed { return ([], []) }
         guard read.count > 0 else { return ([], []) }
+        for item in pendingTotals {
+            database.setSessionTotals(item.key, tool: "opencode",
+                                      input: item.input, output: item.output,
+                                      reasoning: item.reasoning,
+                                      cacheRead: item.cacheRead, cacheWrite: item.cacheWrite,
+                                      cost: item.cost, updated: item.updated)
+        }
         if read.maxUpdated > watermark {
             database.setSetting(watermarkKey, "\(read.maxUpdated)")
         }

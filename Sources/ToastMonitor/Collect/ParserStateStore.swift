@@ -154,7 +154,7 @@ final class StagedParserStateStore: ParserStateStore {
 
     /// Runs inside `Database.inTransaction`, before prepared row inserts.
     func validateForCommit() -> Bool {
-        guard preparationIsConsistent else { return false }
+        guard preparationIsConsistent, problem == nil else { return false }
         for (key, original) in originalSettings {
             guard database.setting(key) == original.value else { return false }
         }

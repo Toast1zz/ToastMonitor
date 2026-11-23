@@ -106,6 +106,22 @@ final class ClaudeQuotaClient: ObservableObject {
         observeForeground()
     }
 
+    private var persistsState = true
+
+    init(forTestingWithConfiguration cfg: URLSessionConfiguration) {
+        session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
+        loadedPersistedState = true
+        persistsState = false
+        enabled = true
+    }
+
+    var rejectedTokenForTesting: String? { rejectedToken }
+
+    func requestUsageForTesting(accessToken: String) {
+        refreshGeneration &+= 1
+        requestUsage(accessToken: accessToken, generation: refreshGeneration)
+    }
+
     /// The store opens in the background at launch, and anything that touches
     /// `shared` before then would read an empty settings cache. Saved state is
     /// read on first start/toggle instead, like the other quota clients.
@@ -171,6 +187,7 @@ final class ClaudeQuotaClient: ObservableObject {
             // carries ToS risk the others don't.
             timer?.invalidate()
             timer = nil
+            renewalRetry.reset()
         }
     }
 
@@ -233,6 +250,13 @@ final class ClaudeQuotaClient: ObservableObject {
 
     private func renewalFailed(outcome: CLIRenewalOutcome?) {
         let rejected = rejectedToken != nil
+        guard foreground else {
+            renewalRetry.reset()
+            state.error = rejected
+                ? "Claude login expired — run claude /login to restore"
+                : "Login expired — run claude in Terminal"
+            return
+        }
         renewalRetry.schedule(counting: outcome != .throttled) { [weak self] in
             self?.refresh(force: true, renewing: true)
         }
@@ -286,7 +310,7 @@ final class ClaudeQuotaClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
                     self.inFlight = false
-                    if self.renewalRetry.loginUnreadable(renewing: renewing, outcome: attempted, retry: { [weak self] in
+                    if self.foreground, self.renewalRetry.loginUnreadable(renewing: renewing, outcome: attempted, retry: { [weak self] in
                         self?.refresh(force: true, renewing: true)
                     }) { return }
                     // A denied read means the login is there and neither this
@@ -596,9 +620,14 @@ final class ClaudeQuotaClient: ObservableObject {
                     self.applyBackoff(retryAfterHeader: retryAfter)
                     return
                 }
-                if http.statusCode == 401 || http.statusCode == 403 {
+                if http.statusCode == 401 {
                     self.rejectedToken = accessToken
                     self.refresh(force: true, renewing: true)
+                    return
+                }
+                if http.statusCode == 403 {
+                    self.state.error = "Claude usage API denied (HTTP 403)"
+                    self.applyBackoff(retryAfterHeader: retryAfter)
                     return
                 }
                 guard http.statusCode == 200 else {
@@ -793,6 +822,7 @@ final class ClaudeQuotaClient: ObservableObject {
 
     private func persistLastAttempt(_ t: TimeInterval) {
         lastAttemptAt = t
+        guard persistsState else { return }
         let v = String(t)
         DispatchQueue.global(qos: .utility).async { _ = Database.shared.setSetting(Self.lastAttemptSettingKey, v) }
     }
@@ -800,6 +830,7 @@ final class ClaudeQuotaClient: ObservableObject {
     private func persistBackoffUntil(_ t: TimeInterval) {
         nextAllowedRefresh = t
         state.retryAt = t
+        guard persistsState else { return }
         let v = t > 0 ? String(t) : nil
         DispatchQueue.global(qos: .utility).async { _ = Database.shared.setSetting(Self.backoffUntilSettingKey, v) }
     }

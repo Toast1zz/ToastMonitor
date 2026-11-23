@@ -29,6 +29,8 @@ VERSION="${1:?usage: sign-update-manifest.sh <version> <artifact.zip> [download_
 ARCHIVE="${2:?missing artifact zip}"
 KEY="$HOME/.config/toastmonitor/update-key.pem"
 [[ -f "$KEY" ]] || { echo "update key not found: $KEY" >&2; exit 1; }
+KEY_MODE="$(stat -f '%Lp' "$KEY")"
+[[ "$KEY_MODE" == "600" ]] || { echo "update key must have 0600 permissions (got $KEY_MODE): $KEY" >&2; exit 1; }
 [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "invalid version: $VERSION" >&2; exit 1; }
 [[ -f "$ARCHIVE" ]] || { echo "artifact not found: $ARCHIVE" >&2; exit 1; }
 
@@ -55,7 +57,7 @@ else
     LEGACY_ARCHIVE="$ARCHIVE"
 fi
 [[ "$LEGACY_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
-[[ "$LEGACY_URL" != *'"'* && "$LEGACY_URL" != *'\\'* ]] || { echo "download URL contains illegal JSON characters" >&2; exit 1; }
+[[ "$LEGACY_URL" != *'"'* && "$LEGACY_URL" != *'\'* ]] || { echo "download URL contains illegal JSON characters" >&2; exit 1; }
 
 SHA256="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
 if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
@@ -77,12 +79,21 @@ echo "output:     $OUT"
 if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
     # Keep the legacy fields pointed at universal so v1.5.2-and-earlier
     # clients can cross the bootstrap boundary on both CPU families.
-    PAYLOAD=$(printf '{"version":"%s","download_url":"%s","sha256":"%s","artifacts":{"arm64":{"download_url":"%s","sha256":"%s"},"x86_64":{"download_url":"%s","sha256":"%s"}}}' \
-        "$VERSION" "$LEGACY_URL" "$UNIVERSAL_SHA256" \
-        "$ARM64_URL" "$SHA256" "$UNIVERSAL_URL" "$UNIVERSAL_SHA256")
+    PAYLOAD=$(python3 -c 'import json, sys; print(json.dumps({
+        "version": sys.argv[1],
+        "download_url": sys.argv[2],
+        "sha256": sys.argv[3],
+        "artifacts": {
+            "arm64": {"download_url": sys.argv[4], "sha256": sys.argv[5]},
+            "x86_64": {"download_url": sys.argv[6], "sha256": sys.argv[7]},
+        }
+    }, separators=(",", ":")))' "$VERSION" "$LEGACY_URL" "$UNIVERSAL_SHA256" "$ARM64_URL" "$SHA256" "$UNIVERSAL_URL" "$UNIVERSAL_SHA256")
 else
-    PAYLOAD=$(printf '{"version":"%s","download_url":"%s","sha256":"%s"}' \
-        "$VERSION" "$LEGACY_URL" "$SHA256")
+    PAYLOAD=$(python3 -c 'import json, sys; print(json.dumps({
+        "version": sys.argv[1],
+        "download_url": sys.argv[2],
+        "sha256": sys.argv[3],
+    }, separators=(",", ":")))' "$VERSION" "$LEGACY_URL" "$SHA256")
 fi
 B64=$(printf '%s' "$PAYLOAD" | base64 | tr -d '\n')
 
@@ -122,6 +133,12 @@ guard let rawKey = Data(hex: hex) else {
     exit(3)
 }
 let key = try! Curve25519.Signing.PrivateKey(rawRepresentation: rawKey)
+let expectedPubHex = "4381a84e55358fe6a10dbd58be54a10e7b16b7f7d9b2c290e42ea6c5125b1d70"
+guard let expectedPub = Data(hex: expectedPubHex),
+      key.publicKey.rawRepresentation == expectedPub else {
+    fputs("error: update key public representation does not match UpdateManager.publicKey\n", stderr)
+    exit(4)
+}
 let payload = try! String(contentsOfFile: inputPath, encoding: .utf8)
     .trimmingCharacters(in: .whitespacesAndNewlines)
 // Loop-back: verify the signature with the derived public key so a broken

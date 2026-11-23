@@ -213,8 +213,8 @@ struct OverviewView: View {
     /// key reused the prior year's grid when the app stayed open over New Year.
     /// Timezone identifier joins the key: year/ordinal-day components depend on
     /// the current zone, so a system zone change must rebuild the grid too.
-    private static var cachedWeeks: [[Int64?]] = []
-    private static var cachedWeeksKey: String = ""
+    @MainActor private static var cachedWeeks: [[Int64?]] = []
+    @MainActor private static var cachedWeeksKey: String = ""
 
     private var heatmapWeeks: [[Int64?]] {
         let now = Date()

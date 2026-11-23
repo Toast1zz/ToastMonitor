@@ -29,7 +29,10 @@ enum BalanceRunway {
     static func dailySpend(balances samples: [(ts: Int64, value: Double)]) -> Double? {
         guard let first = samples.first, let last = samples.last,
               last.ts - first.ts >= minCoverage else { return nil }
-        let spent = zip(samples, samples.dropFirst()).reduce(0) { $0 + max($1.0.value - $1.1.value, 0) }
+        let spent = zip(samples, samples.dropFirst()).reduce(0.0) { total, pair in
+            let delta = pair.0.value - pair.1.value
+            return delta.isFinite && delta > 0 ? total + delta : total
+        }
         return spent / Double(last.ts - first.ts) * 86_400
     }
 

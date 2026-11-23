@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SQLite3
 
 struct DataRepairReceipt: Equatable, Sendable {
     let backupPath: String
@@ -10,7 +11,8 @@ struct DataRepairReceipt: Equatable, Sendable {
 
 enum DataMaintenance {
     static var directory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
         return base.appendingPathComponent("ToastMonitor/Backups", isDirectory: true)
     }
 
@@ -159,7 +161,7 @@ enum DataMaintenance {
     static func recover(from backup: URL?, database: Database = .shared) -> Bool {
         guard let backup else { return database.replaceUnusableStore(with: nil) }
         guard backup.pathExtension == compressedExtension else {
-            guard isSQLiteFile(backup) else { return false }
+            guard isSQLiteFile(backup), passesIntegrityCheck(backup) else { return false }
             return database.replaceUnusableStore(with: backup.path)
         }
         let fm = FileManager.default
@@ -168,8 +170,17 @@ enum DataMaintenance {
                                        attributes: [.posixPermissions: 0o700])) != nil else { return false }
         defer { try? fm.removeItem(at: workspace) }
         let expanded = workspace.appendingPathComponent("backup.db")
-        guard expand(backup, to: expanded), isSQLiteFile(expanded) else { return false }
+        guard expand(backup, to: expanded), isSQLiteFile(expanded), passesIntegrityCheck(expanded) else { return false }
         return database.replaceUnusableStore(with: expanded.path)
+    }
+
+    private static func passesIntegrityCheck(_ url: URL) -> Bool {
+        guard let db = SQLiteReadOnly.open(url.path) else { return false }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_step(stmt) == SQLITE_ROW && SQLiteText.column(stmt, 0) == "ok"
     }
 
     static func restoreWithReceipt(backupPath path: String, database: Database = .shared,

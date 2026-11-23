@@ -50,6 +50,8 @@ enum SubscriptionMath {
 
     static func dateStr(_ d: Date) -> String {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: d)
     }
@@ -106,7 +108,7 @@ enum SubscriptionMath {
     private static func amortized(since windowStart: Date, subscriptions: [Database.Subscription], now: Date) -> Double {
         guard windowStart < now else { return 0 }
         var total = 0.0
-        for sub in subscriptions {
+        for sub in subscriptions where sub.price.isFinite && sub.price >= 0 {
             for cycle in cycles(of: sub, overlapping: windowStart..<now) {
                 let overlap = min(cycle.end, now).timeIntervalSince(max(cycle.start, windowStart))
                 total += sub.price * overlap / cycle.end.timeIntervalSince(cycle.start)

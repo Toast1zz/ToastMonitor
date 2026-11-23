@@ -223,7 +223,6 @@ final class CommandCodeQuotaClient: ObservableObject {
             guard let self, self.refreshGeneration == generation else { return }
             self.inFlight = false
             self.state.isLoading = false
-            self.state.lastSync = Int64(Date().timeIntervalSince1970)
 
             // Prefer a hard error over partial data: if either endpoint
             // failed at the HTTP layer, report it and keep the old snapshot.
@@ -237,7 +236,6 @@ final class CommandCodeQuotaClient: ObservableObject {
                 self.backoff.failed()
                 return
             default:
-                self.backoff.succeeded()
                 break
             }
             guard case .success(let creditsData)? = creditsResult,
@@ -245,6 +243,7 @@ final class CommandCodeQuotaClient: ObservableObject {
                 // Defensive: both endpoints completed (group notified) but a
                 // result is missing — never leave a stuck Loading state.
                 self.state.error = "Billing request failed"
+                self.backoff.failed()
                 return
             }
 
@@ -383,11 +382,24 @@ final class CommandCodeQuotaClient: ObservableObject {
         return (used, percent)
     }
 
+    var isBackoffWaitingForTesting: Bool { backoff.isWaiting }
+
+    func applyForTesting(_ result: Result<Parsed, HTTPError>) {
+        apply(result)
+    }
+
     private func apply(_ result: Result<Parsed, HTTPError>) {
         guard case .success(let parsed) = result else {
-            state.error = Self.message(for: .parse)
+            if case .failure(let error) = result {
+                state.error = Self.message(for: error)
+            } else {
+                state.error = Self.message(for: .parse)
+            }
+            backoff.failed()
             return
         }
+        backoff.succeeded()
+        state.lastSync = Int64(Date().timeIntervalSince1970)
         state.monthlyCreditsRemaining = parsed.monthlyCreditsRemaining
         state.purchasedCredits = parsed.purchasedCredits
         state.planID = parsed.planID

@@ -48,12 +48,6 @@ final class WindowManager {
         if target == .regular {
             NSApp.setActivationPolicy(.regular)
         } else {
-            // NSApp.hide closes the popover panel without a visibility notification.
-            // Post `false` first, or AppState/CollectorEngine keep running in
-            // foreground mode (1s timer, every quota client polling).
-            if PanelController.isPanelVisible {
-                NotificationCenter.default.post(name: TMNotifications.popoverVisibility, object: false)
-            }
             NSApp.setActivationPolicy(.accessory)
             // Only hide when no other visible regular window (such as Settings)
             // is open, otherwise closing the Dashboard would unexpectedly hide it.
@@ -61,6 +55,12 @@ final class WindowManager {
                 $0 !== window && $0.isVisible && !($0 is NSPanel) && $0.className != "NSStatusBarWindow"
             }
             if !hasOtherVisibleWindow {
+                // NSApp.hide closes the popover panel without a visibility notification.
+                // Post `false` first, or AppState/CollectorEngine keep running in
+                // foreground mode (1s timer, every quota client polling).
+                if PanelController.isPanelVisible {
+                    NotificationCenter.default.post(name: TMNotifications.popoverVisibility, object: false)
+                }
                 NSApp.hide(nil)
             }
         }
@@ -469,11 +469,38 @@ private final class DashboardRootView: NSView {
 /// ToastMonitorApp.swift builds one off-screen so it renders through the
 /// exact same page-hosting machinery the real window uses, rather than a
 /// separate SwiftUI reimplementation that could visually drift from it.
+private struct DashboardActiveTabKey: EnvironmentKey {
+    static let defaultValue: DashboardView.Tab? = nil
+}
+
+extension EnvironmentValues {
+    var dashboardActiveTab: DashboardView.Tab? {
+        get { self[DashboardActiveTabKey.self] }
+        set { self[DashboardActiveTabKey.self] = newValue }
+    }
+}
+
+@MainActor
+private final class DashboardTabState: ObservableObject {
+    @Published var activeTab: DashboardView.Tab
+    init(_ activeTab: DashboardView.Tab) { self.activeTab = activeTab }
+}
+
+private struct DashboardTabHost<Content: View>: View {
+    @ObservedObject var tabState: DashboardTabState
+    let content: Content
+
+    var body: some View {
+        content.environment(\.dashboardActiveTab, tabState.activeTab)
+    }
+}
+
 @MainActor
 final class DashboardPageController: NSViewController {
     private(set) var analysisReadyForCapture = false
     private let initialTab: DashboardView.Tab
     private(set) var selectedTab: DashboardView.Tab
+    private let tabState: DashboardTabState
     private var hosts: [DashboardView.Tab: NSViewController] = [:]
     private weak var visibleHost: NSViewController?
     private var keyMonitor: Any?
@@ -482,6 +509,7 @@ final class DashboardPageController: NSViewController {
     init(initialTab: DashboardView.Tab) {
         self.initialTab = initialTab
         self.selectedTab = initialTab
+        self.tabState = DashboardTabState(initialTab)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -525,6 +553,7 @@ final class DashboardPageController: NSViewController {
     func select(_ tab: DashboardView.Tab) {
         guard tab != selectedTab else { return }
         selectedTab = tab
+        tabState.activeTab = tab
         show(tab)
         selectionDidChange?(tab)
     }
@@ -559,17 +588,17 @@ final class DashboardPageController: NSViewController {
         let page: AnyView
         switch tab {
         case .overview:
-            page = AnyView(OverviewView().environmentObject(AppState.shared))
+            page = AnyView(DashboardTabHost(tabState: tabState, content: OverviewView().environmentObject(AppState.shared)))
         case .analysis:
-            page = AnyView(UsageAnalysisView(readinessChanged: { [weak self] ready in
+            page = AnyView(DashboardTabHost(tabState: tabState, content: UsageAnalysisView(readinessChanged: { [weak self] ready in
                 self?.analysisReadyForCapture = ready
-            }).environmentObject(AppState.shared))
+            }).environmentObject(AppState.shared)))
         case .performance:
-            page = AnyView(PerformanceView().environmentObject(AppState.shared))
+            page = AnyView(DashboardTabHost(tabState: tabState, content: PerformanceView().environmentObject(AppState.shared)))
         case .plans:
-            page = AnyView(PlansView().environmentObject(AppState.shared))
+            page = AnyView(DashboardTabHost(tabState: tabState, content: PlansView().environmentObject(AppState.shared)))
         case .sessions:
-            page = AnyView(SessionsView())
+            page = AnyView(DashboardTabHost(tabState: tabState, content: SessionsView().environmentObject(AppState.shared)))
         }
         let host = NSHostingController(rootView: page)
         // The window owns its size; a page's ideal size must not resize it.

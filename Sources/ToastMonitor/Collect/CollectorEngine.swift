@@ -102,12 +102,6 @@ final class CollectorEngine: @unchecked Sendable {
         return sourceSignatures[path] != current
     }
 
-    private func rememberSource(_ path: String) {
-        if let signature = sourceSignature(path) {
-            sourceSignatures[path] = signature
-        }
-    }
-
     /// Logs that end in a partial line, as of the scan that could not finish
     /// them. The cursor stays before that line, so size alone reads as a change
     /// and the same bytes would be parsed and written on every tick.
@@ -276,6 +270,12 @@ final class CollectorEngine: @unchecked Sendable {
                 return
             }
 
+            let trackedSignaturePaths = [signaturePath].compactMap({ $0 }) + signaturePaths
+            let preScanSignatures = Dictionary(
+                uniqueKeysWithValues: trackedSignaturePaths.compactMap { path in
+                    sourceSignature(path).map { (path, $0) }
+                }
+            )
             let prepared = Self.prepareAndCommit(database: .shared,
                                                  sourcePaths: sourcePaths,
                                                  scan: scan)
@@ -304,7 +304,7 @@ final class CollectorEngine: @unchecked Sendable {
             }
             sourceRetry.succeeded(source)
             notePartialTails(sourcePaths.filter { $0.hasSuffix(".jsonl") || $0.hasSuffix(".zstd") })
-            for path in [signaturePath].compactMap({ $0 }) + signaturePaths { rememberSource(path) }
+            for (path, signature) in preScanSignatures { sourceSignatures[path] = signature }
             if turnRows == 0 && sessionRows == 0 {
                 Task { @MainActor in
                     SourceHealthHub.shared.recordIdle(tool: source, durationMs: duration)

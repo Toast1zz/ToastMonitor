@@ -232,7 +232,8 @@ enum DSHParser {
                 var headerFound = false
                 var headerSessionID: String?
                 var headerProject: String?
-                let firstPass = forEachObject(path: file, fromOffset: offset, decompress: decompress) { item in
+                let firstPass = forEachObject(path: file, fromOffset: offset, decompress: decompress,
+                                              stopWhen: { offset == 0 && headerFound }) { item in
                     guard offset == 0, !headerFound,
                           item.obj["type"] as? String == "session" else { return }
                     headerFound = true
@@ -277,12 +278,16 @@ enum DSHParser {
             if offset > 0, let rows = persisted?["pending"] as? [[String: Any]] {
                 initialPending = rows.compactMap(PendingStep.from)
             }
+            let initialHeaderProvider = offset > 0 ? persisted?["headerProvider"] as? String : nil
+            let initialHeaderModel = offset > 0 ? persisted?["headerModel"] as? String : nil
             var foldPass = (count: 0, newOffset: offset)
             let parsed = parseLogEvents({ consume in
                 foldPass = forEachObject(path: file, fromOffset: offset,
                                          decompress: decompress, consume)
             }, sessionID: sid, project: project,
                pending: initialPending,
+               initialHeaderProvider: initialHeaderProvider,
+               initialHeaderModel: initialHeaderModel,
                fallbackTs: st.mtime / 1_000_000_000)
             newOffset = foldPass.newOffset
             if parsed.objectCount == 0 {
@@ -297,6 +302,8 @@ enum DSHParser {
             }
             var ctx: [String: Any] = ["sid": sid]
             if let project { ctx["cwd"] = project }
+            if let hp = parsed.headerProvider { ctx["headerProvider"] = hp }
+            if let hm = parsed.headerModel { ctx["headerModel"] = hm }
             if st.size < prev.size { ctx["_full_rescan"] = true }
             if !parsed.pending.isEmpty {
                 ctx["pending"] = parsed.pending.map(\.json)
@@ -316,11 +323,13 @@ enum DSHParser {
     @discardableResult
     static func forEachObject(path: String, fromOffset: Int64,
                                       decompress: (Data) -> Data?,
+                                      stopWhen: (() -> Bool)? = nil,
                                       _ body: ((offset: Int64, obj: [String: Any])) -> Void)
         -> (count: Int, newOffset: Int64) {
         guard path.hasSuffix(".zstd") else {
             var count = 0
             let newOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: fromOffset) {
+                if stopWhen?() == true { return }
                 count += 1
                 body($0)
             }
@@ -343,6 +352,7 @@ enum DSHParser {
         var count = 0
         var cursor = firstFrame
         while cursor < total {
+            if stopWhen?() == true { break }
             // DSH appends one tiny frame per event, so a log can hold tens of
             // thousands of them. The zstd CLI decodes concatenated frames, so
             // decode a bounded run of whole frames per call instead of
@@ -454,9 +464,11 @@ enum DSHParser {
         return (nil, false)
     }
 
+    private static let maxFrameBytes: UInt64 = 128 * 1024 * 1024
+
     private static func readFrame(handle: FileHandle, from start: UInt64, to end: UInt64)
         -> (data: Data?, failed: Bool) {
-        guard end > start else { return (nil, true) }
+        guard end > start, end - start <= maxFrameBytes else { return (nil, true) }
         do {
             try handle.seek(toOffset: start)
         } catch {
@@ -539,15 +551,17 @@ enum DSHParser {
         _ stream: (_ consume: ((offset: Int64, obj: [String: Any])) -> Void) -> Void,
         sessionID: String, project: String?,
         pending initialPending: [PendingStep] = [],
+        initialHeaderProvider: String? = nil,
+        initialHeaderModel: String? = nil,
         fallbackTs: Int64 = 0
-    ) -> (turns: [TurnRecord], firstTs: Int64, lastTs: Int64, model: String?, objectCount: Int, pending: [PendingStep]) {
+    ) -> (turns: [TurnRecord], firstTs: Int64, lastTs: Int64, model: String?, objectCount: Int, pending: [PendingStep], headerProvider: String?, headerModel: String?) {
         var turns: [TurnRecord] = []
         var pending: [String: PendingStep] = [:]
         for step in initialPending {
             pending["\(step.turn):\(step.step)"] = step
         }
-        var headerProvider: String?
-        var headerModel: String?
+        var headerProvider: String? = initialHeaderProvider
+        var headerModel: String? = initialHeaderModel
         var firstTs: Int64 = 0
         var lastTs: Int64 = 0
         var firstModel: String?
@@ -650,10 +664,12 @@ enum DSHParser {
             step.emitted = true
             pending[key] = step
         }
-        return (turns, firstTs, lastTs, firstModel, objectCount, Array(pending.values))
+        return (turns, firstTs, lastTs, firstModel ?? headerModel, objectCount, Array(pending.values), headerProvider, headerModel)
     }
 
     // MARK: - Cache mode
+
+    private static let maxProjCacheBytes: Int64 = 64 * 1024 * 1024
 
     /// Hermes-style delta over `session_projcache.json`: each session's
     /// cumulative `tokenUsage.totals` is diffed against the local
@@ -661,11 +677,24 @@ enum DSHParser {
     static func scanProjCache(database: any ParserStateStore = Database.shared)
         -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.dsh.sourceIsRemote else { return ([], []) }
-        guard FileManager.default.fileExists(atPath: projCachePath),
-              let data = try? Data(contentsOf: URL(fileURLWithPath: projCachePath)),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard FileManager.default.fileExists(atPath: projCachePath) else { return ([], []) }
+        if let st = FileScanner.fileStat(projCachePath), st.size > maxProjCacheBytes {
+            database.noteScanProblem("DSH projection cache too large (\(st.size) bytes)")
+            return ([], [])
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: projCachePath))
+        } catch {
+            database.noteScanProblem("DSH projection cache unreadable: \(error.localizedDescription)")
+            return ([], [])
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tables = root["tables"] as? [String: Any],
-              let sessions = tables["sessions"] as? [String: Any] else { return ([], []) }
+              let sessions = tables["sessions"] as? [String: Any] else {
+            database.noteScanProblem("DSH projection cache JSON invalid")
+            return ([], [])
+        }
 
         let prevTotals = database.sessionTotals()
         var turns: [TurnRecord] = []

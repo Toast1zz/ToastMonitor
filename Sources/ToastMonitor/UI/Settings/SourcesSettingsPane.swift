@@ -34,11 +34,10 @@ struct SourcesSettingsPane: View {
     var body: some View {
         dataSourcesSection
             .onAppear {
-                feedURL = remote.feedURL
-                for t in tools {
-                    sources[t] = t.sourceIsRemote
-                    effectiveSources[t] = t.sourceIsRemote
-                }
+                reloadFromDatabase()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
+                reloadFromDatabase()
             }
 
         remoteFeedSection
@@ -158,13 +157,21 @@ struct SourcesSettingsPane: View {
         }
     }
 
+    private func reloadFromDatabase() {
+        feedURL = remote.feedURL
+        for t in tools {
+            sources[t] = t.sourceIsRemote
+            effectiveSources[t] = t.sourceIsRemote
+        }
+    }
+
     private func sourceBinding(for tool: ToolKind) -> Binding<Bool> {
         Binding(
             get: { sources[tool] ?? (tool.defaultSource == "remote") },
             set: { newValue in
                 let generation = (sourceGeneration[tool] ?? 0) + 1
                 sourceGeneration[tool] = generation
-                DispatchQueue.global(qos: .userInitiated).async {
+                SettingsWriteQueue.shared.async {
                     let ok = tool.setSource(remote: newValue)
                     DispatchQueue.main.async {
                         guard sourceGeneration[tool] == generation else { return }
@@ -372,7 +379,7 @@ struct DataSettingsPane: View {
                     ?? "Restore failed; original data retained"
                 isWorking = false
                 if ok {
-                    app.refresh()
+                    app.databaseWasReplaced()
                     refreshPreviewQuietly()
                     loadBackups()
                 }
@@ -442,7 +449,7 @@ struct DataSettingsPane: View {
                 message = ok ? "Restored: \(receipt.backupPath)" : "Restore failed; backup retained"
                 isWorking = false
                 if ok {
-                    app.refresh()
+                    app.databaseWasReplaced()
                     refreshPreviewQuietly()
                 }
             }

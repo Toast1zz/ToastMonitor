@@ -326,10 +326,12 @@ final class AppState: ObservableObject {
 
     /// Re-reads everything after the store was replaced.
     func databaseWasReplaced() {
+        PerfCollector.resetCaches()
         MenuBarFontSettings.shared.reloadFromDatabase()
         UsagePeriodSettings.shared.reloadFromDatabase()
         QuotaAlertManager.shared.reloadFromDatabase()
         databaseProblem = Database.shared.openProblem
+        NotificationCenter.default.post(name: TMNotifications.databaseReplaced, object: nil)
         refresh(manual: true)
         CollectorEngine.shared.scheduleScan(force: true)
     }

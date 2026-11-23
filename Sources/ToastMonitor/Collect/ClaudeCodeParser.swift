@@ -107,10 +107,14 @@ enum ClaudeCodeParser {
             let pendingRewrite = FileScanner.contextNeedsFullRescan(prev.context)
             let sameAppendOnlyFile = FileScanner.isAppendOnly(path: file, stat: st, previous: prev)
             let offset = sameAppendOnlyFile ? prev.size : 0
+            let persisted = (sameAppendOnlyFile ? prev.context : nil)
+                .flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             var objectCount = 0
-            var sessionID = (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+            var sessionID = (persisted?["sid"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
             let encodedDir = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
-            var cwd: String?
+            var cwd: String? = (persisted?["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             var lastTs: Int64 = 0
             var firstTs: Int64 = 0
             var sessionModel: String?
@@ -180,14 +184,30 @@ enum ClaudeCodeParser {
             if DebugLog.enabled {
                 NSLog("[ToastMonitor][claude] %@ prev=(%lld,%lld) now=(%lld,%lld) objs=%d", (file as NSString).lastPathComponent, prev.size, prev.mtime, st.size, st.mtime, objectCount)
             }
+            func makeContext(pendingRescan: Bool) -> String? {
+                var ctx: [String: Any] = [:]
+                if let existing = prev.context?.data(using: .utf8),
+                   let decoded = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] {
+                    ctx = decoded
+                }
+                ctx["sid"] = sessionID
+                if let cwd { ctx["cwd"] = cwd }
+                if pendingRescan {
+                    ctx["_full_rescan"] = true
+                } else {
+                    ctx.removeValue(forKey: "_full_rescan")
+                }
+                return (try? JSONSerialization.data(withJSONObject: ctx))
+                    .flatMap { String(data: $0, encoding: .utf8) }
+            }
+
             if objectCount == 0 {
                 let pending = st.size < prev.size || pendingRewrite
                 database.setScanState(file, size: newOffset, mtime: st.mtime,
                                       identity: st.identity,
-                                      context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
+                                      context: makeContext(pendingRescan: pending))
                 continue
             }
-
 
             if lastTs > 0 {
                 sessions.append(SessionInfo(tool: .claude, sessionID: sessionID, title: nil,
@@ -196,7 +216,7 @@ enum ClaudeCodeParser {
             let pending = st.size < prev.size
             database.setScanState(file, size: newOffset, mtime: st.mtime,
                                   identity: st.identity,
-                                  context: FileScanner.contextWithFullRescan(prev.context, pending: pending))
+                                  context: makeContext(pendingRescan: pending))
         }
         return (turns, sessions)
     }

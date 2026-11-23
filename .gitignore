@@ -20,6 +20,7 @@ backups/
 DEEPSEEK_AUDIT_REPORT.md
 HERMES_AGENT_REMEDIATION_PLAN.md
 docs/AUDIT-*.md
+docs/CODEX-FIXES-*.md
 
 # External tool output & unrelated local work — never commit
 graphify-out/
