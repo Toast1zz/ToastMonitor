@@ -36,12 +36,11 @@ struct PerformanceView: View {
     /// Lines beyond this many models turn the chart into noise; the table
     /// still lists every model.
     private static let chartModelLimit = 6
-    /// A median of fewer samples than this is shown as "—".
-    private static let minSamples = 20
 
+    /// Every measured call counts, as in the chart: the query already drops
+    /// calls too short to time, so a rarely used model still reads its speed.
     private static func median(_ samples: [Double]?) -> Double? {
-        guard let samples, samples.count >= minSamples else { return nil }
-        return PerfStats.median(samples)
+        samples.flatMap(PerfStats.median)
     }
 
     private struct ModelRow {
