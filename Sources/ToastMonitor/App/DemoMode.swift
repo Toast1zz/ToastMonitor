@@ -65,6 +65,40 @@ enum DemoMode {
         }
         _ = db.insertTurns(turns)
 
+        // Seed per-call timing samples for the Performance page.
+        let perfMix: [(ToolKind, String, Double, Double, Int)] = [
+            (.claude, "claude-opus-5-5", 62, 1_150, 90),
+            (.claude, "claude-sonnet-5-5", 104, 680, 90),
+            (.codex, "gpt-6-sol", 138, 520, 90),
+            (.opencode, "deepseek-v4.1-flash", 88, 940, 80),
+        ]
+        var perfSamples: [PerfSample] = []
+        for back in stride(from: 90, through: 0, by: -1) {
+            guard rng.unit() < 0.78 else { continue }
+            let dayStartMs = (today - Int64(back) * day) * 1000
+            for (tool, model, baseTps, baseTtft, firstBack) in perfMix where back <= firstBack {
+                let count = 3 + Int(rng.unit() * 5)
+                for i in 0..<count {
+                    let reqMs = dayStartMs + Int64(9 * 3_600 + i * 2_400) * 1000
+                    guard reqMs < nowSeconds * 1000 - 60_000 else { break }
+                    let ttft = Int64(max(180, baseTtft * (0.72 + rng.unit() * 0.65)))
+                    let tps = max(25, baseTps * (0.82 + rng.unit() * 0.36))
+                    let outTokens = Int64(180 + rng.unit() * 900)
+                    let genMs = Int64(Double(outTokens) / tps * 1000)
+                    let firstMs = reqMs + ttft
+                    perfSamples.append(PerfSample(
+                        tool: tool,
+                        key: "demo-perf-\(tool.rawValue)-\(model)-\(back)-\(i)",
+                        model: model,
+                        requestMs: reqMs,
+                        firstTokenMs: firstMs,
+                        lastMs: firstMs + genMs,
+                        outputTokens: outTokens))
+                }
+            }
+        }
+        _ = db.upsertPerfSamples(perfSamples)
+
         let monthAgo = nowSeconds - 40 * day
         _ = db.upsertSubscription(Database.Subscription(
             id: 0, name: "Claude Pro", plan: "claude", startDate: monthAgo,

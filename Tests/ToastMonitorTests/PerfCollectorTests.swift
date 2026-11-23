@@ -269,4 +269,35 @@ final class PerfCollectorTests: XCTestCase {
         XCTAssertEqual(PerfStats.median([3, 1, 2]), 2)
         XCTAssertEqual(PerfStats.median([4, 1, 2, 3]), 2.5)
     }
+
+    func testPercentile() {
+        XCTAssertNil(PerfStats.percentile([], p: 0.9))
+        XCTAssertEqual(PerfStats.percentile([42], p: 0.9), 42)
+        // [10, 20, 30, 40, 50] -> pos 0.9 * 4 = 3.6 -> 40 + 0.6 * 10 = 46
+        XCTAssertEqual(try XCTUnwrap(PerfStats.percentile([50, 10, 40, 20, 30], p: 0.9)), 46, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testPerformanceViewBuildAndSort() throws {
+        let dayKey = PerformanceView.dayKey(for: Date())
+        let points = [
+            PerfPoint(day: dayKey, tool: "claude", model: "claude-opus-5-5", ttftMs: 1_000, tokensPerSecond: 60),
+            PerfPoint(day: dayKey, tool: "claude", model: "claude-opus-5-5", ttftMs: 2_000, tokensPerSecond: 80),
+            PerfPoint(day: dayKey, tool: "claude", model: "claude-opus-5-5", ttftMs: 3_000, tokensPerSecond: 70),
+            PerfPoint(day: dayKey, tool: "codex", model: "gpt-6-sol", ttftMs: 400, tokensPerSecond: 140),
+            PerfPoint(day: dayKey, tool: "omp", model: "custom-local-model", ttftMs: nil, tokensPerSecond: 110),
+        ]
+        let built = PerformanceView.build(points, range: .d7)
+        XCTAssertEqual(built.calls, 5)
+        XCTAssertEqual(built.providers.last, ModelProvider.other)
+        XCTAssertEqual(built.rows.first?.model, "Opus 5.5")
+        XCTAssertEqual(try XCTUnwrap(built.rows.first?.ttftP90Ms), 2_800, accuracy: 0.001)
+
+        let byP90 = PerformanceView.sorted(
+            built.rows,
+            by: .init(column: .ttftP90, ascending: true)
+        )
+        XCTAssertEqual(byP90.first?.model, "GPT-6 Sol")
+        XCTAssertEqual(byP90.last?.model, "Custom Local Model", "nil TTFT P90 sorts last")
+    }
 }

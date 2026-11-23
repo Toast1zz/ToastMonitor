@@ -3384,6 +3384,7 @@ final class Database: @unchecked Sendable {
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)
         }
+        if ok && !samples.isEmpty { bumpDataVersion() }
         return ok
     }
 

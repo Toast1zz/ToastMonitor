@@ -360,6 +360,57 @@ private struct SegmentedControl<Value: Hashable & Identifiable>: NSViewRepresent
     }
 }
 
+/// Lays children out left to right and wraps to a new line when the row is full.
+struct FlowLayout: Layout {
+    var horizontalSpacing: CGFloat
+    var verticalSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
+        let width = rows.map { $0.width }.max() ?? 0
+        let height = rows.reduce(0) { $0 + $1.height } + verticalSpacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for index in row.items {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2),
+                                      proposal: ProposedViewSize(size))
+                x += size.width + horizontalSpacing
+            }
+            y += row.height + verticalSpacing
+        }
+    }
+
+    private struct Row {
+        var items: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let needed = row.items.isEmpty ? size.width : row.width + horizontalSpacing + size.width
+            if !row.items.isEmpty, needed > width {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.items.isEmpty ? size.width : row.width + horizontalSpacing + size.width
+            row.height = max(row.height, size.height)
+            row.items.append(index)
+        }
+        if !row.items.isEmpty { rows.append(row) }
+        return rows
+    }
+}
+
 extension View {
     /// Scrollers that appear only while scrolling, whatever the system
     /// scroll bar setting. For short lists inside a card, whose clipped last

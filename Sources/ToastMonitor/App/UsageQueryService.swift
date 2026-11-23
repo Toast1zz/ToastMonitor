@@ -63,6 +63,7 @@ final class UsageQueryService: @unchecked Sendable {
     /// Daily aggregate / heatmap cache, same keying, so the popover's
     /// minute ticker does not rerun the 371-day GROUP BY.
     private var cachedDailyAggs: (key: String, aggs: [Database.DayAgg])?
+    private var cachedPerfPoints: (key: String, points: [PerfPoint])?
     /// Estimated Claude tokens used outside this Mac. Recomputed only when a
     /// new quota sample lands or every 5 minutes — not on every new turn,
     /// since it scans all local Claude turns since the first sample.
@@ -187,7 +188,14 @@ final class UsageQueryService: @unchecked Sendable {
 
     func loadPerfPoints(days: Int, completion: @escaping @MainActor @Sendable ([PerfPoint]) -> Void) {
         queue.async {
+            let todayKey = Self.localDayKey(self.currentDate())
+            let key = "\(self.database.dataVersionKey())|day=\(todayKey)|days=\(days)"
+            if let c = self.cachedPerfPoints, c.key == key {
+                DispatchQueue.main.async { completion(c.points) }
+                return
+            }
             let points = self.database.perfPoints(days: days)
+            self.cachedPerfPoints = (key, points)
             DispatchQueue.main.async { completion(points) }
         }
     }

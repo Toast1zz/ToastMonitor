@@ -565,7 +565,7 @@ final class DashboardPageController: NSViewController {
                 self?.analysisReadyForCapture = ready
             }).environmentObject(AppState.shared))
         case .performance:
-            page = AnyView(PerformanceView())
+            page = AnyView(PerformanceView().environmentObject(AppState.shared))
         case .plans:
             page = AnyView(PlansView().environmentObject(AppState.shared))
         case .sessions:

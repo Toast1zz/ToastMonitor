@@ -143,6 +143,14 @@ enum TMDesign {
         adaptiveModelColor(light: (0.49, 0.30, 0.72), dark: (0.70, 0.55, 0.94)),
         adaptiveModelColor(light: (0.70, 0.25, 0.45), dark: (0.94, 0.50, 0.67)),
         adaptiveModelColor(light: (0.40, 0.43, 0.48), dark: (0.68, 0.71, 0.76)),
+        adaptiveModelColor(light: (0.80, 0.20, 0.18), dark: (0.98, 0.45, 0.42)),
+        adaptiveModelColor(light: (0.42, 0.58, 0.12), dark: (0.66, 0.84, 0.36)),
+        adaptiveModelColor(light: (0.12, 0.30, 0.58), dark: (0.36, 0.52, 0.86)),
+        adaptiveModelColor(light: (0.55, 0.36, 0.20), dark: (0.80, 0.62, 0.44)),
+        adaptiveModelColor(light: (0.72, 0.22, 0.70), dark: (0.92, 0.50, 0.90)),
+        adaptiveModelColor(light: (0.08, 0.62, 0.78), dark: (0.36, 0.82, 0.94)),
+        adaptiveModelColor(light: (0.85, 0.50, 0.10), dark: (1.00, 0.72, 0.40)),
+        adaptiveModelColor(light: (0.30, 0.25, 0.55), dark: (0.58, 0.52, 0.86)),
     ]
 
     private static func adaptiveModelColor(

@@ -42,9 +42,18 @@ enum PerfStats {
     static let minGenerationMs: Int64 = 250
 
     static func median(_ values: [Double]) -> Double? {
+        percentile(values, p: 0.5)
+    }
+
+    static func percentile(_ values: [Double], p: Double) -> Double? {
         guard !values.isEmpty else { return nil }
         let sorted = values.sorted()
-        let mid = sorted.count / 2
-        return sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+        let clamped = min(max(p, 0), 1)
+        let pos = clamped * Double(sorted.count - 1)
+        let lo = Int(floor(pos))
+        let hi = Int(ceil(pos))
+        if lo == hi { return sorted[lo] }
+        let frac = pos - Double(lo)
+        return sorted[lo] + (sorted[hi] - sorted[lo]) * frac
     }
 }
