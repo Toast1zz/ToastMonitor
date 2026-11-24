@@ -336,8 +336,7 @@ struct PopoverHomeView: View {
             .buttonStyle(.plain)
             .help("Click to switch compact or full count")
             HStack(spacing: 16) {
-                // OpenRouter only reports a monthly window, as the Overview says too.
-                HeroChip(label: period == .all && AccountConnection.openRouter ? "Spent · OR recent month" : "Spent",
+                HeroChip(label: "Spent",
                          value: combinedSpentText,
                          problem: deepseekSpendPending
                              ? RowProblem(title: "DeepSeek spending not included yet",
@@ -353,9 +352,11 @@ struct PopoverHomeView: View {
     }
 
     /// DeepSeek account billing is part of Spent but has not landed (or is
-    /// stale) for this window — flagged on the Spent chip.
+    /// stale) for this window — flagged on the Spent chip. `All Time` never
+    /// fetches a DeepSeek billing window, so it is never pending.
     private var deepseekSpendPending: Bool {
-        deepseek.state.kind == .platform
+        period != .all
+            && deepseek.state.kind == .platform
             && (includedDeepSeekSpend == nil
                 || deepseek.stale(deepseek.state.spendUpdated, error: deepseek.state.spendError, now: now))
     }

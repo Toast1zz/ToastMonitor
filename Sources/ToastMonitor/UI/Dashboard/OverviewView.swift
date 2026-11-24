@@ -164,7 +164,7 @@ struct OverviewView: View {
     }
 
     private var actualSpendLabel: String {
-        period == .all && AccountConnection.openRouter ? "Actual Spend · OR recent mo" : "Actual Spend"
+        "Actual Spend"
     }
 
     private var statusLine: some View {
