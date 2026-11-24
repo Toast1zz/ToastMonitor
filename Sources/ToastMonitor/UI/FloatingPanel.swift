@@ -26,7 +26,7 @@ private final class PanelSurfaceView: NSVisualEffectView {
         // Clip SwiftUI content (and hover fills) to the same corner.
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .circular
+        layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
 
         let diameter = cornerRadius * 2 + 1

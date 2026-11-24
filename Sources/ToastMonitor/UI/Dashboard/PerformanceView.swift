@@ -742,6 +742,10 @@ struct PerformanceView: View {
                             hoveredModel = nil
                         }
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(r.model)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAddTraits(pinnedModel == r.model ? .isSelected : [])
                 }
             }
             // The scroller runs in the card's margin, clear of the figures.

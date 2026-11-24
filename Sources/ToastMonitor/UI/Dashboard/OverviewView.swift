@@ -6,6 +6,7 @@ import SwiftUI
 /// the trailing year.
 struct OverviewView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dashboardActiveTab) private var activeTab
     @EnvironmentObject var app: AppState
     @ObservedObject private var health = SourceHealthHub.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
@@ -13,7 +14,6 @@ struct OverviewView: View {
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @AppStorage(DeepSeekBilling.exchangeRateKey) private var cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
     @State private var period: Period = .today
-    @State private var hoveredDay: HeatmapDay?
 
     /// Page-wide period: the figures and the breakdowns follow it. The
     /// heatmap (one year) is deliberately independent.
@@ -60,24 +60,21 @@ struct OverviewView: View {
                 DashCard("Models") { scrolling(ShareList(items: modelItems)) }
             }
             .frame(minHeight: 140, maxHeight: .infinity)
-            DashCard("Activity", trailing: { activitySummary }) {
-                HeatmapGrid(
-                    weeks: heatmapWeeks,
-                    heatmap: app.heatmap,
-                    heatmapCost: app.heatmapCost,
-                    thresholds: PopoverHeatmap.thresholds(heatmapWeeks.joined().compactMap { $0.flatMap { app.heatmap[$0] } }),
-                    weekdayLabels: weekdayLabels,
-                    hoveredDay: $hoveredDay
-                )
-            }
-            .dashFixedHeight()
+            ActivityHeatmapCard(
+                weeks: heatmapWeeks,
+                heatmap: app.heatmap,
+                heatmapCost: app.heatmapCost,
+                weekdayLabels: weekdayLabels
+            )
         }
         // Account-wide DeepSeek spend for this page's period. It is fetched
         // beside the popover's own period rather than by re-selecting the
         // shared one; the client only fetches while a surface is visible.
         .task(id: period) {
             while !Task.isCancelled {
-                deepseek.loadSpendIfNeeded(for: period.slot, configuration: periodSettings.configuration)
+                if activeTab == nil || activeTab == .overview {
+                    deepseek.loadSpendIfNeeded(for: period.slot, configuration: periodSettings.configuration)
+                }
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
@@ -86,24 +83,6 @@ struct OverviewView: View {
     private func scrolling<V: View>(_ content: V) -> some View {
         ScrollView(.vertical) { content }
             .scrollIndicators(.automatic)
-    }
-
-    /// Trailing text of the Activity card: the hovered day, else the year's
-    /// active-day count. One fixed line so hovering never reflows the card.
-    private var activitySummary: some View {
-        let text: String
-        if let h = hoveredDay {
-            text = "\(Format.shortDayKey(h.key)) · \(Format.compact(h.tokens)) tokens"
-                + (h.cost > 0 ? " · \(Format.money(h.cost))" : "")
-        } else {
-            let active = app.heatmap.values.filter { $0 > 0 }.count
-            text = active == 0 ? "" : "\(active) active day\(active == 1 ? "" : "s") in the past year"
-        }
-        return Text(text)
-            .font(TMType.regular(TMType.caption))
-            .tmMonospacedDigit()
-            .foregroundStyle(TMDesign.quiet)
-            .lineLimit(1)
     }
 
     /// The period is a filter on this page, so it is a segmented control:
@@ -167,7 +146,7 @@ struct OverviewView: View {
     /// Actual spend = billed/direct cost + OpenRouter + amortized subscriptions.
     private var actualSpend: Double {
         let range = periodSettings.configuration.range(for: period.slot, now: Date())
-        let orUsage = Database.shared.openRouterSpend(since: range.start, current: orClient.state.creditsUsage)
+        let orUsage = app.openRouterSpend(since: range.start, current: orClient.state.creditsUsage)
         return periodCost.actual + orUsage
             + SubscriptionMath.amortized(slot: period.slot, configuration: periodSettings.configuration,
                                          subscriptions: app.subscriptions)
@@ -185,14 +164,20 @@ struct OverviewView: View {
     }
 
     private var actualSpendLabel: String {
-        return "Actual Spend"
+        period == .all && AccountConnection.openRouter ? "Actual Spend · OR recent mo" : "Actual Spend"
     }
 
     private var statusLine: some View {
         let broken = health.sources.filter { $0.error != nil }.count
         let stale = health.sources.filter { $0.error == nil && $0.isStale }.count
         let summary = TMHealthStatus(brokenCount: broken, staleCount: stale, lastScan: app.lastScan)
-        return TMStatusPill(text: summary.text, color: summary.color, symbol: summary.symbol)
+        return Button {
+            SettingsWindowController.shared.show(pane: .sources)
+        } label: {
+            TMStatusPill(text: summary.text, color: summary.color, symbol: summary.symbol)
+        }
+        .buttonStyle(.plain)
+        .help("Open Sources settings")
     }
 
     // MARK: - Heatmap (one year, month axis)
@@ -319,6 +304,50 @@ struct HeatmapDay: Equatable {
     let cost: Double
 }
 
+/// Self-contained Activity card so hovering over cells only re-renders the
+/// card header readout instead of the entire Overview page.
+private struct ActivityHeatmapCard: View {
+    let weeks: [[Int64?]]
+    let heatmap: [Int64: Int64]
+    let heatmapCost: [Int64: Double]
+    let weekdayLabels: [String]
+    @State private var hoveredDay: HeatmapDay?
+
+    private var thresholds: [Int64] {
+        PopoverHeatmap.thresholds(weeks.joined().compactMap { $0.flatMap { heatmap[$0] } })
+    }
+
+    var body: some View {
+        DashCard("Activity", trailing: { activitySummary }) {
+            HeatmapGrid(
+                weeks: weeks,
+                heatmap: heatmap,
+                heatmapCost: heatmapCost,
+                thresholds: thresholds,
+                weekdayLabels: weekdayLabels,
+                hoveredDay: $hoveredDay
+            )
+        }
+        .dashFixedHeight()
+    }
+
+    private var activitySummary: some View {
+        let text: String
+        if let h = hoveredDay {
+            text = "\(Format.shortDayKey(h.key)) · \(Format.compact(h.tokens)) tokens"
+                + (h.cost > 0 ? " · \(Format.money(h.cost))" : "")
+        } else {
+            let active = heatmap.values.filter { $0 > 0 }.count
+            text = active == 0 ? "" : "\(active) active day\(active == 1 ? "" : "s") in the past year"
+        }
+        return Text(text)
+            .font(TMType.regular(TMType.caption))
+            .tmMonospacedDigit()
+            .foregroundStyle(TMDesign.quiet)
+            .lineLimit(1)
+    }
+}
+
 /// One year of daily usage, Monday-first (or Sunday-first) columns of weeks.
 /// The cell size is derived from the available width so the grid always fills
 /// the card; hover is reported through `hoveredDay` so the card header, not
@@ -339,6 +368,8 @@ private struct HeatmapGrid: View {
 
     var body: some View {
         let cell = cellSize(for: width)
+        let gridWidth = CGFloat(weeks.count) * cell + CGFloat(max(0, weeks.count - 1)) * gutter
+        let gridHeight = 7 * cell + 6 * gutter
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: gutter) {
@@ -361,26 +392,40 @@ private struct HeatmapGrid: View {
                         }
                     }
                     .frame(height: monthAxisHeight - gutter, alignment: .topLeading)
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: gutter),
-                                             count: weeks.count),
-                              alignment: .leading, spacing: gutter) {
-                        // Row-major ordering renders weekday rows.
-                        ForEach(0..<7, id: \.self) { dayIndex in
-                            ForEach(weeks.indices, id: \.self) { weekIndex in
-                                heatCell(weeks[weekIndex][dayIndex], size: cell)
+                    Canvas { context, _ in
+                        let stride = cell + gutter
+                        for weekIndex in weeks.indices {
+                            for dayIndex in 0..<7 {
+                                let day = weeks[weekIndex][dayIndex]
+                                let rect = CGRect(
+                                    x: CGFloat(weekIndex) * stride,
+                                    y: CGFloat(dayIndex) * stride,
+                                    width: cell,
+                                    height: cell
+                                )
+                                let path = Path(roundedRect: rect, cornerRadius: 3, style: .continuous)
+                                let color: Color
+                                if let day, day > 0 {
+                                    let tokenCount = heatmap[day] ?? 0
+                                    let level = PopoverHeatmap.level(tokenCount, thresholds: thresholds)
+                                    color = level > 0
+                                        ? TMDesign.accent.opacity(PopoverHeatmap.levelOpacity[level - 1])
+                                        : Color.primary.opacity(0.07)
+                                } else {
+                                    color = Color.primary.opacity(day == 0 ? 0.03 : 0.07)
+                                }
+                                context.fill(path, with: .color(color))
                             }
                         }
                     }
-                    .overlay {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                updateHover(phase, cell: cell)
-                            }
+                    .frame(width: max(gridWidth, 1), height: max(gridHeight, 1))
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        updateHover(phase, cell: cell)
                     }
                 }
             }
-            .frame(height: monthAxisHeight + 7 * cell + 6 * gutter, alignment: .topLeading)
+            .frame(height: monthAxisHeight + gridHeight, alignment: .topLeading)
             heatLegend
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -474,31 +519,6 @@ private struct HeatmapGrid: View {
             if hoveredDay != next { hoveredDay = next }
         case .ended:
             hoveredDay = nil
-        }
-    }
-
-    @ViewBuilder
-    private func heatCell(_ day: Int64?, size: CGFloat) -> some View {
-        // 0 is the future-day sentinel (buildHeatmapWeeks writes it for
-        // date > now); it renders fainter than a real zero-token day.
-        if let day, day > 0 {
-            let tokenCount = heatmap[day] ?? 0
-            let level = PopoverHeatmap.level(tokenCount, thresholds: thresholds)
-            let label = Format.shortDayKey(day)
-            let cost = heatmapCost[day] ?? 0
-            let valueText = "\(Format.full(tokenCount)) tokens" + (cost > 0 ? ", \(Format.money(cost))" : "")
-
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(level > 0 ? TMDesign.accent.opacity(PopoverHeatmap.levelOpacity[level - 1]) : Color.primary.opacity(0.07))
-                .frame(width: size, height: size)
-                .contentShape(Rectangle())
-                .accessibilityLabel(Text(label))
-                .accessibilityValue(Text(valueText))
-        } else {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(Color.primary.opacity(day == 0 ? 0.03 : 0.07))
-                .frame(width: size, height: size)
-                .accessibilityHidden(true)
         }
     }
 }

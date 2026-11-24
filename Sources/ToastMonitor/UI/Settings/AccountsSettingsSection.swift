@@ -138,14 +138,14 @@ struct AccountsSettingsSection: View {
                     .foregroundStyle(.secondary)
             }
             account("go", "OpenCode Go", symbol: "g.circle.fill", color: ToolKind.opencode.color,
-                    status: goClient.configured ? "Connected" : "Not connected") {
-                credentials(configured: goClient.configured, label: "Workspace",
+                    status: goStatus) {
+                credentials(configured: goClient.configured,
+                            canClear: AccountConnection.openCodeGo,
+                            label: "Workspace",
                             change: { showGoForm = true }, clear: { pendingClear = .openCodeGo })
             }
             account("codex", "Codex", symbol: ToolKind.codex.symbol, color: ToolKind.codex.color,
-                    status: codexQuota.enabled
-                        ? (codexQuota.state.lastSync > 0 ? "Connected" : "Not connected")
-                        : "Not connected") {
+                    status: codexStatus) {
                 Toggle("Read Codex quota", isOn: Binding(
                     get: { codexQuota.enabled },
                     set: { codexQuota.setEnabled($0) }
@@ -162,8 +162,10 @@ struct AccountsSettingsSection: View {
                 TextField("Name", text: $codexName, prompt: Text(codexAutoName))
             }
             account("cc", "Command Code", symbol: "c.circle.fill", color: TMDesign.commandCode,
-                    status: ccQuota.state.configured ? (ccQuota.state.planName ?? "Connected") : "Not connected") {
-                credentials(configured: ccQuota.state.configured, label: "Session",
+                    status: ccStatus) {
+                credentials(configured: ccQuota.state.configured,
+                            canClear: AccountConnection.commandCode,
+                            label: "Session",
                             change: { showCCForm = true }, clear: { pendingClear = .commandCode })
             }
             account("grok", "Grok", symbol: "x.circle.fill", color: TMDesign.grok,
@@ -193,13 +195,14 @@ struct AccountsSettingsSection: View {
                 }
             }
             account("router", "OpenRouter", symbol: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color,
-                    status: orClient.hasKey ? keyCountText : "Not connected") {
-                credentials(configured: orClient.hasKey, label: "API keys",
+                    status: routerStatus) {
+                credentials(configured: orClient.hasKey,
+                            canClear: AccountConnection.openRouter || orClient.state.error != nil,
+                            label: "API keys",
                             change: { showORForm = true }, clear: { pendingClear = .openRouter })
             }
             account("deepseek", "DeepSeek", symbol: "d.circle.fill", color: ToolKind.dsh.color,
-                    status: deepseek.state.kind == nil ? "Not connected"
-                        : (deepseek.state.kind == .platform ? "Platform account" : "API key")) {
+                    status: deepseekStatus) {
                 DeepSeekAccountSettings()
             }
         }
@@ -208,6 +211,15 @@ struct AccountsSettingsSection: View {
                 rowVisible[key] = PopoverAccountRows.isVisible(key)
             }
             codexBilling = Database.shared.setting("codex_billing_mode") ?? "api"
+            if let key = SettingsWindowController.shared.consumePendingExpandAccount() {
+                expanded.insert(key)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.expandAccount)) { note in
+            if let key = note.object as? String {
+                expanded.insert(key)
+                _ = SettingsWindowController.shared.consumePendingExpandAccount()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
             CodexBillingModeCoordinator.shared.reloadFromDatabase()
@@ -255,6 +267,7 @@ struct AccountsSettingsSection: View {
         } label: {
             LabeledContent {
                 Text(status)
+                    .foregroundStyle(status == "Error" || status == "Sign-in expired" ? TMDesign.danger : .secondary)
             } label: {
                 HStack(spacing: 8) {
                     // Decorative: the system would read its symbol name, such
@@ -271,15 +284,18 @@ struct AccountsSettingsSection: View {
         .accessibilityValue(status)
     }
 
-    private func credentials(configured: Bool, label: String,
+    private func credentials(configured: Bool,
+                             canClear: Bool = false,
+                             label: String,
                              change: @escaping () -> Void,
                              clear: @escaping () -> Void) -> some View {
-        LabeledContent(label) {
+        let active = configured || canClear
+        return LabeledContent(label) {
             HStack {
-                if configured {
+                if active {
                     Button("Clear", role: .destructive, action: clear)
                 }
-                Button(configured ? "Change…" : "Set Up…", action: change)
+                Button(active ? "Change…" : "Set Up…", action: change)
             }
         }
     }
@@ -298,6 +314,37 @@ struct AccountsSettingsSection: View {
         guard claudeQuota.enabled else { return "Not connected" }
         if claudeQuota.state.error != nil { return "Error" }
         return claudeQuota.state.configured || claudeQuota.state.lastSync > 0 ? "Connected" : "Not signed in"
+    }
+
+    private var goStatus: String {
+        if goClient.state.error != nil, AccountConnection.openCodeGo { return "Error" }
+        guard goClient.configured else { return "Not connected" }
+        return "Connected"
+    }
+
+    private var codexStatus: String {
+        guard codexQuota.enabled else { return "Not connected" }
+        if codexQuota.state.error != nil { return "Error" }
+        return codexQuota.state.lastSync > 0 ? "Connected" : "Not connected"
+    }
+
+    private var ccStatus: String {
+        if let err = ccQuota.state.error, err != "Not configured" { return "Error" }
+        guard ccQuota.state.configured else { return "Not connected" }
+        return ccQuota.state.planName ?? "Connected"
+    }
+
+    private var routerStatus: String {
+        guard orClient.hasKey else { return "Not connected" }
+        if orClient.state.authInvalid || orClient.state.error != nil { return "Error" }
+        return keyCountText
+    }
+
+    private var deepseekStatus: String {
+        guard let kind = deepseek.state.kind else { return "Not connected" }
+        if deepseek.state.expired { return "Sign-in expired" }
+        if deepseek.state.balanceError != nil { return "Error" }
+        return kind == .platform ? "Platform account" : "API key"
     }
 
     private var grokStatus: String {

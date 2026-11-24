@@ -73,12 +73,16 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     private var current: SettingsPane?
     private var closeObserver: NSObjectProtocol?
     private var lifecycleGeneration = 0
+    private(set) var pendingExpandAccount: String?
 
     @objc func showSettings(_ sender: Any?) {
         show()
     }
 
-    func show(pane: SettingsPane? = nil) {
+    func show(pane: SettingsPane? = nil, expandAccount: String? = nil) {
+        if let expandAccount {
+            pendingExpandAccount = expandAccount
+        }
         let target = pane ?? current ?? Self.savedPane
         let window = self.window ?? makeWindow()
         let wasVisible = window.isVisible
@@ -98,6 +102,16 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
             }
         }
         clearInitialFocus()
+        if let expandAccount {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: TMNotifications.expandAccount, object: expandAccount)
+            }
+        }
+    }
+
+    func consumePendingExpandAccount() -> String? {
+        defer { pendingExpandAccount = nil }
+        return pendingExpandAccount
     }
 
     private static var savedPane: SettingsPane {

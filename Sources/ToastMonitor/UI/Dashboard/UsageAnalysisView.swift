@@ -35,6 +35,15 @@ struct UsageAnalysisView: View {
         var id: String { rawValue }
     }
 
+    enum SortColumn {
+        case tokens, calls, cost
+    }
+
+    struct TableSort: Equatable {
+        var column: SortColumn
+        var ascending: Bool
+    }
+
     @State private var range: Range = .d30
     @State private var grouping: Grouping = .byTool
     @State private var metric: Metric = .tokens
@@ -46,6 +55,8 @@ struct UsageAnalysisView: View {
     @State private var isLoading = true
     @State private var needsReload = false
     @State private var hoveredDay: Int64?
+    @State private var hoveredName: String?
+    @State private var sort: TableSort?
     /// Model -> color, assigned by usage rank so distinct models always get
     /// distinct palette entries (hash-based mapping collided).
     @State private var modelColors: [String: Color] = [:]
@@ -238,40 +249,51 @@ struct UsageAnalysisView: View {
         }
         let grouping = self.grouping
         let range = self.range
+        let existingColors = self.modelColors
         if grouping == .byTool {
             UsageQueryService.shared.loadDailyAggs(days: range.days) { aggs in
                 guard loadID == requestID else { return }
-                isLoading = false
-                let built = Self.build(aggs: aggs, modelAggs: [],
-                                       grouping: grouping, range: range,
-                                       modelColors: self.modelColors)
-                self.analysis = built
-                if showSpinner || (self.hoveredDay.map { built.tokenByDay[$0] == nil && built.costByDay[$0] == nil } ?? false) {
-                    self.hoveredDay = nil
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let built = Self.build(aggs: aggs, modelAggs: [],
+                                           grouping: grouping, range: range,
+                                           modelColors: existingColors)
+                    DispatchQueue.main.async {
+                        guard loadID == requestID else { return }
+                        isLoading = false
+                        self.analysis = built
+                        if showSpinner || (self.hoveredDay.map { built.tokenByDay[$0] == nil && built.costByDay[$0] == nil } ?? false) {
+                            self.hoveredDay = nil
+                        }
+                        readinessChanged?(true)
+                    }
                 }
-                readinessChanged?(true)
             }
         } else {
             UsageQueryService.shared.loadDailyAggsByModel(days: range.days) { aggs in
                 guard loadID == requestID else { return }
-                isLoading = false
-                let colors = Self.assignModelColors(aggs)
-                self.modelColors = colors
-                let built = Self.build(aggs: [], modelAggs: aggs,
-                                       grouping: grouping, range: range,
-                                       modelColors: colors)
-                self.analysis = built
-                if showSpinner || (self.hoveredDay.map { built.tokenByDay[$0] == nil && built.costByDay[$0] == nil } ?? false) {
-                    self.hoveredDay = nil
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let colors = Self.assignModelColors(aggs)
+                    let built = Self.build(aggs: [], modelAggs: aggs,
+                                           grouping: grouping, range: range,
+                                           modelColors: colors)
+                    DispatchQueue.main.async {
+                        guard loadID == requestID else { return }
+                        isLoading = false
+                        self.modelColors = colors
+                        self.analysis = built
+                        if showSpinner || (self.hoveredDay.map { built.tokenByDay[$0] == nil && built.costByDay[$0] == nil } ?? false) {
+                            self.hoveredDay = nil
+                        }
+                        readinessChanged?(true)
+                    }
                 }
-                readinessChanged?(true)
             }
         }
     }
 
     /// Rank models by total tokens (descending) and hand each the next
     /// palette color — the top model gets the first color, no collisions.
-    private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)]) -> [String: Color] {
+    nonisolated private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)]) -> [String: Color] {
         let totals: [String: Int64] = aggs.reduce(into: [:]) { acc, row in
             acc[ModelName.display(row.model), default: 0] += row.totalTokens
         }
@@ -299,7 +321,7 @@ struct UsageAnalysisView: View {
         }
     }
 
-    private static func date(fromDayKey key: Int64) -> Date? {
+    nonisolated private static func date(fromDayKey key: Int64) -> Date? {
         var c = DateComponents()
         c.year = Int(key) / 10_000
         c.month = (Int(key) / 100) % 100
@@ -322,7 +344,7 @@ struct UsageAnalysisView: View {
 
     /// One pass: per-day × name token sums, per-name totals and per-day cost —
     /// every chart and table input.
-    private static func build(aggs: [Database.DayAgg],
+    nonisolated private static func build(aggs: [Database.DayAgg],
                               modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)],
                               grouping: Grouping,
                               range: Range,
@@ -431,11 +453,11 @@ struct UsageAnalysisView: View {
                             xDomain: first...end)
     }
 
-    private static let legendLimit = 5
-    private static let otherLabel = "Other"
-    private static let otherColor = Color.primary.opacity(0.25)
+    nonisolated private static let legendLimit = 5
+    nonisolated private static let otherLabel = "Other"
+    nonisolated private static let otherColor = Color.primary.opacity(0.25)
 
-    private static func tokenValue(_ row: Row, grouping: Grouping) -> Int64 {
+    nonisolated private static func tokenValue(_ row: Row, grouping: Grouping) -> Int64 {
         if grouping == .byTool {
             return ToolKind(rawValue: row.key)?.totalTokens(input: row.input,
                                                             output: row.output,
@@ -445,7 +467,7 @@ struct UsageAnalysisView: View {
         return row.totalTokens ?? 0
     }
 
-    private static func color(for name: String, grouping: Grouping, modelColors: [String: Color]) -> Color {
+    nonisolated private static func color(for name: String, grouping: Grouping, modelColors: [String: Color]) -> Color {
         if grouping == .byTool {
             return TMDesign.sourceColor(name)
         }
@@ -543,17 +565,15 @@ struct UsageAnalysisView: View {
                                 let index = Calendar.current.dateComponents(
                                     [.day], from: data.xDomain.lowerBound, to: date).day ?? 0
                                 let centerX = plot.origin.x + (CGFloat(index) + 0.5) * dayWidth
-                                // The callout sits beside the bar, on whichever
-                                // side has room, so it never covers the bar.
-                                let onRight = centerX < geo.size.width / 2
+                                let calloutWidth: CGFloat = 210
+                                let gap: CGFloat = 10
+                                let onRight = centerX + gap + calloutWidth <= geo.size.width
+                                let xPos = onRight
+                                    ? min(centerX + gap, max(0, geo.size.width - calloutWidth))
+                                    : max(0, centerX - gap - calloutWidth)
                                 dayCallout(key: key, segments: segments)
-                                    .fixedSize()
-                                    .frame(width: geo.size.width, height: geo.size.height,
-                                           alignment: onRight ? .topLeading : .topTrailing)
-                                    .padding(onRight ? .leading : .trailing,
-                                             onRight ? centerX + dayWidth
-                                                     : geo.size.width - centerX + dayWidth)
-                                    .padding(.top, 4)
+                                    .frame(width: calloutWidth)
+                                    .offset(x: xPos, y: plot.origin.y + 4)
                                     .allowsHitTesting(false)
                             }
                         }
@@ -606,18 +626,19 @@ struct UsageAnalysisView: View {
     // MARK: - Aggregate table
 
     private var aggTable: some View {
-        let rows = analysis?.aggregates ?? []
+        let rows = sortedAggregates(analysis?.aggregates ?? [])
         return Group {
             if rows.isEmpty {
                 Text("No data")
                     .font(TMType.regular(TMType.body))
                     .foregroundStyle(TMDesign.quiet)
             } else {
-                // Up to four rows at full height; more scroll inside the card
+                // Up to six rows at full height; more scroll inside the card
                 // so the chart keeps its share of the page.
                 ScrollView(.vertical) { detailsGrid(rows) }
+                    .overlayScrollers()
                     .frame(height: Self.detailsHeaderHeight
-                           + CGFloat(min(rows.count, 4)) * Self.detailsRowHeight)
+                           + CGFloat(min(rows.count, 6)) * Self.detailsRowHeight)
             }
         }
     }
@@ -625,14 +646,53 @@ struct UsageAnalysisView: View {
     private static let detailsHeaderHeight: CGFloat = 26
     private static let detailsRowHeight: CGFloat = 38
 
+    private func sortedAggregates(_ rows: [AggregateRow]) -> [AggregateRow] {
+        guard let sort else { return rows }
+        return rows.sorted { a, b in
+            let cmp: Bool
+            switch sort.column {
+            case .tokens: cmp = a.tokens < b.tokens
+            case .calls: cmp = a.calls < b.calls
+            case .cost: cmp = a.cost < b.cost
+            }
+            return sort.ascending ? cmp : !cmp
+        }
+    }
+
+    private func sortHeader(_ title: String, _ column: SortColumn) -> some View {
+        let active = sort?.column == column
+        let ascending = sort?.ascending ?? false
+        return Button {
+            sort = active
+                ? TableSort(column: column, ascending: !ascending)
+                : TableSort(column: column, ascending: false)
+        } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                Image(systemName: active && ascending ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(active ? 1 : 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(active ? (ascending ? "Ascending" : "Descending") : "")
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
     private func detailsGrid(_ rows: [AggregateRow]) -> some View {
                 Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 0) {
                     GridRow {
-                        Text(displayGrouping == .byTool ? "Tool" : "Model")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("Tokens").gridColumnAlignment(.trailing)
-                        Text("Calls").gridColumnAlignment(.trailing)
-                        Text("Cost").gridColumnAlignment(.trailing)
+                        Button { sort = nil } label: {
+                            Text(displayGrouping == .byTool ? "Tool" : "Model")
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reset to default ranking by tokens")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        sortHeader("Tokens", .tokens).gridColumnAlignment(.trailing)
+                        sortHeader("Calls", .calls).gridColumnAlignment(.trailing)
+                        sortHeader("Cost", .cost).gridColumnAlignment(.trailing)
                         Text("Share")
                             .frame(width: 150, alignment: .leading)
                     }
@@ -669,6 +729,15 @@ struct UsageAnalysisView: View {
                         .font(TMType.regular(TMType.body))
                         .tmMonospacedDigit()
                         .frame(height: Self.detailsRowHeight - 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(hoveredName == r.name ? Color.primary.opacity(0.05) : Color.clear)
+                                .padding(.horizontal, -6)
+                        )
+                        .onHover { inside in
+                            if inside { hoveredName = r.name }
+                            else if hoveredName == r.name { hoveredName = nil }
+                        }
                     }
                 }
                 .padding(.trailing, 4)

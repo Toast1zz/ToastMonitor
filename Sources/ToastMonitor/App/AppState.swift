@@ -85,6 +85,8 @@ final class AppState: ObservableObject {
         var heatmap: [Int64: Int64]
         var heatmapCost: [Int64: Double]
         var subscriptions: [Database.Subscription]
+        var orCreditSamples: [(ts: Int64, value: Double)]
+        var deepSeekBalanceSamples: [String: [(ts: Int64, value: Double)]]
         var lastScan: Int64
         var snapshotFetchedAt: Int64
 
@@ -99,6 +101,7 @@ final class AppState: ObservableObject {
             costToday = quality; costWeek = quality; costMonth = quality; costAll = quality
             modelAggs = []; modelAggsToday = []; modelAggsMonth = []; modelAggsAll = []
             heatmap = [:]; heatmapCost = [:]; subscriptions = []
+            orCreditSamples = []; deepSeekBalanceSamples = [:]
             lastScan = 0; snapshotFetchedAt = 0
         }
     }
@@ -139,6 +142,20 @@ final class AppState: ObservableObject {
     var subscriptions: [Database.Subscription] { state.subscriptions }
     var lastScan: Int64 { state.lastScan }
     var snapshotFetchedAt: Int64 { state.snapshotFetchedAt }
+
+    /// In-memory OpenRouter spend since `start`, computed from the snapshot's
+    /// preloaded samples so SwiftUI views never touch SQLite during `body`.
+    func openRouterSpend(since start: Int64, current: Double? = nil) -> Double {
+        OpenRouterSpend.since(start, samples: state.orCreditSamples, current: current)
+    }
+
+    func orCreditSamples(since start: Int64) -> [(ts: Int64, value: Double)] {
+        state.orCreditSamples.filter { $0.ts >= start }
+    }
+
+    func deepSeekBalanceSamples(currency: String, since start: Int64) -> [(ts: Int64, value: Double)] {
+        (state.deepSeekBalanceSamples[currency] ?? []).filter { $0.ts >= start }
+    }
 
     private var refreshTimer: Timer?
     private var refreshCoordinator = RefreshCoordinator()
@@ -272,6 +289,8 @@ final class AppState: ObservableObject {
             next.apiValueMonth = light.apiValueMonth
             next.apiValueAll = light.apiValueAll
             next.subscriptions = light.subscriptions
+            next.orCreditSamples = light.orCreditSamples
+            next.deepSeekBalanceSamples = light.deepSeekBalanceSamples
             next.lastScan = light.lastScan
             next.snapshotFetchedAt = light.fetchedAt
             if let complete {

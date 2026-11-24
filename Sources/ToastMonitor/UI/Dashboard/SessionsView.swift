@@ -1,12 +1,22 @@
+import AppKit
 import SwiftUI
 
-/// Sessions: everything the collectors saw, newest first, grouped by day.
+/// Sessions: everything the collectors saw, searchable and sortable.
 struct SessionsView: View {
+    enum SortOrder: String, CaseIterable, Identifiable {
+        case newest = "Newest"
+        case tokens = "Most Tokens"
+        case cost = "Highest Cost"
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var app: AppState
     @Environment(\.dashboardActiveTab) private var activeTab
     @State private var rows: [Database.SessionRow] = []
     @State private var dayGroups: [SessionDayGroup] = []
     @State private var selectedTool = "all"
+    @State private var searchText = ""
+    @State private var sortOrder: SortOrder = .newest
     @State private var selectedSession: Database.SessionRow?
     @State private var loading = false
     @State private var needsReload = false
@@ -16,26 +26,71 @@ struct SessionsView: View {
 
     private static let pageSize = 500
 
+    private var filteredRows: [Database.SessionRow] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matching: [Database.SessionRow]
+        if query.isEmpty {
+            matching = rows
+        } else {
+            matching = rows.filter { row in
+                let title = SessionTitle.display(title: row.title, project: row.project)
+                if title.localizedCaseInsensitiveContains(query) { return true }
+                if let p = row.project, p.localizedCaseInsensitiveContains(query) { return true }
+                if let m = row.model,
+                   m.localizedCaseInsensitiveContains(query) || ModelName.display(m).localizedCaseInsensitiveContains(query) {
+                    return true
+                }
+                return row.sessionID.localizedCaseInsensitiveContains(query)
+            }
+        }
+        switch sortOrder {
+        case .newest:
+            return matching
+        case .tokens:
+            return matching.sorted { Self.sessionTokens($0) > Self.sessionTokens($1) }
+        case .cost:
+            return matching.sorted { $0.cost > $1.cost }
+        }
+    }
+
+    private var filteredDayGroups: [SessionDayGroup] {
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return dayGroups
+        }
+        return SessionDayGroup.groups(filteredRows)
+    }
+
+    private static func sessionTokens(_ row: Database.SessionRow) -> Int64 {
+        ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead)
+            ?? row.input + row.output + row.cacheRead
+    }
+
     var body: some View {
+        let visible = filteredRows
+        let groups = filteredDayGroups
         DashPage {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 toolFilter
+                searchField
                 Spacer(minLength: 8)
                 if loading {
                     ProgressView().controlSize(.small)
-                } else if !rows.isEmpty {
-                    Text(rows.count < total
-                         ? "Latest \(rows.count) of \(total) sessions"
-                         : "\(rows.count) session\(rows.count == 1 ? "" : "s")")
+                } else if !visible.isEmpty {
+                    let countText: String = {
+                        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            return "\(visible.count) matching"
+                        }
+                        return rows.count < total
+                            ? "Latest \(rows.count) of \(total) sessions"
+                            : "\(rows.count) session\(rows.count == 1 ? "" : "s")"
+                    }()
+                    Text(countText)
                         .font(TMType.regular(TMType.caption))
                         .tmMonospacedDigit()
                         .foregroundStyle(TMDesign.quiet)
+                        .lineLimit(1)
                 }
-                Button(action: load) { Image(systemName: "arrow.clockwise") }
-                    .tmGlassButton(circle: true, extraLarge: true)
-                    .disabled(loading)
-                    .help("Refresh sessions")
-                    .accessibilityLabel("Refresh sessions")
+                sortMenu
             }
 
             // One card fills the page; the list scrolls inside it, with each
@@ -45,32 +100,41 @@ struct SessionsView: View {
                     ProgressView("Loading sessions…")
                         .controlSize(.small)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if rows.isEmpty {
-                    Text("No sessions found")
+                } else if visible.isEmpty {
+                    Text(rows.isEmpty ? "No sessions found" : "No matching sessions")
                         .font(TMType.regular(TMType.body))
                         .foregroundStyle(TMDesign.quiet)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView(.vertical) {
-                        LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                            ForEach(dayGroups) { group in
-                                Section {
-                                    ForEach(group.rows) { row in
-                                        SessionRowView(row: row) { selectedSession = row }
+                        if sortOrder == .newest {
+                            LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                                ForEach(groups) { group in
+                                    Section {
+                                        ForEach(group.rows) { row in
+                                            SessionRowView(row: row) { selectedSession = row }
+                                        }
+                                    } header: {
+                                        Text(group.title)
+                                            .font(TMType.semibold(TMType.body))
+                                            .padding(.horizontal, 10)
+                                            .padding(.top, 10)
+                                            .padding(.bottom, 6)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(TMDesign.surface)
                                     }
-                                } header: {
-                                    Text(group.title)
-                                        .font(TMType.semibold(TMType.body))
-                                        .padding(.horizontal, 10)
-                                        .padding(.top, 10)
-                                        .padding(.bottom, 6)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(TMDesign.surface)
                                 }
                             }
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 10)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 2) {
+                                ForEach(visible) { row in
+                                    SessionRowView(row: row, showDate: true) { selectedSession = row }
+                                }
+                            }
+                            .padding(10)
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 10)
                         if rows.count < total {
                             Button("Show \(min(Self.pageSize, total - rows.count)) More") {
                                 limit += Self.pageSize
@@ -81,6 +145,7 @@ struct SessionsView: View {
                             .padding(.bottom, 14)
                         }
                     }
+                    .overlayScrollers()
                 }
             }
         }
@@ -136,6 +201,60 @@ struct SessionsView: View {
         .fixedSize()
         .tmGlassButton(circle: false, extraLarge: true)
         .accessibilityLabel("Tool filter")
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(TMDesign.quiet)
+            TextField("Search title, project, model…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(TMType.regular(TMType.body))
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(TMDesign.quiet)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(width: 220)
+        .background(TMDesign.surface, in: Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            Picker("Sort", selection: $sortOrder) {
+                ForEach(SortOrder.allCases) { order in
+                    Text(order.rawValue).tag(order)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            HStack(spacing: 6) {
+                Text(sortOrder.rawValue)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(TMDesign.quiet)
+            }
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .tmGlassButton(circle: false, extraLarge: true)
+        .accessibilityLabel("Sort sessions")
     }
 
     private func load() {
@@ -236,6 +355,7 @@ struct SessionDayGroup: Identifiable {
 /// One session: tool glyph, title with its context, and the figures.
 struct SessionRowView: View {
     let row: Database.SessionRow
+    var showDate = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -243,6 +363,13 @@ struct SessionRowView: View {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private static let dateTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "MMM d"
         return f
     }()
 
@@ -293,11 +420,13 @@ struct SessionRowView: View {
                         .tmMonospacedDigit()
                         .foregroundStyle(TMDesign.quiet)
                 }
-                Text(Self.timeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(row.updated))))
+                Text(showDate
+                     ? Self.dateTimeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(row.updated)))
+                     : Self.timeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(row.updated))))
                     .font(TMType.regular(TMType.caption))
                     .tmMonospacedDigit()
                     .foregroundStyle(TMDesign.quiet)
-                    .frame(width: 40, alignment: .trailing)
+                    .frame(width: 48, alignment: .trailing)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -318,6 +447,7 @@ struct SessionDetailView: View {
     @State private var turns: [(ts: Int64, model: String?, input: Int64, output: Int64,
                                 cacheRead: Int64, cacheWrite: Int64, cost: Double)] = []
     @State private var loaded = false
+    @State private var copiedID = false
 
     private var tool: ToolKind? { ToolKind(rawValue: session.tool) }
 
@@ -342,6 +472,16 @@ struct SessionDetailView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 12)
+                Button(copiedID ? "Copied ID" : "Copy ID") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.sessionID, forType: .string)
+                    copiedID = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        copiedID = false
+                    }
+                }
+                .tmGlassButton(circle: false)
+                .help("Copy session ID: \(session.sessionID)")
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
                     .tmGlassButton(circle: false)
@@ -378,7 +518,7 @@ struct SessionDetailView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(turn.model.map(ModelName.display) ?? "Unknown model")
                                             .font(TMType.regular(TMType.body))
-                                        Text(Format.dateTime(turn.ts))
+                                        Text(turnMetadata(turn))
                                             .font(TMType.regular(TMType.caption))
                                             .tmMonospacedDigit()
                                             .foregroundStyle(TMDesign.quiet)
@@ -412,5 +552,19 @@ struct SessionDetailView: View {
                 loaded = true
             }
         }
+    }
+
+    private func turnMetadata(_ turn: (ts: Int64, model: String?, input: Int64, output: Int64,
+                                       cacheRead: Int64, cacheWrite: Int64, cost: Double)) -> String {
+        var parts = [Format.dateTime(turn.ts),
+                     "In \(Format.compact(turn.input))",
+                     "Out \(Format.compact(turn.output))"]
+        if turn.cacheRead > 0 {
+            parts.append("Cache R \(Format.compact(turn.cacheRead))")
+        }
+        if turn.cacheWrite > 0 {
+            parts.append("W \(Format.compact(turn.cacheWrite))")
+        }
+        return parts.joined(separator: " · ")
     }
 }

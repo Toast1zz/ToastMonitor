@@ -88,9 +88,17 @@ struct PopoverRootView: View {
             let text = detail.isEmpty ? prefix : "\(prefix) · \(detail)"
             let color = brokenSources.isEmpty ? TMDesign.accent : TMDesign.danger
             let symbol = brokenSources.isEmpty ? "clock.badge.exclamationmark" : "exclamationmark.triangle.fill"
-            TMStatusLabel(text: text, color: color, symbol: symbol)
-                .accessibilityLabel(Text("Source status"))
-                .accessibilityValue(Text(text))
+            Button {
+                openSettings(.sources)
+            } label: {
+                TMStatusLabel(text: text, color: color, symbol: symbol)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .buttonStyle(.plain)
+            .help("Open Sources settings")
+            .accessibilityLabel(Text("Source status"))
+            .accessibilityValue(Text(text))
         }
     }
 

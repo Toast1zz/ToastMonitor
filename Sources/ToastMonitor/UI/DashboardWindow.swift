@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Owns the dashboard window (single instance, close = hide).
@@ -140,9 +141,9 @@ final class WindowManager {
     }
 
     private static let defaultContentSize = NSSize(width: 980, height: 680)
-    /// Pages fill exactly the window and do not scroll; below this their fixed
-    /// cards overflow under the toolbar and past the side margins.
-    private static let minimumContentSize = NSSize(width: 960, height: 660)
+    /// Minimum usable dashboard width/height; allows laptop split-screen while
+    /// preserving card readability.
+    private static let minimumContentSize = NSSize(width: 820, height: 640)
     private static let titlebarAllowance: CGFloat = 32
 
     func show(tab: DashboardView.Tab? = nil) {
@@ -294,6 +295,8 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
 
     private var selectionGeneration = 0
     private let selectionHandler: (DashboardView.Tab) -> Void
+    private var refreshItem: NSToolbarItem?
+    private var refreshCancellable: AnyCancellable?
 
     /// The centered group is the macOS 14+ identity (Liquid Glass on 26/27).
     /// macOS 13 crashes inside `NSToolbarView _centeredItemViewers` when a
@@ -360,6 +363,12 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
         self.initialTab = initialTab
         self.selectionHandler = selectionHandler
         super.init()
+        self.refreshCancellable = AppState.shared.$manualRefreshing
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] refreshing in
+                self?.refreshItem?.isEnabled = !refreshing
+                self?.refreshItem?.toolTip = refreshing ? "Refreshing data…" : "Refresh data (⌘R)"
+            }
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -387,7 +396,10 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
             item.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh data")
             item.target = self
             item.action = #selector(refreshData(_:))
-            item.toolTip = "Refresh data"
+            item.autovalidates = false
+            item.isEnabled = !AppState.shared.manualRefreshing
+            item.toolTip = AppState.shared.manualRefreshing ? "Refreshing data…" : "Refresh data (⌘R)"
+            refreshItem = item
             return item
         default:
             return nil
@@ -533,13 +545,17 @@ final class DashboardPageController: NSViewController {
             guard modifiers == .command,
                   let raw = event.charactersIgnoringModifiers
             else { return event }
-            // Cmd+1…4 switch pages; Cmd+W closes the window. The menu-bar
-            // equivalent may not route when the Dock icon is disabled, so
+            // Cmd+1…5 switch pages; Cmd+R refreshes all sources; Cmd+W closes the window.
+            // The menu-bar equivalent may not route when the Dock icon is disabled, so
             // handle Cmd+W here as a fallback.
             if let number = Int(raw),
                (1...DashboardView.Tab.allCases.count).contains(number) {
                 let tab = DashboardView.Tab.allCases[number - 1]
                 self.select(tab)
+                return nil
+            }
+            if raw.lowercased() == "r" {
+                AppState.shared.refreshAllSources()
                 return nil
             }
             if raw.lowercased() == "w" {

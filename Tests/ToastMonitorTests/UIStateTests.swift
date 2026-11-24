@@ -184,4 +184,39 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(SessionTitle.display(title: nil, project: "demo"), "demo")
         XCTAssertEqual(SessionTitle.display(title: "", project: nil), "Untitled session")
     }
+
+    func testDashUsageBarSemanticTintThresholds() {
+        let base = TMDesign.accent
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 79.9, base: base), base)
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 80.0, base: base), TMDesign.warning)
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 89.9, base: base), TMDesign.warning)
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 90.0, base: base), TMDesign.danger)
+    }
+
+    func testAppStateExposesInMemoryBillingHelpers() {
+        let app = AppState.shared
+        XCTAssertGreaterThanOrEqual(app.openRouterSpend(since: 0), 0)
+        _ = app.orCreditSamples(since: 0)
+        _ = app.deepSeekBalanceSamples(currency: "CNY", since: 0)
+    }
+
+    func testLightSnapshotExposesCachedBillingSamples() async {
+        let exp = expectation(description: "light snapshot")
+        UsageQueryService.shared.loadLightSnapshot { light in
+            _ = light.orCreditSamples
+            _ = light.deepSeekBalanceSamples
+            exp.fulfill()
+        }
+        await fulfillment(of: [exp], timeout: 5.0)
+    }
+
+    func testPopoverReadsQuotaRowHiddenFlagsFromSettingsStore() {
+        let flags = PopoverHomeView.readQuotaRowHidden { key in
+            (key == "hide_quota_row_go" || key == "hide_quota_row_codex") ? "1" : nil
+        }
+        XCTAssertEqual(flags["go"], true)
+        XCTAssertEqual(flags["codex"], true)
+        XCTAssertEqual(flags["claude"], false)
+        XCTAssertEqual(flags["router"], false)
+    }
 }

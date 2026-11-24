@@ -20,6 +20,7 @@ enum TMNotifications {
     static let dashboardVisibility = Notification.Name("tmDashboardVisibility")
     static let usagePeriodSettingsChanged = Notification.Name("tmUsagePeriodSettingsChanged")
     static let databaseReplaced = Notification.Name("tmDatabaseReplaced")
+    static let expandAccount = Notification.Name("tmExpandAccount")
 }
 
 /// Shared refresh cadence. Foreground values preserve the existing live UI
@@ -354,8 +355,8 @@ struct TMStatusCapsule: View {
     var body: some View {
         Label(text, systemImage: "exclamationmark")
             .labelStyle(.titleAndIcon)
-            .font(.system(size: compact ? TMType.micro : TMType.caption,
-                          weight: .medium, design: .monospaced))
+            .font(TMType.medium(compact ? TMType.micro : TMType.caption))
+            .tmMonospacedDigit()
             .foregroundStyle(TMDesign.danger)
             .padding(.horizontal, compact ? 6 : 8)
             .padding(.vertical, compact ? 2 : 4)

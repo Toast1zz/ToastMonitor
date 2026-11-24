@@ -265,7 +265,7 @@ struct SubscriptionSettingsSection: View {
 
     static func planColor(_ p: String) -> Color {
         switch p {
-        case "go": return TMDesign.accent
+        case "go": return ToolKind.opencode.color
         case "openrouter": return ToolKind.openrouter.color
         case "claude": return ToolKind.claude.color
         case "openai", "chatgpt", "codex": return ToolKind.codex.color

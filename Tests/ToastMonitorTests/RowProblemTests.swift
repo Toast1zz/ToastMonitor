@@ -28,6 +28,13 @@ final class RowProblemTests: XCTestCase {
         XCTAssertTrue(p.opensSettings)
     }
 
+    func testRedirectRejectionOffersSettingsWithAccountKey() {
+        let p = RowProblem.from(service: "OpenCode Go", error: "Redirect rejected (HTTP 302)", accountKey: "go")
+        XCTAssertEqual(p.title, "OpenCode Go sign-in needs attention")
+        XCTAssertTrue(p.opensSettings)
+        XCTAssertEqual(p.accountKey, "go")
+    }
+
     func testUnknownErrorKeepsItsText() {
         let p = RowProblem.from(service: "Codex", error: "Unexpected response shape")
         XCTAssertEqual(p.title, "Codex couldn’t refresh")

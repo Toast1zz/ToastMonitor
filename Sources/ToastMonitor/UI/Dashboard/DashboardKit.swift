@@ -98,6 +98,8 @@ struct DashMetric: View {
             Text(label)
                 .font(TMType.regular(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Text(value)
                 .font(TMType.semibold(26))
                 .tmMonospacedDigit()
@@ -223,15 +225,39 @@ struct DashUsageBar: View {
     /// Optional hairline at a fixed fraction (0…1) of the bar — e.g. the
     /// subscription price as a share of the quota it buys.
     var marker: Double?
+    /// 0…1 share of the window's time already passed; nil draws a plain gauge.
+    var elapsed: Double? = nil
+
+    static func semanticTint(usedPercent: Double, base: Color) -> Color {
+        if usedPercent >= 90 { return TMDesign.danger }
+        if usedPercent >= 80 { return TMDesign.warning }
+        return base
+    }
 
     var body: some View {
         let used = min(max(fillPercent, 0), 100) / 100
         GeometryReader { geo in
+            let fillWidth = used > 0 ? max(geo.size.width * used, height) : 0
+            let timeWidth = elapsed.map { $0 > 0 ? max(geo.size.width * min($0, 1), height) : 0 }
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.09))
-                Capsule()
-                    .fill(tint)
-                    .frame(width: used > 0 ? max(geo.size.width * used, height) : 0)
+                if let timeWidth, fillWidth > timeWidth {
+                    Capsule()
+                        .fill(tint.opacity(0.45))
+                        .frame(width: fillWidth)
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: timeWidth)
+                } else {
+                    if let timeWidth, timeWidth > 0 {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.12))
+                            .frame(width: timeWidth)
+                    }
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: fillWidth)
+                }
                 if let marker {
                     Rectangle()
                         .fill(Color.primary.opacity(0.45))

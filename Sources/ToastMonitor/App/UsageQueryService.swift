@@ -40,6 +40,8 @@ final class UsageQueryService: @unchecked Sendable {
         var apiValueMonth: Double
         var apiValueAll: Double
         var subscriptions: [Database.Subscription]
+        var orCreditSamples: [(ts: Int64, value: Double)] = []
+        var deepSeekBalanceSamples: [String: [(ts: Int64, value: Double)]] = [:]
         var lastScan: Int64
         var fetchedAt: Int64
     }
@@ -253,6 +255,10 @@ final class UsageQueryService: @unchecked Sendable {
         let byToolWeek = withElsewhere(localWeek, weekRange)
         let byToolMonth = withElsewhere(localMonth, monthRange)
         let byToolAll = withElsewhere(localAll, allRange)
+        let dsBalances: [String: [(ts: Int64, value: Double)]] = [
+            "CNY": database.deepSeekBalances(currency: "CNY", since: nowTs - BalanceRunway.lookback),
+            "USD": database.deepSeekBalances(currency: "USD", since: nowTs - BalanceRunway.lookback),
+        ]
         return LightSnapshot(
             today: Self.aggregate(localToday),
             week: Self.aggregate(localWeek),
@@ -275,6 +281,8 @@ final class UsageQueryService: @unchecked Sendable {
             apiValueMonth: database.apiValue(from: monthRange.start, to: monthRange.end),
             apiValueAll: database.apiValue(from: allRange.start, to: allRange.end),
             subscriptions: database.subscriptions(),
+            orCreditSamples: database.orCreditUsage(since: 0),
+            deepSeekBalanceSamples: dsBalances,
             lastScan: database.lastScanTime(),
             fetchedAt: nowTs)
     }

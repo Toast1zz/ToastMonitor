@@ -1,13 +1,14 @@
+import Combine
 import SwiftUI
 
-/// Plans: one card per connected account. Every card is the same size and
-/// follows one template — a header, then a row of figure columns centered
-/// below it — so a grid of accounts reads as a set, whichever account
-/// has more to say. Credentials, account options and subscriptions are
-/// managed in Settings › Accounts.
+/// Plans: quotas on the left, prepaid balances and fixed subscriptions on the right.
+/// Matches Overview's zero-outer-scroll layout: the page fits the window, and the
+/// Quotas list scrolls internally only when many accounts are connected.
 struct PlansView: View {
     @EnvironmentObject var app: AppState
+    @Environment(\.dashboardActiveTab) private var activeTab
     @ObservedObject private var claudeQuota = ClaudeQuotaClient.shared
+    @ObservedObject private var codexQuota = CodexQuotaClient.shared
     @ObservedObject private var goClient = OpenCodeGoClient.shared
     @ObservedObject private var orClient = OpenRouterClient.shared
     @ObservedObject private var ccQuota = CommandCodeQuotaClient.shared
@@ -15,18 +16,24 @@ struct PlansView: View {
     @ObservedObject private var antigravity = AntigravityQuotaClient.shared
     @ObservedObject private var deepseek = DeepSeekBillingClient.shared
     @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
+    @AppStorage(CodexPlanName.customNameKey) private var codexCustomName = ""
+    @State private var now = Date()
 
-    /// Tall enough for the largest figure column (label, figure, bar and two
-    /// caption lines) under a header and a two-line error. Every account plus
-    /// Subscriptions and Not connected is at most nine cards: three rows of
-    /// three fit the dashboard's minimum window without scrolling.
-    static let cardHeight: CGFloat = 176
-    static let columns = 3
-    static let cardInset: CGFloat = 14
+    private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
-    // Shared with the popover, so an account never reads "Not configured"
-    // here while it shows numbers there.
+    private enum QuotaMode: String, CaseIterable, Identifiable {
+        case used = "Used"
+        case remaining = "Remaining"
+        var id: String { rawValue }
+    }
+
+    private enum QuotaID: String, Identifiable {
+        case claude, codex, antigravity, grok, commandCode, openCodeGo
+        var id: String { rawValue }
+    }
+
     private var claudeConnected: Bool { AccountConnection.claude }
+    private var codexConnected: Bool { AccountConnection.codex(subscriptions: app.subscriptions) }
     private var goConnected: Bool { AccountConnection.openCodeGo }
     private var orConnected: Bool { AccountConnection.openRouter }
     private var deepseekConnected: Bool { AccountConnection.deepSeek }
@@ -34,244 +41,524 @@ struct PlansView: View {
     private var grokConnected: Bool { AccountConnection.grok }
     private var antigravityConnected: Bool { AccountConnection.antigravity }
 
+    private var isTabActive: Bool {
+        activeTab == nil || activeTab == .plans
+    }
+
+    private var quotaModeBinding: Binding<QuotaMode> {
+        Binding(
+            get: { showsRemaining ? .remaining : .used },
+            set: { showsRemaining = ($0 == .remaining) }
+        )
+    }
+
+    private var connectedQuotaIDs: [QuotaID] {
+        var ids: [QuotaID] = []
+        if claudeConnected { ids.append(.claude) }
+        if codexConnected { ids.append(.codex) }
+        if antigravityConnected { ids.append(.antigravity) }
+        if grokConnected { ids.append(.grok) }
+        if ccConnected { ids.append(.commandCode) }
+        if goConnected { ids.append(.openCodeGo) }
+        return ids
+    }
+
     private var unconnected: [String] {
-        [(claudeConnected, "Claude"), (goConnected, "OpenCode Go"), (ccConnected, "Command Code"),
-         (grokConnected, "Grok"), (antigravityConnected, "Antigravity"),
-         (orConnected, "OpenRouter"), (deepseekConnected, "DeepSeek")]
+        [(claudeConnected, "Claude"),
+         (codexConnected, "Codex"),
+         (goConnected, "OpenCode Go"),
+         (ccConnected, "Command Code"),
+         (grokConnected, "Grok"),
+         (antigravityConnected, "Antigravity"),
+         (orConnected, "OpenRouter"),
+         (deepseekConnected, "DeepSeek")]
             .filter { !$0.0 }.map(\.1)
     }
 
-    private var cards: [AnyView] {
-        var out: [AnyView] = []
-        if claudeConnected { out.append(AnyView(claudeCard)) }
-        if ccConnected { out.append(AnyView(ccCard)) }
-        if grokConnected { out.append(AnyView(grokCard)) }
-        if antigravityConnected { out.append(AnyView(antigravityCard)) }
-        if goConnected { out.append(AnyView(goCard)) }
-        if orConnected { out.append(AnyView(orCard)) }
-        if deepseekConnected { out.append(AnyView(deepseekCard)) }
-        if !activeSubscriptions.isEmpty { out.append(AnyView(subsCard)) }
-        if !unconnected.isEmpty { out.append(AnyView(unconnectedCard)) }
-        return out
+    private var activeSubscriptions: [Database.Subscription] {
+        app.subscriptions.filter {
+            SubscriptionMath.cycleInfo(start: $0.startDate, end: $0.endDate, cycle: $0.cycle, now: now) != nil
+        }
+    }
+
+    private var hasRightColumn: Bool {
+        orConnected || deepseekConnected || !activeSubscriptions.isEmpty || !unconnected.isEmpty
+    }
+
+    private var attentionCount: Int {
+        var count = 0
+        if claudeConnected, claudeQuota.state.error != nil { count += 1 }
+        if codexConnected, codexQuota.state.error != nil { count += 1 }
+        if goConnected, goClient.state.error != nil { count += 1 }
+        if ccConnected, ccQuota.state.error != nil { count += 1 }
+        if grokConnected, grokQuota.state.error != nil { count += 1 }
+        if antigravityConnected,
+           antigravity.state.error != nil,
+           !(antigravity.state.lastSync > 0 && antigravity.state.error == AntigravityQuotaClient.notRunning) {
+            count += 1
+        }
+        if orConnected, orClient.state.authInvalid || orClient.state.error != nil { count += 1 }
+        if deepseekConnected, deepseek.state.expired || deepseek.state.balanceError != nil || deepseek.state.spendError != nil {
+            count += 1
+        }
+        return count
     }
 
     var body: some View {
         DashPage {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: DashLayout.gap),
-                                     count: Self.columns),
-                      alignment: .leading, spacing: DashLayout.gap) {
-                ForEach(Array(cards.enumerated()), id: \.offset) { _, card in
-                    card.frame(height: Self.cardHeight)
+            topBar
+            GeometryReader { geo in
+                let hasQuotas = !connectedQuotaIDs.isEmpty
+                let hasRight = hasRightColumn
+                HStack(alignment: .top, spacing: DashLayout.gap) {
+                    if hasQuotas {
+                        quotasCard
+                            .frame(width: hasRight ? floor((geo.size.width - DashLayout.gap) * 0.57) : geo.size.width)
+                            .frame(maxHeight: .infinity)
+                    }
+                    if hasRight {
+                        rightColumn
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onReceive(minuteTicker) { tick in
+            guard isTabActive else { return }
+            now = tick
+        }
+        .onChange(of: activeTab) { _ in
+            if isTabActive { now = Date() }
         }
         .task {
-            // Today's DeepSeek account spend for its card, fetched beside the
-            // popover's own period.
             while !Task.isCancelled {
-                deepseek.loadSpendIfNeeded(for: .today, configuration: UsagePeriodSettings.shared.configuration)
+                if isTabActive {
+                    deepseek.loadSpendIfNeeded(for: .today, configuration: UsagePeriodSettings.shared.configuration)
+                }
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
     }
 
-    private func openAccountSettings() {
-        SettingsWindowController.shared.show(pane: .accounts)
+    private var topBar: some View {
+        HStack(alignment: .center, spacing: 12) {
+            DashSegmented(selection: quotaModeBinding,
+                          options: QuotaMode.allCases,
+                          title: { $0.rawValue },
+                          accessibilityName: "Quota display mode")
+            Spacer(minLength: 8)
+            if attentionCount > 0 {
+                Button {
+                    openAccountSettings()
+                } label: {
+                    TMStatusPill(
+                        text: "\(attentionCount) account\(attentionCount == 1 ? "" : "s") need attention",
+                        color: TMDesign.danger,
+                        symbol: "exclamationmark.triangle.fill"
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Open Accounts settings")
+            } else {
+                Button("Account Settings…") {
+                    openAccountSettings()
+                }
+                .tmGlassButton(circle: false, extraLarge: true)
+            }
+        }
     }
 
-    // MARK: - Accounts
+    private func openAccountSettings(expandAccount: String? = nil) {
+        SettingsWindowController.shared.show(pane: .accounts, expandAccount: expandAccount)
+    }
 
-    private var claudeCard: some View {
+    // MARK: - Left Column: Quotas
+
+    private var quotasCard: some View {
+        DashCard("Quotas", inset: DashLayout.cardPadding) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(connectedQuotaIDs.enumerated()), id: \.element) { index, id in
+                        if index > 0 {
+                            Divider()
+                                .opacity(0.45)
+                                .padding(.vertical, 12)
+                        }
+                        quotaRow(for: id)
+                    }
+                }
+                .padding(.trailing, 2)
+                .overlayScrollers()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func quotaRow(for id: QuotaID) -> some View {
+        switch id {
+        case .claude: claudeRow
+        case .codex: codexRow
+        case .antigravity: antigravityRow
+        case .grok: grokRow
+        case .commandCode: ccRow
+        case .openCodeGo: goRow
+        }
+    }
+
+    private var claudeRow: some View {
         let cq = claudeQuota.state
-        let windows = [("5h", cq.fiveHour), ("Weekly", cq.sevenDay), ("Weekly Opus", cq.sevenDayOpus)]
-            .compactMap { label, window in window.map { (label: label, window: $0) } }
-        return accountCard(title: "Claude", symbol: ToolKind.claude.symbol, color: ToolKind.claude.color,
-                           isLoading: cq.lastSync <= 0 && cq.error == nil && cq.configured,
-                           error: cq.error, lastSync: cq.lastSync,
-                           refresh: { claudeQuota.refresh(force: true) }) {
-            ForEach(windows, id: \.label) { item in
-                quotaColumn(item.label, usedPercent: Double(item.window.usedPercent),
-                            captions: [resetText(absolute: item.window.resetAt)].compactMap { $0 },
-                            color: ToolKind.claude.color)
-            }
-        }
+        let planLabel: String? = {
+            let p = cq.planType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !p.isEmpty else { return nil }
+            return p.prefix(1).uppercased() + p.dropFirst()
+        }()
+        let windows = [
+            cq.fiveHour.map { makeWindow(label: "5h", usedPercent: Double($0.usedPercent), resetAt: $0.resetAt, duration: 5 * 3600) },
+            cq.sevenDay.map { makeWindow(label: "Weekly", usedPercent: Double($0.usedPercent), resetAt: $0.resetAt, duration: 7 * 86400) },
+            cq.sevenDayOpus.map { makeWindow(label: "Opus", usedPercent: Double($0.usedPercent), resetAt: $0.resetAt, duration: 7 * 86400) },
+        ].compactMap { $0 }
+
+        return PlanQuotaRow(
+            title: "Claude",
+            planName: planLabel,
+            symbol: ToolKind.claude.symbol,
+            color: ToolKind.claude.color,
+            accountKey: "claude",
+            isLoading: cq.lastSync <= 0 && cq.error == nil && cq.configured,
+            error: cq.error,
+            lastSync: cq.lastSync,
+            now: now,
+            windows: windows,
+            footnote: nil,
+            refresh: { claudeQuota.refresh(force: true) },
+            openSettings: { openAccountSettings(expandAccount: "claude") }
+        )
     }
 
-    private var ccCard: some View {
+    private var codexRow: some View {
+        let cx = codexQuota.state
+        let sub = app.subscriptions.first { $0.plan == "openai" || $0.plan == "codex" }
+        let title = CodexPlanName.resolve(custom: codexCustomName, apiPlan: nil, subscription: sub)
+        let planLabel = CodexPlanName.tier(apiPlan: cx.planType) ?? sub.flatMap(CodexPlanName.tier(subscription:))
+        let windowLabel: String = {
+            guard let s = cx.windowSeconds else { return "Limit" }
+            if s >= 7 * 86400 { return "Weekly" }
+            if s >= 86400 { return "\(s / 86400)d" }
+            if s >= 3600 { return "\(s / 3600)h" }
+            return "Limit"
+        }()
+        let windows = [
+            cx.primaryPct.map {
+                makeWindow(label: windowLabel,
+                           usedPercent: Double($0),
+                           resetAt: cx.resetAt,
+                           duration: cx.windowSeconds.map(Int64.init))
+            },
+        ].compactMap { $0 }
+        let footnote: String? = windows.isEmpty && sub != nil
+            ? "Subscribed · \(Format.money(sub!.price))/\(Self.cycleSuffix(sub!.cycle))"
+            : nil
+
+        return PlanQuotaRow(
+            title: title,
+            planName: planLabel,
+            symbol: ToolKind.codex.symbol,
+            color: ToolKind.codex.color,
+            accountKey: "codex",
+            isLoading: codexQuota.enabled && cx.lastSync <= 0 && cx.error == nil,
+            error: cx.error,
+            lastSync: cx.lastSync,
+            now: now,
+            windows: windows,
+            footnote: footnote,
+            refresh: codexQuota.enabled ? { codexQuota.refresh() } : nil,
+            openSettings: { openAccountSettings(expandAccount: "codex") }
+        )
+    }
+
+    private var ccRow: some View {
         let cc = ccQuota.state
-        return accountCard(title: "Command Code", symbol: "c.circle.fill", color: TMDesign.commandCode,
-                           isLoading: cc.isLoading && cc.lastSync <= 0, error: cc.error, lastSync: cc.lastSync,
-                           refresh: { ccQuota.refresh() }) {
-            if let total = cc.monthlyCreditsTotal, let pct = cc.monthlyUsedPercent {
-                quotaColumn("Monthly", usedPercent: pct,
-                            captions: [resetText(absolute: cc.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) })]
-                                .compactMap { $0 },
-                            color: TMDesign.commandCode)
-                FigureColumn(label: "Credits used",
-                             value: Format.money(min(max(pct, 0), 100) / 100 * total),
-                             captions: ["of \(Format.money(total))"])
-            } else if let remaining = cc.monthlyCreditsRemaining {
-                // Unknown plan or no allowance reported: the raw balance,
-                // never a fabricated percentage.
-                FigureColumn(label: "Credits left", value: Format.money(remaining))
-            }
-            if let plan = cc.planName {
-                FigureColumn(label: "Plan", value: CommandCodePlanCatalog.shortName(forPlanID: plan))
-            }
+        let planLabel = cc.planName.map(CommandCodePlanCatalog.shortName(forPlanID:))
+        let resetAt = cc.billingPeriodEnd.map { Int64($0.timeIntervalSince1970) }
+        var windows: [QuotaWindow] = []
+        var footnote: String?
+        if let total = cc.monthlyCreditsTotal, let pct = cc.monthlyUsedPercent {
+            windows.append(makeWindow(label: "Monthly", usedPercent: pct, resetAt: resetAt, duration: 30 * 86400))
+            let usedUSD = min(max(pct, 0), 100) / 100 * total
+            footnote = "Credits used: \(Format.money(usedUSD)) of \(Format.money(total))"
+        } else if let remaining = cc.monthlyCreditsRemaining {
+            footnote = "Credits left: \(Format.money(remaining))"
         }
+
+        return PlanQuotaRow(
+            title: "Command Code",
+            planName: planLabel,
+            symbol: "c.circle.fill",
+            color: TMDesign.commandCode,
+            accountKey: "cc",
+            isLoading: cc.isLoading && cc.lastSync <= 0,
+            error: cc.error,
+            lastSync: cc.lastSync,
+            now: now,
+            windows: windows,
+            footnote: footnote,
+            refresh: { ccQuota.refresh() },
+            openSettings: { openAccountSettings(expandAccount: "cc") }
+        )
     }
 
-    /// The one weekly pool Grok's plan shares across Chat, Imagine, Build and
-    /// Grok Bot; the top product by share gets its own column when the API
-    /// breaks the pool down.
-    private var grokCard: some View {
+    private var grokRow: some View {
         let g = grokQuota.state
-        return accountCard(title: "Grok", symbol: "x.circle.fill", color: TMDesign.grok,
-                           isLoading: g.isLoading && g.lastSync <= 0, error: g.error, lastSync: g.lastSync,
-                           refresh: { grokQuota.refresh() }) {
-            if let pct = g.usedPercent {
-                quotaColumn("Weekly", usedPercent: pct,
-                            captions: [resetText(absolute: g.resetAt)].compactMap { $0 },
-                            color: TMDesign.grok)
-            }
-            ForEach(g.products.prefix(1), id: \.product) { item in
-                FigureColumn(label: item.displayName, value: "\(Int(item.usedPercent.rounded()))%",
-                             unit: "of pool")
-            }
-            if let balance = g.prepaidBalanceUSD, balance > 0 {
-                FigureColumn(label: "Extra credits", value: Format.money(balance))
-            }
-            if let plan = GrokQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: g.planName) {
-                FigureColumn(label: "Plan", value: plan)
-            }
+        let planLabel = GrokQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: g.planName, now: now)
+        let windows = [
+            g.usedPercent.map { makeWindow(label: "Weekly", usedPercent: $0, resetAt: g.resetAt, duration: 7 * 86400) },
+        ].compactMap { $0 }
+        var parts: [String] = []
+        if let top = g.products.first {
+            parts.append("\(top.displayName): \(Int(top.usedPercent.rounded()))% of pool")
         }
+        if let balance = g.prepaidBalanceUSD, balance > 0 {
+            parts.append("Extra credits: \(Format.money(balance))")
+        }
+
+        return PlanQuotaRow(
+            title: "Grok",
+            planName: planLabel,
+            symbol: "x.circle.fill",
+            color: TMDesign.grok,
+            accountKey: "grok",
+            isLoading: g.isLoading && g.lastSync <= 0,
+            error: g.error,
+            lastSync: g.lastSync,
+            now: now,
+            windows: windows,
+            footnote: parts.isEmpty ? nil : parts.joined(separator: " · "),
+            refresh: { grokQuota.refresh() },
+            openSettings: { openAccountSettings(expandAccount: "grok") }
+        )
     }
 
-    /// The same limits as the popover row, then the plan.
-    private var antigravityCard: some View {
+    private var antigravityRow: some View {
         let a = antigravity.state
-        let plan = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: a.planName)
-        let limits = a.displayLimits.prefix(plan == nil ? 3 : 2)
-        return accountCard(title: "Antigravity", symbol: "a.circle.fill", color: TMDesign.antigravity,
-                           isLoading: a.isLoading && a.lastSync <= 0,
-                           error: a.lastSync > 0 && a.error == AntigravityQuotaClient.notRunning ? nil : a.error,
-                           lastSync: a.lastSync,
-                           refresh: { antigravity.refresh() }) {
-            ForEach(Array(limits), id: \.label) { label, model in
-                quotaColumn(label, usedPercent: 100 - model.remaining,
-                            captions: [resetText(absolute: model.resetAt)].compactMap { $0 },
-                            color: TMDesign.antigravity)
-            }
-            if let plan {
-                FigureColumn(label: "Plan", value: plan)
-            }
+        let nowSeconds = Int64(now.timeIntervalSince1970)
+        let planLabel = AntigravityQuotaClient.plan(subscriptions: app.subscriptions, apiPlan: a.planName, now: now)
+        let windows = a.displayLimits.prefix(3).map { label, model in
+            makeWindow(
+                label: label,
+                usedPercent: 100 - model.remaining,
+                resetAt: model.resetAt,
+                duration: model.windowSeconds
+                    ?? AntigravityQuotaClient.windowSeconds(resetAt: model.resetAt, now: nowSeconds)
+            )
         }
+        let effectiveError = (a.lastSync > 0 && a.error == AntigravityQuotaClient.notRunning) ? nil : a.error
+
+        return PlanQuotaRow(
+            title: "Antigravity",
+            planName: planLabel,
+            symbol: "a.circle.fill",
+            color: TMDesign.antigravity,
+            accountKey: "antigravity",
+            isLoading: a.isLoading && a.lastSync <= 0,
+            error: effectiveError,
+            lastSync: a.lastSync,
+            now: now,
+            windows: windows,
+            footnote: nil,
+            refresh: { antigravity.refresh() },
+            openSettings: { openAccountSettings(expandAccount: "antigravity") }
+        )
     }
 
-    private var goCard: some View {
+    private var goRow: some View {
         let go = goClient.state
         let limit = OpenCodeGoClient.monthlyLimitUSD
         let absolute: (Int64?) -> Int64? = { reset in
             reset.flatMap { go.lastSync > 0 ? go.lastSync + $0 : nil }
         }
-        return accountCard(title: "OpenCode Go", symbol: "g.circle.fill", color: ToolKind.opencode.color,
-                           isLoading: go.isLoading && go.lastOK <= 0, error: go.error, lastSync: go.lastOK,
-                           refresh: goClient.configured ? { goClient.refresh() } : nil) {
-            if let pct = go.monthlyPct {
-                quotaColumn("Monthly", usedPercent: pct,
-                            captions: ["\(Format.money(min(max(pct, 0), 100) / 100 * limit)) of \(Format.money(limit))",
-                                       resetText(absolute: absolute(go.monthlyReset))].compactMap { $0 },
-                            color: ToolKind.opencode.color)
+        let windows = [
+            go.monthlyPct.map { makeWindow(label: "Monthly", usedPercent: $0, resetAt: absolute(go.monthlyReset), duration: 30 * 86400) },
+            go.weeklyPct.map { makeWindow(label: "Weekly", usedPercent: $0, resetAt: absolute(go.weeklyReset), duration: 7 * 86400) },
+            go.rollingPct.map { makeWindow(label: "5h", usedPercent: $0, resetAt: absolute(go.rollingReset), duration: 5 * 3600) },
+        ].compactMap { $0 }
+        let footnote = go.monthlyPct.map { pct in
+            "\(Format.money(min(max(pct, 0), 100) / 100 * limit)) of \(Format.money(limit)) monthly limit"
+        }
+
+        return PlanQuotaRow(
+            title: "OpenCode Go",
+            planName: nil,
+            symbol: "g.circle.fill",
+            color: ToolKind.opencode.color,
+            accountKey: "go",
+            isLoading: go.isLoading && go.lastOK <= 0,
+            error: go.error,
+            lastSync: go.lastOK,
+            now: now,
+            windows: windows,
+            footnote: footnote,
+            refresh: goClient.configured ? { goClient.refresh() } : nil,
+            openSettings: { openAccountSettings(expandAccount: "go") }
+        )
+    }
+
+    private func makeWindow(label: String, usedPercent: Double, resetAt: Int64?, duration: Int64?) -> QuotaWindow {
+        let nowSeconds = Int64(now.timeIntervalSince1970)
+        let clamped = min(max(usedPercent, 0), 100)
+        let resetIn = resetAt.flatMap { $0 > nowSeconds ? Format.remaining($0 - nowSeconds) : nil }
+        let elapsed: Double? = {
+            guard let resetAt, let duration, duration > 0, resetAt > nowSeconds else { return nil }
+            return min(max(1 - Double(resetAt - nowSeconds) / Double(duration), 0), 1)
+        }()
+        return QuotaWindow(label: label, usedPercent: clamped, resetIn: resetIn, elapsed: elapsed)
+    }
+
+    // MARK: - Right Column: Balances, Subscriptions, Not connected
+
+    private var rightColumn: some View {
+        let subs = activeSubscriptions
+        return VStack(alignment: .leading, spacing: DashLayout.gap) {
+            if orConnected || deepseekConnected {
+                balancesCard
+                    .dashFixedHeight()
             }
-            if let pct = go.weeklyPct {
-                quotaColumn("Weekly", usedPercent: pct,
-                            captions: [resetText(absolute: absolute(go.weeklyReset))].compactMap { $0 },
-                            color: ToolKind.opencode.color)
+            if !subs.isEmpty {
+                subscriptionsCard(subs)
+                    .dashFixedHeight()
             }
-            if let pct = go.rollingPct {
-                quotaColumn("5h", usedPercent: pct,
-                            captions: [resetText(absolute: absolute(go.rollingReset))].compactMap { $0 },
-                            color: ToolKind.opencode.color)
+            if !unconnected.isEmpty {
+                unconnectedCard
+                    .dashFixedHeight()
             }
+            Spacer(minLength: 0)
         }
     }
 
-    private var orCard: some View {
-        let or = orClient.state
-        return accountCard(title: "OpenRouter", symbol: ToolKind.openrouter.symbol, color: ToolKind.openrouter.color,
-                           isLoading: or.isLoading && or.lastOK <= 0, error: or.error, lastSync: or.lastOK,
-                           refresh: { orClient.refresh() }) {
-            if or.lastOK > 0 {
-                let periods = UsagePeriodConfiguration(mode: .calendar)
-                let now = Date()
-                FigureColumn(label: "Balance", value: or.accountBalance.map(Format.money) ?? "—")
-                FigureColumn(label: "Today", value: Format.money(
-                    Database.shared.openRouterSpend(since: periods.range(for: .today, now: now).start,
-                                                    current: or.creditsUsage)))
-                FigureColumn(label: "This month", value: Format.money(
-                    Database.shared.openRouterSpend(since: periods.range(for: .month, now: now).start,
-                                                    current: or.creditsUsage)))
-                if let remaining = or.limitRemaining, let limit = or.limit, limit > 0 {
-                    // Pass what is used; quotaColumn applies the used/remaining mode.
-                    quotaColumn("Key", usedPercent: (limit - remaining) / limit * 100,
-                                captions: ["\(Format.money(remaining)) of \(Format.money(limit)) left"],
-                                color: ToolKind.openrouter.color)
+    private var balancesCard: some View {
+        DashCard("Balances", inset: DashLayout.cardPadding) {
+            VStack(alignment: .leading, spacing: 12) {
+                if orConnected {
+                    openRouterRow
+                }
+                if orConnected && deepseekConnected {
+                    Divider().opacity(0.45)
+                }
+                if deepseekConnected {
+                    deepseekRow
                 }
             }
         }
     }
 
-    private var deepseekCard: some View {
+    private var openRouterRow: some View {
+        let or = orClient.state
+        let periods = UsagePeriodConfiguration(mode: .calendar)
+        let todayStart = periods.range(for: .today, now: now).start
+        let monthStart = periods.range(for: .month, now: now).start
+        let todaySpend = app.openRouterSpend(since: todayStart, current: or.creditsUsage)
+        let monthSpend = app.openRouterSpend(since: monthStart, current: or.creditsUsage)
+        let err = or.authInvalid ? "API key rejected (401/403)" : or.error
+
+        return PlanBalanceRow(
+            title: "OpenRouter",
+            symbol: ToolKind.openrouter.symbol,
+            color: ToolKind.openrouter.color,
+            accountKey: "router",
+            isLoading: or.isLoading && or.lastOK <= 0,
+            error: err,
+            lastSync: or.lastOK,
+            now: now,
+            balanceText: or.lastOK > 0 ? (or.accountBalance.map(Format.money) ?? "—") : nil,
+            balanceTint: .primary,
+            secondaryStats: or.lastOK > 0 ? [
+                ("Today", Format.money(todaySpend)),
+                ("Month", Format.money(monthSpend)),
+            ] : [],
+            keyQuota: (or.lastOK > 0 && or.limitRemaining != nil && (or.limit ?? 0) > 0)
+                ? (remaining: or.limitRemaining!, limit: or.limit!) : nil,
+            showsRemaining: showsRemaining,
+            refresh: { orClient.refresh() },
+            openSettings: { openAccountSettings(expandAccount: "router") }
+        )
+    }
+
+    private var deepseekRow: some View {
         let state = deepseek.state
-        let wallets = state.expired ? [] : state.balance?.wallets ?? []
-        // Same reading as the popover: funded wallets only, symbol amounts.
+        let wallets = state.expired ? [] : (state.balance?.wallets ?? [])
         let funded = wallets.filter { $0.total.amount != 0 }
         let shown = funded.isEmpty ? Array(wallets.prefix(1)) : funded
         let unavailable = state.balance?.available == false
-        let spend = deepseek.spend(for: .today, configuration: UsagePeriodSettings.shared.configuration)
+        let spend = deepseek.spend(for: .today, configuration: UsagePeriodSettings.shared.configuration, now: now)
         let updated = state.balanceUpdated.map { Int64($0.timeIntervalSince1970) } ?? 0
-        return accountCard(title: "DeepSeek", symbol: "d.circle.fill", color: ToolKind.dsh.color,
-                           isLoading: state.loadingBalance && updated == 0,
-                           error: state.expired ? "Sign-in expired" : (state.balanceError ?? state.spendError),
-                           lastSync: updated,
-                           refresh: { deepseek.refresh(force: true) }) {
-            if !shown.isEmpty {
-                FigureColumn(label: "Balance",
-                             value: shown.map { $0.total.symbolFormatted }.joined(separator: " · "),
-                             tint: unavailable ? TMDesign.danger : .primary,
-                             captions: unavailable ? ["Unavailable for API calls"] : [],
-                             captionTint: unavailable ? TMDesign.danger : TMDesign.quiet)
-            }
-            if state.kind == .platform {
-                FigureColumn(label: "Today",
-                             value: spend.map { $0.amounts.isEmpty ? "—"
-                                 : $0.amounts.map(\.symbolFormatted).joined(separator: " · ") } ?? "—",
-                             captions: ["Account spend"])
-            }
+        let err = state.expired ? "Sign-in expired" : (state.balanceError ?? state.spendError)
+
+        let balanceText: String? = shown.isEmpty ? nil : shown.map { $0.total.symbolFormatted }.joined(separator: " · ")
+        var secondary: [(String, String)] = []
+        if state.kind == .platform {
+            let todayStr = spend.map {
+                $0.amounts.isEmpty ? "—" : $0.amounts.map(\.symbolFormatted).joined(separator: " · ")
+            } ?? "—"
+            secondary.append(("Today", todayStr))
         }
+
+        return PlanBalanceRow(
+            title: "DeepSeek",
+            symbol: "d.circle.fill",
+            color: ToolKind.dsh.color,
+            accountKey: "deepseek",
+            isLoading: state.loadingBalance && updated == 0,
+            error: err,
+            lastSync: updated,
+            now: now,
+            balanceText: balanceText,
+            balanceTint: unavailable ? TMDesign.danger : .primary,
+            secondaryStats: secondary,
+            keyQuota: nil,
+            showsRemaining: showsRemaining,
+            warningNote: unavailable ? "Unavailable for API calls" : nil,
+            refresh: { deepseek.refresh(force: true) },
+            openSettings: { openAccountSettings(expandAccount: "deepseek") }
+        )
     }
 
-    /// Ended plans stay in Settings and in All Time spend, not on this page.
-    private var activeSubscriptions: [Database.Subscription] {
-        let now = Date()
-        return app.subscriptions.filter {
-            SubscriptionMath.cycleInfo(start: $0.startDate, end: $0.endDate, cycle: $0.cycle, now: now) != nil
+    private func subscriptionsCard(_ subs: [Database.Subscription]) -> some View {
+        let monthlyTotal = subs.reduce(0.0) { total, sub in
+            switch sub.cycle {
+            case "yearly": return total + sub.price / 12
+            case "weekly": return total + sub.price * 52 / 12
+            default: return total + sub.price
+            }
         }
-    }
-
-    private var subsCard: some View {
-        let subs = activeSubscriptions
-        return plainCard(title: "Subscriptions", symbol: "calendar", color: TMDesign.accent) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(subs.prefix(3)) { sub in
+        return DashCard("Subscriptions", inset: DashLayout.cardPadding, trailing: {
+            HStack(spacing: 8) {
+                if monthlyTotal > 0 {
+                    Text("\(Format.money(monthlyTotal))/mo")
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(TMDesign.quiet)
+                }
+                Button("Manage") { openAccountSettings() }
+                    .buttonStyle(.borderless)
+                    .font(TMType.medium(TMType.caption))
+                    .foregroundStyle(TMDesign.accent)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(subs.enumerated()), id: \.element.id) { index, sub in
+                    if index > 0 { Divider().opacity(0.45) }
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: SubscriptionSettingsSection.planIcon(sub.plan))
+                            .font(.system(size: 12))
+                            .foregroundStyle(SubscriptionSettingsSection.planColor(sub.plan))
+                            .frame(width: 16)
+                            .accessibilityHidden(true)
                         Text(sub.name)
                             .font(TMType.medium(TMType.body))
                             .lineLimit(1)
                             .layoutPriority(1)
                         Spacer(minLength: 8)
-                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle) {
-                            // A long plan name keeps its room; the date gives way whole.
+                        if let info = SubscriptionMath.cycleInfo(start: sub.startDate, end: sub.endDate, cycle: sub.cycle, now: now) {
                             ViewThatFits(in: .horizontal) {
                                 Text("renews \(Self.shortDate(info.end))")
                                 Text(Self.shortDate(info.end))
@@ -287,160 +574,28 @@ struct PlansView: View {
                             .fixedSize()
                     }
                 }
-                if subs.count > 3 {
-                    Text("\(subs.count - 3) more in Settings")
-                        .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.quiet)
-                }
             }
         }
     }
 
     private var unconnectedCard: some View {
-        plainCard(title: "Not connected", symbol: "plus", color: TMDesign.quiet) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(unconnected.joined(separator: " · "))
-                    .font(TMType.regular(TMType.body))
-                    .foregroundStyle(TMDesign.quiet)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Set Up…", action: openAccountSettings)
-                    .tmGlassButton(circle: false)
-            }
-        }
-    }
-
-    // MARK: - Card template
-
-    /// Header, then the figure columns centered in the space below it. An account
-    /// that failed before producing any figure says so in the body, where the
-    /// figures would be; with figures on screen the reason stays in the header.
-    private func accountCard<Columns: View>(
-        title: String, symbol: String, color: Color,
-        isLoading: Bool, error: String?, lastSync: Int64,
-        refresh: (() -> Void)?,
-        @ViewBuilder columns: () -> Columns
-    ) -> some View {
-        let failedEmpty = error != nil && lastSync <= 0
-        return DashCard(inset: Self.cardInset) {
-            VStack(alignment: .leading, spacing: 0) {
-                header(title: title, symbol: symbol, color: color) {
-                    if error == nil {
-                        freshness(isLoading: isLoading, lastSync: lastSync)
-                    } else if !failedEmpty {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(TMType.regular(TMType.caption))
-                            .foregroundStyle(TMDesign.danger)
-                            .accessibilityHidden(true)
-                    }
-                    if let refresh {
-                        Button(action: refresh) {
-                            if isLoading {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(isLoading)
-                        .help("Refresh \(title)")
-                        .accessibilityLabel("Refresh \(title)")
-                    }
-                }
-                if !failedEmpty, let error {
-                    // Older figures are still below; the whole reason stays readable.
-                    Text(error)
+        DashCard(inset: 14) {
+            HStack(alignment: .center, spacing: 10) {
+                DashGlyph(symbol: "plus", color: TMDesign.quiet, size: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Not connected")
+                        .font(TMType.medium(TMType.caption))
+                    Text(unconnected.joined(separator: " · "))
                         .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.danger)
+                        .foregroundStyle(TMDesign.quiet)
                         .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 4)
                 }
-                Group {
-                if failedEmpty, let error {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(TMType.regular(TMType.body))
-                            .foregroundStyle(TMDesign.danger)
-                            .lineLimit(2)
-                        Button("Open Settings…", action: openAccountSettings)
-                            .tmGlassButton(circle: false)
-                    }
-                } else if isLoading {
-                    ProgressView().controlSize(.small)
-                } else {
-                    // Labels on one line across columns, whether or not a
-                    // column carries a bar.
-                    HStack(alignment: .top, spacing: 16) { columns() }
-                }
-                }
-                // The body sits centered in the space under the header, so
-                // cards with a short body balance their space above and below
-                // instead of leaving it all at one end.
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                Spacer(minLength: 8)
+                Button("Set Up…") { openAccountSettings() }
+                    .tmGlassButton(circle: false)
+                    .controlSize(.small)
             }
         }
-    }
-
-    /// A card that is not an account (subscriptions, the not-connected list):
-    /// same size and header, free-form body centered below it.
-    private func plainCard<Content: View>(title: String, symbol: String, color: Color,
-                                          @ViewBuilder content: () -> Content) -> some View {
-        DashCard(inset: Self.cardInset) {
-            VStack(alignment: .leading, spacing: 0) {
-                header(title: title, symbol: symbol, color: color) { EmptyView() }
-                content()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private func header<Trailing: View>(title: String, symbol: String, color: Color,
-                                        @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: 8) {
-            DashGlyph(symbol: symbol, color: color, size: 24)
-            Text(title)
-                .font(TMType.semibold(14))
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            trailing()
-        }
-    }
-
-    /// Trailing status: how long ago the account updated; a colored mark
-    /// only for states that need attention.
-    @ViewBuilder
-    private func freshness(isLoading: Bool, lastSync: Int64) -> some View {
-        let age = Int64(Date().timeIntervalSince1970) - lastSync
-        if isLoading {
-            EmptyView()
-        } else if lastSync <= 0 {
-            TMStatusPill(text: "Idle", color: TMDesign.quiet, symbol: "circle.dashed")
-        } else if age > 120 {
-            TMStatusPill(text: "\(Format.remaining(age)) ago", color: TMDesign.accent, symbol: "clock.badge.exclamationmark")
-        } else {
-            Text(age < 60 ? "Just now" : "\(Format.remaining(age)) ago")
-                .font(TMType.regular(TMType.caption))
-                .tmMonospacedDigit()
-                .foregroundStyle(TMDesign.quiet)
-        }
-    }
-
-    /// A quota window as a figure column. The figure and the bar both follow
-    /// the used/remaining preference from the popover.
-    private func quotaColumn(_ label: String, usedPercent: Double, captions: [String],
-                             color: Color) -> FigureColumn {
-        let p = min(max(usedPercent, 0), 100)
-        let shown = QuotaWindow.shownPercent(used: p, showsRemaining: showsRemaining)
-        return FigureColumn(label: label, value: "\(Int(shown.rounded()))%",
-                            unit: showsRemaining ? "left" : "used",
-                            barPercent: shown, barTint: color, captions: captions)
-    }
-
-    /// "resets in 4.8d" for an absolute unix-seconds reset; nil once passed.
-    private func resetText(absolute: Int64?) -> String? {
-        guard let absolute else { return nil }
-        let remaining = absolute - Int64(Date().timeIntervalSince1970)
-        return remaining > 0 ? "resets in \(Format.remaining(remaining))" : nil
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -461,51 +616,315 @@ struct PlansView: View {
     }
 }
 
-/// One figure in an account card: a small label, the figure, an optional
-/// usage bar, and up to two caption lines. Columns share the card's width.
-private struct FigureColumn: View {
-    let label: String
-    let value: String
-    var unit: String?
-    var tint: Color = .primary
-    var barPercent: Double?
-    var barTint: Color = .accentColor
-    var captions: [String] = []
-    var captionTint: Color = TMDesign.quiet
+// MARK: - Quota Row
+
+private struct PlanQuotaRow: View {
+    @AppStorage(QuotaWindow.showsRemainingKey) private var showsRemaining = false
+    @State private var hovering = false
+
+    let title: String
+    let planName: String?
+    let symbol: String
+    let color: Color
+    let accountKey: String
+    let isLoading: Bool
+    let error: String?
+    let lastSync: Int64
+    let now: Date
+    let windows: [QuotaWindow]
+    let footnote: String?
+    let refresh: (() -> Void)?
+    let openSettings: () -> Void
+
+    private var failedEmpty: Bool { error != nil && lastSync <= 0 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-                .lineLimit(1)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(TMType.semibold(19))
-                    .tmMonospacedDigit()
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                if let unit {
-                    Text(unit)
+        VStack(alignment: .leading, spacing: 8) {
+            if failedEmpty, let error {
+                compactErrorRow(error)
+            } else {
+                header
+                if let error {
+                    let problem = RowProblem.from(service: title, error: error, accountKey: accountKey)
+                    Text(conciseErrorTitle(problem.title))
                         .font(TMType.regular(TMType.caption))
-                        .foregroundStyle(TMDesign.quiet)
+                        .foregroundStyle(TMDesign.danger)
+                        .lineLimit(1)
+                        .help(problem.detail)
+                }
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                        .padding(.vertical, 4)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(windows, id: \.label) { window in
+                            windowRow(window)
+                        }
+                        if let footnote {
+                            Text(footnote)
+                                .font(TMType.regular(TMType.caption))
+                                .tmMonospacedDigit()
+                                .foregroundStyle(TMDesign.quiet)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
                 }
             }
-            if let barPercent {
-                DashUsageBar(fillPercent: barPercent, tint: barTint, height: 4)
-                    .padding(.vertical, 2)
-            }
-            ForEach(captions, id: \.self) { caption in
-                Text(caption)
-                    .font(TMType.regular(TMType.caption))
-                    .tmMonospacedDigit()
-                    .foregroundStyle(captionTint)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+
+    private func compactErrorRow(_ error: String) -> some View {
+        let problem = RowProblem.from(service: title, error: error, accountKey: accountKey)
+        return HStack(alignment: .center, spacing: 10) {
+            DashGlyph(symbol: symbol, color: color, size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(TMType.semibold(14))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                Label(conciseErrorTitle(problem.title), systemImage: "exclamationmark.triangle.fill")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.danger)
+                    .lineLimit(1)
+                    .help(problem.detail)
+            }
+            Spacer(minLength: 8)
+            Button("Open Settings…", action: openSettings)
+                .tmGlassButton(circle: false)
+                .controlSize(.small)
+            if let refresh {
+                Button(action: refresh) {
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12))
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(isLoading)
+                .help("Retry \(title)")
+                .accessibilityLabel("Retry \(title)")
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            DashGlyph(symbol: symbol, color: color, size: 22)
+                .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
+            Text(title)
+                .font(TMType.semibold(14))
+                .lineLimit(1)
+            if let planName, !planName.isEmpty {
+                Text("·  \(planName)")
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if isLoading {
+                ProgressView().controlSize(.small)
+            } else if hovering, let refresh {
+                Button(action: refresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh \(title)")
+                .accessibilityLabel("Refresh \(title)")
+            } else {
+                freshnessView
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var freshnessView: some View {
+        let age = Int64(now.timeIntervalSince1970) - lastSync
+        if lastSync <= 0 {
+            Text("Idle")
+                .font(TMType.regular(TMType.caption))
+                .foregroundStyle(TMDesign.quiet)
+        } else if age > 120 {
+            Text("\(Format.remaining(age)) ago")
+                .font(TMType.regular(TMType.caption))
+                .tmMonospacedDigit()
+                .foregroundStyle(TMDesign.accent)
+        } else {
+            Text(age < 60 ? "Just now" : "\(Format.remaining(age)) ago")
+                .font(TMType.regular(TMType.caption))
+                .tmMonospacedDigit()
+                .foregroundStyle(TMDesign.quiet)
+        }
+    }
+
+    private func conciseErrorTitle(_ raw: String) -> String {
+        let prefix = "\(title) "
+        guard raw.hasPrefix(prefix) else { return raw }
+        let stripped = String(raw.dropFirst(prefix.count))
+        guard let first = stripped.first else { return raw }
+        return first.uppercased() + stripped.dropFirst()
+    }
+
+    private func windowRow(_ window: QuotaWindow) -> some View {
+        let shown = QuotaWindow.shownPercent(used: window.usedPercent, showsRemaining: showsRemaining)
+        let tint = DashUsageBar.semanticTint(usedPercent: window.usedPercent, base: color)
+        let valueColor: Color = window.usedPercent >= 90 ? TMDesign.danger
+            : (window.usedPercent >= 80 ? TMDesign.warning : .primary)
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(window.label)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                    .frame(width: 62, alignment: .leading)
+                    .lineLimit(1)
+                if let resetIn = window.resetIn {
+                    Text("resets in \(resetIn)")
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(TMDesign.quiet)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text("\(Int(shown.rounded()))% \(showsRemaining ? "left" : "used")")
+                    .font(TMType.semibold(TMType.caption))
+                    .tmMonospacedDigit()
+                    .foregroundStyle(valueColor)
+                    .lineLimit(1)
+            }
+            DashUsageBar(
+                fillPercent: shown,
+                tint: tint,
+                height: 5,
+                elapsed: window.barElapsed(showsRemaining: showsRemaining)
+            )
+        }
         .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Balance Row
+
+private struct PlanBalanceRow: View {
+    @State private var hovering = false
+
+    let title: String
+    let symbol: String
+    let color: Color
+    let accountKey: String
+    let isLoading: Bool
+    let error: String?
+    let lastSync: Int64
+    let now: Date
+    let balanceText: String?
+    let balanceTint: Color
+    let secondaryStats: [(label: String, value: String)]
+    let keyQuota: (remaining: Double, limit: Double)?
+    let showsRemaining: Bool
+    var warningNote: String? = nil
+    let refresh: () -> Void
+    let openSettings: () -> Void
+
+    private var failedEmpty: Bool { error != nil && lastSync <= 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                DashGlyph(symbol: symbol, color: color, size: 22)
+                Text(title)
+                    .font(TMType.semibold(14))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else if hovering || error != nil {
+                    Button(action: refresh) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Refresh \(title)")
+                    .accessibilityLabel("Refresh \(title)")
+                } else if lastSync > 0 {
+                    let age = Int64(now.timeIntervalSince1970) - lastSync
+                    Text(age < 60 ? "Just now" : "\(Format.remaining(age)) ago")
+                        .font(TMType.regular(TMType.caption))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(age > 120 ? TMDesign.accent : TMDesign.quiet)
+                }
+            }
+
+            if failedEmpty, let error {
+                let problem = RowProblem.from(service: title, error: error, accountKey: accountKey)
+                HStack(spacing: 8) {
+                    Label(problem.title, systemImage: "exclamationmark.triangle.fill")
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.danger)
+                        .lineLimit(1)
+                        .help(problem.detail)
+                    Spacer(minLength: 6)
+                    Button("Open Settings…", action: openSettings)
+                        .tmGlassButton(circle: false)
+                        .controlSize(.small)
+                }
+            } else if let balanceText {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(balanceText)
+                        .font(TMType.semibold(22))
+                        .tmMonospacedDigit()
+                        .foregroundStyle(balanceTint)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    HStack(spacing: 14) {
+                        ForEach(Array(secondaryStats.enumerated()), id: \.offset) { _, stat in
+                            VStack(alignment: .trailing, spacing: 1) {
+                                Text(stat.label)
+                                    .font(TMType.regular(TMType.micro))
+                                    .foregroundStyle(TMDesign.quiet)
+                                Text(stat.value)
+                                    .font(TMType.medium(TMType.caption))
+                                    .tmMonospacedDigit()
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                }
+                if let keyQuota {
+                    let usedPct = (keyQuota.limit - keyQuota.remaining) / keyQuota.limit * 100
+                    let shown = QuotaWindow.shownPercent(used: usedPct, showsRemaining: showsRemaining)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Key limit")
+                                .font(TMType.regular(TMType.micro))
+                                .foregroundStyle(TMDesign.quiet)
+                            Spacer()
+                            Text("\(Int(shown.rounded()))% \(showsRemaining ? "left" : "used")")
+                                .font(TMType.medium(TMType.micro))
+                                .tmMonospacedDigit()
+                                .foregroundStyle(TMDesign.quiet)
+                        }
+                        DashUsageBar(
+                            fillPercent: shown,
+                            tint: DashUsageBar.semanticTint(usedPercent: usedPct, base: color),
+                            height: 4
+                        )
+                    }
+                }
+                if let warningNote {
+                    Text(warningNote)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.danger)
+                }
+            } else if isLoading {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 }
