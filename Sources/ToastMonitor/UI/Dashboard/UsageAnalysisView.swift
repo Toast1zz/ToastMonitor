@@ -298,11 +298,7 @@ struct UsageAnalysisView: View {
             acc[ModelName.display(row.model), default: 0] += row.totalTokens
         }
         let ranked = totals.sorted { $0.value > $1.value }.map(\.key)
-        var map: [String: Color] = [:]
-        for (i, name) in ranked.enumerated() {
-            map[name] = TMDesign.modelPalette[i % TMDesign.modelPalette.count]
-        }
-        return map
+        return TMDesign.modelColors(for: ranked)
     }
 
     /// The interface is English; axis dates follow it, not the system locale.

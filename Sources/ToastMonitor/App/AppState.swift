@@ -280,6 +280,10 @@ final class AppState: ObservableObject {
             next.byToolWeek = light.byToolWeek
             next.byToolMonth = light.byToolMonth
             next.byToolAll = light.byToolAll
+            next.modelAggs = light.modelAggsWeek
+            next.modelAggsToday = light.modelAggsToday
+            next.modelAggsMonth = light.modelAggsMonth
+            next.modelAggsAll = light.modelAggsAll
             next.costToday = light.costToday
             next.costWeek = light.costWeek
             next.costMonth = light.costMonth
@@ -294,10 +298,6 @@ final class AppState: ObservableObject {
             next.lastScan = light.lastScan
             next.snapshotFetchedAt = light.fetchedAt
             if let complete {
-                next.modelAggs = complete.modelAggs
-                next.modelAggsToday = complete.modelAggsToday
-                next.modelAggsMonth = complete.modelAggsMonth
-                next.modelAggsAll = complete.modelAggsAll
                 next.heatmap = complete.heatmap
                 next.heatmapCost = complete.heatmapCost
             }

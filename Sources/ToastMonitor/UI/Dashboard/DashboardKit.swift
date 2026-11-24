@@ -229,9 +229,7 @@ struct DashUsageBar: View {
     var elapsed: Double? = nil
 
     static func semanticTint(usedPercent: Double, base: Color) -> Color {
-        if usedPercent >= 90 { return TMDesign.danger }
-        if usedPercent >= 80 { return TMDesign.warning }
-        return base
+        base
     }
 
     var body: some View {

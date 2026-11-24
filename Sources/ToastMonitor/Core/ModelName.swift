@@ -24,6 +24,13 @@ enum ModelName {
         "deepseek": ("DeepSeek", false),
     ]
     private static let claudeFamilies: Set<String> = ["opus", "sonnet", "haiku", "fable", "mythos"]
+    /// Reasoning effort, tier, and context-window modifiers appended by some
+    /// tools ("claude-opus-5-5-medium", "gemini-4-hydrogen-tiered-high",
+    /// "gpt-6-luna-900k") that refer to the same underlying model. `"max"` is
+    /// deliberately excluded because it names distinct model tiers ("Qwen Max").
+    private static let trailingModifiers: Set<String> = [
+        "low", "medium", "high", "xhigh", "minimal", "thinking", "tiered",
+    ]
 
     static func display(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,11 +39,18 @@ enum ModelName {
         let id = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
         guard !id.isEmpty else { return trimmed }
 
-        var tokens = id.lowercased()
+        let base = stripParenthesizedModifier(id)
+        var tokens = base.lowercased()
             .split(whereSeparator: { "-_: ".contains($0) })
             .map(String.init)
         // A trailing snapshot date ("-20250929") says nothing a reader needs.
         if let last = tokens.last, tokens.count > 1, last.count == 8, last.allSatisfy(\.isNumber) {
+            tokens.removeLast()
+        }
+        // Strip trailing reasoning/tier/context-window modifiers so identical
+        // models across sources merge under one display name.
+        while tokens.count > 1, let last = tokens.last,
+              trailingModifiers.contains(last) || isContextWindow(last) {
             tokens.removeLast()
         }
         guard !tokens.isEmpty else { return id }
@@ -89,7 +103,8 @@ enum ModelName {
         var version = ""
         var extras: [String] = []
         for token in tokens where token != family {
-            if token.allSatisfy(\.isNumber) {
+            if token.first?.isNumber == true, token.last?.isNumber == true,
+               token.allSatisfy({ $0.isNumber || $0 == "." }) {
                 version += version.isEmpty ? token : "." + token
             } else if token.allSatisfy(\.isLetter) {
                 extras.append(token.prefix(1).uppercased() + token.dropFirst())
@@ -115,6 +130,23 @@ enum ModelName {
         if body.first?.isLetter == true { body = body.dropFirst() }
         guard let first = body.first, first.isNumber else { return false }
         return body.allSatisfy { $0.isNumber || $0 == "." } && !body.hasSuffix(".")
+    }
+
+    /// Strips a trailing `" (<modifier>)"` such as `"Claude Opus 5.5 (Medium)"`.
+    private static func stripParenthesizedModifier(_ id: String) -> String {
+        guard id.hasSuffix(")"), let open = id.lastIndex(of: "(") else { return id }
+        let inner = id[id.index(after: open)..<id.index(before: id.endIndex)]
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        guard trailingModifiers.contains(inner) || isContextWindow(inner) else { return id }
+        let prefix = id[..<open].trimmingCharacters(in: .whitespaces)
+        return prefix.isEmpty ? id : prefix
+    }
+
+    /// Context-window size suffixes such as `"900k"`, `"200k"`, or `"1m"`.
+    private static func isContextWindow(_ token: String) -> Bool {
+        guard token.count >= 2, let unit = token.last, unit == "k" || unit == "m" else { return false }
+        return token.dropLast().allSatisfy { $0.isASCII && $0.isNumber }
     }
 }
 

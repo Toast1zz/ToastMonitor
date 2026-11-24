@@ -188,9 +188,9 @@ final class UIStateTests: XCTestCase {
     func testDashUsageBarSemanticTintThresholds() {
         let base = TMDesign.accent
         XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 79.9, base: base), base)
-        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 80.0, base: base), TMDesign.warning)
-        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 89.9, base: base), TMDesign.warning)
-        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 90.0, base: base), TMDesign.danger)
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 80.0, base: base), base)
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 89.9, base: base), base)
+        XCTAssertEqual(DashUsageBar.semanticTint(usedPercent: 90.0, base: base), base)
     }
 
     func testAppStateExposesInMemoryBillingHelpers() {

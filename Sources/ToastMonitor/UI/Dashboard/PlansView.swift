@@ -773,8 +773,6 @@ private struct PlanQuotaRow: View {
     private func windowRow(_ window: QuotaWindow) -> some View {
         let shown = QuotaWindow.shownPercent(used: window.usedPercent, showsRemaining: showsRemaining)
         let tint = DashUsageBar.semanticTint(usedPercent: window.usedPercent, base: color)
-        let valueColor: Color = window.usedPercent >= 90 ? TMDesign.danger
-            : (window.usedPercent >= 80 ? TMDesign.warning : .primary)
 
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -794,7 +792,7 @@ private struct PlanQuotaRow: View {
                 Text("\(Int(shown.rounded()))% \(showsRemaining ? "left" : "used")")
                     .font(TMType.semibold(TMType.caption))
                     .tmMonospacedDigit()
-                    .foregroundStyle(valueColor)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
             }
             DashUsageBar(

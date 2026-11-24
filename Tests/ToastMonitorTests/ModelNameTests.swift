@@ -77,6 +77,25 @@ final class ModelNameTests: XCTestCase {
         XCTAssertEqual(ModelName.display("/"), "/")
         XCTAssertEqual(ModelName.display("-"), "-")
     }
+
+    func testEffortTierAndContextSuffixesMergeIntoSameModel() {
+        for spelling in [
+            "claude-opus-5-5",
+            "claude-opus-5-5-medium",
+            "claude-opus-5-5-low",
+            "claude-opus-5-5-high",
+            "claude-opus-5-5-thinking",
+            "Claude Opus 5.5 (Medium)",
+        ] {
+            XCTAssertEqual(ModelName.display(spelling), "Opus 5.5", "spelling: \(spelling)")
+        }
+        XCTAssertEqual(ModelName.display("gemini-4-hydrogen"), "Gemini 4 Hydrogen")
+        XCTAssertEqual(ModelName.display("gemini-4-hydrogen-tiered-high"), "Gemini 4 Hydrogen")
+        XCTAssertEqual(ModelName.display("gpt-6-luna"), "GPT-6 Luna")
+        XCTAssertEqual(ModelName.display("gpt-6-luna-900k"), "GPT-6 Luna")
+        // "max" is a model tier name and must stay distinct.
+        XCTAssertEqual(ModelName.display("qwen3.7-max"), "Qwen 3.7 Max")
+    }
 }
 
 final class AnalysisCSVTests: XCTestCase {

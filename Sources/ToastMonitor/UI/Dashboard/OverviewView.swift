@@ -249,11 +249,11 @@ struct OverviewView: View {
     }
 
     private var modelItems: [ShareItem] {
-        // One color per model by rank (same rule as Analysis › By Model);
-        // a tool's color would repeat across its models.
-        modelRows(period).enumerated().map { index, row in
-            ShareItem(name: row.0, value: row.1,
-                      color: TMDesign.modelPalette[index % TMDesign.modelPalette.count])
+        // Use each AI maker's brand color (same rule as Popover & Analysis › By Model).
+        let rows = modelRows(period)
+        let colors = TMDesign.modelColors(for: rows.map(\.0))
+        return rows.map { row in
+            ShareItem(name: row.0, value: row.1, color: colors[row.0] ?? TMDesign.accent)
         }
     }
 

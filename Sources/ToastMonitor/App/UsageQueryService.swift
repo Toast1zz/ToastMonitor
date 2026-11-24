@@ -31,6 +31,12 @@ final class UsageQueryService: @unchecked Sendable {
         var byToolWeek: [Database.ToolTotals]
         var byToolMonth: [Database.ToolTotals]
         var byToolAll: [Database.ToolTotals]
+        /// Per-model totals for each period; the popover's breakdown can
+        /// switch from tools to models without a full dashboard snapshot.
+        var modelAggsToday: [Database.ModelAgg] = []
+        var modelAggsWeek: [Database.ModelAgg] = []
+        var modelAggsMonth: [Database.ModelAgg] = []
+        var modelAggsAll: [Database.ModelAgg] = []
         var costToday: CostQuality
         var costWeek: CostQuality
         var costMonth: CostQuality
@@ -272,6 +278,10 @@ final class UsageQueryService: @unchecked Sendable {
             byToolWeek: byToolWeek,
             byToolMonth: byToolMonth,
             byToolAll: byToolAll,
+            modelAggsToday: database.modelAggregates(from: todayRange.start, to: todayRange.end),
+            modelAggsWeek: database.modelAggregates(from: weekRange.start, to: weekRange.end),
+            modelAggsMonth: database.modelAggregates(from: monthRange.start, to: monthRange.end),
+            modelAggsAll: database.modelAggregates(from: allRange.start, to: allRange.end),
             costToday: costQuality(from: todayRange.start, to: todayRange.end),
             costWeek: costQuality(from: weekRange.start, to: weekRange.end),
             costMonth: costQuality(from: monthRange.start, to: monthRange.end),
@@ -290,17 +300,14 @@ final class UsageQueryService: @unchecked Sendable {
     private func compute(configuration: UsagePeriodConfiguration, now: Date) -> Snapshot {
         fullComputations += 1
         let light = computeLight(configuration: configuration, now: now)
-        let todayRange = configuration.range(for: .today, now: now)
-        let weekRange = configuration.range(for: .week, now: now)
-        let monthRange = configuration.range(for: .month, now: now)
-        let allRange = configuration.range(for: .all, now: now)
         let annualAggs = database.dailyAggregates(days: 371)
         return Snapshot(
             light: light,
-            modelAggs: database.modelAggregates(from: weekRange.start, to: weekRange.end),
-            modelAggsToday: database.modelAggregates(from: todayRange.start, to: todayRange.end),
-            modelAggsMonth: database.modelAggregates(from: monthRange.start, to: monthRange.end),
-            modelAggsAll: database.modelAggregates(from: allRange.start, to: allRange.end),
+            // Model totals are computed once in the light snapshot.
+            modelAggs: light.modelAggsWeek,
+            modelAggsToday: light.modelAggsToday,
+            modelAggsMonth: light.modelAggsMonth,
+            modelAggsAll: light.modelAggsAll,
             // The overview renders 53 weeks (up to 371 calendar days).
             heatmap: Self.buildHeatmap(aggs: annualAggs),
             heatmapCost: Self.buildCostHeatmap(aggs: annualAggs))

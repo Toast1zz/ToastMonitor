@@ -26,7 +26,7 @@
 ### 2.3 Color & Semantic Restraint
 - **Accent & Semantic Palette**:
   - Primary product accent: `TMDesign.accent` (warm copper-orange).
-  - Semantic states: `TMDesign.warning` (quota ≥ 80% used) and `TMDesign.danger` (quota ≥ 90% used, errors, expired sessions).
+  - Semantic states: Quota progress bars and percentage readouts keep their calm base service color and `.primary` text at every usage level (high usage is indicated by the subtle warning icon, never by turning bars or numbers red/orange); reserve `TMDesign.danger` for actual errors and expired sessions, and `TMDesign.warning` for stale indicators and warning icons.
   - Brand colors (`ToolKind.*.color`, `TMDesign.*`) must remain consistent across Popover, Dashboard, and Settings (e.g., OpenCode Go always uses `ToolKind.opencode.color`).
 - **Keep Normal States Neutral**: Healthy states stay neutral (`TMDesign.quiet` / `.primary`); color is reserved for brand marks, charts, and actionable anomalies.
 

@@ -103,6 +103,8 @@ struct PopoverHomeView: View {
     @AppStorage(CodexPlanName.customNameKey) private var codexCustomName = ""
     /// Activity card shows one history view at a time: heatmap or trend.
     @AppStorage("popoverHistoryMode") private var historyMode = HistoryMode.heatmap
+    /// Usage breakdown under the hero: per tool or per model.
+    @AppStorage(BreakdownMode.storageKey) private var breakdownMode = BreakdownMode.tools
     /// Cards hidden in Settings › Appearance (comma-separated keys).
     @AppStorage("popoverHiddenSections") private var hiddenSectionsRaw = ""
     /// Daily usage for a year. The popover loads its own: AppState fills its heatmap only while the dashboard is visible.
@@ -347,6 +349,12 @@ struct PopoverHomeView: View {
                              : nil)
                 HeroChip(label: "Value",
                          value: estimatedShown > 0 ? Format.money(estimatedShown) : "—")
+                // The breakdown switch heads the share rows directly below
+                // without cutting into the share bar.
+                if showsBreakdownToggle {
+                    Spacer(minLength: 8)
+                    BreakdownModeToggleButton(mode: $breakdownMode)
+                }
             }
         }
     }
@@ -418,15 +426,13 @@ struct PopoverHomeView: View {
                                    subscriptions: app.subscriptions, now: now)
     }
 
-    /// Source share bar plus one row per source.
+    /// Share bar plus one row per tool or per model, switched in place.
     private var sourceBar: some View {
-        let rows = sortedRows
-        let total = rows.reduce(Int64(0)) {
-            $0 + (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? ($1.input + $1.output))
-        }
+        let entries = breakdownMode == .models ? modelEntries : toolEntries
+        let total = entries.reduce(Int64(0)) { $0 + $1.value }
         // "Never configured" means no data at all, ever. An empty current
         // period must not show Get Started at the start of every day.
-        let neverConfigured = rows.isEmpty && app.byToolAll.isEmpty
+        let neverConfigured = byTool.isEmpty && app.byToolAll.isEmpty
         return VStack(alignment: .leading, spacing: 7) {
             if neverConfigured {
                 VStack(alignment: .leading, spacing: 8) {
@@ -445,39 +451,120 @@ struct PopoverHomeView: View {
                     }
                     .controlSize(.small)
                 }
-            } else if rows.isEmpty {
-                Text("No usage yet this period")
-                    .font(TMType.regular(TMType.caption))
-                    .foregroundStyle(TMDesign.quiet)
             } else {
-                SourceBar(segments: rows.map { row in
-                    (Double(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)),
-                     TMDesign.sourceColor(row.tool))
-                })
+                if entries.isEmpty {
+                    Text("No usage yet this period")
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.quiet)
+                } else {
+                    SourceBar(segments: entries.map { (Double($0.value), $0.color) })
+                }
 
-                ForEach(rows, id: \.tool) { row in
+                ForEach(entries) { entry in
                     HStack(spacing: 7) {
                         Circle()
-                            .fill(TMDesign.sourceColor(row.tool))
+                            .fill(entry.color)
                             .frame(width: 7, height: 7)
-                        Text(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
+                        Text(entry.name)
                             .font(TMType.medium(TMType.body))
                             .foregroundStyle(.primary)
-                        Text("(\(percentText(row, total: total)))")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("(\(Self.percentText(entry.value, total: total)))")
                             .font(TMType.number(TMType.caption))
                             .foregroundStyle(TMDesign.quiet)
-                        Spacer()
-                        let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
-                        Text(Format.compact(value))
+                            .fixedSize()
+                        Spacer(minLength: 6)
+                        Text(Format.compact(entry.value))
                             .font(TMType.number(TMType.body))
                             .foregroundStyle(TMDesign.quiet)
+                            .fixedSize()
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel(ToolKind(rawValue: row.tool)?.displayName ?? row.tool)
-                    .accessibilityValue(Text("\(Format.full(ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output))) tokens, \(percentText(row, total: total)) of total"))
+                    .accessibilityLabel(entry.name)
+                    .accessibilityValue(Text("\(Format.full(entry.value)) tokens, \(Self.percentText(entry.value, total: total)) of total"))
                 }
             }
         }
+    }
+
+    /// The switch only means something when the breakdown is on screen.
+    private var showsBreakdownToggle: Bool {
+        !isSectionHidden("sources") && !(byTool.isEmpty && app.byToolAll.isEmpty)
+    }
+
+    /// One row of the share breakdown, for a tool or a model.
+    struct ShareEntry: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let value: Int64
+        let color: Color
+    }
+
+    private var toolEntries: [ShareEntry] {
+        sortedRows.map { row in
+            ShareEntry(id: "tool|\(row.tool)",
+                       name: ToolKind(rawValue: row.tool)?.displayName ?? row.tool,
+                       value: ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output),
+                       color: TMDesign.sourceColor(row.tool))
+        }
+    }
+
+    private var modelEntries: [ShareEntry] {
+        // The off-Mac Claude estimate has no model; keep it as its own row so
+        // the model rows still add up to the headline total.
+        let extras = byTool.filter { ToolKind(rawValue: $0.tool) == nil }.map { row in
+            (name: row.tool, value: row.input + row.output, color: TMDesign.sourceColor(row.tool))
+        }
+        return Self.modelShareEntries(aggs: modelAggs, extras: extras)
+    }
+
+    private var modelAggs: [Database.ModelAgg] {
+        switch period {
+        case .today: app.modelAggsToday
+        case .week: app.modelAggs
+        case .month: app.modelAggsMonth
+        case .all: app.modelAggsAll
+        }
+    }
+
+    /// Most rows a model breakdown shows before folding the rest into "Other".
+    static let modelRowLimit = 5
+
+    /// Per-model rows: the same model logged by several tools or under several
+    /// ids merges by display name (as on the Overview), largest first, with
+    /// the long tail folded into one "Other" row so the popover stays short.
+    static func modelShareEntries(aggs: [Database.ModelAgg],
+                                  extras: [(name: String, value: Int64, color: Color)] = [],
+                                  limit: Int = modelRowLimit) -> [ShareEntry] {
+        var totals: [String: Int64] = [:]
+        for row in aggs {
+            let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output,
+                                                                  cacheRead: row.cacheRead)
+                ?? (row.input + row.output)
+            guard value > 0 else { continue }
+            totals[ModelName.display(row.model), default: 0] += value
+        }
+        let ranked = totals.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+        // Folding a single model into "Other" would hide its name for nothing.
+        let shown = ranked.count > limit + 1 ? Array(ranked.prefix(limit)) : ranked
+        let colors = TMDesign.modelColors(for: shown.map(\.key))
+        var entries = shown.map { item in
+            ShareEntry(id: "model|\(item.key)", name: item.key, value: item.value,
+                       color: colors[item.key] ?? TMDesign.accent)
+        }
+        let rest = ranked.dropFirst(shown.count)
+        if !rest.isEmpty {
+            entries.append(ShareEntry(id: "model|other",
+                                      name: "Other (\(rest.count) models)",
+                                      value: rest.reduce(Int64(0)) { $0 + $1.value },
+                                      color: Color.secondary.opacity(0.35)))
+        }
+        for extra in extras where extra.value > 0 {
+            entries.append(ShareEntry(id: "extra|\(extra.name)", name: extra.name,
+                                      value: extra.value, color: extra.color))
+        }
+        return entries
     }
 
     private func loadDetectedTools() {
@@ -497,8 +584,7 @@ struct PopoverHomeView: View {
         }
     }
 
-    private func percentText(_ row: Database.ToolTotals, total: Int64) -> String {
-        let value = ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output)
+    static func percentText(_ value: Int64, total: Int64) -> String {
         let ratio = total > 0 ? Double(value) / Double(total) : 0
         return String(format: "%.1f%%", ratio * 100)
     }
@@ -1749,9 +1835,7 @@ private struct QuotaWindowLine: View {
     }
 
     private var valueColor: Color {
-        if window.usedPercent >= 90 { return TMDesign.danger }
-        if window.usedPercent >= 80 { return TMDesign.warning }
-        return .primary
+        .primary
     }
 
     var body: some View {
@@ -1924,6 +2008,41 @@ private struct UnconnectedSourcesRow: View {
         .padding(.top, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Not connected: \(names.joined(separator: ", "))")
+    }
+}
+
+/// What the popover's usage breakdown groups by.
+enum BreakdownMode: String, CaseIterable {
+    case tools, models
+
+    static let storageKey = "popoverBreakdownMode"
+
+    var title: String { self == .tools ? "By Tool" : "By Model" }
+}
+
+/// Same capsule as the quota Used/Remaining switch: one click flips the
+/// breakdown between tools and models; the choice persists.
+private struct BreakdownModeToggleButton: View {
+    @Binding var mode: BreakdownMode
+
+    var body: some View {
+        Button {
+            mode = mode == .tools ? .models : .tools
+        } label: {
+            Text(mode.title)
+                .font(TMType.medium(TMType.micro))
+                .foregroundStyle(TMDesign.quiet)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
+                .fixedSize()
+                .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(mode == .tools ? "Showing usage by tool — click to show by model"
+                             : "Showing usage by model — click to show by tool")
+        .accessibilityLabel("Usage breakdown")
+        .accessibilityValue(mode.title)
     }
 }
 

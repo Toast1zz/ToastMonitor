@@ -109,8 +109,50 @@ enum TMDesign {
     /// xAI's brand is black on white (white on black in dark), so Grok
     /// follows the label color and stays monochrome in both appearances.
     static let grok = Color(nsColor: .labelColor)
-    /// Google blue, lightened in dark mode as Google's own dark themes do.
+    /// Google / Gemini brand blue, lightened in dark mode.
     static let antigravity = brand(0x4285F4, dark: 0x8AB4F8)
+
+    private static let providerColors: [String: Color] = [
+        "Anthropic": brand(0xD97757),
+        "Google": antigravity,
+        "OpenAI": brand(0x10A37F, dark: 0x19C37D),
+        "DeepSeek": brand(0x2F49D1, dark: 0x5B73F5),
+        "Qwen": brand(0x615CED, dark: 0x8B87FF),
+        "Z.ai": brand(0x3B5BDB, dark: 0x748FFC),
+        "xAI": grok,
+        "Xiaomi": brand(0xFF6900, dark: 0xFF8533),
+        "MiniMax": brand(0xE84C6E, dark: 0xF4718E),
+        "Moonshot": brand(0x0EA5E9, dark: 0x38BDF8),
+    ]
+
+    /// Official brand color for each AI company named by `ModelProvider`.
+    static func providerColor(for provider: String) -> Color? {
+        providerColors[provider]
+    }
+
+    /// Assigns each model display name (ordered largest-first) its maker's
+    /// brand color, stepping opacity for secondary models from the same maker
+    /// so every brand remains recognizable while individual models stay distinct.
+    static func modelColors(for orderedNames: [String]) -> [String: Color] {
+        let shades: [Double] = [1.0, 0.68, 0.48, 0.34]
+        var providerRank: [String: Int] = [:]
+        var fallbackIndex = 0
+        var map: [String: Color] = [:]
+        for name in orderedNames {
+            if map[name] != nil { continue }
+            let provider = ModelProvider.name(for: name)
+            if let base = providerColor(for: provider) {
+                let rank = providerRank[provider, default: 0]
+                providerRank[provider] = rank + 1
+                let opacity = shades[min(rank, shades.count - 1)]
+                map[name] = opacity == 1.0 ? base : base.opacity(opacity)
+            } else {
+                map[name] = modelPalette[fallbackIndex % modelPalette.count]
+                fallbackIndex += 1
+            }
+        }
+        return map
+    }
 
     /// A row in a per-source breakdown. The estimated row reuses Claude's hue,
     /// faded, so it reads as "more Claude, but not measured".

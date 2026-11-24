@@ -278,7 +278,7 @@ struct PerformanceView: View {
             }
         }
         let ranked = callsByModel.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map(\.key)
-        let palette = TMDesign.modelPalette
+        let colors = TMDesign.modelColors(for: ranked)
 
         let providers = callsByProvider.sorted { a, b in
             if (a.key == ModelProvider.other) != (b.key == ModelProvider.other) { return b.key == ModelProvider.other }
@@ -301,9 +301,9 @@ struct PerformanceView: View {
 
         return PerfData(
             range: range,
-            rows: ranked.enumerated().map { index, model in
+            rows: ranked.map { model in
                 ModelRow(model: model, provider: providerByModel[model] ?? ModelProvider.other,
-                         color: palette[index % palette.count],
+                         color: colors[model] ?? TMDesign.accent,
                          tokensPerSecond: PerfStats.median(speedByModel[model] ?? []),
                          ttftMs: PerfStats.median(ttftByModel[model] ?? []),
                          ttftP90Ms: PerfStats.percentile(ttftByModel[model] ?? [], p: 0.90),
