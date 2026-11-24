@@ -261,7 +261,10 @@ struct AccountsSettingsSection: View {
             content
             if let note = message[key] {
                 Text(note.text)
+                    .font(.callout)
                     .foregroundStyle(note.failed ? TMDesign.danger : .secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
             }
             Toggle("Show in popover", isOn: visibility(key))
         } label: {
@@ -297,7 +300,9 @@ struct AccountsSettingsSection: View {
                 }
                 Button(active ? "Change…" : "Set Up…", action: change)
             }
+            .padding(.vertical, 4)
         }
+        .padding(.vertical, 2)
     }
 
     private func visibility(_ key: String) -> Binding<Bool> {
