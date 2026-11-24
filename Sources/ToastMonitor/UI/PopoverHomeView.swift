@@ -461,28 +461,7 @@ struct PopoverHomeView: View {
                 }
 
                 ForEach(entries) { entry in
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(entry.color)
-                            .frame(width: 7, height: 7)
-                        Text(entry.name)
-                            .font(TMType.medium(TMType.body))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text("(\(Self.percentText(entry.value, total: total)))")
-                            .font(TMType.number(TMType.caption))
-                            .foregroundStyle(TMDesign.quiet)
-                            .fixedSize()
-                        Spacer(minLength: 6)
-                        Text(Format.compact(entry.value))
-                            .font(TMType.number(TMType.body))
-                            .foregroundStyle(TMDesign.quiet)
-                            .fixedSize()
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(entry.name)
-                    .accessibilityValue(Text("\(Format.full(entry.value)) tokens, \(Self.percentText(entry.value, total: total)) of total"))
+                    ShareBreakdownRow(entry: entry, total: total)
                 }
             }
         }
@@ -2008,6 +1987,55 @@ private struct UnconnectedSourcesRow: View {
         .padding(.top, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Not connected: \(names.joined(separator: ", "))")
+    }
+}
+
+/// Breakdown row in the popover's period card: hides the share percentage at
+/// rest and smoothly reveals it when hovering anywhere on the row without
+/// shifting surrounding text.
+private struct ShareBreakdownRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let entry: PopoverHomeView.ShareEntry
+    let total: Int64
+    @State private var isHovered = false
+
+    var body: some View {
+        let percent = PopoverHomeView.percentText(entry.value, total: total)
+        HStack(spacing: 7) {
+            Circle()
+                .fill(entry.color)
+                .frame(width: 7, height: 7)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(entry.name)
+                    .font(TMType.medium(TMType.body))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(percent)
+                    .font(TMType.number(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                    .fixedSize()
+                    .opacity(isHovered ? 1 : 0)
+                Spacer(minLength: 6)
+                Text(Format.compact(entry.value))
+                    .font(TMType.number(TMType.body))
+                    .foregroundStyle(TMDesign.quiet)
+                    .fixedSize()
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if reduceMotion {
+                isHovered = hovering
+            } else {
+                withAnimation(.easeOut(duration: 0.14)) {
+                    isHovered = hovering
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(entry.name)
+        .accessibilityValue(Text("\(Format.full(entry.value)) tokens, \(percent) of total"))
     }
 }
 
