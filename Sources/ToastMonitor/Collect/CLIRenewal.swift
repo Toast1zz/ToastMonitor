@@ -43,6 +43,8 @@ final class CLIRenewalRetry {
     private(set) var failures = 0
     private var pending: DispatchWorkItem?
 
+    var hasPendingForTesting: Bool { pending != nil }
+
     init(interval: TimeInterval = defaultInterval) {
         self.interval = interval
     }

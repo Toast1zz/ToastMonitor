@@ -265,8 +265,22 @@ enum ClaudeCLIRefresher {
                 nudgedAfterStatus = true
             }
             if sentCommand, statusReadyTokens.contains(where: scan.contains) {
-                succeeded = true
-                Thread.sleep(forTimeInterval: 1.5) // let the credential write flush
+                if let renewed {
+                    let flushDeadline = min(deadline, Date().addingTimeInterval(5))
+                    while Date() < flushDeadline {
+                        if renewed() {
+                            succeeded = true
+                            break
+                        }
+                        Thread.sleep(forTimeInterval: 0.5)
+                    }
+                    if !succeeded, renewed() {
+                        succeeded = true
+                    }
+                } else {
+                    succeeded = true
+                    Thread.sleep(forTimeInterval: 1.5) // let the credential write flush
+                }
                 break
             }
         }

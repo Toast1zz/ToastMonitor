@@ -184,4 +184,79 @@ final class CLIRenewalTests: XCTestCase {
         XCTAssertEqual(GrokCLIRefresher.run(binary: ok), .completed)
         XCTAssertEqual(GrokCLIRefresher.run(binary: bad), .failed("exit 3"))
     }
+
+    @MainActor
+    func testClaudeBackgroundRenewalPersistsAcrossPopoverClose() {
+        let client = ClaudeQuotaClient(forTestingWithConfiguration: .ephemeral)
+        defer { client.setEnabled(false) }
+
+        client.simulateRenewalFailureForTesting(outcome: .failed("probe failed"))
+        XCTAssertTrue(client.hasPendingRenewalRetryForTesting)
+        XCTAssertEqual(client.renewalFailuresForTesting, 1)
+        XCTAssertNil(client.state.error)
+
+        client.setForegroundForTesting(true)
+        client.setForegroundForTesting(false)
+        XCTAssertTrue(client.hasPendingRenewalRetryForTesting)
+        XCTAssertEqual(client.renewalFailuresForTesting, 1)
+    }
+
+    @MainActor
+    func testClaudeForcedRefreshClearsSecurityToolBlock() {
+        final class StubOKProtocol: URLProtocol {
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                               httpVersion: nil, headerFields: nil)!
+                let body = Data("{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20}}".utf8)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: body)
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            override func stopLoading() {}
+        }
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [StubOKProtocol.self]
+        let client = ClaudeQuotaClient(forTestingWithConfiguration: cfg)
+        defer {
+            client.setEnabled(false)
+            ClaudeQuotaClient.clearSecurityToolBlock()
+        }
+
+        ClaudeQuotaClient.markSecurityToolBlocked(now: Date().timeIntervalSince1970)
+        XCTAssertTrue(ClaudeQuotaClient.securityToolBlocked())
+
+        client.refresh(force: true, renewing: false)
+        XCTAssertFalse(ClaudeQuotaClient.securityToolBlocked())
+    }
+
+    func testProbeWaitsForRenewedCallbackAfterStatusReady() throws {
+        let dir = NSTemporaryDirectory() + "claude-status-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let script = "\(dir)/claude"
+        let body = """
+        #!/bin/sh
+        while IFS= read -r line; do
+          case "$line" in
+            */status*) echo "Logged in" ;;
+            */exit*) exit 0 ;;
+          esac
+        done
+        """
+        FileManager.default.createFile(atPath: script, contents: Data(body.utf8),
+                                       attributes: [.posixPermissions: 0o755])
+
+        let lock = NSLock()
+        var checks = 0
+        let outcome = ClaudeCLIRefresher.probe(binary: script, attempt: 0) {
+            lock.lock()
+            defer { lock.unlock() }
+            checks += 1
+            return checks >= 3
+        }
+        XCTAssertEqual(outcome, .completed)
+    }
 }

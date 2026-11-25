@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -116,6 +117,25 @@ final class ClaudeQuotaClient: ObservableObject {
     }
 
     var rejectedTokenForTesting: String? { rejectedToken }
+    var hasPendingRenewalRetryForTesting: Bool { renewalRetry.hasPendingForTesting }
+    var renewalFailuresForTesting: Int { renewalRetry.failures }
+
+    func setForegroundForTesting(_ visible: Bool) {
+        popoverVisible = visible
+        if visible {
+            foreground = true
+        } else {
+            updateForeground()
+        }
+    }
+
+    func setErrorForTesting(_ message: String?) {
+        state.error = message
+    }
+
+    func simulateRenewalFailureForTesting(outcome: CLIRenewalOutcome?) {
+        renewalFailed(outcome: outcome)
+    }
 
     func requestUsageForTesting(accessToken: String) {
         refreshGeneration &+= 1
@@ -179,15 +199,13 @@ final class ClaudeQuotaClient: ObservableObject {
         foreground = fg
         if fg {
             startTimer(interval: Self.foregroundInterval)
-            refresh()
+            refresh(force: state.error != nil || state.lastSync == 0)
         } else {
-            // No background polling at all: nobody is looking at the numbers,
-            // so there is nothing to refresh for. This is stricter than every
-            // other quota source in the app, deliberately — this one alone
-            // carries ToS risk the others don't.
+            // No background API polling when healthy: nobody is looking at the
+            // numbers. Keep any in-progress login renewal (`renewalRetry`)
+            // alive, though, so closing the panel doesn't strand the login.
             timer?.invalidate()
             timer = nil
-            renewalRetry.reset()
         }
     }
 
@@ -204,6 +222,14 @@ final class ClaudeQuotaClient: ObservableObject {
                     }
                     self.updateForeground()
                 }
+            }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.enabled, (self.foreground || self.state.error != nil) else { return }
+                self.refresh(force: self.state.error != nil)
             }
         }
     }
@@ -250,13 +276,6 @@ final class ClaudeQuotaClient: ObservableObject {
 
     private func renewalFailed(outcome: CLIRenewalOutcome?) {
         let rejected = rejectedToken != nil
-        guard foreground else {
-            renewalRetry.reset()
-            state.error = rejected
-                ? "Claude login expired — run claude /login to restore"
-                : "Login expired — run claude in Terminal"
-            return
-        }
         renewalRetry.schedule(counting: outcome != .throttled) { [weak self] in
             self?.refresh(force: true, renewing: true)
         }
@@ -282,6 +301,9 @@ final class ClaudeQuotaClient: ObservableObject {
         guard renewing || now >= nextAllowedRefresh else { return }
         if !force, lastAttemptAt > 0, now - lastAttemptAt < Self.minPassiveInterval { return }
 
+        if force && !renewing {
+            Self.clearSecurityToolBlock()
+        }
         inFlight = true
         persistLastAttempt(now)
         refreshGeneration &+= 1
@@ -310,13 +332,14 @@ final class ClaudeQuotaClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
                     self.inFlight = false
-                    if self.foreground, self.renewalRetry.loginUnreadable(renewing: renewing, outcome: attempted, retry: { [weak self] in
+                    let denied = Self.lastReadWasDenied
+                    let expectedLogin = renewing || self.state.configured || self.state.lastSync > 0 || denied
+                    if self.renewalRetry.loginUnreadable(renewing: expectedLogin, outcome: attempted, retry: { [weak self] in
                         self?.refresh(force: true, renewing: true)
                     }) { return }
                     // A denied read means the login is there and neither this
                     // app nor /usr/bin/security may decrypt it — telling the
                     // user to log in again would send them down the wrong path.
-                    let denied = Self.lastReadWasDenied
                     self.state.configured = denied
                     self.state.error = denied
                         ? "Claude login unreadable (Keychain denied access)"
