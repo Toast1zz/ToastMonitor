@@ -470,7 +470,49 @@ struct FlowLayout: Layout {
     }
 }
 
+/// Rounded-top-only bar clip shape (macOS 13+ replacement for UnevenRoundedRectangle)
+/// so interior stacked bar segments stay flush without pinched corner notches.
+struct DashBarSegmentShape: Shape {
+    var topRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        guard rect.width > 0, rect.height > 0 else { return Path() }
+        let r = min(max(topRadius, 0), rect.width / 2, rect.height)
+        guard r > 0 else { return Path(rect) }
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        p.addQuadCurve(
+            to: CGPoint(x: rect.minX + r, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        p.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        p.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + r),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.closeSubpath()
+        return p
+    }
+}
+
 extension View {
+    /// Floating callout card surface: shadow and hairline border live on the
+    /// card backing instead of the view itself so SwiftUI does not cast
+    /// per-glyph drop shadows behind text and legend dots.
+    func dashChartCallout() -> some View {
+        background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(TMDesign.calloutSurface)
+                .shadow(color: .black.opacity(0.16), radius: 10, y: 3)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(TMDesign.divider, lineWidth: 0.75)
+        }
+    }
+
     /// Scrollers that appear only while scrolling, whatever the system
     /// scroll bar setting. For short lists inside a card, whose clipped last
     /// row already shows that more follow. Apply inside the ScrollView.

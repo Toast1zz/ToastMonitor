@@ -385,6 +385,7 @@ struct PerformanceView: View {
                     }
                     if let day = hoveredDay, let date = Self.date(fromDayKey: day) {
                         RuleMark(x: .value("Day", date, unit: .day))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
                             .foregroundStyle(Color.primary.opacity(0.16))
                     }
                 }
@@ -394,7 +395,7 @@ struct PerformanceView: View {
                 .chartXAxis {
                     // Points sit at midday, so ticks do too.
                     AxisMarks(values: Self.tickDates(in: data.xDomain, every: step)) { _ in
-                        AxisValueLabel(format: Self.axisDate)
+                        AxisValueLabel(format: Self.axisDate, centered: false, anchor: .top)
                             .font(TMType.regular(TMType.caption))
                             .foregroundStyle(TMDesign.quiet)
                     }
@@ -505,8 +506,7 @@ struct PerformanceView: View {
             }
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        .dashChartCallout()
     }
 
     // MARK: - Providers & Legend
@@ -671,6 +671,7 @@ struct PerformanceView: View {
         } label: {
             HStack(spacing: 3) {
                 Text(title)
+                    .lineLimit(1)
                 // Always laid out so switching columns never shifts the header.
                 Image(systemName: active && ascending ? "chevron.up" : "chevron.down")
                     .font(.system(size: 8, weight: .bold))
@@ -685,30 +686,38 @@ struct PerformanceView: View {
 
     private func table(_ rows: [ModelRow]) -> some View {
         ScrollView(.vertical) {
-            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 0) {
-                GridRow {
+            VStack(spacing: 0) {
+                HStack(spacing: 20) {
                     // Back to the default ranking.
                     Button { sort = nil } label: {
-                        Text("Model").contentShape(Rectangle())
+                        Text("Model")
+                            .lineLimit(1)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help("Reset to default ranking by calls")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Text("Provider")
-                        .frame(minWidth: 70, alignment: .leading)
-                    sortHeader("Speed", .speed).gridColumnAlignment(.trailing)
-                    sortHeader("First Token", .firstToken).gridColumnAlignment(.trailing)
-                    sortHeader("TTFT P90", .ttftP90).gridColumnAlignment(.trailing)
-                    sortHeader("Calls", .calls).gridColumnAlignment(.trailing)
+                        .lineLimit(1)
+                        .frame(width: 92, alignment: .leading)
+                    sortHeader("Speed", .speed)
+                        .frame(width: 78, alignment: .trailing)
+                    sortHeader("First Token", .firstToken)
+                        .frame(width: 88, alignment: .trailing)
+                    sortHeader("TTFT P90", .ttftP90)
+                        .frame(width: 78, alignment: .trailing)
+                    sortHeader("Calls", .calls)
+                        .frame(width: 60, alignment: .trailing)
                 }
                 .font(TMType.medium(TMType.caption))
                 .foregroundStyle(TMDesign.quiet)
+                .padding(.horizontal, 6)
                 .frame(height: Self.headerHeight, alignment: .top)
 
                 ForEach(Self.sorted(rows, by: sort), id: \.model) { r in
                     let isHighlighted = activeHighlightModel == r.model
-                    Divider().gridCellUnsizedAxes(.horizontal)
-                    GridRow {
+                    Divider()
+                    HStack(spacing: 20) {
                         HStack(spacing: 8) {
                             Circle().fill(r.color).frame(width: 8, height: 8)
                             Text(r.model)
@@ -720,23 +729,28 @@ struct PerformanceView: View {
                             .font(TMType.regular(TMType.caption))
                             .foregroundStyle(TMDesign.quiet)
                             .lineLimit(1)
+                            .frame(width: 92, alignment: .leading)
                         Text(Self.speedText(r.tokensPerSecond))
                             .font(TMType.medium(TMType.body))
+                            .frame(width: 78, alignment: .trailing)
                         Text(Self.ttftText(r.ttftMs))
                             .foregroundStyle(TMDesign.quiet)
+                            .frame(width: 88, alignment: .trailing)
                         Text(Self.ttftText(r.ttftP90Ms))
                             .foregroundStyle(TMDesign.quiet)
+                            .frame(width: 78, alignment: .trailing)
                         Text(Format.count(Int64(r.calls)))
                             .foregroundStyle(TMDesign.quiet)
+                            .frame(width: 60, alignment: .trailing)
                     }
                     .font(TMType.regular(TMType.body))
                     .tmMonospacedDigit()
+                    .padding(.horizontal, 6)
                     .frame(height: Self.rowHeight - 1)
                     .contentShape(Rectangle())
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(isHighlighted ? Color.primary.opacity(0.05) : Color.clear)
-                            .padding(.horizontal, -6)
                     )
                     .onTapGesture {
                         pinnedModel = (pinnedModel == r.model) ? nil : r.model

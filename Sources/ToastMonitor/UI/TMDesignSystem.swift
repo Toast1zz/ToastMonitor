@@ -83,6 +83,12 @@ enum TMDesign {
         }
         return NSColor(calibratedWhite: 0.955, alpha: 1.0)
     })
+    static let calloutSurface = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(calibratedWhite: 0.225, alpha: 0.98)
+        }
+        return NSColor(calibratedWhite: 1.0, alpha: 0.98)
+    })
     static let divider = Color.primary.opacity(0.13)
     /// Secondary text. Not the system secondary label: over the panel's glass
     /// its vibrancy measured under 3:1, and it follows the desktop behind the

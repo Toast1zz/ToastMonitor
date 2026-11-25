@@ -355,4 +355,19 @@ final class AuditPostFixPolishTests: XCTestCase {
         XCTAssertGreaterThan(xAfter - xBefore, 2.0,
                              "Trailing space must visibly advance the caret in Subscription Name field")
     }
+
+    func testDashBarSegmentShapeTopRadiusBehavior() {
+        let rect = CGRect(x: 0, y: 0, width: 12, height: 1.5)
+
+        let interiorPath = DashBarSegmentShape(topRadius: 0).path(in: rect)
+        XCTAssertEqual(interiorPath.boundingRect, rect)
+
+        let topPath = DashBarSegmentShape(topRadius: 2.5).path(in: rect)
+        XCTAssertEqual(topPath.boundingRect.minX, rect.minX, accuracy: 0.01)
+        XCTAssertEqual(topPath.boundingRect.maxX, rect.maxX, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(topPath.boundingRect.minY, rect.minY - 0.01)
+        XCTAssertLessThanOrEqual(topPath.boundingRect.maxY, rect.maxY + 0.01)
+
+        XCTAssertTrue(DashBarSegmentShape(topRadius: 2.5).path(in: .zero).isEmpty)
+    }
 }

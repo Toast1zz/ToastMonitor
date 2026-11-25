@@ -503,6 +503,11 @@ struct UsageAnalysisView: View {
         let step = data.range.days <= 7 ? 1 : (data.range.days <= 30 ? 5 : 14)
         let metricName = metric.rawValue
         let groupName = displayGrouping == .byTool ? "Tool" : "Model"
+        var lastSegmentByDay: [Int64: String] = [:]
+        for p in points where p.value > 0 {
+            lastSegmentByDay[p.dayKey] = p.id
+        }
+        let topSegmentIDs = Set(lastSegmentByDay.values)
         return Group {
             if points.isEmpty {
                 Text(metric == .tokens ? "No data in this range" : "No estimated cost in this range")
@@ -516,9 +521,11 @@ struct UsageAnalysisView: View {
                                 y: .value(metricName, p.value),
                                 width: .ratio(0.74))
                             .foregroundStyle(by: .value(groupName, p.label))
+                            .clipShape(DashBarSegmentShape(topRadius: topSegmentIDs.contains(p.id) ? 2.5 : 0))
                     }
                     if let key = hoveredDay, let date = Self.date(fromDayKey: key), byDay[key] != nil {
                         RuleMark(x: .value("Day", date, unit: .day))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
                             .foregroundStyle(Color.primary.opacity(0.14))
                     }
                 }
@@ -526,9 +533,9 @@ struct UsageAnalysisView: View {
                 .chartLegend(.hidden)
                 .chartXScale(domain: data.xDomain)
                 .chartXAxis {
-                    // One label per `step` days, at the center of that day's bar.
+                    // One label per `step` days, centered under that day's bar.
                     AxisMarks(values: Self.tickDates(in: data.xDomain, every: step)) { _ in
-                        AxisValueLabel(format: Self.axisDate)
+                        AxisValueLabel(format: Self.axisDate, centered: false, anchor: .top)
                             .font(TMType.regular(TMType.caption))
                             .foregroundStyle(TMDesign.quiet)
                     }
@@ -630,8 +637,7 @@ struct UsageAnalysisView: View {
         }
         .padding(10)
         .frame(width: 210)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        .dashChartCallout()
     }
 
     // MARK: - Aggregate table
@@ -680,6 +686,7 @@ struct UsageAnalysisView: View {
         } label: {
             HStack(spacing: 3) {
                 Text(title)
+                    .lineLimit(1)
                 Image(systemName: active && ascending ? "chevron.up" : "chevron.down")
                     .font(.system(size: 8, weight: .bold))
                     .opacity(active ? 1 : 0)
@@ -692,66 +699,75 @@ struct UsageAnalysisView: View {
     }
 
     private func detailsGrid(_ rows: [AggregateRow]) -> some View {
-                Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 0) {
-                    GridRow {
-                        Button { sort = nil } label: {
-                            Text(displayGrouping == .byTool ? "Tool" : "Model")
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Reset to default ranking by tokens")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        sortHeader("Tokens", .tokens).gridColumnAlignment(.trailing)
-                        sortHeader("Calls", .calls).gridColumnAlignment(.trailing)
-                        sortHeader("Cost", .cost).gridColumnAlignment(.trailing)
-                        Text("Share")
-                            .frame(width: 150, alignment: .leading)
-                    }
-                    .font(TMType.medium(TMType.caption))
-                    .foregroundStyle(TMDesign.quiet)
-                    .frame(height: Self.detailsHeaderHeight, alignment: .top)
-
-                    ForEach(rows, id: \.name) { r in
-                        Divider().gridCellUnsizedAxes(.horizontal)
-                        GridRow {
-                            HStack(spacing: 8) {
-                                Circle().fill(r.color).frame(width: 8, height: 8)
-                                Text(displayName(for: r.name))
-                                    .font(TMType.regular(TMType.body))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(Format.compact(r.tokens))
-                                .font(TMType.medium(TMType.body))
-                            Text(Format.count(r.calls))
-                                .foregroundStyle(TMDesign.quiet)
-                            Text(r.cost > 0 ? Format.moneyShort(r.cost) : "—")
-                                .foregroundStyle(TMDesign.quiet)
-                            HStack(spacing: 8) {
-                                DashUsageBar(fillPercent: r.ratio * 100, tint: r.color, height: 5)
-                                    .frame(width: 84)
-                                Text(String(format: "%.1f%%", r.ratio * 100))
-                                    .foregroundStyle(TMDesign.quiet)
-                                    .frame(width: 46, alignment: .trailing)
-                            }
-                            .frame(width: 150, alignment: .leading)
-                        }
-                        .font(TMType.regular(TMType.body))
-                        .tmMonospacedDigit()
-                        .frame(height: Self.detailsRowHeight - 1)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(hoveredName == r.name ? Color.primary.opacity(0.05) : Color.clear)
-                                .padding(.horizontal, -6)
-                        )
-                        .onHover { inside in
-                            if inside { hoveredName = r.name }
-                            else if hoveredName == r.name { hoveredName = nil }
-                        }
-                    }
+        VStack(spacing: 0) {
+            HStack(spacing: 24) {
+                Button { sort = nil } label: {
+                    Text(displayGrouping == .byTool ? "Tool" : "Model")
+                        .lineLimit(1)
+                        .contentShape(Rectangle())
                 }
-                .padding(.trailing, 4)
+                .buttonStyle(.plain)
+                .help("Reset to default ranking by tokens")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                sortHeader("Tokens", .tokens)
+                    .frame(width: 72, alignment: .trailing)
+                sortHeader("Calls", .calls)
+                    .frame(width: 64, alignment: .trailing)
+                sortHeader("Cost", .cost)
+                    .frame(width: 76, alignment: .trailing)
+                Text("Share")
+                    .frame(width: 150, alignment: .leading)
+            }
+            .font(TMType.medium(TMType.caption))
+            .foregroundStyle(TMDesign.quiet)
+            .padding(.horizontal, 6)
+            .frame(height: Self.detailsHeaderHeight, alignment: .top)
+
+            ForEach(rows, id: \.name) { r in
+                Divider()
+                HStack(spacing: 24) {
+                    HStack(spacing: 8) {
+                        Circle().fill(r.color).frame(width: 8, height: 8)
+                        Text(displayName(for: r.name))
+                            .font(TMType.regular(TMType.body))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(Format.compact(r.tokens))
+                        .font(TMType.medium(TMType.body))
+                        .frame(width: 72, alignment: .trailing)
+                    Text(Format.count(r.calls))
+                        .foregroundStyle(TMDesign.quiet)
+                        .frame(width: 64, alignment: .trailing)
+                    Text(r.cost > 0 ? Format.moneyShort(r.cost) : "—")
+                        .foregroundStyle(TMDesign.quiet)
+                        .frame(width: 76, alignment: .trailing)
+                    HStack(spacing: 8) {
+                        DashUsageBar(fillPercent: r.ratio * 100, tint: r.color, height: 5)
+                            .frame(width: 84)
+                        Text(String(format: "%.1f%%", r.ratio * 100))
+                            .foregroundStyle(TMDesign.quiet)
+                            .frame(width: 46, alignment: .trailing)
+                    }
+                    .frame(width: 150, alignment: .leading)
+                }
+                .font(TMType.regular(TMType.body))
+                .tmMonospacedDigit()
+                .padding(.horizontal, 6)
+                .frame(height: Self.detailsRowHeight - 1)
+                .contentShape(Rectangle())
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(hoveredName == r.name ? Color.primary.opacity(0.05) : Color.clear)
+                )
+                .onHover { inside in
+                    if inside { hoveredName = r.name }
+                    else if hoveredName == r.name { hoveredName = nil }
+                }
+            }
+        }
+        .padding(.trailing, 4)
     }
 
     // MARK: - Legend
