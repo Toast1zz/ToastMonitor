@@ -219,7 +219,11 @@ final class CLIRenewalTests: XCTestCase {
 
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [StubOKProtocol.self]
-        let client = ClaudeQuotaClient(forTestingWithConfiguration: cfg)
+        let future = Int64(Date().timeIntervalSince1970) + 3600
+        let client = ClaudeQuotaClient(
+            forTestingWithConfiguration: cfg,
+            credentialLoader: { .init(accessToken: "test-tok", expiresAt: future, subscriptionType: "max") }
+        )
         defer {
             client.setEnabled(false)
             ClaudeQuotaClient.clearSecurityToolBlock()

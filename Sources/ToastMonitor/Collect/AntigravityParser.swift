@@ -59,14 +59,111 @@ enum AntigravityParser {
         let project: String?
     }
 
+    private final class ScanCacheStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pathSignatures: [String: String] = [:]
+        private var summariesSignature: [UInt64: String] = [:]
+
+        func pathSignature(_ key: String) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            return pathSignatures[key]
+        }
+
+        func setPathSignature(_ key: String, _ sig: String) {
+            lock.lock(); defer { lock.unlock() }
+            pathSignatures[key] = sig
+        }
+
+        func summarySignature(_ scope: UInt64) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            return summariesSignature[scope]
+        }
+
+        func setSummarySignature(_ scope: UInt64, _ sig: String) {
+            lock.lock(); defer { lock.unlock() }
+            summariesSignature[scope] = sig
+        }
+
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            pathSignatures.removeAll()
+            summariesSignature.removeAll()
+        }
+    }
+
+    private static let scanCache = ScanCacheStore()
+
+    static func resetCaches() {
+        scanCache.reset()
+    }
+
+    private static func fileSignature(_ path: String) -> String? {
+        guard let st = FileScanner.fileStat(path) else { return nil }
+        let wal = FileScanner.fileStat(path + "-wal")
+        return "\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)"
+    }
+
     static func scan(database: any ParserStateStore = Database.shared) -> (turns: [TurnRecord], sessions: [SessionInfo]) {
-        let summaries = loadSummaries()
+        let summariesResult = loadSummaries()
+        let summaries = summariesResult ?? [:]
+        if summariesResult == nil {
+            database.noteSkippedSourcePath(summariesPath)
+        }
+        let paths = conversationPaths()
+        let scope = database.cacheScopeID
+        let currentSummarySig = fileSignature(summariesPath) ?? ""
+        let summaryChanged = !currentSummarySig.isEmpty && scanCache.summarySignature(scope) != currentSummarySig
+
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
-        for path in conversationPaths() {
-            let out = scan(path: path, summary: summaries[cascadeID(path)], database: database)
+        var updatedCascades = Set<String>()
+        var openFailures = 0
+
+        for path in paths {
+            let cascade = cascadeID(path)
+            let watermark = Int64(database.setting(watermarkKey(cascade)) ?? "") ?? -1
+            let pathSig = fileSignature(path)
+            let cacheKey = "\(scope):\(path)"
+            let expectedSig = pathSig.map { "\($0)|wm=\(watermark)" }
+            if let expectedSig, watermark >= 0, scanCache.pathSignature(cacheKey) == expectedSig {
+                continue
+            }
+            let out = scan(path: path, summary: summaries[cascade], database: database)
+            if out.failed {
+                openFailures += 1
+                database.noteSkippedSourcePath(path)
+                continue
+            }
+            if let pathSig {
+                let updatedWm = Int64(database.setting(watermarkKey(cascade)) ?? "") ?? watermark
+                let nextSig = "\(pathSig)|wm=\(updatedWm)"
+                database.onCommit {
+                    scanCache.setPathSignature(cacheKey, nextSig)
+                }
+            }
             turns += out.turns
-            if let session = out.session { sessions.append(session) }
+            if let session = out.session {
+                sessions.append(session)
+                updatedCascades.insert(cascade)
+            }
+        }
+
+        if summaryChanged, summariesResult != nil {
+            for path in paths {
+                let cascade = cascadeID(path)
+                guard !updatedCascades.contains(cascade), let summary = summaries[cascade],
+                      (Int64(database.setting(watermarkKey(cascade)) ?? "") ?? -1) >= 0 else { continue }
+                sessions.append(SessionInfo(tool: .antigravity, sessionID: cascade,
+                                            title: summary.title, project: summary.project,
+                                            model: nil, created: 0, updated: 0))
+            }
+            database.onCommit {
+                scanCache.setSummarySignature(scope, currentSummarySig)
+            }
+        }
+
+        if openFailures > 0 && openFailures == paths.count && turns.isEmpty && sessions.isEmpty {
+            database.noteScanProblem("Antigravity conversation could not be opened")
         }
         return (turns, sessions)
     }
@@ -76,18 +173,18 @@ enum AntigravityParser {
     }
 
     private static func scan(path: String, summary: Summary?,
-                             database: any ParserStateStore) -> (turns: [TurnRecord], session: SessionInfo?) {
+                             database: any ParserStateStore) -> (turns: [TurnRecord], session: SessionInfo?, failed: Bool) {
         let cascade = cascadeID(path)
         let key = watermarkKey(cascade)
         let watermark = Int64(database.setting(key) ?? "") ?? -1
         guard let rows = readGenerations(path: path, after: watermark) else {
-            database.noteScanProblem("Antigravity conversation could not be opened")
-            return ([], nil)
+            return ([], nil, true)
         }
         var turns: [TurnRecord] = []
         var firstTs: Int64?
         var lastTs: Int64 = 0
         var lastModel: String?
+        let now = Int64(Date().timeIntervalSince1970)
         for row in rows {
             let gen = row.gen
             guard let usage = gen.usage,
@@ -98,7 +195,14 @@ enum AntigravityParser {
             lastModel = gen.model ?? lastModel
             let cost = Pricing.estimate(model: gen.model, input: usage.input, output: usage.output,
                                         cacheRead: usage.cacheRead, cacheWrite: 0)
-            let identity = usage.responseID ?? usage.messageID ?? "\(cascade):\(row.idx)"
+            let identity: String
+            if let responseID = usage.responseID {
+                identity = responseID
+            } else if let messageID = usage.messageID {
+                identity = "\(cascade):\(messageID)"
+            } else {
+                identity = "\(cascade):\(row.idx)"
+            }
             turns.append(TurnRecord(tool: .antigravity, sessionID: cascade, project: summary?.project,
                                     model: gen.model, ts: ts,
                                     inputTokens: usage.input, outputTokens: usage.output,
@@ -106,18 +210,20 @@ enum AntigravityParser {
                                     cacheRead: usage.cacheRead, cacheWrite: 0,
                                     cost: cost ?? 0,
                                     eventID: "antigravity:\(identity)",
-                                    costQuality: cost == nil ? "unknown" : "estimated"))
+                                    costQuality: cost == nil ? "unknown" : "estimated",
+                                    usageMerge: .keepGreater))
         }
-        let next = readThrough(rows, previous: watermark) { gen in
+        let next = readThrough(rows, previous: watermark, now: now) { gen in
             guard let usage = gen.usage else { return false }
             return usage.input + usage.output + usage.cacheRead > 0
+                && gen.streamingMs != nil
         }
         if next != watermark { database.setSetting(key, "\(next)") }
         let session = firstTs.map {
             SessionInfo(tool: .antigravity, sessionID: cascade, title: summary?.title,
-                        project: summary?.project, model: lastModel, created: $0, updated: lastTs)
+                        project: summary?.project, model: lastModel, created: $0, updated: max(lastTs, $0))
         }
-        return (turns, session)
+        return (turns, session, false)
     }
 
     struct Row {
@@ -179,31 +285,52 @@ enum AntigravityParser {
         }
     }
 
-    /// The new watermark: the last row that is complete. Earlier rows without
-    /// usage (e.g. cancelled/non-usage steps) must not pin the watermark
-    /// forever, while trailing incomplete rows stay unread until they finish.
-    static func readThrough(_ rows: [Row], previous: Int64, isComplete: (Generation) -> Bool) -> Int64 {
-        rows.last { isComplete($0.gen) }.map { max($0.idx, previous) } ?? previous
+    /// The new watermark: advances monotonically through complete rows while
+    /// stopping before any recently-active incomplete concurrent generation so
+    /// parallel calls finish before their `idx` is skipped. Permanently empty
+    /// or aged-out cancelled steps (`sentAt == 0` or older than `staleAfterSeconds`)
+    /// do not pin the watermark.
+    static func readThrough(_ rows: [Row], previous: Int64,
+                            now: Int64 = Int64(Date().timeIntervalSince1970),
+                            staleAfterSeconds: Int64 = 600,
+                            isComplete: (Generation) -> Bool) -> Int64 {
+        guard let lastComplete = rows.lastIndex(where: { isComplete($0.gen) }) else {
+            return previous
+        }
+        var watermark = previous
+        for row in rows[...lastComplete] {
+            if isComplete(row.gen) {
+                watermark = max(watermark, row.idx)
+            } else if row.sentAt > 0 && now - row.sentAt < staleAfterSeconds {
+                break
+            }
+        }
+        return watermark
     }
 
     /// cascade id → title and workspace folder name.
-    static func loadSummaries() -> [String: Summary] {
-        guard FileManager.default.fileExists(atPath: summariesPath),
-              let db = SQLiteReadOnly.open(summariesPath) else { return [:] }
+    /// Returns `nil` when the summaries database exists but cannot be opened/read.
+    static func loadSummaries() -> [String: Summary]? {
+        guard FileManager.default.fileExists(atPath: summariesPath) else { return [:] }
+        guard let db = SQLiteReadOnly.open(summariesPath) else { return nil }
         defer { sqlite3_close(db) }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT conversation_id, title, workspace_uris FROM conversation_summaries;",
                                  -1, &stmt, nil) == SQLITE_OK else {
             sqlite3_finalize(stmt)
-            return [:]
+            return nil
         }
         defer { sqlite3_finalize(stmt) }
         var out: [String: Summary] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepRC: Int32 = SQLITE_OK
+        while true {
+            stepRC = sqlite3_step(stmt)
+            guard stepRC == SQLITE_ROW else { break }
             guard let id = SQLiteText.column(stmt, 0), !id.isEmpty else { continue }
             let title = SQLiteText.column(stmt, 1).flatMap { $0.isEmpty ? nil : String($0.prefix(200)) }
             out[id] = Summary(title: title, project: project(fromWorkspaceURIs: SQLiteText.column(stmt, 2)))
         }
+        guard stepRC == SQLITE_DONE else { return nil }
         return out
     }
 

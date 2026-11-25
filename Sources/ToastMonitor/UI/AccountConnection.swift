@@ -23,9 +23,9 @@ enum AccountConnection {
         return client.configured || keychainLocked || client.state.lastSync > 0
     }
 
-    static func codex(subscriptions: [Database.Subscription]) -> Bool {
-        let subscribed = subscriptions.contains { $0.plan == "openai" || $0.plan == "codex" }
-        return subscribed || CodexQuotaClient.shared.state.lastSync > 0
+    static func codex(subscriptions: [Database.Subscription], now: Date = Date()) -> Bool {
+        let subscribed = SubscriptionMath.activeCodexSubscription(in: subscriptions, now: now) != nil
+        return subscribed || (CodexQuotaClient.shared.enabled && CodexQuotaClient.shared.state.lastSync > 0)
     }
 
     /// A failing source (expired cookie, locked Keychain) is still a connected
@@ -39,8 +39,8 @@ enum AccountConnection {
     /// Connected once `grok login` left a token; an expired one stays
     /// connected so the card can say so.
     static var grok: Bool {
-        let state = GrokQuotaClient.shared.state
-        return state.configured || state.lastSync > 0
+        let client = GrokQuotaClient.shared
+        return client.enabled && (client.state.configured || client.state.lastSync > 0)
     }
 
     /// Connected once Antigravity has run on this Mac; a closed app stays

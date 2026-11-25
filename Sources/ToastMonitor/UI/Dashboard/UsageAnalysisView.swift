@@ -76,7 +76,7 @@ struct UsageAnalysisView: View {
     }
 
     /// One bar segment: a day's value for one tool/model.
-    private struct ChartPoint: Identifiable {
+    struct ChartPoint: Identifiable {
         let dayKey: Int64
         let date: Date
         let label: String
@@ -85,7 +85,7 @@ struct UsageAnalysisView: View {
         var id: String { "\(dayKey)|\(label)" }
     }
 
-    private struct AggregateRow {
+    struct AggregateRow {
         let name: String
         let tokens: Int64
         let calls: Int64
@@ -96,7 +96,7 @@ struct UsageAnalysisView: View {
 
     /// Every derived chart/table input, built in one pass over the raw rows
     /// when data arrives; old values keep rendering while range/grouping change.
-    private struct AnalysisData {
+    struct AnalysisData {
         let grouping: Grouping
         let range: Range
         let tokenPoints: [ChartPoint]
@@ -143,7 +143,7 @@ struct UsageAnalysisView: View {
         .onAppear { load(showSpinner: analysis == nil) }
         .onChange(of: range) { _ in load(showSpinner: true) }
         .onChange(of: grouping) { _ in load(showSpinner: true) }
-        .onChange(of: app.lastScan) { _ in
+        .onChange(of: app.dataRevision) { _ in
             guard isTabActive else {
                 needsReload = true
                 return
@@ -229,7 +229,8 @@ struct UsageAnalysisView: View {
         let daily = data.dayCount > 0 ? data.totalTokens / Int64(data.dayCount) : 0
         return DashMetricRow {
             DashMetric(label: "Tokens", value: Format.compact(data.totalTokens))
-            DashMetric(label: "Estimated Cost", value: Format.moneyShort(data.totalCost))
+            DashMetric(label: "Estimated Cost",
+                       value: (data.totalCost <= 0 && data.totalTokens > 0) ? "—" : Format.moneyShort(data.totalCost))
             DashMetric(label: "Daily Avg Tokens", value: Format.compact(daily))
             DashMetric(label: "Calls", value: Format.count(data.totalCalls))
         }
@@ -294,11 +295,18 @@ struct UsageAnalysisView: View {
     /// Rank models by total tokens (descending) and hand each the next
     /// palette color — the top model gets the first color, no collisions.
     nonisolated private static func assignModelColors(_ aggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)]) -> [String: Color] {
-        let totals: [String: Int64] = aggs.reduce(into: [:]) { acc, row in
-            acc[ModelName.display(row.model), default: 0] += row.totalTokens
+        var totals: [String: Int64] = [:]
+        var providersByDisplay: [String: String] = [:]
+        for row in aggs {
+            let display = ModelName.display(row.model)
+            totals[display, default: 0] += row.totalTokens
+            let provider = ModelProvider.name(for: row.model)
+            if providersByDisplay[display] == nil || providersByDisplay[display] == ModelProvider.other {
+                providersByDisplay[display] = provider
+            }
         }
         let ranked = totals.sorted { $0.value > $1.value }.map(\.key)
-        return TMDesign.modelColors(for: ranked)
+        return TMDesign.modelColors(for: ranked, providersByDisplayName: providersByDisplay)
     }
 
     /// The interface is English; axis dates follow it, not the system locale.
@@ -340,11 +348,11 @@ struct UsageAnalysisView: View {
 
     /// One pass: per-day × name token sums, per-name totals and per-day cost —
     /// every chart and table input.
-    nonisolated private static func build(aggs: [Database.DayAgg],
-                              modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)],
-                              grouping: Grouping,
-                              range: Range,
-                              modelColors: [String: Color]) -> AnalysisData {
+    nonisolated static func build(aggs: [Database.DayAgg],
+                                  modelAggs: [(day: Int64, model: String, input: Int64, output: Int64, cacheRead: Int64, cost: Double, count: Int64, totalTokens: Int64)],
+                                  grouping: Grouping,
+                                  range: Range,
+                                  modelColors: [String: Color]) -> AnalysisData {
         let rows: [Row] = grouping == .byTool
             ? aggs.map { Row(day: $0.day, key: $0.tool, input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count, totalTokens: nil) }
             : modelAggs.map { Row(day: $0.day, key: ModelName.display($0.model), input: $0.input, output: $0.output, cacheRead: $0.cacheRead, cost: $0.cost, count: $0.count, totalTokens: $0.totalTokens) }
@@ -356,24 +364,29 @@ struct UsageAnalysisView: View {
         var costByName: [String: Double] = [:]
         for r in rows {
             let v = tokenValue(r, grouping: grouping)
+            let safeCost = r.cost.isFinite && r.cost > 0 ? r.cost : 0
             dayTokens[r.day, default: [:]][r.key, default: 0] += v
             tokensByName[r.key, default: 0] += v
             callsByName[r.key, default: 0] += max(r.count, 0)
-            costByName[r.key, default: 0] += max(r.cost, 0)
-            if r.cost > 0 { dayCost[r.day, default: [:]][r.key, default: 0] += r.cost }
+            costByName[r.key, default: 0] += safeCost
+            if safeCost > 0 { dayCost[r.day, default: [:]][r.key, default: 0] += safeCost }
         }
 
         let orderedNames = tokensByName.sorted { $0.value > $1.value }.map(\.key)
         // Models past the legend share one gray: more colors than the legend
         // can name leave segments nobody can identify. The table lists them all.
-        let chartedNames = grouping == .byModel ? Array(orderedNames.prefix(legendLimit)) : orderedNames
+        // Fold any model whose display name collides with `otherLabel` into the
+        // tail bucket using a sentinel key so Swift Charts never sees duplicate keys.
+        let chartCandidates = grouping == .byModel ? orderedNames.filter { $0 != otherLabel } : orderedNames
+        let chartedNames = grouping == .byModel ? Array(chartCandidates.prefix(legendLimit)) : orderedNames
         let charted = Set(chartedNames)
-        func chartName(_ name: String) -> String { charted.contains(name) ? name : otherLabel }
+        func chartKey(_ name: String) -> String { charted.contains(name) ? name : otherBucketKey }
         let dayOrder = Set(rows.map(\.day)).sorted()
         let totalTokens = tokensByName.values.reduce(0, +)
 
-        func label(_ name: String) -> String {
-            grouping == .byTool ? (ToolKind(rawValue: name)?.displayName ?? name) : name
+        func label(_ key: String) -> String {
+            if key == otherBucketKey { return otherLabel }
+            return grouping == .byTool ? (ToolKind(rawValue: key)?.displayName ?? key) : key
         }
 
         var tokenPoints: [ChartPoint] = []
@@ -383,17 +396,18 @@ struct UsageAnalysisView: View {
             var tokens: [String: Double] = [:]
             var cost: [String: Double] = [:]
             for name in orderedNames {
-                tokens[chartName(name), default: 0] += Double(dayTokens[d]?[name] ?? 0)
-                cost[chartName(name), default: 0] += dayCost[d]?[name] ?? 0
+                let targetKey = chartKey(name)
+                tokens[targetKey, default: 0] += Double(dayTokens[d]?[name] ?? 0)
+                cost[targetKey, default: 0] += dayCost[d]?[name] ?? 0
             }
-            for name in chartedNames + [otherLabel] {
-                let c = name == otherLabel ? otherColor : color(for: name, grouping: grouping, modelColors: modelColors)
-                if let v = tokens[name], v > 0 {
-                    tokenPoints.append(ChartPoint(dayKey: d, date: date, label: label(name),
+            for key in chartedNames + [otherBucketKey] {
+                let c = key == otherBucketKey ? otherColor : color(for: key, grouping: grouping, modelColors: modelColors)
+                if let v = tokens[key], v > 0 {
+                    tokenPoints.append(ChartPoint(dayKey: d, date: date, label: label(key),
                                                   color: c, value: v))
                 }
-                if let v = cost[name], v > 0 {
-                    costPoints.append(ChartPoint(dayKey: d, date: date, label: label(name),
+                if let v = cost[key], v > 0 {
+                    costPoints.append(ChartPoint(dayKey: d, date: date, label: label(key),
                                                  color: c, value: v))
                 }
             }
@@ -429,7 +443,7 @@ struct UsageAnalysisView: View {
         let today = calendar.startOfDay(for: Date())
         let first = calendar.date(byAdding: .day, value: -(range.days - 1), to: today) ?? today
         let end = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-        let hasOther = chartedNames.count < orderedNames.count
+        let hasOther = orderedNames.contains { !charted.contains($0) }
         let chartedAggregates = aggregates.filter { charted.contains($0.name) }
 
         return AnalysisData(grouping: grouping,
@@ -450,15 +464,13 @@ struct UsageAnalysisView: View {
     }
 
     nonisolated private static let legendLimit = 5
+    nonisolated private static let otherBucketKey = "\u{0}__other__"
     nonisolated private static let otherLabel = "Other"
     nonisolated private static let otherColor = Color.primary.opacity(0.25)
 
     nonisolated private static func tokenValue(_ row: Row, grouping: Grouping) -> Int64 {
         if grouping == .byTool {
-            return ToolKind(rawValue: row.key)?.totalTokens(input: row.input,
-                                                            output: row.output,
-                                                            cacheRead: row.cacheRead)
-                ?? row.input + row.output
+            return ToolKind.totalTokens(tool: row.key, input: row.input, output: row.output, cacheRead: row.cacheRead)
         }
         return row.totalTokens ?? 0
     }
@@ -527,7 +539,8 @@ struct UsageAnalysisView: View {
                             .foregroundStyle(Color.primary.opacity(0.14))
                         AxisValueLabel {
                             if let v = value.as(Double.self) {
-                                Text(metric == .tokens ? Format.compact(Int64(v)) : Format.moneyShort(v))
+                                let clamped = v.isFinite ? Int64(min(max(v.rounded(), 0), Double(Int64.max / 2))) : 0
+                                Text(metric == .tokens ? Format.compact(clamped) : Format.moneyShort(v))
                                     .font(TMType.regular(TMType.caption))
                                     .tmMonospacedDigit()
                                     .foregroundStyle(TMDesign.quiet)
@@ -587,7 +600,9 @@ struct UsageAnalysisView: View {
     private func dayCallout(key: Int64, segments: [ChartPoint]) -> some View {
         let total = segments.reduce(0) { $0 + $1.value }
         func text(_ v: Double) -> String {
-            metric == .tokens ? Format.compact(Int64(v)) : Format.money(v)
+            guard metric == .tokens else { return v > 0 ? Format.money(v) : "—" }
+            let clamped = v.isFinite ? min(max(v, Double(Int64.min / 2)), Double(Int64.max / 2)) : 0
+            return Format.compact(Int64(clamped))
         }
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {

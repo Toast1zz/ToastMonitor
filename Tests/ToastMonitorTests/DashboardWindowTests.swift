@@ -6,6 +6,7 @@ import AppKit
 final class DashboardWindowTests: XCTestCase {
     func testToggleDismissalRestoresSelectedTabAndPostsOneVisibilityChange() {
         let manager = WindowManager.shared
+        manager.activatesAppOnShow = false
         var visibilityChanges: [Bool] = []
         let observer = NotificationCenter.default.addObserver(
             forName: WindowManager.visibilityNotification,
@@ -16,7 +17,13 @@ final class DashboardWindowTests: XCTestCase {
                 visibilityChanges.append(visible)
             }
         }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        defer {
+            if NSApp.windows.first(where: { $0.toolbar?.identifier == "ToastMonitor.DashboardToolbar" })?.isVisible == true {
+                manager.toggle()
+            }
+            manager.activatesAppOnShow = true
+            NotificationCenter.default.removeObserver(observer)
+        }
 
         manager.show(tab: .analysis)
         let firstWindow = NSApp.windows.first {

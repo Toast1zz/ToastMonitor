@@ -11,6 +11,8 @@ This document explains how ToastMonitor accounts for tokens along two axes: **by
 | DeepSeek Harness | `$DSH_HOME` session logs (or the projection cache) | one row per turn step; a later message replaces the step | — |
 | OpenCode | `OPENCODE_HOME`, XDG, or Application Support `opencode.db` | session cumulative → local delta | cumulative → `session_totals` delta |
 | Hermes | `~/.hermes/state.db` (column introspection) | (session, model) cumulative rows → delta | aggregate rows → baseline delta |
+| OMP | `~/.omp/agent/sessions/**/*.jsonl` | per-event (`assistant` message usage) | — |
+| Antigravity | `~/Library/Application Support/Antigravity/...` `.pb` / SQLite state | per-generation (`antigravity_gen_<cascadeID>`) | — |
 | OpenRouter | cloud API (produces no token rows) | — | — |
 
 Each tool can be switched between local and remote independently in Sources & Settings (setting key `src_<tool>`).
@@ -39,12 +41,12 @@ Each tool can be switched between local and remote independently in Sources & Se
 
 ### OpenCode
 
-- **Local path**: `OPENCODE_HOME` when set, otherwise the first existing database among `$XDG_DATA_HOME/opencode/opencode.db`, `~/Library/Application Support/opencode/opencode.db` and `~/.local/share/opencode/opencode.db` (opened read-only). Scans re-read rows at or above the stored `time_updated` watermark.
-- **Row semantics**: one row per session holding **cumulative** values: `tokens_input`, `tokens_output`, `tokens_reasoning`, `tokens_cache_read`, `tokens_cache_write`, `cost` (official actual price).
+- **Local path**: `OPENCODE_HOME` when set, otherwise the first existing database among `$XDG_DATA_HOME/opencode/opencode.db`, `~/Library/Application Support/opencode/opencode.db` and `~/.local/share/opencode/opencode.db` (opened read-only). Scans track `opencode_row_watermark` and re-read rows at or above it.
+- **Row semantics**: one row per session holding **cumulative** values: `tokens_input`, `tokens_output`, `tokens_reasoning`, `tokens_cache_read`, `tokens_cache_write`, `cost` (official actual price when positive; zero-cost/free-model turns stay `estimated`/`unknown` rather than being locked as `actual`).
 - **Delta mechanism**: a local `session_totals` table (key `opencode|<id>`). Each scan computes new cumulative − last recorded = this batch's delta; shrinking fields (upstream reset) count as 0. The first time a session is seen, the full cumulative value becomes one backfill row attributed to the real last update time (never to today).
 - **Time**: upstream millisecond timestamps normalized to seconds.
 - **Model**: the upstream `model` column may be a JSON object (`{"id":...,"providerID":...}`); the parser normalizes it to the plain id; existing data is repaired once at startup via SQL.
-- **Remote feed**: same cumulative → `session_totals` delta (shares the same key as local, so switching sources never double-counts).
+- **Remote feed**: same cumulative → `session_totals` delta (shares the same key as local, so switching sources never double-counts), using post-step cumulative delta `event_id`s so incremental polls never collide.
 
 ### Hermes
 
@@ -52,7 +54,7 @@ Each tool can be switched between local and remote independently in Sources & Se
 - **Row semantics**: cumulative rows keyed by (session, model).
 - **Delta mechanism**: baseline key `hm_d|<session>|<model>|<provider>|<base_url>` stores the last cumulative value; delta = current − last (negatives clamped to 0 to survive counter resets). Output-only messages are kept (input=0 still recorded). Timestamps are normalized between ms/s.
 - **Cost**: Hermes traffic bills through the OpenCode Go / OpenRouter / Codex plans, so tokens are recorded but **cost is always 0** (`cost_quality = 'unknown'`).
-- **Remote feed**: `session_model_usage` aggregate rows, baseline delta keyed by (session, model, provider, base_url) — one shared key so route changes never double-count.
+- **Remote feed**: `session_model_usage` aggregate rows are pre-aggregated per `(billing_mode, task)` before advancing the shared `hm_d|...` baseline with post-step cumulative delta `event_id`s — one shared key scheme so multi-task exports and local/remote switches never double-count or drop sub-tasks.
 
 ### DeepSeek Harness
 
@@ -63,10 +65,16 @@ Each tool can be switched between local and remote independently in Sources & Se
 ### OMP (Oh My Pi)
 
 - **Local path**: `~/.omp/agent/sessions/**/*.jsonl` (top-level sessions `<cwd>/<session>.jsonl`, subagent sessions `<session>/<agent>.jsonl`).
-- **Parsing**: `message` events (`role == "assistant"`) carry `message.usage`: `input`, `output`, `cacheRead`, `cacheWrite`, `cost` (per-request cost breakdown). The structure resembles Claude Code's JSONL, so the same incremental machinery (size/mtime/inode + byte-offset cursor) is reused.
+- **Parsing**: `message` events (`role == "assistant"`) carry `message.usage`: `input`, `output`, `cacheRead`, `cacheWrite`, `cost` (per-request cost breakdown) and `provider`. The structure resembles Claude Code's JSONL, so the same incremental machinery (size/mtime/inode + byte-offset cursor) is reused.
 - **Semantics**: `input` excludes cache hits; `cacheRead` is the hit portion (from the opencode-go upstream, reported at 8-token block granularity — same origin as Hermes, real token values). `cost` is provider-computed; OMP bills within the opencode-go plan, marked `estimated`.
-- **Dedupe**: event ID = `omp:<file>:<message id>` (the file name contains the session UUID, globally unique; message ids are stable, so replays dedupe).
+- **Dedupe**: event ID = `omp:<file>:<message id>` when present (falling back to `<inode>:<mtime>:<offset>`); message ids keep the greater usage on update.
 - **Remote feed**: none (OMP runs locally only).
+
+### Antigravity
+
+- **Local path**: local Antigravity conversation stores under `~/Library/Application Support/Antigravity/` (and `conversation_summaries.db` for titles), tracked by per-conversation generation cursor `antigravity_gen_<cascadeID>`.
+- **Parsing**: reads completed generations (stopping before active incomplete concurrent rows so earlier slow generations are not skipped) and uses `usageMerge: .keepGreater`.
+- **Remote feed**: none (Antigravity runs locally only).
 
 ### OpenRouter
 
@@ -87,11 +95,11 @@ Reads the local files/SQLite directly. The loop runs every 1s while the panel is
 
 ### Remote VPS feed (optional, per-tool switch)
 
-- The VPS exporter is deployed by the user and produces `usage.json`; the app only requests addresses explicitly configured in Sources & Settings. HTTPS is allowed. Plain HTTP is limited to loopback and the Tailscale range `100.64.0.0/10`. No personal IPs or default remote hosts are baked in.
+- The VPS exporter is deployed by the user and produces `usage.json`; the app only requests addresses explicitly configured in Sources & Settings. HTTPS is allowed. Plain HTTP is limited to loopback (`127.0.0.0/8`, `::1`, `localhost`), RFC1918 private LAN (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 ULA (`fc00::/7`), and the Tailscale CGNAT range `100.64.0.0/10` (strict dotted-quad validation; no personal IPs or default remote hosts are baked in).
 - The app polls incrementally every 15s while visible (stopped in background); the cursor is a **per-tool watermark** (`remote_watermark_<tool>` = `ts:eventID`; same-second events ordered by eventID).
 - Row semantics differ per tool (see table above): claude/codex insert per-event rows; opencode/hermes run deltas over cumulative rows — delta baselines are idempotent, so watermarks cannot corrupt them.
 - Rows from unknown tools are rejected; watermark, turns and baselines commit in one transaction — nothing advances on failure.
-- **Switching sources**: `src_<tool> = local/remote` takes effect immediately. OpenCode's delta key is shared local/remote, so switching never double-counts; Hermes uses different baseline keys (local `session_totals`, remote `hm_d|...`), so the first remote row after a switch backfills the full value — a known edge case that can record one extra historical entry after a source switch.
+- **Switching sources**: `src_<tool> = local/remote` takes effect immediately. Both OpenCode (`opencode|<id>`) and Hermes (`hm_d|...` via `HermesUsageBaseline`) use unified shared baseline keys between local and remote scans, so switching sources never double-counts or replays historical totals.
 
 ---
 

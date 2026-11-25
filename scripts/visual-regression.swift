@@ -93,11 +93,13 @@ func averageHash(path: String) throws -> String {
 
 func hammingDistance(_ lhs: String, _ rhs: String) -> Int {
     guard lhs.count == rhs.count else { return Int.max }
-    return zip(lhs, rhs).reduce(0) { total, pair in
-        guard let l = Int(String(pair.0), radix: 16),
-              let r = Int(String(pair.1), radix: 16) else { return Int.max }
-        return total + (l ^ r).nonzeroBitCount
+    var distance = 0
+    for (a, b) in zip(lhs, rhs) {
+        guard let l = Int(String(a), radix: 16),
+              let r = Int(String(b), radix: 16) else { return Int.max }
+        distance += (l ^ r).nonzeroBitCount
     }
+    return distance
 }
 
 let mode = CommandLine.arguments.dropFirst().first ?? "compare"
@@ -143,7 +145,8 @@ for scenario in scenarios {
     environment["CFFIXED_USER_HOME"] = scenarioHome.path
     environment["TZ"] = "UTC"
     environment["LANG"] = "en_US.UTF-8"
-    for key in ["DSH_HOME", "HERMES_HOME", "OPENCODE_HOME"] {
+    for key in ["DSH_HOME", "HERMES_HOME", "OPENCODE_HOME",
+                "TM_CLAUDE_PROJECTS_ROOT", "TM_CLAUDE_COWORK_ROOT"] {
         environment.removeValue(forKey: key)
     }
     if scenario.name.hasPrefix("popover-home-") {

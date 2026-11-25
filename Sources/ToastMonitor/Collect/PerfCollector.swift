@@ -27,6 +27,11 @@ enum PerfCollector {
     static let didUpdate = Notification.Name("ToastMonitorPerfDidUpdate")
     private static var lastRun: CFAbsoluteTime = 0
 
+    private static func sameCursor(_ lhs: (size: Int64, identity: Int64)?,
+                                   _ rhs: (size: Int64, identity: Int64)?) -> Bool {
+        lhs?.size == rhs?.size && lhs?.identity == rhs?.identity
+    }
+
     /// Called from the collector queue on every tick.
     static func maybeRun(claudeFiles: [String], codexFiles: [String], ompFiles: [String],
                          database: Database = .shared) {
@@ -74,12 +79,13 @@ enum PerfCollector {
                 && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
         } ?? 0
         var samples: [String: PerfSample] = [:]
-        let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+        let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
             guard let sample = claudeSample(item.obj) else { return }
             samples[sample.key, default: sample].merge(sample)
         }
         _ = database.inTransaction {
-            database.upsertPerfSamples(Array(samples.values))
+            guard sameCursor(database.perfCursor(file), prev) else { return false }
+            return database.upsertPerfSamples(Array(samples.values))
                 && database.setPerfCursor(file, size: end, identity: st.identity)
         }
         return max(end - offset, 0)
@@ -102,10 +108,11 @@ enum PerfCollector {
         var sample = PerfSample(tool: .claude, key: key,
                                 model: message["model"] as? String,
                                 lastMs: ts,
-                                outputTokens: (usage?["output_tokens"] as? NSNumber)?.int64Value ?? 0)
+                                outputTokens: FileScanner.tokenCount(usage?["output_tokens"]))
         if (obj["apiBlockIndex"] as? NSNumber)?.intValue == 0,
            let thinking = (obj["thinkingDurationMs"] as? NSNumber)?.int64Value, thinking > 0 {
-            sample.firstTokenMs = ts - thinking
+            let (first, overflow) = ts.subtractingReportingOverflow(thinking)
+            if !overflow { sample.firstTokenMs = first }
         }
         return sample
     }
@@ -160,14 +167,15 @@ enum PerfCollector {
             state.model = model
         }
         var samples: [PerfSample] = []
-        let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+        let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
             if let sample = state.consume(item.obj, offset: item.offset) { samples.append(sample) }
         }
         // A turn whose last line is an hour old ended without a closing event.
         let open = state.turnOpen && nowMs - state.lastLineMs < 3_600_000
         let cursor = open ? max(state.mark ?? offset, offset) : end
         _ = database.inTransaction {
-            database.upsertPerfSamples(samples)
+            guard sameCursor(database.perfCursor(file), prev) else { return false }
+            return database.upsertPerfSamples(samples)
                 && database.setPerfCursor(file, size: cursor, identity: st.identity)
         }
         return max(end - offset, 0)
@@ -259,22 +267,25 @@ enum PerfCollector {
     /// the database across reads.
     @discardableResult
     static func scanDSH(file: String, database: Database,
-                        decompress: (Data) -> Data? = { Zstd.decompress($0) }) -> Int64 {
+                        decompress: ((Data) -> Data?)? = nil) -> Int64 {
+        if decompress == nil, file.hasSuffix(".zstd"), Zstd.executablePath() == nil { return 0 }
+        let decompressFn: (Data) -> Data? = decompress ?? { Zstd.decompress($0) }
         guard let st = FileScanner.fileStat(file) else { return 0 }
         let prev = database.perfCursor(file)
         if let prev, prev.size == st.size, prev.identity == st.identity { return 0 }
         let offset = prev.flatMap {
             $0.identity == st.identity && $0.size < st.size
-                && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
+                && (file.hasSuffix(".zstd") || FileScanner.isLineBoundary(path: file, offset: $0.size)) ? $0.size : nil
         } ?? 0
         let sessionID = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
         var samples: [String: PerfSample] = [:]
-        let pass = DSHParser.forEachObject(path: file, fromOffset: offset, decompress: decompress) { item in
+        let pass = DSHParser.forEachObject(path: file, fromOffset: offset, maxOffset: st.size, decompress: decompressFn) { item in
             guard let sample = dshSample(item.obj, sessionID: sessionID) else { return }
             samples[sample.key, default: sample].merge(sample)
         }
         _ = database.inTransaction {
-            database.upsertPerfSamples(Array(samples.values))
+            guard sameCursor(database.perfCursor(file), prev) else { return false }
+            return database.upsertPerfSamples(Array(samples.values))
                 && database.setPerfCursor(file, size: pass.newOffset, identity: st.identity)
         }
         return max(pass.newOffset - offset, 0)
@@ -296,7 +307,9 @@ enum PerfCollector {
             case "usage":
                 sample.outputTokens = FileScanner.tokenCount((chunk["usage"] as? [String: Any])?["outputTokens"])
             case "finish":
-                sample.model = ((chunk["replayState"] as? [String: Any])?["response"] as? [String: Any])?["model"] as? String
+                let rs = chunk["replayState"] as? [String: Any]
+                sample.model = (rs?["response"] as? [String: Any])?["model"] as? String
+                    ?? rs?["model"] as? String
             default:
                 sample.firstTokenMs = time
                 sample.lastMs = time
@@ -311,8 +324,15 @@ enum PerfCollector {
             for entry in d["stream"] as? [[String: Any]] ?? [] {
                 let span: (Int64, Int64)
                 if let t0 = (entry["time0"] as? NSNumber)?.int64Value {
-                    let dt = (entry["dt"] as? [NSNumber] ?? []).reduce(0) { $0 + $1.int64Value }
-                    span = (t0, t0 + dt)
+                    var dt: Int64 = 0
+                    for v in entry["dt"] as? [NSNumber] ?? [] {
+                        let (sum, ov) = dt.addingReportingOverflow(v.int64Value)
+                        if ov { dt = Int64.max; break }
+                        dt = sum
+                    }
+                    let (endTs, ov) = t0.addingReportingOverflow(dt)
+                    guard !ov else { continue }
+                    span = (t0, endTs)
                 } else if let t = (entry["time"] as? NSNumber)?.int64Value,
                           let kind = (entry["chunk"] as? [String: Any])?["type"] as? String,
                           kind != "usage", kind != "finish" {
@@ -341,11 +361,12 @@ enum PerfCollector {
                 && FileScanner.isLineBoundary(path: file, offset: $0.size) ? $0.size : nil
         } ?? 0
         var samples: [PerfSample] = []
-        let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+        let end = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
             if let sample = ompSample(item.obj) { samples.append(sample) }
         }
         _ = database.inTransaction {
-            database.upsertPerfSamples(samples)
+            guard sameCursor(database.perfCursor(file), prev) else { return false }
+            return database.upsertPerfSamples(samples)
                 && database.setPerfCursor(file, size: end, identity: st.identity)
         }
         return max(end - offset, 0)
@@ -395,32 +416,44 @@ enum PerfCollector {
         }
     }
 
-    /// Signature of each conversation file at its last read, so unchanged
+    /// Signature of each conversation file / OpenCode DB at its last read, so unchanged
     /// files are not opened every minute.
     private static let antigravitySignatures = SignatureCache()
+    private static let openCodeSignatures = SignatureCache()
 
     static func resetCaches() {
         antigravitySignatures.reset()
+        openCodeSignatures.reset()
     }
 
     /// The cursor holds the next unread `gen_metadata` index.
     static func scanAntigravity(path: String, database: Database) {
         let wal = FileScanner.fileStat(path + "-wal")
         guard let st = FileScanner.fileStat(path) else { return }
-        let signature = "\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)"
+        let prevCursor = database.perfCursor(path)
+        let next = prevCursor?.size ?? 0
+        let signature = "\(ObjectIdentifier(database))|\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)|c=\(next)"
         guard antigravitySignatures.get(path) != signature else { return }
-        let next = database.perfCursor(path)?.size ?? 0
         guard let rows = AntigravityParser.readGenerations(path: path, after: next - 1) else { return }
         let cascade = AntigravityParser.cascadeID(path)
-        let samples = rows.compactMap {
-            antigravitySample($0.gen, key: "\(cascade):\($0.idx)", sentMs: $0.sentAt * 1000)
+        let samples = rows.compactMap { row -> PerfSample? in
+            let (sentMs, ov) = row.sentAt.multipliedReportingOverflow(by: 1000)
+            guard !ov else { return nil }
+            return antigravitySample(row.gen, key: "\(cascade):\(row.idx)", sentMs: sentMs)
         }
-        let read = AntigravityParser.readThrough(rows, previous: next - 1) { $0.timeToFirstTokenMs != nil }
+        let read = AntigravityParser.readThrough(rows, previous: next - 1) {
+            $0.timeToFirstTokenMs != nil && $0.usage != nil && $0.streamingMs != nil
+        }
         let saved = database.inTransaction {
-            database.upsertPerfSamples(samples)
+            guard sameCursor(database.perfCursor(path), prevCursor) else { return false }
+            return database.upsertPerfSamples(samples)
                 && (read + 1 == next || database.setPerfCursor(path, size: read + 1, identity: 0))
         }
-        if saved { antigravitySignatures.set(path, signature) }
+        if saved {
+            let finalNext = database.perfCursor(path)?.size ?? next
+            let finalSig = "\(ObjectIdentifier(database))|\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)|c=\(finalNext)"
+            antigravitySignatures.set(path, finalSig)
+        }
     }
 
     /// The step time only dates the call; both figures come from the
@@ -428,10 +461,18 @@ enum PerfCollector {
     static func antigravitySample(_ gen: AntigravityParser.Generation, key: String,
                                   sentMs: Int64) -> PerfSample? {
         guard let ttft = gen.timeToFirstTokenMs, let usage = gen.usage else { return nil }
-        let first = sentMs + ttft
+        let (first, firstOverflow) = sentMs.addingReportingOverflow(ttft)
+        guard !firstOverflow else { return nil }
+        let last: Int64?
+        if let streaming = gen.streamingMs {
+            let (sum, lastOverflow) = first.addingReportingOverflow(streaming)
+            last = lastOverflow ? nil : sum
+        } else {
+            last = nil
+        }
         return PerfSample(tool: .antigravity, key: key, model: gen.model,
                           requestMs: sentMs, firstTokenMs: first,
-                          lastMs: gen.streamingMs.map { first + $0 },
+                          lastMs: last,
                           outputTokens: usage.output)
     }
 
@@ -441,31 +482,33 @@ enum PerfCollector {
     /// last run. Multi-step messages are skipped: their parts interleave tool
     /// execution with generation.
     static func scanOpenCode(database: Database, path: String = OpenCodeParser.dbPath) {
-        guard FileManager.default.fileExists(atPath: path) else { return }
-        let watermark = database.perfCursor(path)?.size ?? 0
+        guard let st = FileScanner.fileStat(path) else { return }
+        let wal = FileScanner.fileStat(path + "-wal")
+        let prevCursor = database.perfCursor(path)
+        let watermark = prevCursor?.size ?? -1
+        let sig = "\(ObjectIdentifier(database))|\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)|c=\(watermark)"
+        guard openCodeSignatures.get(path) != sig else { return }
         guard let src = SQLiteReadOnly.open(path) else { return }
         defer { sqlite3_close(src) }
         let sql = """
         WITH m AS (
           SELECT id, time_updated, data FROM message
-          WHERE time_updated >= ? AND json_extract(data, '$.role') = 'assistant'
+          WHERE time_updated > ? AND json_extract(data, '$.role') = 'assistant'
             AND json_extract(data, '$.time.completed') IS NOT NULL
-        ), p AS (
-          SELECT p.message_id, json_extract(p.data, '$.type') AS type,
-                 json_extract(p.data, '$.time.start') AS start,
-                 json_extract(p.data, '$.time.end') AS stop,
-                 json_extract(p.data, '$.state.time.start') AS tool_start
-          FROM part p JOIN m ON m.id = p.message_id
         )
         SELECT m.id, m.time_updated, json_extract(m.data, '$.modelID'),
                json_extract(m.data, '$.time.created'), json_extract(m.data, '$.time.completed'),
                COALESCE(json_extract(m.data, '$.tokens.output'), 0)
                  + COALESCE(json_extract(m.data, '$.tokens.reasoning'), 0),
-               (SELECT COUNT(*) FROM p WHERE p.message_id = m.id AND type = 'step-start'),
-               (SELECT MIN(start) FROM p WHERE p.message_id = m.id AND type IN ('reasoning', 'text')),
-               (SELECT MAX(stop) FROM p WHERE p.message_id = m.id AND type IN ('reasoning', 'text')),
-               (SELECT MAX(tool_start) FROM p WHERE p.message_id = m.id AND type = 'tool')
-        FROM m
+               SUM(CASE WHEN json_extract(p.data, '$.type') = 'step-start' THEN 1 ELSE 0 END),
+               MIN(CASE WHEN json_extract(p.data, '$.type') IN ('reasoning', 'text')
+                        THEN json_extract(p.data, '$.time.start') END),
+               MAX(CASE WHEN json_extract(p.data, '$.type') IN ('reasoning', 'text')
+                        THEN json_extract(p.data, '$.time.end') END),
+               MAX(CASE WHEN json_extract(p.data, '$.type') = 'tool'
+                        THEN json_extract(p.data, '$.state.time.start') END)
+        FROM m LEFT JOIN part p ON p.message_id = m.id
+        GROUP BY m.id
         ORDER BY m.time_updated ASC;
         """
         var stmt: OpaquePointer?
@@ -485,18 +528,29 @@ enum PerfCollector {
                 // streaming; `completed` would include the tool's run time.
                 let last = int(9).map { max($0, int(8) ?? $0) } ?? int(4)
                 let model = SQLiteText.column(stmt, 2)
+                let rawOut = int(5) ?? 0
+                let clampedOut = min(max(rawOut, 0), TurnRecord.maxTokens)
                 samples.append(PerfSample(tool: .opencode,
                                           key: key,
                                           model: model, requestMs: int(3), firstTokenMs: first,
-                                          lastMs: last, outputTokens: int(5) ?? 0))
+                                          lastMs: last, outputTokens: clampedOut))
             }
             stepRC = sqlite3_step(stmt)
         }
         guard stepRC == SQLITE_DONE else { return }
-        guard high > watermark || !samples.isEmpty else { return }
-        _ = database.inTransaction {
-            database.upsertPerfSamples(samples)
-                && database.setPerfCursor(path, size: high, identity: 0)
+        guard high > watermark || !samples.isEmpty else {
+            openCodeSignatures.set(path, sig)
+            return
+        }
+        let saved = database.inTransaction {
+            guard sameCursor(database.perfCursor(path), prevCursor) else { return false }
+            return database.upsertPerfSamples(samples)
+                && database.setPerfCursor(path, size: max(high, 0), identity: 0)
+        }
+        if saved {
+            let finalCursor = max(high, 0)
+            let finalSig = "\(ObjectIdentifier(database))|\(st.size):\(st.mtime):\(st.identity)|\(wal?.size ?? -1):\(wal?.mtime ?? -1)|c=\(finalCursor)"
+            openCodeSignatures.set(path, finalSig)
         }
     }
 }

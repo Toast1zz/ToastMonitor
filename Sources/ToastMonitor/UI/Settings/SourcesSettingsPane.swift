@@ -118,7 +118,7 @@ struct SourcesSettingsPane: View {
                     }
                 }
                 Button {
-                    HermesRemoteClient.shared.maybePoll()
+                    HermesRemoteClient.shared.poll()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -448,6 +448,7 @@ struct DataSettingsPane: View {
             DispatchQueue.main.async {
                 message = ok ? "Restored: \(receipt.backupPath)" : "Restore failed; backup retained"
                 isWorking = false
+                loadBackups()
                 if ok {
                     app.databaseWasReplaced()
                     refreshPreviewQuietly()

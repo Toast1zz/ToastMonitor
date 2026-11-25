@@ -125,10 +125,9 @@ enum OpenCodeParser {
         let prevTotals = database.sessionTotals()
         // opencode stores ms timestamps; normalize to seconds.
         func sec(_ v: Int64) -> Int64 { v > 1_000_000_000_000 ? v / 1000 : v }
-        func quality(_ row: Row) -> String {
-            let tokens = row.input + row.output + row.reasoning + row.cacheRead + row.cacheWrite
-            if row.cost == 0 && tokens > 0 { return "unknown" }
-            return row.hasActualCost ? "actual" : "unknown"
+        func turnQuality(hasActual: Bool, turnCost: Double, turnTokens: Int64) -> String {
+            if turnCost == 0 && turnTokens > 0 { return "unknown" }
+            return hasActual ? "actual" : "unknown"
         }
         let watermark = Int64(database.setting(watermarkKey) ?? "") ?? 0
         var pendingTotals: [(key: String, input: Int64, output: Int64, reasoning: Int64,
@@ -137,8 +136,10 @@ enum OpenCodeParser {
         let read = forEachRow(since: watermark, database: database) { row in
             let key = "opencode|\(row.id)"
             let project = row.directory.isEmpty ? nil : (row.directory as NSString).lastPathComponent
+            let createdS = sec(row.timeCreated)
+            let updatedS = sec(row.timeUpdated)
             sessions.append(SessionInfo(tool: .opencode, sessionID: row.id, title: row.title.isEmpty ? nil : row.title,
-                                        project: project, model: row.model, created: sec(row.timeCreated), updated: sec(row.timeUpdated)))
+                                        project: project, model: row.model, created: createdS, updated: max(updatedS, createdS)))
 
             let totalInput = row.input
             let legacyCombinedInput = prevTotals[key].map {
@@ -146,35 +147,37 @@ enum OpenCodeParser {
                     && FileScanner.tokenCount($0.input) == row.input + row.reasoning
             } ?? false
             if let prev = prevTotals[key] {
-                let dInput = (legacyCombinedInput ? row.input + row.reasoning : totalInput) - FileScanner.tokenCount(prev.input)
-                let dOutput = row.output - FileScanner.tokenCount(prev.output)
-                let dReasoning = legacyCombinedInput ? 0 : row.reasoning - FileScanner.tokenCount(prev.reasoning)
-                let dCacheRead = row.cacheRead - FileScanner.tokenCount(prev.cacheRead)
-                let dCacheWrite = row.cacheWrite - FileScanner.tokenCount(prev.cacheWrite)
-                let dCost = row.cost - prev.cost
-                let turn = TurnRecord(tool: .opencode, sessionID: row.id, project: project,
-                                      model: row.model, ts: sec(row.timeUpdated),
-                                      inputTokens: max(dInput, 0), outputTokens: max(dOutput, 0),
-                                      reasoningTokens: max(dReasoning, 0),
-                                      cacheRead: max(dCacheRead, 0), cacheWrite: max(dCacheWrite, 0),
-                                      cost: max(dCost, 0), provider: row.provider,
-                                      eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
-                                      costQuality: quality(row))
-                if turn.inputTokens + turn.outputTokens + turn.reasoningTokens + turn.cacheRead + turn.cacheWrite > 0 {
+                let dInput = max((legacyCombinedInput ? row.input + row.reasoning : totalInput) - FileScanner.tokenCount(prev.input), 0)
+                let dOutput = max(row.output - FileScanner.tokenCount(prev.output), 0)
+                let dReasoning = legacyCombinedInput ? 0 : max(row.reasoning - FileScanner.tokenCount(prev.reasoning), 0)
+                let dCacheRead = max(row.cacheRead - FileScanner.tokenCount(prev.cacheRead), 0)
+                let dCacheWrite = max(row.cacheWrite - FileScanner.tokenCount(prev.cacheWrite), 0)
+                let dCost = max(row.cost - prev.cost, 0)
+                let dTokens = dInput + dOutput + dReasoning + dCacheRead + dCacheWrite
+                if dTokens > 0 {
+                    let turn = TurnRecord(tool: .opencode, sessionID: row.id, project: project,
+                                          model: row.model, ts: updatedS,
+                                          inputTokens: dInput, outputTokens: dOutput,
+                                          reasoningTokens: dReasoning,
+                                          cacheRead: dCacheRead, cacheWrite: dCacheWrite,
+                                          cost: dCost, provider: row.provider,
+                                          eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
+                                          costQuality: turnQuality(hasActual: row.hasActualCost, turnCost: dCost, turnTokens: dTokens))
                     turns.append(turn)
                 }
             } else if totalInput > 0 || row.output > 0 || row.reasoning > 0 || row.cacheRead > 0 || row.cacheWrite > 0 {
+                let initialTokens = totalInput + row.output + row.reasoning + row.cacheRead + row.cacheWrite
                 // First sighting: record the full totals as one turn (backfill).
                 // ts uses the REAL last-update time so history lands on its
                 // true day instead of today.
                 turns.append(TurnRecord(tool: .opencode, sessionID: row.id, project: project,
-                                        model: row.model, ts: sec(row.timeUpdated),
+                                        model: row.model, ts: updatedS,
                                         inputTokens: totalInput, outputTokens: row.output,
                                         reasoningTokens: row.reasoning,
                                         cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, cost: row.cost,
                                         provider: row.provider,
                                         eventID: "opencode:\(row.id):\(row.timeUpdated):\(totalInput):\(row.output):\(row.reasoning):\(row.cacheRead):\(row.cacheWrite)",
-                                        costQuality: quality(row)))
+                                        costQuality: turnQuality(hasActual: row.hasActualCost, turnCost: row.cost, turnTokens: initialTokens)))
             }
             // Cost-only changes without token growth are intentionally not imported.
             // Keep high-water counters across rollbacks. On the legacy transition,

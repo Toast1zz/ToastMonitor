@@ -23,21 +23,21 @@ final class CodexQuotaClient: ObservableObject {
     }
 
     private static func boundedPercent(_ value: NSNumber?) -> Int? {
-        guard let value else { return nil }
+        guard let value, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
         let d = value.doubleValue
         guard d.isFinite, d >= 0, d <= 100 else { return nil }
         return Int(d.rounded())
     }
 
     private static func boundedWindow(_ value: NSNumber?) -> Int? {
-        guard let value else { return nil }
+        guard let value, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
         let d = value.doubleValue
         guard d.isFinite, d >= 0, d <= 366 * 86400 else { return nil }
         return Int(d.rounded())
     }
 
     private static func boundedReset(_ value: NSNumber?) -> Int64? {
-        guard let value else { return nil }
+        guard let value, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
         let d = value.doubleValue
         let now = Date().timeIntervalSince1970
         guard d.isFinite, d >= now - 10 * 365 * 86400, d <= now + 366 * 86400 else { return nil }
@@ -69,11 +69,24 @@ final class CodexQuotaClient: ObservableObject {
 
     func setEnabled(_ on: Bool) {
         guard on != enabled else { return }
-        enabled = on
-        loadedPreference = true
         DispatchQueue.global(qos: .utility).async {
             _ = Database.shared.setSetting(Self.enabledSettingKey, on ? "1" : nil)
         }
+        applyEnabled(on)
+    }
+
+    func reloadFromDatabase() {
+        let on = Database.shared.setting(Self.enabledSettingKey) == "1"
+        applyEnabled(on)
+    }
+
+    private func applyEnabled(_ on: Bool) {
+        loadedPreference = true
+        guard on != enabled else {
+            if on && !started { start() }
+            return
+        }
+        enabled = on
         if on {
             started = false
             start()
@@ -82,6 +95,8 @@ final class CodexQuotaClient: ObservableObject {
             poller.stop()
             refreshGeneration &+= 1
             inFlight = false
+            backoff.succeeded()
+            state = State()
         }
     }
 
@@ -93,11 +108,20 @@ final class CodexQuotaClient: ObservableObject {
         guard enabled, !started else { return }
         started = true
         refresh()
-        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
+        poller.start(onWake: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.backoff.allowNow()
+                self.refresh(force: self.state.error != nil)
+            }
+        }) { [weak self] in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         guard enabled, !inFlight else { return }
+        if force { backoff.allowNow() }
         // Backoff gate: skip attempts inside the backoff window.
         if backoff.isWaiting { return }
         inFlight = true
@@ -190,6 +214,11 @@ final class CodexQuotaClient: ObservableObject {
                     self.backoff.failed()
                     return
                 }
+                guard let pct = Self.boundedPercent(pw["used_percent"] as? NSNumber) else {
+                    self.state.error = "Usage API returned invalid rate-limit percent"
+                    self.backoff.failed()
+                    return
+                }
                 if let rawPlan = json["plan_type"] as? String,
                    rawPlan.count <= 128,
                    rawPlan.rangeOfCharacter(from: .controlCharacters) == nil {
@@ -197,7 +226,7 @@ final class CodexQuotaClient: ObservableObject {
                 } else {
                     self.state.planType = nil
                 }
-                self.state.primaryPct = Self.boundedPercent(pw["used_percent"] as? NSNumber)
+                self.state.primaryPct = pct
                 self.state.windowSeconds = Self.boundedWindow(pw["limit_window_seconds"] as? NSNumber)
                 self.state.resetAt = Self.boundedReset(pw["reset_at"] as? NSNumber)
                 self.state.lastSync = Int64(Date().timeIntervalSince1970)

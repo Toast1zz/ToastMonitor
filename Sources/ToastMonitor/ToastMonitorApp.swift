@@ -2,6 +2,50 @@ import SwiftUI
 import AppKit
 import Darwin
 
+private func writePrivateDiagnosticsFile(_ data: Data, to outPath: String) -> Bool {
+    guard !outPath.isEmpty else { return false }
+    var st = stat()
+    if lstat(outPath, &st) == 0 {
+        guard (st.st_mode & S_IFMT) == S_IFREG else { return false }
+    } else if errno != ENOENT {
+        return false
+    }
+    let outURL = URL(fileURLWithPath: outPath)
+    let parent = outURL.deletingLastPathComponent()
+    var isDir: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDir), isDir.boolValue else {
+        return false
+    }
+    let tempPath = parent.appendingPathComponent(".tm-diag-\(UUID().uuidString).tmp").path
+    let fd = Darwin.open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    guard fd >= 0 else { return false }
+    let writtenOK = data.withUnsafeBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return true }
+        var remaining = data.count
+        var offset = 0
+        while remaining > 0 {
+            let n = Darwin.write(fd, base.advanced(by: offset), remaining)
+            if n <= 0 {
+                if n < 0 && errno == EINTR { continue }
+                return false
+            }
+            offset += n
+            remaining -= n
+        }
+        return true
+    }
+    _ = Darwin.close(fd)
+    guard writtenOK else {
+        try? FileManager.default.removeItem(atPath: tempPath)
+        return false
+    }
+    if Darwin.rename(tempPath, outPath) != 0 {
+        try? FileManager.default.removeItem(atPath: tempPath)
+        return false
+    }
+    return true
+}
+
 private let cliHelp = """
 Usage: ToastMonitor [option]
 
@@ -221,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("key store failed (Keychain unavailable or key invalid; no plaintext fallback)")
                 exit(1)
             }
+            OpenRouterClient.shared.flushSettings()
             print("key stored")
             exit(0)
         }
@@ -259,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(1)
             }
             if OpenRouterClient.shared.provisionKey(key) {
+                OpenRouterClient.shared.flushSettings()
                 print("key provisioned")
                 exit(0)
             }
@@ -277,6 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(1)
             }
             if OpenCodeGoClient.shared.provision(workspaceId: workspaceID, cookie: cookie) {
+                OpenCodeGoClient.shared.flushSettings()
                 print("go provisioned")
                 exit(0)
             }
@@ -305,7 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let summary = Database.shared.diagnosticsSummary()
             let outPath = args[flag + 1]
             if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted]),
-               (try? data.write(to: URL(fileURLWithPath: outPath))) != nil {
+               writePrivateDiagnosticsFile(data, to: outPath) {
                 print("diagnostics written to \(outPath)")
                 exit(0)
             }
@@ -558,6 +605,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Only acknowledge the replacement after normal startup completes.
         // The detached installer retains the previous bundle until this point.
         UpdateManager.acknowledgeLaunch(arguments: arguments)
+        NotificationCenter.default.post(name: AccountsSettingsSection.quotaRowsChanged, object: nil)
+        NotificationCenter.default.post(name: TMNotifications.databaseReplaced, object: nil)
+        if PanelController.isPanelVisible {
+            NotificationCenter.default.post(name: TMNotifications.popoverVisibility, object: true)
+        }
+        if WindowManager.shared.isVisible {
+            NotificationCenter.default.post(name: TMNotifications.dashboardVisibility, object: true)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             AppState.shared.refresh()
         }
@@ -576,9 +631,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // viewDidChangeEffectiveAppearance() (DashboardRootView reacts to that
         // to repaint its background), so ordering relative to `.view` above
         // does not matter.
-        if path.contains("dark") {
+        let fileName = (path as NSString).lastPathComponent.lowercased()
+        if fileName.contains("dark") {
             view.appearance = NSAppearance(named: .darkAqua)
-        } else if path.contains("light") {
+        } else if fileName.contains("light") {
             view.appearance = NSAppearance(named: .aqua)
         }
         controller.prepareAllPages()
@@ -597,9 +653,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func renderSnapshot<V: View>(_ root: V, to path: String, height: CGFloat, width: CGFloat) {
         let hosting = NSHostingView(rootView: root)
-        if path.contains("dark") {
+        let fileName = (path as NSString).lastPathComponent.lowercased()
+        if fileName.contains("dark") {
             hosting.appearance = NSAppearance(named: .darkAqua)
-        } else if path.contains("light") {
+        } else if fileName.contains("light") {
             hosting.appearance = NSAppearance(named: .aqua)
         }
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)

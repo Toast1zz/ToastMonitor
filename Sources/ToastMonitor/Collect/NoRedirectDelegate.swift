@@ -27,8 +27,17 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
         }
     }
 
+    private struct TaskKey: Hashable {
+        let session: ObjectIdentifier
+        let taskID: Int
+    }
+
     private let lock = NSLock()
-    private var tasks: [Int: TaskState] = [:]
+    private var tasks: [TaskKey: TaskState] = [:]
+
+    private static func key(for session: URLSession, task: URLSessionTask) -> TaskKey {
+        TaskKey(session: ObjectIdentifier(session), taskID: task.taskIdentifier)
+    }
 
     /// Creates and registers a task before it can deliver any delegate
     /// callbacks. The returned task must be resumed by the caller.
@@ -38,8 +47,9 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
                          completion: @escaping (Data?, URLResponse?, Error?) -> Void)
         -> URLSessionDataTask {
         let task = session.dataTask(with: request)
+        let key = Self.key(for: session, task: task)
         lock.lock()
-        tasks[task.taskIdentifier] = TaskState(maxBytes: maxBytes, completion: completion)
+        tasks[key] = TaskState(maxBytes: maxBytes, completion: completion)
         lock.unlock()
         return task
     }
@@ -48,17 +58,20 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
+        let key = Self.key(for: session, task: task)
         lock.lock()
-        tasks[task.taskIdentifier]?.redirectBlocked = true
+        tasks[key]?.redirectBlocked = true
         lock.unlock()
+        task.cancel()
         completionHandler(nil)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        let key = Self.key(for: session, task: dataTask)
         lock.lock()
-        let state = tasks[dataTask.taskIdentifier]
+        let state = tasks[key]
         if let state {
             state.response = response
             if response.expectedContentLength > Int64(state.maxBytes) {
@@ -77,8 +90,9 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive data: Data) {
+        let key = Self.key(for: session, task: dataTask)
         lock.lock()
-        guard let state = tasks[dataTask.taskIdentifier] else {
+        guard let state = tasks[key] else {
             lock.unlock()
             return
         }
@@ -95,8 +109,9 @@ final class NoRedirectDelegate: NSObject, URLSessionDataDelegate, @unchecked Sen
 
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     didCompleteWithError error: Error?) {
+        let key = Self.key(for: session, task: task)
         lock.lock()
-        guard let state = tasks.removeValue(forKey: task.taskIdentifier) else {
+        guard let state = tasks.removeValue(forKey: key) else {
             lock.unlock()
             return
         }

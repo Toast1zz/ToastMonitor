@@ -50,7 +50,13 @@ struct OverviewView: View {
                     .tmNumericTextTransition(value: Double(periodTokens))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: periodTokens)
                 DashMetric(label: "Calls", value: Format.count(periodCalls))
-                DashMetric(label: actualSpendLabel, value: actualSpendText)
+                DashMetric(label: actualSpendLabel,
+                           value: actualSpendText,
+                           warningDetail: deepseekSpendPending
+                               ? "Actual Spend leaves out DeepSeek's account billing for this period until it loads"
+                                   + (deepseek.state.spendError.map { " (\($0))" } ?? "")
+                                   + ". ToastMonitor tries again on its own."
+                               : nil)
                 DashMetric(label: "API Value", value: apiValue > 0 ? Format.money(apiValue) : "—")
             }
             // The breakdowns absorb the window's spare height; a long model
@@ -77,6 +83,10 @@ struct OverviewView: View {
                 }
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.dashboardVisibility)) { note in
+            guard (note.object as? Bool) == true, activeTab == nil || activeTab == .overview else { return }
+            deepseek.loadSpendIfNeeded(for: period.slot, configuration: periodSettings.configuration)
         }
     }
 
@@ -143,11 +153,13 @@ struct OverviewView: View {
         }
     }
 
-    /// Actual spend = billed/direct cost + OpenRouter + amortized subscriptions.
+    /// Actual spend = non-OpenRouter billed cost + OpenRouter + amortized subscriptions.
     private var actualSpend: Double {
         let range = periodSettings.configuration.range(for: period.slot, now: Date())
         let orUsage = app.openRouterSpend(since: range.start, current: orClient.state.creditsUsage)
-        return periodCost.actual + orUsage
+        let nonOpenRouterActual = max(0, periodCost.actual - periodCost.openrouterActual)
+        let effectiveOpenRouter = orClient.hasKey ? max(orUsage, periodCost.openrouterActual) : periodCost.openrouterActual
+        return nonOpenRouterActual + effectiveOpenRouter
             + SubscriptionMath.amortized(slot: period.slot, configuration: periodSettings.configuration,
                                          subscriptions: app.subscriptions)
     }
@@ -161,6 +173,13 @@ struct OverviewView: View {
             coveredLocalUSD: periodCost.deepseekActual,
             spend: deepseek.spend(for: period.slot, configuration: periodSettings.configuration),
             cnyPerUSD: cnyPerUSD)
+    }
+
+    private var deepseekSpendPending: Bool {
+        period != .all
+            && deepseek.state.kind == .platform
+            && (deepseek.spend(for: period.slot, configuration: periodSettings.configuration) == nil
+                || deepseek.stale(deepseek.state.spendUpdated, error: deepseek.state.spendError))
     }
 
     private var actualSpendLabel: String {
@@ -250,14 +269,19 @@ struct OverviewView: View {
 
     private var modelItems: [ShareItem] {
         // Use each AI maker's brand color (same rule as Popover & Analysis › By Model).
-        let rows = modelRows(period)
-        let colors = TMDesign.modelColors(for: rows.map(\.0))
+        let (rows, providers) = modelRowsWithProviders(period)
+        let realRows = rows.filter { $0.0 != ClaudeNonLocalEstimator.estimateToolLabel }
+        let colors = TMDesign.modelColors(for: realRows.map(\.0), providersByDisplayName: providers)
         return rows.map { row in
-            ShareItem(name: row.0, value: row.1, color: colors[row.0] ?? TMDesign.accent)
+            ShareItem(name: row.0,
+                      value: row.1,
+                      color: row.0 == ClaudeNonLocalEstimator.estimateToolLabel
+                          ? row.3
+                          : (colors[row.0] ?? row.3))
         }
     }
 
-    private func modelRows(_ period: Period) -> [(String, Int64, Double, Color)] {
+    private func modelRowsWithProviders(_ period: Period) -> (rows: [(String, Int64, Double, Color)], providers: [String: String]) {
         let aggs: [Database.ModelAgg]
         switch period {
         case .today: aggs = app.modelAggsToday
@@ -271,9 +295,14 @@ struct OverviewView: View {
         // the ranking answers "which model" instead of leaking source details
         // as duplicate labels.
         var totals: [String: (tokens: Int64, cost: Double, color: Color)] = [:]
+        var providersByDisplay: [String: String] = [:]
         for row in aggs {
-            let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead) ?? row.input + row.output
+            let value = ToolKind.totalTokens(tool: row.tool, input: row.input, output: row.output, cacheRead: row.cacheRead)
             let name = ModelName.display(row.model)
+            let provider = ModelProvider.name(for: row.model)
+            if providersByDisplay[name] == nil || providersByDisplay[name] == ModelProvider.other {
+                providersByDisplay[name] = provider
+            }
             let previous = totals[name]
             totals[name] = (
                 tokens: (previous?.tokens ?? 0) + value,
@@ -281,17 +310,27 @@ struct OverviewView: View {
                 color: previous?.color ?? ToolKind(rawValue: row.tool)?.color ?? TMDesign.accent
             )
         }
-        return totals.map { ($0.key, $0.value.tokens, $0.value.cost, $0.value.color) }
+        for row in periodRows where ToolKind(rawValue: row.tool) == nil {
+            let value = ToolKind.totalTokens(row)
+            guard value > 0 else { continue }
+            let previous = totals[row.tool]
+            totals[row.tool] = (
+                tokens: (previous?.tokens ?? 0) + value,
+                cost: (previous?.cost ?? 0) + row.cost,
+                color: TMDesign.sourceColor(row.tool)
+            )
+        }
+        let rows = totals.map { ($0.key, $0.value.tokens, $0.value.cost, $0.value.color) }
             .sorted { $0.1 > $1.1 }
+        return (rows, providersByDisplay)
     }
 
     private func toolRows(_ period: Period) -> [(String, Int64, Double, Color)] {
         periodRows.sorted {
-            (ToolKind(rawValue: $0.tool)?.totalTokens($0) ?? $0.input + $0.output) >
-                (ToolKind(rawValue: $1.tool)?.totalTokens($1) ?? $1.input + $1.output)
+            ToolKind.totalTokens($0) > ToolKind.totalTokens($1)
         }.map { row in
             (ToolKind(rawValue: row.tool)?.displayName ?? row.tool,
-             ToolKind(rawValue: row.tool)?.totalTokens(row) ?? row.input + row.output,
+             ToolKind.totalTokens(row),
              row.cost,
              TMDesign.sourceColor(row.tool))
         }

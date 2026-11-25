@@ -34,16 +34,17 @@ KEY_MODE="$(stat -f '%Lp' "$KEY")"
 [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "invalid version: $VERSION" >&2; exit 1; }
 [[ -f "$ARCHIVE" ]] || { echo "artifact not found: $ARCHIVE" >&2; exit 1; }
 
+EXPLICIT_OUT="${4:-}"
 UNIVERSAL_ARCHIVE=""
 if [[ -n "${3:-}" && -f "$3" ]]; then
     UNIVERSAL_ARCHIVE="$3"
-    OUT="${4:-appcast.json}"
+    OUT="${EXPLICIT_OUT:-appcast.json}"
     ARM64_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-arm64.zip"
     UNIVERSAL_URL="https://github.com/Toast1zz/ToastMonitor/releases/download/v$VERSION/ToastMonitor-$VERSION-universal.zip"
     LEGACY_ARCHIVE="$UNIVERSAL_ARCHIVE"
     LEGACY_URL="$UNIVERSAL_URL"
 else
-    OUT="${4:-appcast.json}"
+    OUT="${EXPLICIT_OUT:-appcast.json}"
     if [[ -n "${3:-}" ]]; then
         LEGACY_URL="$3"
     else
@@ -58,6 +59,34 @@ else
 fi
 [[ "$LEGACY_URL" == https://* ]] || { echo "download URL must be HTTPS" >&2; exit 1; }
 [[ "$LEGACY_URL" != *'"'* && "$LEGACY_URL" != *'\'* ]] || { echo "download URL contains illegal JSON characters" >&2; exit 1; }
+
+ARCH_CHECK_DIR="$(mktemp -d)"
+INPUT="$(mktemp -t tm-sign-input.XXXXXX)"
+trap 'rm -rf "$ARCH_CHECK_DIR" "$INPUT"' EXIT
+
+verify_archive_archs() {
+    local zip="$1"
+    local label="$2"
+    shift 2
+    local unpack="$ARCH_CHECK_DIR/$label"
+    mkdir -p "$unpack"
+    ditto -x -k "$zip" "$unpack"
+    local bin="$unpack/ToastMonitor.app/Contents/MacOS/ToastMonitor"
+    [[ -f "$bin" ]] || { echo "error: $zip missing ToastMonitor.app binary" >&2; exit 1; }
+    local archs
+    archs="$(lipo -archs "$bin")"
+    for req in "$@"; do
+        [[ " $archs " == *" $req "* ]] || {
+            echo "error: $zip ($archs) missing required architecture $req" >&2
+            exit 1
+        }
+    done
+}
+
+verify_archive_archs "$ARCHIVE" "primary" arm64
+if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
+    verify_archive_archs "$UNIVERSAL_ARCHIVE" "universal" arm64 x86_64
+fi
 
 SHA256="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
 if [[ -n "$UNIVERSAL_ARCHIVE" ]]; then
@@ -97,10 +126,7 @@ else
 fi
 B64=$(printf '%s' "$PAYLOAD" | base64 | tr -d '\n')
 
-# Throwaway 0600 input file (unique per run — no fixed /tmp path that another
-# run or a symlink could clobber). The key path is passed as argv.
-INPUT="$(mktemp -t tm-sign-input.XXXXXX)"
-trap 'rm -f "$INPUT"' EXIT
+# Scratch 0600 input file created alongside ARCH_CHECK_DIR above.
 chmod 600 "$INPUT"
 printf '%s' "$B64" > "$INPUT"
 
@@ -154,4 +180,8 @@ print(signature.base64EncodedString())
 mkdir -p "$(dirname "$OUT")"
 printf '{"payload":"%s","signature":"%s"}\n' "$B64" "$SIGN" > "$OUT"
 echo "== $OUT written =="
+if [[ -z "$EXPLICIT_OUT" && "$OUT" == "appcast.json" ]]; then
+    cp "$OUT" "docs/appcast.json"
+    echo "== docs/appcast.json synced =="
+fi
 python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print("payload bytes:", len(d["payload"]), "| signature bytes:", len(d["signature"]))' "$OUT"

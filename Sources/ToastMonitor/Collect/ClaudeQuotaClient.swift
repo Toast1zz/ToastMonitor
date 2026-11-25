@@ -85,6 +85,7 @@ final class ClaudeQuotaClient: ObservableObject {
     /// any success). Wall-clock based and persisted, not systemUptime-based,
     /// so a relaunch cannot discard a server-imposed backoff.
     private var backoffAttempt = 0
+    private var backoffIsRateLimited = false
     private var nextAllowedRefresh: TimeInterval = 0
     /// Last attempt time (success or failure), independent of the backoff
     /// above. This is the soft cooldown that keeps passive triggers (app
@@ -96,6 +97,8 @@ final class ClaudeQuotaClient: ObservableObject {
     private let session: URLSession
     /// Retained because URLSession delegates are weak.
     private let redirectBlocker = NoRedirectDelegate()
+    private let credentialLoader: @Sendable () -> Credentials?
+    private let cliRefresher: @Sendable (@escaping @Sendable () -> Bool) -> CLIRenewalOutcome
 
     private init() {
         let cfg = URLSessionConfiguration.ephemeral
@@ -104,13 +107,19 @@ final class ClaudeQuotaClient: ObservableObject {
         cfg.httpCookieStorage = nil
         cfg.httpShouldSetCookies = false
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
+        credentialLoader = { Self.loadCredentials() }
+        cliRefresher = { ClaudeCLIRefresher.refresh(renewed: $0) }
         observeForeground()
     }
 
     private var persistsState = true
 
-    init(forTestingWithConfiguration cfg: URLSessionConfiguration) {
+    init(forTestingWithConfiguration cfg: URLSessionConfiguration,
+         credentialLoader: @escaping @Sendable () -> Credentials? = { nil },
+         cliRefresher: @escaping @Sendable (@escaping @Sendable () -> Bool) -> CLIRenewalOutcome = { _ in .failed("test stub") }) {
         session = URLSession(configuration: cfg, delegate: redirectBlocker, delegateQueue: nil)
+        self.credentialLoader = credentialLoader
+        self.cliRefresher = cliRefresher
         loadedPersistedState = true
         persistsState = false
         enabled = true
@@ -150,13 +159,30 @@ final class ClaudeQuotaClient: ObservableObject {
     private func loadPersistedStateIfNeeded() {
         guard !loadedPersistedState else { return }
         loadedPersistedState = true
+        guard persistsState else { return }
+        lastAttemptAt = 0
+        backoffAttempt = 0
+        backoffIsRateLimited = false
+        nextAllowedRefresh = 0
+        state = State()
+        let now = Date().timeIntervalSince1970
         enabled = Database.shared.setting(Self.enabledSettingKey) == "1"
-        if let raw = Database.shared.setting(Self.lastAttemptSettingKey), let v = TimeInterval(raw) {
-            lastAttemptAt = v
+        if let raw = Database.shared.setting(Self.lastAttemptSettingKey),
+           let v = TimeInterval(raw), v.isFinite, v >= 0 {
+            lastAttemptAt = min(v, now)
         }
-        if let raw = Database.shared.setting(Self.backoffUntilSettingKey), let v = TimeInterval(raw) {
-            nextAllowedRefresh = v
-            state.retryAt = v
+        if let raw = Database.shared.setting(Self.backoffUntilSettingKey),
+           let v = TimeInterval(raw), v.isFinite, v >= 0 {
+            if v <= now + 24 * 3600 {
+                nextAllowedRefresh = v
+                state.retryAt = v
+            } else {
+                nextAllowedRefresh = 0
+                state.retryAt = 0
+                DispatchQueue.global(qos: .utility).async {
+                    _ = Database.shared.setSetting(Self.backoffUntilSettingKey, nil)
+                }
+            }
         }
         loadCache()
     }
@@ -168,16 +194,35 @@ final class ClaudeQuotaClient: ObservableObject {
     func setEnabled(_ on: Bool) {
         loadPersistedStateIfNeeded()
         guard on != enabled else { return }
-        enabled = on
-        DispatchQueue.global(qos: .utility).async {
-            _ = Database.shared.setSetting(Self.enabledSettingKey, on ? "1" : nil)
+        if persistsState {
+            DispatchQueue.global(qos: .utility).async {
+                _ = Database.shared.setSetting(Self.enabledSettingKey, on ? "1" : nil)
+            }
         }
+        applyEnabled(on)
+    }
+
+    func reloadFromDatabase() {
+        guard persistsState, !isDemo else { return }
+        refreshGeneration &+= 1
+        inFlight = false
+        renewalRetry.reset()
+        rejectedToken = nil
+        loadedPersistedState = false
+        loadPersistedStateIfNeeded()
+        applyEnabled(enabled)
+    }
+
+    private func applyEnabled(_ on: Bool) {
+        enabled = on
         if on {
+            started = false
             start()
         } else {
             started = false
             timer?.invalidate()
             timer = nil
+            foreground = false
             refreshGeneration &+= 1 // orphan any in-flight request's completion
             inFlight = false
             renewalRetry.reset()
@@ -199,7 +244,9 @@ final class ClaudeQuotaClient: ObservableObject {
         foreground = fg
         if fg {
             startTimer(interval: Self.foregroundInterval)
-            refresh(force: state.error != nil || state.lastSync == 0)
+            let needsImmediate = state.error != nil || state.lastSync == 0 || renewalRetry.failures > 0
+            if needsImmediate { Self.clearSecurityToolBlock() }
+            refresh(force: needsImmediate)
         } else {
             // No background API polling when healthy: nobody is looking at the
             // numbers. Keep any in-progress login renewal (`renewalRetry`)
@@ -228,8 +275,13 @@ final class ClaudeQuotaClient: ObservableObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.enabled, (self.foreground || self.state.error != nil) else { return }
-                self.refresh(force: self.state.error != nil)
+                guard let self, self.enabled,
+                      (self.foreground || self.state.error != nil || self.renewalRetry.failures > 0 || self.rejectedToken != nil) else { return }
+                Self.clearSecurityToolBlock()
+                if !self.backoffIsRateLimited {
+                    self.clearBackoff()
+                }
+                self.refresh(force: true)
             }
         }
     }
@@ -277,14 +329,15 @@ final class ClaudeQuotaClient: ObservableObject {
     private func renewalFailed(outcome: CLIRenewalOutcome?) {
         let rejected = rejectedToken != nil
         renewalRetry.schedule(counting: outcome != .throttled) { [weak self] in
-            self?.refresh(force: true, renewing: true)
+            guard let self else { return }
+            self.refresh(force: true, renewing: true,
+                         retestRejected: self.renewalRetry.shouldRetestRejectedToken)
         }
         if renewalRetry.shouldReport {
             state.error = rejected
                 ? "Claude login expired — run claude /login to restore"
                 : "Login expired — run claude in Terminal"
         }
-        if renewalRetry.shouldRetestRejectedToken { rejectedToken = nil }
     }
 
     /// - Parameters:
@@ -294,37 +347,48 @@ final class ClaudeQuotaClient: ObservableObject {
     ///   - renewing: a retry of a failed login renewal. Runs through any
     ///     backoff, which covers the usage API and not the CLI, so the retry
     ///     can't stop; the usage API still waits for the backoff to end.
-    func refresh(force: Bool = false, renewing: Bool = false) {
+    func refresh(force: Bool = false, renewing: Bool = false, retestRejected: Bool = false) {
         guard enabled, !isDemo else { return }
-        guard !inFlight else { return }
+        if inFlight {
+            if renewing {
+                renewalRetry.schedule(counting: false) { [weak self] in
+                    guard let self else { return }
+                    self.refresh(force: true, renewing: true,
+                                 retestRejected: self.renewalRetry.shouldRetestRejectedToken)
+                }
+            }
+            return
+        }
         let now = Date().timeIntervalSince1970
+        if !force && !renewing && renewalRetry.hasActiveRetry { return }
         guard renewing || now >= nextAllowedRefresh else { return }
         if !force, lastAttemptAt > 0, now - lastAttemptAt < Self.minPassiveInterval { return }
 
-        if force && !renewing {
+        if (force && !renewing) || (renewing && renewalRetry.failures > 0 && renewalRetry.failures % 3 == 0) {
             Self.clearSecurityToolBlock()
         }
         inFlight = true
-        persistLastAttempt(now)
         refreshGeneration &+= 1
         let generation = refreshGeneration
 
         // Credential lookup touches disk (and possibly the Keychain); never
         // on the main actor.
-        let rejected = rejectedToken
+        let effectiveRejected = retestRejected ? nil : rejectedToken
+        let loader = credentialLoader
+        let refresher = cliRefresher
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var credentials = Self.loadCredentials()
+            var credentials = loader()
             var outcome: CLIRenewalOutcome?
-            if let creds = credentials, Self.needsRenewal(creds, rejectedToken: rejected) {
+            if let creds = credentials, Self.needsRenewal(creds, rejectedToken: effectiveRejected) {
                 // Rather than give up immediately, delegate to the real
                 // `claude` CLI (see ClaudeCLIRefresher) and let its own
                 // startup sequence refresh the token, then re-read whatever
                 // it wrote. This blocks for up to ~25s, which is exactly why
                 // it happens here and not on the main actor.
-                outcome = ClaudeCLIRefresher.refresh(renewed: {
-                    Self.loadCredentials().map { !Self.needsRenewal($0, rejectedToken: rejected) } ?? false
-                })
-                credentials = Self.loadCredentials()
+                outcome = refresher {
+                    loader().map { !Self.needsRenewal($0, rejectedToken: effectiveRejected) } ?? false
+                }
+                credentials = loader()
             }
             let resolved = credentials
             let attempted = outcome
@@ -332,8 +396,9 @@ final class ClaudeQuotaClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 guard let resolved else {
                     self.inFlight = false
+                    if attempted != nil { self.persistLastAttempt(Date().timeIntervalSince1970) }
                     let denied = Self.lastReadWasDenied
-                    let expectedLogin = renewing || self.state.configured || self.state.lastSync > 0 || denied
+                    let expectedLogin = renewing || self.state.configured || self.state.lastSync > 0 || denied || self.renewalRetry.failures > 0
                     if self.renewalRetry.loginUnreadable(renewing: expectedLogin, outcome: attempted, retry: { [weak self] in
                         self?.refresh(force: true, renewing: true)
                     }) { return }
@@ -347,7 +412,8 @@ final class ClaudeQuotaClient: ObservableObject {
                     return
                 }
                 self.state.configured = true
-                if Self.needsRenewal(resolved, rejectedToken: rejected) {
+                if Self.needsRenewal(resolved, rejectedToken: effectiveRejected) {
+                    self.persistLastAttempt(Date().timeIntervalSince1970)
                     // Still unusable even after attempting a CLI-delegated
                     // refresh (no `claude` binary found, one Gatekeeper would
                     // block, the probe couldn't complete in time, or the login
@@ -356,22 +422,28 @@ final class ClaudeQuotaClient: ObservableObject {
                     self.renewalFailed(outcome: attempted)
                     return
                 }
-                if attempted != nil { ClaudeCLIRefresher.renewalSucceeded() }
-                self.renewalRetry.reset()
-                self.rejectedToken = nil
                 if self.state.planType == nil {
                     self.state.planType = resolved.subscriptionType
                 }
                 guard Date().timeIntervalSince1970 >= self.nextAllowedRefresh else {
                     self.inFlight = false
+                    if renewing || self.renewalRetry.failures > 0 {
+                        self.renewalRetry.schedule(counting: false) { [weak self] in
+                            guard let self else { return }
+                            self.refresh(force: true, renewing: true,
+                                         retestRejected: self.renewalRetry.shouldRetestRejectedToken)
+                        }
+                    }
                     return
                 }
-                self.requestUsage(accessToken: resolved.accessToken, generation: generation)
+                self.persistLastAttempt(Date().timeIntervalSince1970)
+                self.requestUsage(accessToken: resolved.accessToken, generation: generation,
+                                  usedCLI: attempted != nil)
             }
         }
     }
 
-    struct Credentials {
+    struct Credentials: Sendable {
         var accessToken: String
         var expiresAt: Int64?      // unix seconds
         var subscriptionType: String?
@@ -590,7 +662,8 @@ final class ClaudeQuotaClient: ObservableObject {
         }
         // expiresAt is milliseconds since epoch in the Claude Code blob.
         var expiresAt: Int64?
-        if let ms = (oauth["expiresAt"] ?? oauth["expires_at"]) as? NSNumber {
+        if let ms = (oauth["expiresAt"] ?? oauth["expires_at"]) as? NSNumber,
+           CFGetTypeID(ms) != CFBooleanGetTypeID() {
             let d = ms.doubleValue
             if d.isFinite, d > 0 {
                 expiresAt = Int64(d > 4_000_000_000 ? d / 1000 : d)
@@ -604,7 +677,7 @@ final class ClaudeQuotaClient: ObservableObject {
         return Credentials(accessToken: accessToken, expiresAt: expiresAt, subscriptionType: plan)
     }
 
-    private func requestUsage(accessToken: String, generation: UInt64) {
+    private func requestUsage(accessToken: String, generation: UInt64, usedCLI: Bool = false) {
         guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
             inFlight = false
             return
@@ -630,27 +703,38 @@ final class ClaudeQuotaClient: ObservableObject {
                 if let err {
                     self.state.error = err.localizedDescription
                     self.applyBackoff(retryAfterHeader: nil)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
                 guard let http = resp as? HTTPURLResponse else {
                     self.state.error = "No HTTP response"
                     self.applyBackoff(retryAfterHeader: nil)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
                 let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
                 if (300..<400).contains(http.statusCode) {
                     self.state.error = "Redirect rejected (HTTP \(http.statusCode))"
                     self.applyBackoff(retryAfterHeader: retryAfter)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
                 if http.statusCode == 401 {
-                    self.rejectedToken = accessToken
-                    self.refresh(force: true, renewing: true)
+                    if self.rejectedToken == accessToken {
+                        // A periodic retest got 401 again for the exact same
+                        // rejected token; keep the monotonic retry counter moving
+                        // instead of resetting it into an endless 1-minute loop.
+                        self.renewalFailed(outcome: .failed("HTTP 401"))
+                    } else {
+                        self.rejectedToken = accessToken
+                        self.refresh(force: true, renewing: true)
+                    }
                     return
                 }
                 if http.statusCode == 403 {
                     self.state.error = "Claude usage API denied (HTTP 403)"
                     self.applyBackoff(retryAfterHeader: retryAfter)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
                 guard http.statusCode == 200 else {
@@ -659,6 +743,7 @@ final class ClaudeQuotaClient: ObservableObject {
                     default: self.state.error = "usage API HTTP \(http.statusCode)"
                     }
                     self.applyBackoff(retryAfterHeader: retryAfter, rateLimited: http.statusCode == 429)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
                 guard http.expectedContentLength <= Self.maxResponseBytes,
@@ -666,6 +751,7 @@ final class ClaudeQuotaClient: ObservableObject {
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     self.state.error = "Failed to parse usage response"
                     self.applyBackoff(retryAfterHeader: retryAfter)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
                 let parsed = Self.parseUsage(json)
@@ -674,8 +760,14 @@ final class ClaudeQuotaClient: ObservableObject {
                     // shape moved; say so instead of showing a stale percent.
                     self.state.error = "usage API returned no known rate-limit window"
                     self.applyBackoff(retryAfterHeader: retryAfter)
+                    self.scheduleBackgroundRecoveryIfNeeded(usedCLI: usedCLI)
                     return
                 }
+                if usedCLI || self.renewalRetry.failures > 0 {
+                    ClaudeCLIRefresher.renewalSucceeded()
+                }
+                self.renewalRetry.reset()
+                self.rejectedToken = nil
                 self.state.fiveHour = parsed.fiveHour
                 self.state.sevenDay = parsed.sevenDay
                 self.state.sevenDayOpus = parsed.sevenDayOpus
@@ -735,7 +827,7 @@ final class ClaudeQuotaClient: ObservableObject {
     /// Percentages arrive as 0–100. A 0–1 fraction is not assumed: it would
     /// silently turn a 100%-used window into 1%.
     private nonisolated static func percent(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber else { return nil }
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         let d = number.doubleValue
         guard d.isFinite, d >= 0, d <= 100 else { return nil }
         return Int(d.rounded())
@@ -749,7 +841,7 @@ final class ClaudeQuotaClient: ObservableObject {
             guard d.isFinite, d >= now - 366 * 86400, d <= now + 366 * 86400 else { return nil }
             return Int64(d)
         }
-        if let number = value as? NSNumber {
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
             return bounded(number.doubleValue)
         }
         guard let text = value as? String, text.count <= 64 else { return nil }
@@ -810,8 +902,21 @@ final class ClaudeQuotaClient: ObservableObject {
         return (cap / 2) + Double.random(in: 0...max(cap / 2, 0))
     }
 
+    private func scheduleBackgroundRecoveryIfNeeded(usedCLI: Bool) {
+        guard !foreground,
+              (usedCLI || renewalRetry.failures > 0 || rejectedToken != nil || state.lastSync == 0) else {
+            return
+        }
+        renewalRetry.schedule(counting: false) { [weak self] in
+            guard let self else { return }
+            self.refresh(force: true, renewing: true,
+                         retestRejected: self.renewalRetry.shouldRetestRejectedToken)
+        }
+    }
+
     private func applyBackoff(retryAfterHeader: String?, rateLimited: Bool = false) {
         backoffAttempt += 1
+        backoffIsRateLimited = rateLimited
         let delay = Self.computeBackoffDelay(attempt: backoffAttempt, retryAfterHeader: retryAfterHeader,
                                              rateLimited: rateLimited)
         persistBackoffUntil(Date().timeIntervalSince1970 + delay)
@@ -819,6 +924,7 @@ final class ClaudeQuotaClient: ObservableObject {
 
     private func clearBackoff() {
         backoffAttempt = 0
+        backoffIsRateLimited = false
         persistBackoffUntil(0)
     }
 
@@ -828,7 +934,7 @@ final class ClaudeQuotaClient: ObservableObject {
     /// (UsageQueryService turns samples into tokens). Off the main actor:
     /// SQLite may be held by the collector.
     private func recordQuotaSample(_ sample: ClaudeNonLocalEstimator.Sample?) {
-        guard let sample else { return }
+        guard persistsState, let sample else { return }
         DispatchQueue.global(qos: .utility).async {
             Database.shared.insertClaudeQuotaSample(sample)
         }
@@ -839,9 +945,9 @@ final class ClaudeQuotaClient: ObservableObject {
     /// A relaunch must not reset a real server-imposed backoff or make the
     /// app think it hasn't checked recently when it has — both are wall-clock
     /// (not systemUptime) so they carry meaning across process restarts.
-    private static let lastAttemptSettingKey = "claude_quota_last_attempt_ts"
-    private static let backoffUntilSettingKey = "claude_quota_backoff_until_ts"
-    private static let cacheSettingKey = "claude_quota_cache_v1"
+    nonisolated private static let lastAttemptSettingKey = "claude_quota_last_attempt_ts"
+    nonisolated private static let backoffUntilSettingKey = "claude_quota_backoff_until_ts"
+    nonisolated private static let cacheSettingKey = "claude_quota_cache_v1"
 
     private func persistLastAttempt(_ t: TimeInterval) {
         lastAttemptAt = t
@@ -869,6 +975,7 @@ final class ClaudeQuotaClient: ObservableObject {
     /// Last known good numbers, so a relaunch shows them immediately instead
     /// of a blank "Loading" row while waiting out the cooldown/backoff.
     private func persistCache() {
+        guard persistsState else { return }
         let blob = CacheBlob(planType: state.planType, fiveHour: state.fiveHour,
                              sevenDay: state.sevenDay, sevenDayOpus: state.sevenDayOpus,
                              lastSync: state.lastSync)

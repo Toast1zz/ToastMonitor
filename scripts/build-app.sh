@@ -267,6 +267,22 @@ else
             [[ "$STILL_RUNNING" == "0" ]] && break
             sleep 1
         done
+        if [[ "$STILL_RUNNING" == "1" ]]; then
+            echo "ToastMonitor did not quit on SIGTERM; escalating to SIGKILL"
+            kill -9 "${RUNNING_PIDS[@]}" 2>/dev/null || true
+            for _ in 1 2; do
+                STILL_RUNNING=0
+                for pid in "${RUNNING_PIDS[@]}"; do
+                    if kill -0 "$pid" 2>/dev/null; then STILL_RUNNING=1; fi
+                done
+                [[ "$STILL_RUNNING" == "0" ]] && break
+                sleep 1
+            done
+            if [[ "$STILL_RUNNING" == "1" ]]; then
+                echo "error: running ToastMonitor process did not exit; refusing to remove $INSTALL_APP" >&2
+                exit 1
+            fi
+        fi
     fi
     mkdir -p "$(dirname "$INSTALL_APP")"
     rm -rf "$INSTALL_APP"

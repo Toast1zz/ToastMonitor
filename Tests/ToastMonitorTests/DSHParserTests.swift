@@ -5,6 +5,7 @@ final class DSHParserTests: XCTestCase {
     private var dbPath = ""
     private var db: Database!
     private var tempDir = ""
+    private var previousHome: String?
 
     override func setUp() {
         super.setUp()
@@ -16,11 +17,11 @@ final class DSHParserTests: XCTestCase {
         try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
         // Point the parser's DSH root at the temp dir so path-based tests
         // never touch the real ~/.dsh.
-        setenv("DSH_HOME", tempDir, 1)
+        previousHome = TestEnvironment.beginScope("DSH_HOME", value: tempDir)
     }
 
     override func tearDown() {
-        unsetenv("DSH_HOME")
+        TestEnvironment.endScope("DSH_HOME", restoring: previousHome)
         db.close()
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(atPath: dbPath + suffix)

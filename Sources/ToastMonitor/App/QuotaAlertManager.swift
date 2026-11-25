@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 @preconcurrency import UserNotifications
@@ -9,10 +10,10 @@ enum QuotaAlertPolicy {
         var unread = false
 
         mutating func update(remaining: Double, threshold: Double, resetAt nextReset: Int64?,
-                             viewed: Bool = false) {
+                             viewed: Bool = false, jitterTolerance: Int64 = 300) {
             guard remaining.isFinite else { return }
             // Relative reset countdowns can drift slightly between fetches.
-            if let old = resetAt, let nextReset, Double(nextReset) - Double(old) > 300 {
+            if let old = resetAt, let nextReset, Double(nextReset) - Double(old) > Double(jitterTolerance) {
                 triggered = false
                 unread = false
                 resetAt = nextReset
@@ -51,6 +52,7 @@ final class QuotaAlertManager: ObservableObject {
         let name: String
         let remaining: Double
         var resetAt: Int64? = nil
+        var resetJitterTolerance: Int64 = 300
     }
 
     static let shared = QuotaAlertManager()
@@ -142,14 +144,38 @@ final class QuotaAlertManager: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.scheduleRenewalReminders() }
             .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: Database.didResetState)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.reloadFromDatabase() }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.scheduleRenewalReminders() }
+            .store(in: &cancellables)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.scheduleRenewalReminders() }
+            .store(in: &cancellables)
         evaluate()
         scheduleRenewalReminders()
     }
 
     func setThreshold(_ newValue: Double) {
         guard newValue != threshold, Self.thresholdChoices.contains(newValue) else { return }
+        let previousThreshold = threshold
         threshold = newValue
         persistSetting(Self.thresholdKey, "\(Int(newValue))")
+        if newValue < previousThreshold {
+            // Lowering the threshold must not falsely announce a "quota reset"
+            // for readings that were only "low" under the old higher bar.
+            for reading in currentReadings() where reading.remaining > newValue {
+                let key = "quota_alert_state_\(reading.id)"
+                if (alertStates[reading.id] ?? Database.shared.setting(key)) == "low" {
+                    alertStates[reading.id] = "ok"
+                    persistSetting(key, "ok")
+                }
+            }
+        }
         evaluate()
     }
 
@@ -183,7 +209,8 @@ final class QuotaAlertManager: ObservableObject {
         for reading in readings {
             var state = badgeStates[reading.id] ?? QuotaAlertPolicy.BadgeState()
             state.update(remaining: reading.remaining, threshold: threshold,
-                         resetAt: reading.resetAt, viewed: panelVisible)
+                         resetAt: reading.resetAt, viewed: panelVisible,
+                         jitterTolerance: reading.resetJitterTolerance)
             badgeStates[reading.id] = state
         }
         let count = readings.filter { badgeStates[$0.id]?.unread == true }.count
@@ -232,12 +259,14 @@ final class QuotaAlertManager: ObservableObject {
     private func currentReadings() -> [Reading] {
         if let readingProvider { return readingProvider() }
         var readings: [Reading] = []
-        if let used = ClaudeQuotaClient.shared.state.sevenDay?.usedPercent {
+        if ClaudeQuotaClient.shared.enabled,
+           let used = ClaudeQuotaClient.shared.state.sevenDay?.usedPercent {
             readings.append(.init(id: "claude-weekly", name: "Claude weekly",
                                   remaining: Double(100 - used),
                                   resetAt: ClaudeQuotaClient.shared.state.sevenDay?.resetAt))
         }
-        if let used = CodexQuotaClient.shared.state.primaryPct {
+        if CodexQuotaClient.shared.enabled,
+           let used = CodexQuotaClient.shared.state.primaryPct {
             readings.append(.init(id: "codex", name: "Codex",
                                   remaining: Double(100 - used), resetAt: CodexQuotaClient.shared.state.resetAt))
         }
@@ -246,7 +275,8 @@ final class QuotaAlertManager: ObservableObject {
                                   remaining: 100 - used,
                                   resetAt: OpenCodeGoClient.shared.state.monthlyReset.map {
                                       OpenCodeGoClient.shared.state.lastSync + $0
-                                  }))
+                                  },
+                                  resetJitterTolerance: 7_200))
         }
         if let used = CommandCodeQuotaClient.shared.state.monthlyUsedPercent {
             readings.append(.init(id: "command-code", name: "Command Code",
@@ -255,16 +285,20 @@ final class QuotaAlertManager: ObservableObject {
                                       Int64($0.timeIntervalSince1970)
                                   }))
         }
-        if let used = GrokQuotaClient.shared.state.usedPercent {
+        if GrokQuotaClient.shared.enabled,
+           let used = GrokQuotaClient.shared.state.usedPercent {
             readings.append(.init(id: "supergrok-weekly", name: "Grok weekly",
                                   remaining: 100 - used, resetAt: GrokQuotaClient.shared.state.resetAt))
         }
-        for model in AntigravityQuotaClient.shared.state.current() {
-            readings.append(.init(id: "antigravity-\(model.label)", name: "Antigravity \(model.label)",
-                                  remaining: model.remaining, resetAt: model.resetAt))
+        if AntigravityQuotaClient.shared.enabled {
+            for model in AntigravityQuotaClient.shared.state.current() {
+                readings.append(.init(id: "antigravity-\(model.label)", name: "Antigravity \(model.label)",
+                                      remaining: model.remaining, resetAt: model.resetAt))
+            }
         }
         let router = OpenRouterClient.shared.state
-        if let limit = router.limit, limit > 0, let remaining = router.limitRemaining {
+        if OpenRouterClient.shared.hasKey,
+           let limit = router.limit, limit > 0, let remaining = router.limitRemaining {
             readings.append(.init(id: "openrouter", name: "OpenRouter",
                                   remaining: min(max(remaining / limit * 100, 0), 100)))
         }

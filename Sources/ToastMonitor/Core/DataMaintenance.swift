@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Compression
 import SQLite3
 
 struct DataRepairReceipt: Equatable, Sendable {
@@ -71,30 +72,139 @@ enum DataMaintenance {
 
     static let compressedExtension = "lzfse"
 
-    /// Writes `source` compressed to a new private file; never overwrites.
+    private static let routineLock = NSLock()
+    nonisolated(unsafe) private static var lastRoutineAttempt: [String: Int64] = [:]
+
+    /// Writes `source` compressed to a private staging file first, verifies
+    /// LZFSE header/footer markers, and atomically links into `destination`.
     @discardableResult
     static func compress(_ source: URL, to destination: URL) -> Bool {
         guard let data = NSData(contentsOf: source),
               let packed = try? data.compressed(using: .lzfse) else { return false }
-        let descriptor = Darwin.open(destination.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        let packedData = packed as Data
+        guard isValidLZFSEBytes(packedData) else { return false }
+        let temp = destination.deletingLastPathComponent()
+            .appendingPathComponent(".compress-\(UUID().uuidString).tmp")
+        let descriptor = Darwin.open(temp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard descriptor >= 0 else { return false }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
-            try handle.write(contentsOf: packed as Data)
+            try handle.write(contentsOf: packedData)
             try handle.synchronize()
-            return true
         } catch {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        let linked = Darwin.link(temp.path, destination.path) == 0
+        try? FileManager.default.removeItem(at: temp)
+        return linked
+    }
+
+    private static let maxExpandedBytes: Int64 = 2 * 1024 * 1024 * 1024
+
+    /// Expands a compressed backup to a private file via bounded streaming LZFSE.
+    static func expand(_ source: URL, to destination: URL) -> Bool {
+        guard let input = FileHandle(forReadingAtPath: source.path) else { return false }
+        defer { try? input.close() }
+        let descriptor = Darwin.open(destination.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard descriptor >= 0 else { return false }
+        let output = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+
+        let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        defer { stream.deallocate() }
+        memset(stream, 0, MemoryLayout<compression_stream>.size)
+        guard compression_stream_init(stream, COMPRESSION_STREAM_DECODE, COMPRESSION_LZFSE) == COMPRESSION_STATUS_OK else {
             try? FileManager.default.removeItem(at: destination)
             return false
         }
+        defer { compression_stream_destroy(stream) }
+
+        let dstCapacity = 64 * 1024
+        let dstBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: dstCapacity)
+        defer { dstBuffer.deallocate() }
+
+        var totalWritten: Int64 = 0
+        var inputEOF = false
+        stream.pointee.src_size = 0
+
+        while true {
+            var readChunk: Data?
+            if stream.pointee.src_size == 0 && !inputEOF {
+                readChunk = try? autoreleasepool { try input.read(upToCount: 64 * 1024) }
+                if let chunk = readChunk, !chunk.isEmpty {
+                    // Processed below via withUnsafeBytes while readChunk stays alive for this iteration.
+                } else {
+                    inputEOF = true
+                }
+            }
+
+            let stepStatus: compression_status
+            if let chunk = readChunk, !chunk.isEmpty {
+                stepStatus = chunk.withUnsafeBytes { rawBuf in
+                    let base = rawBuf.bindMemory(to: UInt8.self).baseAddress!
+                    stream.pointee.src_ptr = base
+                    stream.pointee.src_size = chunk.count
+                    var status: compression_status = COMPRESSION_STATUS_OK
+                    repeat {
+                        stream.pointee.dst_ptr = dstBuffer
+                        stream.pointee.dst_size = dstCapacity
+                        status = compression_stream_process(stream, 0)
+                        let produced = dstCapacity - stream.pointee.dst_size
+                        if produced > 0 {
+                            totalWritten += Int64(produced)
+                            if totalWritten > maxExpandedBytes { return COMPRESSION_STATUS_ERROR }
+                            do {
+                                try output.write(contentsOf: Data(bytesNoCopy: dstBuffer, count: produced, deallocator: .none))
+                            } catch {
+                                return COMPRESSION_STATUS_ERROR
+                            }
+                        }
+                    } while status == COMPRESSION_STATUS_OK && (stream.pointee.src_size > 0 || producedAll(dstCapacity, remaining: stream.pointee.dst_size))
+                    return status
+                }
+            } else {
+                stream.pointee.src_ptr = UnsafePointer<UInt8>(bitPattern: 1)!
+                stream.pointee.src_size = 0
+                stream.pointee.dst_ptr = dstBuffer
+                stream.pointee.dst_size = dstCapacity
+                stepStatus = compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                let produced = dstCapacity - stream.pointee.dst_size
+                if produced > 0 {
+                    totalWritten += Int64(produced)
+                    if totalWritten > maxExpandedBytes {
+                        try? FileManager.default.removeItem(at: destination)
+                        return false
+                    }
+                    do {
+                        try output.write(contentsOf: Data(bytesNoCopy: dstBuffer, count: produced, deallocator: .none))
+                    } catch {
+                        try? FileManager.default.removeItem(at: destination)
+                        return false
+                    }
+                }
+            }
+
+            if stepStatus == COMPRESSION_STATUS_END {
+                try? output.synchronize()
+                return true
+            }
+            if stepStatus == COMPRESSION_STATUS_ERROR {
+                try? FileManager.default.removeItem(at: destination)
+                return false
+            }
+        }
     }
 
-    /// Expands a compressed backup to a private file for restore.
-    static func expand(_ source: URL, to destination: URL) -> Bool {
-        guard let data = NSData(contentsOf: source),
-              let raw = try? data.decompressed(using: .lzfse) else { return false }
-        return FileManager.default.createFile(atPath: destination.path, contents: raw as Data,
-                                              attributes: [.posixPermissions: 0o600])
+    private static func producedAll(_ capacity: Int, remaining: Int) -> Bool {
+        remaining == 0
+    }
+
+    private static func isValidLZFSEBytes(_ data: Data) -> Bool {
+        guard data.count >= 8 else { return false }
+        let header = data.prefix(4)
+        let validHeaders = [Data("bvx1".utf8), Data("bvx2".utf8), Data("bvxn".utf8)]
+        guard validHeaders.contains(header) else { return false }
+        return data.suffix(4) == Data("bvx$".utf8)
     }
 
     /// Compresses backups written before compression existed, keeping their
@@ -221,21 +331,29 @@ enum DataMaintenance {
     /// backup+prune work to once per 7 days. This is the only automatic
     /// backup in the app; `repair()` also creates its
     /// own mandatory pre-operation backup. See `retained(_:)` for rotation.
-    static func maybeCreateRoutineBackupIfDue() {
-        if Database.shared.setting("backups_compressed") == nil {
-            _ = Database.shared.setSetting("backups_compressed", "1")
-            pruneBackups()
-            compressLegacyBackups()
+    static func maybeCreateRoutineBackupIfDue(database: Database = .shared,
+                                            backupDirectory: URL? = nil) {
+        guard database.isOpen, database.openProblem == nil else { return }
+        let directory = backupDirectory ?? Self.directory
+        if database.setting("backups_compressed") == nil,
+           database.setSetting("backups_compressed", "1") {
+            pruneBackups(in: directory)
+            compressLegacyBackups(in: directory)
         }
         let now = Int64(Date().timeIntervalSince1970)
         let key = "routine_backup_last"
-        if let last = Int64(Database.shared.setting(key) ?? "0"), now - last < 7 * 86400 { return }
-        // Stamped unconditionally after attempting — same pattern as
-        // Database.optimizeIfDue/pruneSnapshotsIfDue — so a persistent
-        // failure (disk full, directory unwritable) waits for next week's
-        // tick instead of retrying the backup on every subsequent scan.
-        _ = Database.shared.setSetting(key, "\(now)")
-        _ = createBackup(label: "weekly")
+        let persisted = Int64(database.setting(key) ?? "0") ?? 0
+        let dbKey = database.dbPath
+        let shouldRun: Bool = routineLock.withLock {
+            let last = max(persisted, lastRoutineAttempt[dbKey] ?? 0)
+            guard last == 0 || now - last >= 7 * 86400 else { return false }
+            lastRoutineAttempt[dbKey] = now
+            return true
+        }
+        guard shouldRun else { return }
+        // Only write a weekly backup if the store is writable and recorded the timestamp.
+        guard database.setSetting(key, "\(now)") else { return }
+        _ = createBackup(label: "weekly", database: database, backupDirectory: directory)
     }
 
     static func availableBackups(in directory: URL = DataMaintenance.directory) -> [URL] {
@@ -295,14 +413,21 @@ enum DataMaintenance {
         return data.count >= magic.count && data.prefix(magic.count) == magic
     }
 
-    /// A compressed backup (LZFSE block magic "bvx") or a legacy SQLite one.
+    /// A compressed backup (LZFSE block magic "bvx1/2/n" + "bvx$" footer) or a legacy SQLite one.
     static func isBackupFile(_ url: URL) -> Bool {
         switch url.pathExtension {
         case "db": return isSQLiteFile(url)
         case compressedExtension:
             guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
             defer { try? handle.close() }
-            return (try? handle.read(upToCount: 3)) == Data("bvx".utf8)
+            guard let end = try? handle.seekToEnd(), end >= 8 else { return false }
+            try? handle.seek(toOffset: 0)
+            guard let header = try? handle.read(upToCount: 4),
+                  [Data("bvx1".utf8), Data("bvx2".utf8), Data("bvxn".utf8)].contains(header) else {
+                return false
+            }
+            try? handle.seek(toOffset: end - 4)
+            return (try? handle.read(upToCount: 4)) == Data("bvx$".utf8)
         default: return false
         }
     }

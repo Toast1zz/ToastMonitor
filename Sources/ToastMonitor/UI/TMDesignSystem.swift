@@ -133,14 +133,15 @@ enum TMDesign {
     /// Assigns each model display name (ordered largest-first) its maker's
     /// brand color, stepping opacity for secondary models from the same maker
     /// so every brand remains recognizable while individual models stay distinct.
-    static func modelColors(for orderedNames: [String]) -> [String: Color] {
+    static func modelColors(for orderedNames: [String],
+                            providersByDisplayName: [String: String] = [:]) -> [String: Color] {
         let shades: [Double] = [1.0, 0.68, 0.48, 0.34]
         var providerRank: [String: Int] = [:]
         var fallbackIndex = 0
         var map: [String: Color] = [:]
         for name in orderedNames {
             if map[name] != nil { continue }
-            let provider = ModelProvider.name(for: name)
+            let provider = providersByDisplayName[name] ?? ModelProvider.name(for: name)
             if let base = providerColor(for: provider) {
                 let rank = providerRank[provider, default: 0]
                 providerRank[provider] = rank + 1

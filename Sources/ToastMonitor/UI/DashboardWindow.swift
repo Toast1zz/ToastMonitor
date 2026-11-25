@@ -10,11 +10,38 @@ final class WindowManager {
     private var toolbarController: DashboardToolbarController?
     private var pageController: DashboardPageController?
     private var closeObserver: NSObjectProtocol?
+    private var appVisibilityObservers: [NSObjectProtocol] = []
+    private var windowVisibilityObservers: [NSObjectProtocol] = []
     private var lastTab: DashboardView.Tab = .overview
+    var activatesAppOnShow = true
 
-    private init() {}
+    var isVisible: Bool { window?.isVisible ?? false }
 
-    static let visibilityNotification = TMNotifications.dashboardVisibility
+    private init() {
+        let hideObs = NotificationCenter.default.addObserver(
+            forName: NSApplication.didHideNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.window != nil else { return }
+                NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
+            }
+        }
+        let unhideObs = NotificationCenter.default.addObserver(
+            forName: NSApplication.didUnhideNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let w = self.window, w.isVisible, !w.isMiniaturized else { return }
+                NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
+            }
+        }
+        appVisibilityObservers = [hideObs, unhideObs]
+    }
+
+    nonisolated static let visibilityNotification = TMNotifications.dashboardVisibility
 
     /// Setting key: "1" (default) shows a Dock icon while the dashboard is
     /// open; "0" keeps the app a pure menu-bar accessory even then.
@@ -28,8 +55,8 @@ final class WindowManager {
     /// to a regular (Dock) application; closing or hiding demotes back to a
     /// menu-bar accessory. Guarding on the current policy makes repeated
     /// show/hide cheap and avoids AppKit policy churn.
-    private func setDockPresence(_ visible: Bool) {
-        applyPolicy(showDock: visible && Self.dockIconEnabled)
+    private func setDockPresence(_ visible: Bool, excluding closingWindow: NSWindow? = nil) {
+        applyPolicy(showDock: visible && Self.dockIconEnabled, excluding: closingWindow)
     }
 
     /// Applies the Dock policy for the current window visibility and the
@@ -39,7 +66,7 @@ final class WindowManager {
         applyPolicy(showDock: (window?.isVisible ?? false) && enabled)
     }
 
-    private func applyPolicy(showDock: Bool) {
+    private func applyPolicy(showDock: Bool, excluding closingWindow: NSWindow? = nil) {
         // The main menu is built once and keeps Cmd+W/Cmd+Q/Edit working even
         // when the Dock icon is disabled (accessory apps get no menu bar, but
         // the menu's key equivalents still route through the app).
@@ -53,7 +80,7 @@ final class WindowManager {
             // Only hide when no other visible regular window (such as Settings)
             // is open, otherwise closing the Dashboard would unexpectedly hide it.
             let hasOtherVisibleWindow = NSApp.windows.contains {
-                $0 !== window && $0.isVisible && !($0 is NSPanel) && $0.className != "NSStatusBarWindow"
+                $0 !== window && $0 !== closingWindow && $0.isVisible && !($0 is NSPanel) && $0.className != "NSStatusBarWindow"
             }
             if !hasOtherVisibleWindow {
                 // NSApp.hide closes the popover panel without a visibility notification.
@@ -133,7 +160,7 @@ final class WindowManager {
         if let window, window.isVisible {
             window.orderOut(nil)
             releaseWindow(window)
-            setDockPresence(false)
+            if activatesAppOnShow { setDockPresence(false) }
             NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
         } else {
             show()
@@ -147,10 +174,14 @@ final class WindowManager {
     private static let titlebarAllowance: CGFloat = 32
 
     func show(tab: DashboardView.Tab? = nil) {
-        setDockPresence(true)
+        if activatesAppOnShow { setDockPresence(true) }
         if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            if activatesAppOnShow {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                window.orderFront(nil)
+            }
             NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
             if let tab {
                 pageController?.select(tab)
@@ -185,7 +216,9 @@ final class WindowManager {
         // v3: the default shrank, and a remembered v2 frame would keep
         // reopening at the old large size, so the size memory starts over
         // once at the new default.
-        window.setFrameAutosaveName("ToastMonitorDashboard.v3")
+        if activatesAppOnShow {
+            window.setFrameAutosaveName("ToastMonitorDashboard.v3")
+        }
         // A frame remembered from when the minimum was lower.
         let restored = window.contentRect(forFrameRect: window.frame).size
         if restored.width < Self.minimumContentSize.width || restored.height < Self.minimumContentSize.height {
@@ -215,13 +248,42 @@ final class WindowManager {
             object: window,
             queue: .main
         ) { [weak self, weak window] _ in
-            guard let self, let window else { return }
-            self.releaseWindow(window)
-            self.setDockPresence(false)
-            NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
+            MainActor.assumeIsolated {
+                guard let self, let window else { return }
+                self.releaseWindow(window)
+                if self.activatesAppOnShow {
+                    self.setDockPresence(false, excluding: window)
+                }
+                NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
+            }
         }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        let miniObs = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMiniaturizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self, let window, self.window === window else { return }
+                NotificationCenter.default.post(name: Self.visibilityNotification, object: false)
+            }
+        }
+        let deminiObs = NotificationCenter.default.addObserver(
+            forName: NSWindow.didDeminiaturizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self, let window, self.window === window, !NSApp.isHidden else { return }
+                NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
+            }
+        }
+        windowVisibilityObservers = [miniObs, deminiObs]
+        if activatesAppOnShow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.orderFront(nil)
+        }
         NotificationCenter.default.post(name: Self.visibilityNotification, object: true)
     }
 
@@ -234,6 +296,10 @@ final class WindowManager {
             NotificationCenter.default.removeObserver(closeObserver)
             self.closeObserver = nil
         }
+        for obs in windowVisibilityObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        windowVisibilityObservers.removeAll()
         pageController?.releaseHosts()
         closingWindow.contentViewController = nil
         closingWindow.toolbar = nil
@@ -280,6 +346,8 @@ final class WindowManager {
 
     deinit {
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        for obs in appVisibilityObservers { NotificationCenter.default.removeObserver(obs) }
+        for obs in windowVisibilityObservers { NotificationCenter.default.removeObserver(obs) }
     }
 
 }
@@ -438,6 +506,7 @@ private final class DashboardToolbarController: NSObject, NSToolbarDelegate {
     /// control that is actually in the toolbar: touching `tabsGroup` on
     /// Ventura would only instantiate the unused 14+ item.
     func select(_ tab: DashboardView.Tab) {
+        selectionGeneration &+= 1
         guard let index = DashboardView.Tab.allCases.firstIndex(of: tab) else { return }
         if #available(macOS 14.0, *) {
             guard tabsGroup.selectedIndex != index else { return }
@@ -540,7 +609,9 @@ final class DashboardPageController: NSViewController {
         attach(initialTab)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
-            guard let self, event.window == self.view.window else { return event }
+            guard let self,
+                  event.window == self.view.window,
+                  self.view.window?.attachedSheet == nil else { return event }
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             guard modifiers == .command,
                   let raw = event.charactersIgnoringModifiers

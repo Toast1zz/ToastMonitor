@@ -12,6 +12,7 @@ final class HermesParserTests: XCTestCase {
     private var db: Database!
     private var dbPath = ""
     private var homeDir = ""
+    private var previousHome: String?
 
     override func setUp() {
         super.setUp()
@@ -21,11 +22,11 @@ final class HermesParserTests: XCTestCase {
         homeDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("hermes-home-\(UUID().uuidString)").path
         try? FileManager.default.createDirectory(atPath: homeDir, withIntermediateDirectories: true)
-        setenv("HERMES_HOME", homeDir, 1)
+        previousHome = TestEnvironment.beginScope("HERMES_HOME", value: homeDir)
     }
 
     override func tearDown() {
-        unsetenv("HERMES_HOME")
+        TestEnvironment.endScope("HERMES_HOME", restoring: previousHome)
         db.close()
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(atPath: dbPath + suffix)

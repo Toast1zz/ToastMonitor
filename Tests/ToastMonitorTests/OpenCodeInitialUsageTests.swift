@@ -11,8 +11,7 @@ final class OpenCodeInitialUsageTests: XCTestCase {
         directory = NSTemporaryDirectory() + "tm-opencode-initial-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         database = Database.testInstance(path: directory + "/monitor.db")
-        previousHome = ProcessInfo.processInfo.environment["OPENCODE_HOME"]
-        setenv("OPENCODE_HOME", directory, 1)
+        previousHome = TestEnvironment.beginScope("OPENCODE_HOME", value: directory)
         execute("""
           CREATE TABLE session(id TEXT PRIMARY KEY, title TEXT, directory TEXT, model TEXT, cost REAL,
             tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER,
@@ -21,7 +20,7 @@ final class OpenCodeInitialUsageTests: XCTestCase {
     }
 
     override func tearDown() {
-        if let previousHome { setenv("OPENCODE_HOME", previousHome, 1) } else { unsetenv("OPENCODE_HOME") }
+        TestEnvironment.endScope("OPENCODE_HOME", restoring: previousHome)
         database.close()
         try? FileManager.default.removeItem(atPath: directory)
         super.tearDown()

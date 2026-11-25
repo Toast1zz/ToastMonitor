@@ -63,7 +63,7 @@ final class CollectorEngine: @unchecked Sendable {
         database: Database,
         sourcePaths: [String],
         scan: (any ParserStateStore) -> (turns: [TurnRecord], sessions: [SessionInfo])
-    ) -> (committed: Bool, turns: [TurnRecord], sessions: [SessionInfo], problem: String?) {
+    ) -> (committed: Bool, turns: [TurnRecord], sessions: [SessionInfo], problem: String?, skippedPaths: Set<String>) {
         let staged = StagedParserStateStore(database: database, sourcePaths: sourcePaths)
         let out = scan(staged)
         let committed = database.inTransaction {
@@ -72,7 +72,10 @@ final class CollectorEngine: @unchecked Sendable {
                 && database.upsertSessions(out.sessions)
                 && staged.apply()
         }
-        return (committed, out.turns, out.sessions, staged.problem)
+        if committed {
+            staged.runPostCommitActions()
+        }
+        return (committed, out.turns, out.sessions, staged.problem, staged.skippedSourcePaths)
     }
 
     private let queue = DispatchQueue(label: "toastmonitor.collector", qos: .utility)
@@ -166,6 +169,24 @@ final class CollectorEngine: @unchecked Sendable {
                 self.runScan()
             }
         }
+        NotificationCenter.default.addObserver(forName: Database.didResetState, object: nil, queue: nil) { [weak self] _ in
+            self?.queue.async { [weak self] in
+                self?.sourceSignatures.removeAll()
+                self?.settledPartialTails.removeAll()
+                self?.sourceRetry = SourceRetry()
+            }
+        }
+    }
+
+    func resetCaches() {
+        PerfCollector.resetCaches()
+        AntigravityParser.resetCaches()
+        CodexParser.resetCaches()
+        queue.async { [weak self] in
+            self?.sourceSignatures.removeAll()
+            self?.settledPartialTails.removeAll()
+            self?.sourceRetry = SourceRetry()
+        }
     }
 
     private func updateForeground() {
@@ -249,6 +270,15 @@ final class CollectorEngine: @unchecked Sendable {
                  completion: (@MainActor @Sendable (ScanReceipt) -> Void)? = nil) {
         dispatchPrecondition(condition: .onQueue(queue))
         let startedAt = Date()
+        if Database.shared.openProblem != nil {
+            let receipt = ScanReceipt(requestID: requestID, startedAt: startedAt,
+                                      finishedAt: Date(), turns: 0,
+                                      sessions: 0, failedSources: ["database"])
+            Task { @MainActor in
+                completion?(receipt)
+            }
+            return
+        }
         let t0 = CFAbsoluteTimeGetCurrent()
         lastScanStart = t0
 
@@ -304,7 +334,9 @@ final class CollectorEngine: @unchecked Sendable {
             }
             sourceRetry.succeeded(source)
             notePartialTails(sourcePaths.filter { $0.hasSuffix(".jsonl") || $0.hasSuffix(".zstd") })
-            for (path, signature) in preScanSignatures { sourceSignatures[path] = signature }
+            for (path, signature) in preScanSignatures where !prepared.skippedPaths.contains(path) {
+                sourceSignatures[path] = signature
+            }
             if turnRows == 0 && sessionRows == 0 {
                 Task { @MainActor in
                     SourceHealthHub.shared.recordIdle(tool: source, durationMs: duration)
@@ -319,38 +351,47 @@ final class CollectorEngine: @unchecked Sendable {
             }
         }
 
-        let claudeFiles = (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 4)
-            + ClaudeCodeParser.listCoworkFiles())
-            .filter { $0.hasSuffix(".jsonl") }
-        let codexFiles = FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4)
-            .filter { $0.hasSuffix(".jsonl") }
+        let claudeFiles = ToolKind.claude.sourceIsRemote ? []
+            : (FileScanner.listFiles(ClaudeCodeParser.root, maxDepth: 4)
+                + ClaudeCodeParser.listCoworkFiles())
+                .filter { $0.hasSuffix(".jsonl") }
+        let codexFiles = ToolKind.codex.sourceIsRemote ? []
+            : FileScanner.listFiles(CodexParser.sessionsRoot, maxDepth: 4)
+                .filter { $0.hasSuffix(".jsonl") }
         let dshLogFiles = (!ToolKind.dsh.sourceIsRemote && DSHParser.resolveMode() == .log)
             ? DSHParser.listSessionFiles() : []
         Database.shared.recountMiscountedUsage(
-            claudePaths: ToolKind.claude.sourceIsRemote ? [] : claudeFiles,
-            codexPaths: ToolKind.codex.sourceIsRemote ? [] : codexFiles,
+            claudePaths: claudeFiles,
+            codexPaths: codexFiles,
             dshPaths: dshLogFiles)
-        Database.shared.replayClaudeForCacheSplit(
-            paths: ToolKind.claude.sourceIsRemote ? [] : claudeFiles)
+        Database.shared.replayClaudeForCacheSplit(paths: claudeFiles)
 
-        ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) },
-               sourcePaths: claudeFiles) { state in
-            ClaudeCodeParser.scan(knownPaths: claudeFiles, database: state)
+        if !ToolKind.claude.sourceIsRemote {
+            ingest("claude", preflight: { self.fileSourcesChanged(claudeFiles) },
+                   sourcePaths: claudeFiles) { state in
+                ClaudeCodeParser.scan(knownPaths: claudeFiles, database: state)
+            }
         }
 
-        ingest("codex", preflight: { self.fileSourcesChanged(codexFiles) },
-               sourcePaths: codexFiles) { state in
-            CodexParser.scan(files: codexFiles, database: state)
+        if !ToolKind.codex.sourceIsRemote {
+            ingest("codex", preflight: { self.fileSourcesChanged(codexFiles) },
+                   sourcePaths: codexFiles) { state in
+                CodexParser.scan(files: codexFiles, database: state)
+            }
         }
 
-        ingest("opencode", preflight: { self.sourceChanged(OpenCodeParser.dbPath) },
-               sourcePaths: [OpenCodeParser.dbPath, OpenCodeParser.dbPath + "-wal"],
-               scan: { OpenCodeParser.scan(database: $0) }, signaturePath: OpenCodeParser.dbPath)
+        if !ToolKind.opencode.sourceIsRemote {
+            ingest("opencode", preflight: { self.sourceChanged(OpenCodeParser.dbPath) },
+                   sourcePaths: [OpenCodeParser.dbPath, OpenCodeParser.dbPath + "-wal"],
+                   scan: { OpenCodeParser.scan(database: $0) }, signaturePath: OpenCodeParser.dbPath)
+        }
 
         let hermesDBs = HermesParser.dbPaths
-        ingest("hermes", preflight: { hermesDBs.contains { self.sourceChanged($0) } },
-               sourcePaths: hermesDBs.flatMap { [$0, $0 + "-wal"] },
-               scan: { HermesParser.scan(database: $0) }, signaturePaths: hermesDBs)
+        if !ToolKind.hermes.sourceIsRemote {
+            ingest("hermes", preflight: { hermesDBs.contains { self.sourceChanged($0) } },
+                   sourcePaths: hermesDBs.flatMap { [$0, $0 + "-wal"] },
+                   scan: { HermesParser.scan(database: $0) }, signaturePaths: hermesDBs)
+        }
         let ompFiles = FileScanner.listFiles(OmpParser.root, maxDepth: 3)
             .filter { $0.hasSuffix(".jsonl") }
         ingest("omp", preflight: { self.fileSourcesChanged(ompFiles) },
@@ -391,9 +432,7 @@ final class CollectorEngine: @unchecked Sendable {
         // can change independently of collector activity. Self-throttled
         // internally, so calling this every tick costs one setting read.
         DataMaintenance.maybeCreateRoutineBackupIfDue()
-        if turnCount > 0 || sessionCount > 0 {
-            Database.shared.backfillCosts()
-        }
+        Database.shared.backfillCosts()
 
         if turnCount > 0 || sessionCount > 0 {
             Database.shared.setSetting("last_scan_heartbeat", "\(Int64(Date().timeIntervalSince1970))")

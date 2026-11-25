@@ -99,9 +99,16 @@ enum CodexParser {
                 || cacheRead > previous.cacheRead || cacheWrite > previous.cacheWrite
         }
 
-        /// Primary counters moved backwards: the stream restarted, it did not repeat.
+        var isZero: Bool {
+            input == 0 && output == 0 && reasoning == 0 && cacheRead == 0 && cacheWrite == 0
+        }
+
+        /// Counters moved backwards: the stream restarted, it did not repeat.
         func restarted(from previous: TokenTotals) -> Bool {
             input < previous.input || output < previous.output
+                || reasoning < previous.reasoning
+                || cacheRead < previous.cacheRead
+                || cacheWrite < previous.cacheWrite
         }
 
         func delta(from previous: TokenTotals) -> TokenTotals {
@@ -135,6 +142,14 @@ enum CodexParser {
     }
     private static let threadsLock = NSLock()
     private static var threadsCache: (key: ThreadsCacheKey, value: [String: ThreadMeta])?
+    private static var lastEmittedThreadsKey: [UInt64: ThreadsCacheKey] = [:]
+
+    static func resetCaches() {
+        threadsLock.lock()
+        threadsCache = nil
+        lastEmittedThreadsKey.removeAll()
+        threadsLock.unlock()
+    }
 
     private static func currentThreadsKey() -> ThreadsCacheKey? {
         guard let st = FileScanner.fileStat(stateDBPath) else { return nil }
@@ -146,14 +161,14 @@ enum CodexParser {
     /// Reads threads table into [sessionID: model] plus session metadata.
     /// Reused until the database or WAL changes; transient read errors are
     /// never cached.
-    private static func readThreads() -> [String: ThreadMeta] {
+    private static func readThreads() -> (meta: [String: ThreadMeta], ok: Bool) {
         let keyBefore = currentThreadsKey()
         if let keyBefore {
             threadsLock.lock()
             if let cache = threadsCache, cache.key == keyBefore {
                 let value = cache.value
                 threadsLock.unlock()
-                return value
+                return (value, true)
             }
             threadsLock.unlock()
         }
@@ -161,7 +176,7 @@ enum CodexParser {
             threadsLock.lock()
             let fallback = threadsCache?.value ?? [:]
             threadsLock.unlock()
-            return fallback
+            return (fallback, false)
         }
         let keyAfter = currentThreadsKey()
         threadsLock.lock()
@@ -171,7 +186,7 @@ enum CodexParser {
             threadsCache = nil
         }
         threadsLock.unlock()
-        return value
+        return (value, true)
     }
 
     private static func loadThreads() -> [String: ThreadMeta]? {
@@ -211,7 +226,7 @@ enum CodexParser {
             files = FileScanner.listFiles(sessionsRoot, maxDepth: 4)
         }
 
-        let threadMeta = readThreads()
+        let (threadMeta, threadMetaOK) = readThreads()
 
         // Rollout files: incremental per-file with persisted parse context
         // (session id / model / provider / cwd / cumulative total survive).
@@ -250,7 +265,7 @@ enum CodexParser {
             var objectCount = 0
             var resumedWithoutBaseline = offset > 0 && lastTotal == nil
             let fallbackTs = st.mtime / 1_000_000_000
-            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
                 objectCount += 1
                 let obj = item.obj
                 let type = obj["type"] as? String
@@ -274,6 +289,11 @@ enum CodexParser {
                     let usageForID: [String: Any]?
                     if let totalRaw = info["total_token_usage"] as? [String: Any] {
                         let total = TokenTotals.from(totalRaw)
+                        if total.isZero {
+                            // Ignore spurious zero-counter cumulative snapshots so
+                            // the baseline isn't wiped to 0 and double-counted later.
+                            return
+                        }
                         if let previous = lastTotal {
                             if total.restarted(from: previous) {
                                 // A resumed or compacted rollout restarts its
@@ -377,12 +397,26 @@ enum CodexParser {
                                   identity: st.identity, context: ctxJSON)
         }
 
-        // Sessions from threads table that have no rollout data yet.
-        let seen = Set(sessions.map(\.sessionID))
-        for (id, meta) in threadMeta where !seen.contains(id) {
-            sessions.append(SessionInfo(tool: .codex, sessionID: id, title: meta.title,
-                                        project: meta.cwd.map { ($0 as NSString).lastPathComponent },
-                                        model: meta.model ?? meta.provider, created: 0, updated: 0))
+        // Sessions from threads table that have no rollout data yet: only emit
+        // when state_5.sqlite actually changed since the last scan for this DB.
+        let threadsKey = currentThreadsKey()
+        let scope = database.cacheScopeID
+        let threadsChanged: Bool = threadsLock.withLock {
+            if let threadsKey, lastEmittedThreadsKey[scope] == threadsKey { return false }
+            return true
+        }
+        if threadsChanged {
+            let seen = Set(sessions.map(\.sessionID))
+            for (id, meta) in threadMeta where !seen.contains(id) {
+                sessions.append(SessionInfo(tool: .codex, sessionID: id, title: meta.title,
+                                            project: meta.cwd.map { ($0 as NSString).lastPathComponent },
+                                            model: meta.model ?? meta.provider, created: 0, updated: 0))
+            }
+            if threadMetaOK, let threadsKey {
+                database.onCommit {
+                    threadsLock.withLock { lastEmittedThreadsKey[scope] = threadsKey }
+                }
+            }
         }
         return (turns, sessions)
     }

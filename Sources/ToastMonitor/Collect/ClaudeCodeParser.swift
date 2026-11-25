@@ -15,7 +15,10 @@ import Foundation
 enum ClaudeCodeParser {
 
     static var root: String {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let raw = getenv("TM_CLAUDE_PROJECTS_ROOT"), let override = String(validatingUTF8: raw), !override.isEmpty {
+            return override
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects").path
     }
 
@@ -25,7 +28,10 @@ enum ClaudeCodeParser {
     /// component here — listCoworkFiles() starts its walk past that, so the
     /// dot-skip never applies to it.
     static var coworkLocalAgentRoot: String {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let raw = getenv("TM_CLAUDE_COWORK_ROOT"), let override = String(validatingUTF8: raw), !override.isEmpty {
+            return override
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Claude/local-agent-mode-sessions").path
     }
 
@@ -113,13 +119,17 @@ enum ClaudeCodeParser {
             var objectCount = 0
             var sessionID = (persisted?["sid"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? (file as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
-            let encodedDir = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            let parentDir = (file as NSString).deletingLastPathComponent
+            let parentName = (parentDir as NSString).lastPathComponent
+            let encodedDir = parentName == "subagents"
+                ? (((parentDir as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent as NSString).lastPathComponent
+                : parentName
             var cwd: String? = (persisted?["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             var lastTs: Int64 = 0
             var firstTs: Int64 = 0
             var sessionModel: String?
             let fallbackTs = st.mtime / 1_000_000_000
-            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
                 objectCount += 1
                 let obj = item.obj
                 guard let type = obj["type"] as? String else { return }
@@ -148,20 +158,20 @@ enum ClaudeCodeParser {
                     let cacheRead = FileScanner.tokenCount(usage["cache_read_input_tokens"])
                     let creation = usage["cache_creation"] as? [String: Any]
                     let write5m: Int64
-                    let write1h: Int64
+                    let write1h: Int64?
                     if let creation,
                        creation["ephemeral_5m_input_tokens"] != nil || creation["ephemeral_1h_input_tokens"] != nil {
                         write5m = FileScanner.tokenCount(creation["ephemeral_5m_input_tokens"])
                         write1h = FileScanner.tokenCount(creation["ephemeral_1h_input_tokens"])
                     } else {
                         write5m = FileScanner.tokenCount(usage["cache_creation_input_tokens"])
-                        write1h = 0
+                        write1h = write5m == 0 ? 0 : nil
                     }
-                    let cacheWrite = write5m + write1h
+                    let cacheWrite = write5m + (write1h ?? 0)
                     guard input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 else { return }
                     let est = Pricing.estimate(model: model, input: input, output: output,
                                                cacheRead: cacheRead, cacheWrite: write5m,
-                                               cacheWrite1h: write1h)
+                                               cacheWrite1h: write1h ?? 0)
                     let eventID = EventIdentity.claude(
                         sessionID: sessionID, object: obj, usage: usage,
                         model: model, timestamp: ts, offset: item.offset)

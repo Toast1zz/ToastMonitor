@@ -11,12 +11,11 @@ final class HermesSourceSwitchTests: XCTestCase {
         directory = NSTemporaryDirectory() + "tm-hermes-switch-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         database = Database.testInstance(path: directory + "/monitor.db")
-        previousHome = ProcessInfo.processInfo.environment["HERMES_HOME"]
-        setenv("HERMES_HOME", directory, 1)
+        previousHome = TestEnvironment.beginScope("HERMES_HOME", value: directory)
     }
 
     override func tearDown() {
-        if let previousHome { setenv("HERMES_HOME", previousHome, 1) } else { unsetenv("HERMES_HOME") }
+        TestEnvironment.endScope("HERMES_HOME", restoring: previousHome)
         database.close()
         try? FileManager.default.removeItem(atPath: directory)
         super.tearDown()

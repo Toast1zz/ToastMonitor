@@ -25,4 +25,6 @@ if (( COUNT > BASELINE )); then
     printf '%s\n' "$WARNINGS"
     echo "error: $COUNT warnings is above the baseline of $BASELINE" >&2
     exit 1
+elif (( COUNT < BASELINE )); then
+    echo "note: strict concurrency warnings dropped from $BASELINE to $COUNT (baseline can be tightened)"
 fi

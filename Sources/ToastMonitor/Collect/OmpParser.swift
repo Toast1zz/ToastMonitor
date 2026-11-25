@@ -9,7 +9,10 @@ import Foundation
 enum OmpParser {
 
     static var root: String {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let override = ProcessInfo.processInfo.environment["TM_OMP_SESSIONS_ROOT"], !override.isEmpty {
+            return override
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".omp/agent/sessions").path
     }
 
@@ -44,7 +47,7 @@ enum OmpParser {
             // First pass: session identity and cwd may appear after the
             // byte offset, so every new line is inspected before turns
             // are built with the resolved identity.
-            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+            let newOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
                 objectCount += 1
                 guard item.obj["type"] as? String == "session" else { return }
                 if !foundSessionID, let sid = item.obj["id"] as? String, !sid.isEmpty {
@@ -63,21 +66,26 @@ enum OmpParser {
                 continue
             }
 
-
-            let encodedDir = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            let rootPrefix = OmpParser.root.hasSuffix("/") ? OmpParser.root : OmpParser.root + "/"
+            let relKey = file.hasPrefix(rootPrefix)
+                ? String(file.dropFirst(rootPrefix.count))
+                : fileName
+            let encodedDir: String = {
+                let trimmed = relKey.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let parts = trimmed.split(separator: "/").map(String.init)
+                if parts.count >= 2 { return parts[0] }
+                return ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            }()
             let project = FileScanner.projectName(cwd: sessionCwd, encodedDirectory: encodedDir)
             // Full relative path disambiguates subagent transcripts across
             // sessions; the message id is only 32-bit, so the path prefix is
             // what makes the composite id globally unique.
-            let relKey = file.hasPrefix(OmpParser.root)
-                ? String(file.dropFirst(OmpParser.root.count))
-                : fileName
             var firstTs: Int64 = 0
             var lastTs: Int64 = 0
             var sessionModel: String?
             var turnIndex: [String: Int] = [:]
 
-            _ = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset) { item in
+            let messageOffset = FileScanner.forEachNewJSONLine(path: file, fromOffset: offset, maxOffset: st.size) { item in
                 let obj = item.obj
                 guard obj["type"] as? String == "message",
                       let msg = obj["message"] as? [String: Any],
@@ -92,9 +100,10 @@ enum OmpParser {
                     ?? st.mtime / 1_000_000_000
                 guard ts > 0 else { return }
                 let model = msg["model"] as? String
+                let provider = (msg["provider"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 let messageID = obj["id"] as? String
                 let eventID = EventIdentity.omp(relativePath: relKey, sessionID: sessionID,
-                                                object: obj, usage: usage)
+                                                object: obj, usage: usage, offset: item.offset)
                 let (cost, quality) = billedOrEstimatedCost(model: model, usage: usage,
                                                              input: input, output: output,
                                                              cacheRead: cacheRead, cacheWrite: cacheWrite)
@@ -102,7 +111,7 @@ enum OmpParser {
                                       model: model, ts: ts,
                                       inputTokens: input, outputTokens: output,
                                       cacheRead: cacheRead, cacheWrite: cacheWrite,
-                                      cost: cost, eventID: eventID, costQuality: quality,
+                                      cost: cost, provider: provider, eventID: eventID, costQuality: quality,
                                       usageMerge: messageID == nil || messageID?.isEmpty == true ? .ignore : .keepGreater),
                            into: &turns, index: &turnIndex)
                 if firstTs == 0 || ts < firstTs { firstTs = ts }
@@ -122,7 +131,7 @@ enum OmpParser {
             }
             let ctxJSON = (try? JSONSerialization.data(withJSONObject: ctx))
                 .flatMap { String(data: $0, encoding: .utf8) }
-            database.setScanState(file, size: newOffset, mtime: st.mtime,
+            database.setScanState(file, size: min(newOffset, messageOffset), mtime: st.mtime,
                                  identity: st.identity, context: ctxJSON)
         }
         return (turns, sessions)

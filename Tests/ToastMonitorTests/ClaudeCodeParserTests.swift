@@ -11,30 +11,6 @@ final class ClaudeCodeParserTests: XCTestCase {
                           subdirectory: "Fixtures")!.path
     }
 
-    private var createdClaudeRoot = false
-
-    override func setUp() {
-        super.setUp()
-        // scan() bails early when ~/.claude/projects does not exist (e.g. a
-        // fresh CI runner). Create it when missing so the fixture still
-        // parses; tearDown removes exactly what we created.
-        if !FileManager.default.fileExists(atPath: ClaudeCodeParser.root) {
-            try? FileManager.default.createDirectory(atPath: ClaudeCodeParser.root,
-                                                     withIntermediateDirectories: true)
-            createdClaudeRoot = true
-        }
-    }
-
-    override func tearDown() {
-        if createdClaudeRoot {
-            try? FileManager.default.removeItem(atPath: ClaudeCodeParser.root)
-            try? FileManager.default.removeItem(
-                atPath: (ClaudeCodeParser.root as NSString).deletingLastPathComponent)
-            createdClaudeRoot = false
-        }
-        super.tearDown()
-    }
-
     func testParsesAssistantUsageTurnsFromFixture() {
         let (turns, sessions) = ClaudeCodeParser.scan(knownPaths: [fixturePath])
         // Only the two assistant messages carry usage; the user message is skipped.

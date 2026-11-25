@@ -286,19 +286,30 @@ enum ClaudeCLIRefresher {
         }
 
         writeToFD(masterFD, "/exit\r")
+        drainAvailable(masterFD)
         Thread.sleep(forTimeInterval: 0.3)
+        drainAvailable(masterFD)
         if process.isRunning {
             process.terminate()
-            for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.1) }
+            for _ in 0..<20 where process.isRunning {
+                drainAvailable(masterFD)
+                Thread.sleep(forTimeInterval: 0.1)
+            }
         }
         if process.isRunning, process.processIdentifier > 0 {
             kill(process.processIdentifier, SIGKILL)
         }
+        drainAvailable(masterFD)
         process.waitUntilExit()
         close(masterFD)
         if succeeded { return .completed }
         return .failed(exitedEarly ? "exited with status \(process.terminationStatus)"
                                    : "no account info within \(Int(probeTimeout))s")
+    }
+
+    private static func drainAvailable(_ fd: Int32) {
+        var discard = [UInt8](repeating: 0, count: 4096)
+        while Darwin.read(fd, &discard, discard.count) > 0 {}
     }
 
     private static func writeToFD(_ fd: Int32, _ text: String) {

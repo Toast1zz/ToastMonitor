@@ -27,13 +27,24 @@ protocol ParserStateStore: AnyObject {
     func setting(_ key: String) -> String?
     @discardableResult
     func setSetting(_ key: String, _ value: String?) -> Bool
+    /// Stable scope token for in-memory parser caches; bumps on DB open/close/reset.
+    var cacheScopeID: UInt64 { get }
     /// A source could not be read. The default does nothing; the staged store
     /// keeps the message so the collector can show it instead of an idle scan.
     func noteScanProblem(_ message: String)
+    /// Marks a specific tracked source path whose read/open failed cleanly so the
+    /// collector retries it on the next tick instead of caching its signature.
+    func noteSkippedSourcePath(_ path: String)
+    /// Runs `action` only once the enclosing transaction commits (or immediately on
+    /// un-staged stores).
+    func onCommit(_ action: @escaping @Sendable () -> Void)
 }
 
 extension ParserStateStore {
+    var cacheScopeID: UInt64 { 0 }
     func noteScanProblem(_ message: String) {}
+    func noteSkippedSourcePath(_ path: String) {}
+    func onCommit(_ action: @escaping @Sendable () -> Void) { action() }
 }
 
 extension Database: ParserStateStore {}
@@ -75,6 +86,10 @@ final class StagedParserStateStore: ParserStateStore {
     private var totalsUpdates: [String: TotalsUpdate] = [:]
     private(set) var preparationIsConsistent = true
     private(set) var problem: String?
+    private(set) var skippedSourcePaths: Set<String> = []
+    private var commitActions: [@Sendable () -> Void] = []
+
+    var cacheScopeID: UInt64 { database.cacheScopeID }
 
     init(database: Database, sourcePaths: [String]) {
         self.database = database
@@ -86,6 +101,19 @@ final class StagedParserStateStore: ParserStateStore {
 
     func noteScanProblem(_ message: String) {
         if problem == nil { problem = message }
+    }
+
+    func noteSkippedSourcePath(_ path: String) {
+        skippedSourcePaths.insert(path)
+    }
+
+    func onCommit(_ action: @escaping @Sendable () -> Void) {
+        commitActions.append(action)
+    }
+
+    func runPostCommitActions() {
+        for action in commitActions { action() }
+        commitActions.removeAll()
     }
 
     func scanState(_ source: String) -> (size: Int64, mtime: Int64, identity: Int64, context: String?) {

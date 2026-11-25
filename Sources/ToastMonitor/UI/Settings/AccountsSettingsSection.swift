@@ -123,6 +123,7 @@ struct AccountsSettingsSection: View {
     @State private var pendingClear: CredentialTarget?
     /// Last save/clear outcome per account, shown inside that account only.
     @State private var message: [String: (text: String, failed: Bool)] = [:]
+    @State private var busyKeys: Set<String> = []
 
     var body: some View {
         Section("Accounts") {
@@ -375,7 +376,7 @@ struct AccountsSettingsSection: View {
     /// What the Codex row is called when no custom name is set.
     private var codexAutoName: String {
         CodexPlanName.resolve(custom: nil, apiPlan: codexQuota.state.planType,
-                              subscription: app.subscriptions.first { $0.plan == "openai" || $0.plan == "codex" })
+                              subscription: SubscriptionMath.activeCodexSubscription(in: app.subscriptions))
     }
 
     // MARK: - Credential sheets
@@ -450,32 +451,52 @@ struct AccountsSettingsSection: View {
     }
 
     private func saveGo() {
-        if goClient.provision(workspaceId: goWS.trimmed, cookie: goCookie.trimmed) {
-            goClient.refresh()
-            showGoForm = false
-            message["go"] = ("Credentials saved", false)
-        } else {
-            message["go"] = (goClient.state.error ?? "Save failed (Keychain unavailable)", true)
+        let ws = goWS.trimmed
+        let cookie = goCookie.trimmed
+        guard !busyKeys.contains("go") else { return }
+        busyKeys.insert("go")
+        Task { @MainActor in
+            defer { busyKeys.remove("go") }
+            if await goClient.provisionAsync(workspaceId: ws, cookie: cookie) {
+                goClient.refresh(force: true)
+                showGoForm = false
+                message["go"] = ("Credentials saved", false)
+            } else {
+                message["go"] = (goClient.state.error ?? "Save failed (Keychain unavailable)", true)
+            }
         }
     }
 
     private func saveOpenRouter() {
         let key = orKey.trimmed
-        if orAppend ? orClient.addKey(key) : orClient.setKey(key) {
-            showORForm = false
-            message["router"] = ("Key saved", false)
-        } else {
-            message["router"] = (orClient.state.error ?? "Save failed (Keychain unavailable)", true)
+        let append = orAppend
+        guard !busyKeys.contains("router") else { return }
+        busyKeys.insert("router")
+        Task { @MainActor in
+            defer { busyKeys.remove("router") }
+            let ok = append ? await orClient.addKeyAsync(key) : await orClient.setKeyAsync(key)
+            if ok {
+                showORForm = false
+                message["router"] = ("Key saved", false)
+            } else {
+                message["router"] = (orClient.state.error ?? "Save failed (Keychain unavailable)", true)
+            }
         }
     }
 
     private func saveCommandCode() {
-        if ccQuota.provision(cookie: ccCookie.trimmed) {
-            ccQuota.refresh()
-            showCCForm = false
-            message["cc"] = ("Session saved", false)
-        } else {
-            message["cc"] = (ccQuota.state.error ?? "Save failed (Keychain unavailable)", true)
+        let cookie = ccCookie.trimmed
+        guard !busyKeys.contains("cc") else { return }
+        busyKeys.insert("cc")
+        Task { @MainActor in
+            defer { busyKeys.remove("cc") }
+            if await ccQuota.provisionAsync(cookie: cookie) {
+                ccQuota.refresh(force: true)
+                showCCForm = false
+                message["cc"] = ("Session saved", false)
+            } else {
+                message["cc"] = (ccQuota.state.error ?? "Save failed (Keychain unavailable)", true)
+            }
         }
     }
 
@@ -491,20 +512,40 @@ struct AccountsSettingsSection: View {
     }
 
     private func clearPending() {
-        switch pendingClear {
-        case .openCodeGo:
-            goClient.clear()
-            message["go"] = ("Credentials cleared", false)
-        case .openRouter:
-            _ = orClient.setKey(nil)
-            message["router"] = ("Keys cleared", false)
-        case .commandCode:
-            ccQuota.clear()
-            message["cc"] = ("Session cleared", false)
-        case .none:
-            break
-        }
+        let target = pendingClear
         pendingClear = nil
+        guard let target else { return }
+        Task { @MainActor in
+            switch target {
+            case .openCodeGo:
+                guard !busyKeys.contains("go") else { return }
+                busyKeys.insert("go")
+                defer { busyKeys.remove("go") }
+                if await goClient.clearAsync() {
+                    message["go"] = ("Credentials cleared", false)
+                } else {
+                    message["go"] = (goClient.state.error ?? "Keychain delete failed", true)
+                }
+            case .openRouter:
+                guard !busyKeys.contains("router") else { return }
+                busyKeys.insert("router")
+                defer { busyKeys.remove("router") }
+                if await orClient.setKeyAsync(nil) {
+                    message["router"] = ("Keys cleared", false)
+                } else {
+                    message["router"] = (orClient.state.error ?? "Keychain delete failed", true)
+                }
+            case .commandCode:
+                guard !busyKeys.contains("cc") else { return }
+                busyKeys.insert("cc")
+                defer { busyKeys.remove("cc") }
+                if await ccQuota.clearAsync() {
+                    message["cc"] = ("Session cleared", false)
+                } else {
+                    message["cc"] = (ccQuota.state.error ?? "Keychain delete failed", true)
+                }
+            }
+        }
     }
 }
 

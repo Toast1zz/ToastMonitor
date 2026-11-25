@@ -52,9 +52,9 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private let panel: FloatingPanel
     private weak var statusItem: NSStatusItem?
-    private var hideObserver: NSObjectProtocol?
-    private var resignObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
     private var keyMonitor: Any?
+    private var naturalContentHeight: CGFloat
     private var desiredHeight: CGFloat
 
     /// The most recently created PanelController (the app makes one; weak).
@@ -83,6 +83,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init<Content: View>(statusItem: NSStatusItem, content: Content, size: NSSize) {
         self.statusItem = statusItem
+        self.naturalContentHeight = size.height
         self.desiredHeight = size.height
         self.panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0,
@@ -130,43 +131,64 @@ final class PanelController: NSObject, NSWindowDelegate {
         // compositing and brings square corners back at the window edge.
         panel.contentView = surface
 
-        hideObserver = NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: Self.hideNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.dismiss() }
-        }
+        })
 
         // Opt-in focus-loss dismissal (settings: "Close when clicking
-        // elsewhere"). When disabled, clicking other windows or apps leaves
-        // the panel open; only the status button's toggle, the in-panel close
-        // affordance, or Esc dismiss it.
-        resignObserver = NotificationCenter.default.addObserver(
+        // elsewhere"). Observe both panel/child key resign and app deactivation
+        // so opening a child `?` popover never strands the panel open when the
+        // user later clicks another app or desktop window.
+        observers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
-            object: panel,
+            object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self, self.panel.isVisible,
                       Self.dismissOnResign else { return }
+                let resignedWindow = note.object as? NSWindow
+                let isOwnWindow = resignedWindow === self.panel
+                    || self.panel.childWindows?.contains(where: { $0 === resignedWindow }) == true
+                guard isOwnWindow else { return }
                 // Let the status button's action own the toggle; closing here
                 // first would turn the same click into an immediate reopen.
                 if let buttonWindow = self.statusItem?.button?.window,
                    buttonWindow.frame.contains(NSEvent.mouseLocation) {
                     return
                 }
-                // The new key window is only known a moment later. A popover
-                // opened from inside the panel (a row's "?") is a child
-                // window of it; focus moving there is not leaving the panel.
-                DispatchQueue.main.async {
-                    if let key = NSApp.keyWindow, self.panel.childWindows?.contains(key) == true {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.panel.isVisible else { return }
+                    if self.panel.isKeyWindow || (self.panel.childWindows?.contains(where: { $0.isKeyWindow }) == true) {
                         return
                     }
                     self.dismiss()
                 }
             }
-        }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.panel.isVisible, Self.dismissOnResign else { return }
+                self.dismiss()
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didHideNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.dismiss()
+            }
+        })
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53, let self, self.panel.isKeyWindow else {
@@ -218,7 +240,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         x = min(max(x, visible.minX + 8), visible.maxX - Self.panelWidth - 8)
         let height = Self.clampedHeight(
-            natural: desiredHeight,
+            natural: naturalContentHeight,
             available: visible.height - 12
         )
         desiredHeight = height
@@ -230,6 +252,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func applyMeasuredContentSize(naturalHeight: CGFloat) {
+        naturalContentHeight = naturalHeight
         let screen = statusItem?.button?.window?.screen ?? panel.screen ?? NSScreen.main
         let available = (screen?.visibleFrame.height ?? 800) - 12
         let target = Self.clampedHeight(natural: naturalHeight, available: available)
@@ -256,7 +279,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     deinit {
-        for observer in [hideObserver, resignObserver].compactMap({ $0 }) {
+        for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }

@@ -71,18 +71,16 @@ final class ReviewRegressionTests: XCTestCase {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("dsh-regression-\(UUID().uuidString)").path
         try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
-        setenv("DSH_HOME", tempDir, 1)
-        defer {
-            unsetenv("DSH_HOME")
-            try? FileManager.default.removeItem(atPath: tempDir)
-        }
+        defer { try? FileManager.default.removeItem(atPath: tempDir) }
         let body = """
         {"type":"session","id":"sess-x","cwd":"/tmp/p"}
         {"type":"assistant/message","seq":1,"time":1786628800000,"data":{"message":{"model":"deepseek-v4-flash","usage":{"inputTokens":10,"outputTokens":1}}}}
         {"type":"assistant/message","seq":2,"time":1786628801000,"data":{"message":{"model":"deepseek-v4-flash","usage":{"inputTokens":20,"outputTokens":2}}}}
         """
         let path = try write("session.jsonl", body + "\n")
-        let turns = DSHParser.scanLogs(knownPaths: [path], database: db).turns
+        let turns = TestEnvironment.withVariable("DSH_HOME", value: tempDir) {
+            DSHParser.scanLogs(knownPaths: [path], database: db).turns
+        }
         XCTAssertEqual(Set(turns.compactMap(\.eventID)).count, 2)
         XCTAssertTrue(db.insertTurns(turns))
         XCTAssertEqual(db.totals(from: 0, to: Int64.max, tool: .dsh).count, 2)

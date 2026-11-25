@@ -114,8 +114,7 @@ struct PopoverHomeView: View {
     /// minute tick and heatmap reload must stop or a 371-day aggregation runs every 60s.
     @State private var panelVisible = false
     @State private var bodyContentHeight: CGFloat = 0
-    /// True once the scrolled content reaches the bottom of the viewport.
-    @State private var scrolledToEnd = true
+    @State private var scrollOffset: CGFloat = 0
     private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     @MainActor init(deepseek: DeepSeekBillingClient? = nil) {
@@ -185,6 +184,7 @@ struct PopoverHomeView: View {
                 // the viewport. A mask, not a colored overlay: the panel is
                 // translucent, so any fixed color would show as a band.
                 let overflows = bodyContentHeight > viewport.size.height + 1
+                let scrolledToEnd = bodyContentHeight + scrollOffset <= viewport.size.height + 1
                 let fading = overflows && !scrolledToEnd
                 ZStack(alignment: .bottom) {
                     ScrollViewReader { scroller in
@@ -250,8 +250,7 @@ struct PopoverHomeView: View {
                 }
                 .onPreferenceChange(PopoverBodyHeightKey.self) { bodyContentHeight = $0 }
                 .onPreferenceChange(PopoverScrollOffsetKey.self) { offset in
-                    let atEnd = bodyContentHeight + offset <= viewport.size.height + 1
-                    if atEnd != scrolledToEnd { scrolledToEnd = atEnd }
+                    scrollOffset = offset
                 }
             }
             .frame(minHeight: 0, maxHeight: .infinity)
@@ -287,8 +286,14 @@ struct PopoverHomeView: View {
             if transition.reload {
                 now = Date()
                 loadQuotaRowHidden()
+                if byTool.isEmpty && app.byToolAll.isEmpty { loadDetectedTools() }
                 deepseek.select(period.slot, configuration: periodSettings.configuration, now: now)
                 reloadHeatmap()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CollectorEngine.didCollect)) { _ in
+            if byTool.isEmpty && app.byToolAll.isEmpty {
+                loadDetectedTools()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: AccountsSettingsSection.quotaRowsChanged)) { _ in
@@ -296,6 +301,9 @@ struct PopoverHomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: TMNotifications.databaseReplaced)) { _ in
             loadQuotaRowHidden()
+            reloadHeatmap()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Database.didResetState)) { _ in
             reloadHeatmap()
         }
         .onReceive(NotificationCenter.default.publisher(for: Self.testPeriodNotification)) { note in
@@ -398,9 +406,13 @@ struct PopoverHomeView: View {
         .accessibilityLabel("Period")
     }
 
-    /// Actual spend = billed turns + OpenRouter + amortized subscriptions.
+    /// Actual spend = non-OpenRouter billed turns + OpenRouter spend + amortized subscriptions.
+    /// Avoids double-counting OpenCode/OMP OpenRouter turns when OpenRouter account billing is connected.
     private var actualShown: Double {
-        cost.actual + periodOrUsage + subsAmortized
+        let orUsage = periodOrUsage
+        let nonOpenRouterActual = max(0, cost.actual - cost.openrouterActual)
+        let effectiveOpenRouter = orClient.hasKey ? max(orUsage, cost.openrouterActual) : cost.openrouterActual
+        return nonOpenRouterActual + effectiveOpenRouter + subsAmortized
     }
 
     /// API value = every tool's turns (Hermes included) at list prices.
@@ -481,11 +493,13 @@ struct PopoverHomeView: View {
     }
 
     private var toolEntries: [ShareEntry] {
-        sortedRows.map { row in
-            ShareEntry(id: "tool|\(row.tool)",
-                       name: ToolKind(rawValue: row.tool)?.displayName ?? row.tool,
-                       value: ToolKind(rawValue: row.tool)?.totalTokens(row) ?? (row.input + row.output),
-                       color: TMDesign.sourceColor(row.tool))
+        sortedRows.compactMap { row in
+            let value = ToolKind.totalTokens(row)
+            guard value > 0 else { return nil }
+            return ShareEntry(id: "tool|\(row.tool)",
+                              name: ToolKind(rawValue: row.tool)?.displayName ?? row.tool,
+                              value: value,
+                              color: TMDesign.sourceColor(row.tool))
         }
     }
 
@@ -493,7 +507,7 @@ struct PopoverHomeView: View {
         // The off-Mac Claude estimate has no model; keep it as its own row so
         // the model rows still add up to the headline total.
         let extras = byTool.filter { ToolKind(rawValue: $0.tool) == nil }.map { row in
-            (name: row.tool, value: row.input + row.output, color: TMDesign.sourceColor(row.tool))
+            (name: row.tool, value: ToolKind.totalTokens(row), color: TMDesign.sourceColor(row.tool))
         }
         return Self.modelShareEntries(aggs: modelAggs, extras: extras)
     }
@@ -517,17 +531,22 @@ struct PopoverHomeView: View {
                                   extras: [(name: String, value: Int64, color: Color)] = [],
                                   limit: Int = modelRowLimit) -> [ShareEntry] {
         var totals: [String: Int64] = [:]
+        var providersByDisplay: [String: String] = [:]
         for row in aggs {
-            let value = ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output,
-                                                                  cacheRead: row.cacheRead)
-                ?? (row.input + row.output)
+            let value = ToolKind.totalTokens(tool: row.tool, input: row.input, output: row.output,
+                                             cacheRead: row.cacheRead)
             guard value > 0 else { continue }
-            totals[ModelName.display(row.model), default: 0] += value
+            let display = ModelName.display(row.model)
+            totals[display, default: 0] += value
+            let provider = ModelProvider.name(for: row.model)
+            if providersByDisplay[display] == nil || providersByDisplay[display] == ModelProvider.other {
+                providersByDisplay[display] = provider
+            }
         }
         let ranked = totals.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
         // Folding a single model into "Other" would hide its name for nothing.
         let shown = ranked.count > limit + 1 ? Array(ranked.prefix(limit)) : ranked
-        let colors = TMDesign.modelColors(for: shown.map(\.key))
+        let colors = TMDesign.modelColors(for: shown.map(\.key), providersByDisplayName: providersByDisplay)
         var entries = shown.map { item in
             ShareEntry(id: "model|\(item.key)", name: item.key, value: item.value,
                        color: colors[item.key] ?? TMDesign.accent)
@@ -756,7 +775,7 @@ struct PopoverHomeView: View {
     }
 
     private func saveHeatmapCache(_ map: [Int64: Int64]) {
-        guard Self.shouldPersistHeatmapCache else { return }
+        guard Self.shouldPersistHeatmapCache, Database.shared.isReadableOpen else { return }
         let dict = Dictionary(uniqueKeysWithValues: map.map { (String($0.key), $0.value) })
         if let data = try? JSONEncoder().encode(dict) {
             UserDefaults.standard.set(data, forKey: Self.heatmapCacheKey)
@@ -764,12 +783,13 @@ struct PopoverHomeView: View {
     }
 
     private func reloadHeatmap() {
-        // Draw from the cache at once, then refresh asynchronously.
+        // Draw from the cache at once, then refresh asynchronously once the DB is open.
         if heatmapData.isEmpty, let cached = cachedHeatmap() {
             heatmapData = cached
         }
+        guard Database.shared.isReadableOpen else { return }
         UsageQueryService.shared.loadHeatmap { map in
-            guard map != self.heatmapData else { return }
+            guard Database.shared.isReadableOpen, map != self.heatmapData else { return }
             self.heatmapData = map
             self.saveHeatmapCache(map)
         }
@@ -784,11 +804,28 @@ struct PopoverHomeView: View {
         visibleHeatmapKeys.filter { (heatmapData[$0] ?? 0) > 0 }.count
     }
 
+    /// Daily usage for the last 60 consecutive calendar days (today included),
+    /// oldest first, padding idle days with 0.
+    static func buildTrendSeries(heatmap: [Int64: Int64], now: Date,
+                                 calendar: Calendar = .current) -> [(key: Int64, tokens: Int64)] {
+        let today = calendar.startOfDay(for: now)
+        var series: [(key: Int64, tokens: Int64)] = []
+        series.reserveCapacity(60)
+        var hasActivity = false
+        for offset in -59...0 {
+            guard let dayDate = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
+            let c = calendar.dateComponents([.year, .month, .day], from: dayDate)
+            let key = Int64((c.year ?? 0) * 10_000 + (c.month ?? 0) * 100 + (c.day ?? 0))
+            let tokens = max(0, heatmap[key] ?? 0)
+            if tokens > 0 { hasActivity = true }
+            series.append((key: key, tokens: tokens))
+        }
+        return hasActivity ? series : []
+    }
+
     /// Daily usage for the last 60 days (today included), oldest first.
     private var trendSeries: [(key: Int64, tokens: Int64)] {
-        heatmapData.sorted { $0.key < $1.key }
-            .suffix(60)
-            .map { ($0.key, $0.value) }
+        Self.buildTrendSeries(heatmap: heatmapData, now: now)
     }
 
     private var trendPeak: Int64 {
@@ -1015,8 +1052,8 @@ struct PopoverHomeView: View {
         let state = codexQuota.state
         let remaining = state.primaryPct.map { 100 - Double($0) }
         // The plan picker stores "openai" for the ChatGPT/Codex subscription;
-        // "codex" alone never matched anything a user could actually save.
-        let sub = app.subscriptions.first { $0.plan == "openai" || $0.plan == "codex" }
+        // filter out expired subscriptions and prefer the newest active one.
+        let sub = SubscriptionMath.activeCodexSubscription(in: app.subscriptions, now: now)
         let stale = state.lastSync > 0
             && now.timeIntervalSince1970 - TimeInterval(state.lastSync) > 120
         // Keep the last result while refreshing; Loading only before the first sync.
@@ -1541,7 +1578,7 @@ private struct StatusRow: View {
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     header
-                    ForEach(windows, id: \.label) { window in
+                    ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                         QuotaWindowLine(window: window, tint: tint)
                     }
                 }

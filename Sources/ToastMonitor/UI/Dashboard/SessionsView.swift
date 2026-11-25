@@ -26,6 +26,14 @@ struct SessionsView: View {
 
     private static let pageSize = 500
 
+    private var dbSortOrder: Database.SessionSortOrder {
+        switch sortOrder {
+        case .newest: return .newest
+        case .tokens: return .tokens
+        case .cost: return .cost
+        }
+    }
+
     private var filteredRows: [Database.SessionRow] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let matching: [Database.SessionRow]
@@ -40,6 +48,11 @@ struct SessionsView: View {
                    m.localizedCaseInsensitiveContains(query) || ModelName.display(m).localizedCaseInsensitiveContains(query) {
                     return true
                 }
+                if let toolName = ToolKind(rawValue: row.tool)?.displayName,
+                   toolName.localizedCaseInsensitiveContains(query) {
+                    return true
+                }
+                if row.tool.localizedCaseInsensitiveContains(query) { return true }
                 return row.sessionID.localizedCaseInsensitiveContains(query)
             }
         }
@@ -61,8 +74,7 @@ struct SessionsView: View {
     }
 
     private static func sessionTokens(_ row: Database.SessionRow) -> Int64 {
-        ToolKind(rawValue: row.tool)?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead)
-            ?? row.input + row.output + row.cacheRead
+        ToolKind.totalTokens(tool: row.tool, input: row.input, output: row.output, cacheRead: row.cacheRead)
     }
 
     var body: some View {
@@ -78,7 +90,9 @@ struct SessionsView: View {
                 } else if !visible.isEmpty {
                     let countText: String = {
                         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            return "\(visible.count) matching"
+                            return visible.count < total
+                                ? "\(visible.count) of \(total) matching"
+                                : "\(visible.count) matching"
                         }
                         return rows.count < total
                             ? "Latest \(rows.count) of \(total) sessions"
@@ -101,10 +115,20 @@ struct SessionsView: View {
                         .controlSize(.small)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if visible.isEmpty {
-                    Text(rows.isEmpty ? "No sessions found" : "No matching sessions")
-                        .font(TMType.regular(TMType.body))
-                        .foregroundStyle(TMDesign.quiet)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 12) {
+                        Text(rows.isEmpty ? "No sessions found" : "No matching sessions")
+                            .font(TMType.regular(TMType.body))
+                            .foregroundStyle(TMDesign.quiet)
+                        if rows.count < total {
+                            Button("Show \(min(Self.pageSize, total - rows.count)) More") {
+                                limit += Self.pageSize
+                                load()
+                            }
+                            .disabled(loading)
+                            .tmGlassButton(circle: false)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView(.vertical) {
                         if sortOrder == .newest {
@@ -156,7 +180,15 @@ struct SessionsView: View {
             limit = Self.pageSize
             load()
         }
-        .onChange(of: app.lastScan) { _ in
+        .onChange(of: sortOrder) { _ in
+            limit = Self.pageSize
+            load()
+        }
+        .onChange(of: searchText) { _ in
+            limit = Self.pageSize
+            load()
+        }
+        .onChange(of: app.dataRevision) { _ in
             guard isTabActive else {
                 needsReload = true
                 return
@@ -168,7 +200,10 @@ struct SessionsView: View {
                 load()
             }
         }
-        .sheet(item: $selectedSession) { SessionDetailView(session: $0) }
+        .sheet(item: $selectedSession) { session in
+            SessionDetailView(session: session)
+                .id(session.id)
+        }
     }
 
     private var isTabActive: Bool {
@@ -263,7 +298,9 @@ struct SessionsView: View {
         needsReload = false
         loading = true
         let tool = selectedTool == "all" ? nil : ToolKind(rawValue: selectedTool)
-        UsageQueryService.shared.loadSessions(tool: tool, limit: limit) { sessions, count in
+        let query = searchText
+        let sort = dbSortOrder
+        UsageQueryService.shared.loadSessions(tool: tool, search: query, sort: sort, limit: limit) { sessions, count in
             guard generation == loadGeneration else { return }
             rows = sessions
             dayGroups = SessionDayGroup.groups(sessions)
@@ -320,12 +357,14 @@ struct SessionDayGroup: Identifiable {
     }()
 
     /// Rows arrive newest first, so consecutive rows of one day form a group.
+    /// Zero/negative timestamps belong to "Unknown Date", never 1970-01-01.
     static func groups(_ rows: [Database.SessionRow]) -> [SessionDayGroup] {
         let calendar = Calendar.current
         let currentYear = calendar.component(.year, from: Date())
         var out: [SessionDayGroup] = []
         var currentDay: Date?
         var current: [Database.SessionRow] = []
+        var unknownRows: [Database.SessionRow] = []
         func flush() {
             guard let day = currentDay, !current.isEmpty else { return }
             let title: String
@@ -339,6 +378,10 @@ struct SessionDayGroup: Identifiable {
             out.append(SessionDayGroup(day: day, title: title, rows: current))
         }
         for row in rows {
+            guard row.updated > 0 else {
+                unknownRows.append(row)
+                continue
+            }
             let day = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(row.updated)))
             if day != currentDay {
                 flush()
@@ -348,6 +391,9 @@ struct SessionDayGroup: Identifiable {
             current.append(row)
         }
         flush()
+        if !unknownRows.isEmpty {
+            out.append(SessionDayGroup(day: Date.distantPast, title: "Unknown Date", rows: unknownRows))
+        }
         return out
     }
 }
@@ -391,8 +437,19 @@ struct SessionRowView: View {
     }
 
     private var tokens: Int64 {
-        tool?.totalTokens(input: row.input, output: row.output, cacheRead: row.cacheRead)
-            ?? row.input + row.output + row.cacheRead
+        ToolKind.totalTokens(tool: row.tool, input: row.input, output: row.output, cacheRead: row.cacheRead)
+    }
+
+    private var costSuffix: String {
+        if row.cost > 0 { return " · \(Format.moneyShort(row.cost))" }
+        if row.count > 0 && !row.hasKnownCost { return " · —" }
+        return ""
+    }
+
+    private var updatedText: String {
+        guard row.updated > 0 else { return "—" }
+        let date = Date(timeIntervalSince1970: TimeInterval(row.updated))
+        return showDate ? Self.dateTimeFormatter.string(from: date) : Self.timeFormatter.string(from: date)
     }
 
     var body: some View {
@@ -415,14 +472,12 @@ struct SessionRowView: View {
                     Text(Format.compact(tokens) + " tokens")
                         .font(TMType.medium(TMType.body))
                         .tmMonospacedDigit()
-                    Text("\(Format.count(row.count)) calls" + (row.cost > 0 ? " · \(Format.moneyShort(row.cost))" : ""))
+                    Text("\(Format.count(row.count)) calls" + costSuffix)
                         .font(TMType.regular(TMType.caption))
                         .tmMonospacedDigit()
                         .foregroundStyle(TMDesign.quiet)
                 }
-                Text(showDate
-                     ? Self.dateTimeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(row.updated)))
-                     : Self.timeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(row.updated))))
+                Text(updatedText)
                     .font(TMType.regular(TMType.caption))
                     .tmMonospacedDigit()
                     .foregroundStyle(TMDesign.quiet)
@@ -445,15 +500,25 @@ struct SessionDetailView: View {
     let session: Database.SessionRow
     @Environment(\.dismiss) private var dismiss
     @State private var turns: [(ts: Int64, model: String?, input: Int64, output: Int64,
-                                cacheRead: Int64, cacheWrite: Int64, cost: Double)] = []
+                                cacheRead: Int64, cacheWrite: Int64, cost: Double, costQuality: String)] = []
     @State private var loaded = false
     @State private var copiedID = false
 
     private var tool: ToolKind? { ToolKind(rawValue: session.tool) }
 
     private var totalTokens: Int64 {
-        tool?.totalTokens(input: session.input, output: session.output, cacheRead: session.cacheRead)
-            ?? session.input + session.output + session.cacheRead
+        ToolKind.totalTokens(tool: session.tool, input: session.input, output: session.output, cacheRead: session.cacheRead)
+    }
+
+    private var sessionCostText: String {
+        if session.cost > 0 { return Format.moneyShort(session.cost) }
+        return (session.hasKnownCost && session.count > 0) ? "$0.00" : "—"
+    }
+
+    private func turnCostText(_ turn: (ts: Int64, model: String?, input: Int64, output: Int64,
+                                       cacheRead: Int64, cacheWrite: Int64, cost: Double, costQuality: String)) -> String {
+        if turn.cost > 0 { return Format.moneyShort(turn.cost) }
+        return turn.costQuality == "unknown" ? "—" : "$0.00"
     }
 
     var body: some View {
@@ -490,7 +555,7 @@ struct SessionDetailView: View {
             DashMetricRow {
                 DashMetric(label: "Tokens", value: Format.compact(totalTokens))
                 DashMetric(label: "Calls", value: Format.count(session.count))
-                DashMetric(label: "Cost", value: Format.moneyShort(session.cost))
+                DashMetric(label: "Cost", value: sessionCostText)
             }
 
             DashCard("Turns", inset: 10, trailing: {
@@ -524,11 +589,11 @@ struct SessionDetailView: View {
                                             .foregroundStyle(TMDesign.quiet)
                                     }
                                     Spacer(minLength: 12)
-                                    Text(Format.compact(tool?.totalTokens(input: turn.input, output: turn.output, cacheRead: turn.cacheRead)
-                                                        ?? turn.input + turn.output + turn.cacheRead))
+                                    Text(Format.compact(ToolKind.totalTokens(tool: session.tool, input: turn.input,
+                                                                             output: turn.output, cacheRead: turn.cacheRead)))
                                         .font(TMType.medium(TMType.body))
                                         .tmMonospacedDigit()
-                                    Text(Format.moneyShort(turn.cost))
+                                    Text(turnCostText(turn))
                                         .font(TMType.regular(TMType.body))
                                         .tmMonospacedDigit()
                                         .foregroundStyle(TMDesign.quiet)
@@ -546,8 +611,8 @@ struct SessionDetailView: View {
         .frame(minWidth: 680, minHeight: 460)
         .background(TMDesign.canvas)
         .onAppear {
-            UsageQueryService.shared.loadTurns(sessionTool: session.tool,
-                                               sessionID: session.sessionID) {
+            UsageQueryService.shared.loadTurnsWithQuality(sessionTool: session.tool,
+                                                          sessionID: session.sessionID) {
                 turns = $0
                 loaded = true
             }
@@ -555,13 +620,18 @@ struct SessionDetailView: View {
     }
 
     private func turnMetadata(_ turn: (ts: Int64, model: String?, input: Int64, output: Int64,
-                                       cacheRead: Int64, cacheWrite: Int64, cost: Double)) -> String {
-        var parts = [Format.dateTime(turn.ts),
-                     "In \(Format.compact(turn.input))",
-                     "Out \(Format.compact(turn.output))"]
-        if turn.cacheRead > 0 {
-            parts.append("Cache R \(Format.compact(turn.cacheRead))")
+                                       cacheRead: Int64, cacheWrite: Int64, cost: Double, costQuality: String)) -> String {
+        let timeText = turn.ts > 0 ? Format.dateTime(turn.ts) : "—"
+        var parts = [timeText]
+        if tool?.cacheIncludedInInput == true, turn.cacheRead > 0 {
+            parts.append("In \(Format.compact(turn.input)) (incl. \(Format.compact(turn.cacheRead)) cached)")
+        } else {
+            parts.append("In \(Format.compact(turn.input))")
+            if turn.cacheRead > 0 {
+                parts.append("Cache R \(Format.compact(turn.cacheRead))")
+            }
         }
+        parts.append("Out \(Format.compact(turn.output))")
         if turn.cacheWrite > 0 {
             parts.append("W \(Format.compact(turn.cacheWrite))")
         }

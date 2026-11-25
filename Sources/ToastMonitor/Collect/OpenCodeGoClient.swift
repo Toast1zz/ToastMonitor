@@ -77,7 +77,9 @@ final class OpenCodeGoClient: ObservableObject {
         }
     }
 
-    nonisolated private static func normalizedWorkspaceID(_ raw: String) -> String? {
+    func flushSettings() { Self.settingsQueue.sync {} }
+
+    nonisolated static func normalizedWorkspaceID(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
         guard !value.isEmpty,
@@ -86,8 +88,14 @@ final class OpenCodeGoClient: ObservableObject {
         return value
     }
 
-    nonisolated private static func normalizedCookie(_ raw: String) -> String? {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    nonisolated static func normalizedCookie(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("cookie:") {
+            value = String(value.dropFirst("cookie:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if value.hasPrefix("auth=") {
+            value = String(value.dropFirst("auth=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !value.isEmpty,
               value.count <= maxCookieLength,
               value.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
@@ -103,7 +111,7 @@ final class OpenCodeGoClient: ObservableObject {
         let (ckRead, ckStatus) = KeychainStore.getWithStatus(account: "go-auth-cookie")
         var ws = wsRead
         var ck = ckRead
-        let readLocked = KeychainStore.authorizationFailures.contains(wsStatus)
+        var readLocked = KeychainStore.authorizationFailures.contains(wsStatus)
             || KeychainStore.authorizationFailures.contains(ckStatus)
         if ws != nil && ck != nil {
             database.setSetting("go_workspace_id", nil)
@@ -114,20 +122,30 @@ final class OpenCodeGoClient: ObservableObject {
             let legacyCK = database.setting("go_auth_cookie")
             if let legacyWS, let legacyCK,
                let normalizedWS = Self.normalizedWorkspaceID(legacyWS),
-               let normalizedCK = Self.normalizedCookie(legacyCK),
-               KeychainStore.set(normalizedWS, account: "go-workspace-id"),
-               KeychainStore.set(normalizedCK, account: "go-auth-cookie") {
-                database.setSetting("go_workspace_id", nil)
-                database.setSetting("go_auth_cookie", nil)
-                database.setSetting("go_cred_storage", "keychain")
-                ws = normalizedWS
-                ck = normalizedCK
+               let normalizedCK = Self.normalizedCookie(legacyCK) {
+                let wsWrite = KeychainStore.setWithStatus(normalizedWS, account: "go-workspace-id")
+                let ckWrite = wsWrite.ok
+                    ? KeychainStore.setWithStatus(normalizedCK, account: "go-auth-cookie")
+                    : (ok: false, status: wsWrite.status)
+                if wsWrite.ok && ckWrite.ok {
+                    database.setSetting("go_workspace_id", nil)
+                    database.setSetting("go_auth_cookie", nil)
+                    database.setSetting("go_cred_storage", "keychain")
+                    ws = normalizedWS
+                    ck = normalizedCK
+                    readLocked = false
+                } else {
+                    database.setSetting("go_cred_storage", "keychain-unavailable")
+                    let writeLocked = KeychainStore.authorizationFailures.contains(wsWrite.status)
+                        || KeychainStore.authorizationFailures.contains(ckWrite.status)
+                    return (nil, readLocked || writeLocked)
+                }
             } else if legacyWS != nil || legacyCK != nil {
                 // Keychain unavailable or invalid legacy data: treat as
                 // unconfigured. Plaintext stays as a recovery copy but is
                 // never used for requests.
                 database.setSetting("go_cred_storage", "keychain-unavailable")
-                return (nil, readLocked || KeychainStore.lastWasInteractionNotAllowed)
+                return (nil, readLocked)
             }
         }
         guard let ws = ws.flatMap(Self.normalizedWorkspaceID),
@@ -138,6 +156,31 @@ final class OpenCodeGoClient: ObservableObject {
             return (nil, readLocked)
         }
         return ((ws, ck), false)
+    }
+
+    nonisolated private static func writeProvisionToKeychain(workspaceID: String, authCookie: String) -> (ok: Bool, locked: Bool) {
+        let (oldWorkspace, oldWSStatus) = KeychainStore.getWithStatus(account: "go-workspace-id")
+        let (oldCookie, oldCKStatus) = KeychainStore.getWithStatus(account: "go-auth-cookie")
+        let wsWrite = KeychainStore.setWithStatus(workspaceID, account: "go-workspace-id", allowPrompt: true)
+        let ckWrite = wsWrite.ok
+            ? KeychainStore.setWithStatus(authCookie, account: "go-auth-cookie", allowPrompt: true)
+            : (ok: false, status: errSecSuccess)
+        if wsWrite.ok && ckWrite.ok {
+            return (true, false)
+        }
+        let locked = KeychainStore.authorizationFailures.contains(wsWrite.status)
+            || (!wsWrite.ok ? false : KeychainStore.authorizationFailures.contains(ckWrite.status))
+        if let oldWorkspace {
+            _ = KeychainStore.setWithStatus(oldWorkspace, account: "go-workspace-id")
+        } else if wsWrite.ok && oldWSStatus == errSecItemNotFound {
+            _ = KeychainStore.delete(account: "go-workspace-id")
+        }
+        if let oldCookie {
+            _ = KeychainStore.setWithStatus(oldCookie, account: "go-auth-cookie")
+        } else if ckWrite.ok && oldCKStatus == errSecItemNotFound {
+            _ = KeychainStore.delete(account: "go-auth-cookie")
+        }
+        return (false, locked)
     }
 
     /// Stores only in Keychain. A locked/unavailable Keychain is an explicit
@@ -151,38 +194,39 @@ final class OpenCodeGoClient: ObservableObject {
             return false
         }
         invalidateInFlight()
-        let oldWorkspace = KeychainStore.get(account: "go-workspace-id")
-        let oldCookie = KeychainStore.get(account: "go-auth-cookie")
-        let wroteWorkspace = KeychainStore.set(workspaceID, account: "go-workspace-id",
-                                               allowPrompt: true)
-        let okKC = wroteWorkspace && KeychainStore.set(authCookie, account: "go-auth-cookie",
-                                                       allowPrompt: true)
-        if okKC {
-            writeSettingAsync("go_workspace_id", nil)
-            writeSettingAsync("go_auth_cookie", nil)
-            writeSettingAsync("go_cred_storage", "keychain")
-            keychainLocked = false
-        } else {
-            // Capture before the rollback calls overwrite the SecItem status.
-            let locked = KeychainStore.lastWasInteractionNotAllowed
-            // Avoid leaving a mixed workspace/cookie pair when the second
-            // Keychain write fails.
-            if let oldWorkspace {
-                _ = KeychainStore.set(oldWorkspace, account: "go-workspace-id")
-            } else {
-                KeychainStore.delete(account: "go-workspace-id")
-            }
-            if let oldCookie {
-                _ = KeychainStore.set(oldCookie, account: "go-auth-cookie")
-            } else {
-                KeychainStore.delete(account: "go-auth-cookie")
-            }
+        let outcome = Self.writeProvisionToKeychain(workspaceID: workspaceID, authCookie: authCookie)
+        return applyProvisionOutcome(outcome, workspaceID: workspaceID, authCookie: authCookie)
+    }
+
+    @discardableResult
+    func provisionAsync(workspaceId: String, cookie: String) async -> Bool {
+        guard let workspaceID = Self.normalizedWorkspaceID(workspaceId),
+              let authCookie = Self.normalizedCookie(cookie) else {
             configured = false
-            state.error = locked
+            state.error = "Invalid workspaceId or cookie"
+            return false
+        }
+        invalidateInFlight()
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.writeProvisionToKeychain(workspaceID: workspaceID, authCookie: authCookie)
+        }.value
+        return applyProvisionOutcome(outcome, workspaceID: workspaceID, authCookie: authCookie)
+    }
+
+    private func applyProvisionOutcome(_ outcome: (ok: Bool, locked: Bool),
+                                       workspaceID: String, authCookie: String) -> Bool {
+        guard outcome.ok else {
+            configured = false
+            keychainLocked = outcome.locked
+            state.error = outcome.locked
                 ? "Keychain locked or access denied; cookie was not saved"
                 : "Keychain write failed — cookie not saved"
             return false
         }
+        writeSettingAsync("go_workspace_id", nil)
+        writeSettingAsync("go_auth_cookie", nil)
+        writeSettingAsync("go_cred_storage", "keychain")
+        keychainLocked = false
         cachedCredentials = (workspaceID, authCookie)
         credentialsLoaded = true
         configured = true
@@ -190,14 +234,38 @@ final class OpenCodeGoClient: ObservableObject {
         return true
     }
 
-    func clear() {
-        invalidateInFlight()
+    nonisolated private static func deleteKeychainCredentials() -> Bool {
         let deletedWorkspace = KeychainStore.delete(account: "go-workspace-id", allowPrompt: true)
         let deletedCookie = KeychainStore.delete(account: "go-auth-cookie", allowPrompt: true)
-        guard deletedWorkspace && deletedCookie else {
+        return deletedWorkspace && deletedCookie
+    }
+
+    @discardableResult
+    func clear() -> Bool {
+        invalidateInFlight()
+        guard Self.deleteKeychainCredentials() else {
             state.error = "Keychain delete failed — credentials still stored"
-            return
+            return false
         }
+        applyClearSuccess()
+        return true
+    }
+
+    @discardableResult
+    func clearAsync() async -> Bool {
+        invalidateInFlight()
+        let ok = await Task.detached(priority: .userInitiated) {
+            Self.deleteKeychainCredentials()
+        }.value
+        guard ok else {
+            state.error = "Keychain delete failed — credentials still stored"
+            return false
+        }
+        applyClearSuccess()
+        return true
+    }
+
+    private func applyClearSuccess() {
         writeSettingAsync("go_workspace_id", nil)
         writeSettingAsync("go_auth_cookie", nil)
         writeSettingAsync("go_cred_storage", nil)
@@ -221,11 +289,23 @@ final class OpenCodeGoClient: ObservableObject {
         guard !started else { return }
         started = true
         refresh()
-        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
+        poller.start(onWake: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.backoff.allowNow()
+                self.refresh(force: self.state.error != nil)
+            }
+        }) { [weak self] in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         guard !inFlight else { return }
+        if force {
+            backoff.allowNow()
+            if keychainLocked { credentialsLoaded = false }
+        }
         // Backoff gate: skip attempts inside the backoff window.
         if backoff.isWaiting { return }
         inFlight = true
@@ -252,9 +332,11 @@ final class OpenCodeGoClient: ObservableObject {
                 guard let self, self.refreshGeneration == generation else { return }
                 let creds = loaded.value
                 self.keychainLocked = loaded.locked
-                self.credentialsLoaded = true
                 self.cachedCredentials = creds
                 guard let creds else {
+                    // Never freeze credentialsLoaded = true while Keychain is locked;
+                    // unlocking later must automatically re-read.
+                    self.credentialsLoaded = !loaded.locked
                     self.inFlight = false
                     self.configured = false
                     var cleared = State()
@@ -262,6 +344,7 @@ final class OpenCodeGoClient: ObservableObject {
                     self.state = cleared
                     return
                 }
+                self.credentialsLoaded = true
                 self.refresh(with: creds)
             }
         }
@@ -485,13 +568,14 @@ final class OpenCodeGoClient: ObservableObject {
     nonisolated static func parseHumanDuration(_ text: String) -> Int64 {
         guard text.count <= 256, !hasDisallowedControl(text) else { return -1 }
         let t = text.lowercased().trimmingCharacters(in: .whitespaces)
-        if t.contains("now") { return 0 }
+        if t.range(of: #"\bnow\b"#, options: .regularExpression) != nil { return 0 }
         var total = 0.0
-        if let v = firstNumber(t, unit: "day") { total += v * 86400 }
-        if let v = firstNumber(t, unit: "hour") { total += v * 3600 }
-        if let v = firstNumber(t, unit: "minute") { total += v * 60 }
-        if let v = firstNumber(t, unit: "second") { total += v }
-        guard total.isFinite, total >= 0, total <= 366 * 86400 else { return -1 }
+        var matched = false
+        if let v = firstNumber(t, unit: "day") { total += v * 86400; matched = true }
+        if let v = firstNumber(t, unit: "hour") { total += v * 3600; matched = true }
+        if let v = firstNumber(t, unit: "minute") { total += v * 60; matched = true }
+        if let v = firstNumber(t, unit: "second") { total += v; matched = true }
+        guard matched, total.isFinite, total >= 0, total <= 366 * 86400 else { return -1 }
         return Int64(total)
     }
 

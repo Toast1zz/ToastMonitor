@@ -125,7 +125,7 @@ struct PerformanceView: View {
         }
         .onAppear { load(showSpinner: data == nil) }
         .onChange(of: range) { _ in load(showSpinner: true) }
-        .onChange(of: app.lastScan) { _ in handleExternalUpdate() }
+        .onChange(of: app.dataRevision) { _ in handleExternalUpdate() }
         .onReceive(NotificationCenter.default.publisher(for: PerfCollector.didUpdate)) { _ in
             handleExternalUpdate()
         }
@@ -252,7 +252,9 @@ struct PerformanceView: View {
         let points = rawPoints.map { raw -> PerfPoint in
             let provider = ModelProvider.name(for: raw.model)
             let model = ModelName.display(raw.model)
-            if providerByModel[model] == nil { providerByModel[model] = provider }
+            if providerByModel[model] == nil || providerByModel[model] == ModelProvider.other {
+                providerByModel[model] = provider
+            }
             return PerfPoint(day: raw.day, tool: raw.tool, model: model,
                              ttftMs: raw.ttftMs, tokensPerSecond: raw.tokensPerSecond)
         }
@@ -278,7 +280,7 @@ struct PerformanceView: View {
             }
         }
         let ranked = callsByModel.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map(\.key)
-        let colors = TMDesign.modelColors(for: ranked)
+        let colors = TMDesign.modelColors(for: ranked, providersByDisplayName: providerByModel)
 
         let providers = callsByProvider.sorted { a, b in
             if (a.key == ModelProvider.other) != (b.key == ModelProvider.other) { return b.key == ModelProvider.other }
@@ -326,13 +328,17 @@ struct PerformanceView: View {
     }
 
     private static func speedText(_ v: Double?) -> String {
-        guard let v else { return "—" }
-        return "\(Int(v.rounded())) tok/s"
+        guard let v, v.isFinite, v >= 0 else { return "—" }
+        let clamped = Int(min(v.rounded(), Double(Int.max / 2)))
+        return "\(clamped) tok/s"
     }
 
     private static func ttftText(_ ms: Double?) -> String {
-        guard let ms else { return "—" }
-        return ms < 1000 ? "\(Int(ms.rounded())) ms" : String(format: "%.1f s", ms / 1000)
+        guard let ms, ms.isFinite, ms >= 0 else { return "—" }
+        if ms < 1000 {
+            return "\(Int(ms.rounded())) ms"
+        }
+        return String(format: "%.1f s", ms / 1000)
     }
 
     private func valueText(_ v: Double) -> String {

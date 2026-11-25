@@ -91,6 +91,15 @@ enum ToolKind: String, CaseIterable, Identifiable {
 
     /// Primary token measure: input + output + cache reads. Codex is the
     /// exception: its input already includes cache reads.
+    static func totalTokens(tool: String, input: Int64, output: Int64, cacheRead: Int64) -> Int64 {
+        ToolKind(rawValue: tool)?.totalTokens(input: input, output: output, cacheRead: cacheRead)
+            ?? (input + output)
+    }
+
+    static func totalTokens(_ t: Database.ToolTotals) -> Int64 {
+        totalTokens(tool: t.tool, input: t.input, output: t.output, cacheRead: t.cacheRead)
+    }
+
     func totalTokens(_ t: Database.ToolTotals) -> Int64 {
         totalTokens(input: t.input, output: t.output, cacheRead: t.cacheRead)
     }
@@ -196,7 +205,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
             let tokensMatchWinner = model == winner.model
                 && input == winner.inputTokens && output == winner.outputTokens
                 && reasoning == winner.reasoningTokens && cacheRead == winner.cacheRead
-                && cacheWrite == winner.cacheWrite
+                && cacheWrite == winner.cacheWrite && cacheWrite1h == winner.cacheWrite1h
             let repriced = tokensMatchWinner ? nil : Pricing.estimate(
                 model: model, input: input, output: output,
                 cacheRead: cacheRead, cacheWrite: cacheWrite - min(cacheWrite1h ?? 0, cacheWrite),

@@ -15,12 +15,14 @@ final class CLIRenewalGate: @unchecked Sendable {
     static let minInterval: TimeInterval = 45
 
     private let lock = NSLock()
-    private var lastInvoke: TimeInterval = 0
+    private var lastInvoke: TimeInterval?
 
-    func begin(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+    func begin(now: TimeInterval = MonotonicClock.now()) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard now - lastInvoke >= Self.minInterval else { return false }
+        if let lastInvoke, now - lastInvoke >= 0, now - lastInvoke < Self.minInterval {
+            return false
+        }
         lastInvoke = now
         return true
     }
@@ -44,6 +46,7 @@ final class CLIRenewalRetry {
     private var pending: DispatchWorkItem?
 
     var hasPendingForTesting: Bool { pending != nil }
+    var hasActiveRetry: Bool { failures > 0 || pending != nil }
 
     init(interval: TimeInterval = defaultInterval) {
         self.interval = interval
@@ -64,7 +67,12 @@ final class CLIRenewalRetry {
     func schedule(counting: Bool, retry: @escaping @MainActor @Sendable () -> Void) {
         if counting { failures += 1 }
         pending?.cancel()
-        let work = DispatchWorkItem { MainActor.assumeIsolated { retry() } }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.pending = nil
+                retry()
+            }
+        }
         pending = work
         DispatchQueue.main.asyncAfter(deadline: .now() + nextDelay, execute: work)
     }

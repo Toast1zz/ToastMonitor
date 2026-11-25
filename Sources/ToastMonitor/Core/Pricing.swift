@@ -20,7 +20,7 @@ enum Pricing {
     /// Labels the table that priced a row. Bumping it does not touch stored
     /// costs: a price change applies to new usage, and history keeps what it
     /// was priced at. Only `correctedModels` below are ever repriced.
-    static let version = "2026-11-10"
+    static let version = "2026-11-25"
     /// A row priced before this revision by a model in `correctedModels` was
     /// priced from a wrong table entry, so its stored cost is an error rather
     /// than history. Add to this only when the table itself was wrong.
@@ -34,13 +34,14 @@ enum Pricing {
     /// OpenAI's long context starts above this many input tokens.
     static let longContextThreshold: Int64 = 272_000
     /// Models with a long-context entry below, for matching stored rows in SQL.
-    // Ends-with patterns (`%gpt-5.4`) plus dated snapshots (`%gpt-5.4-20%`).
+    // Ends-with patterns (`%gpt-5.4`) plus dated snapshots (`%gpt-5.4-20%`)
+    // and suffixed variants (`:online`, `[1m]`, `-latest`).
     // A trailing % on `gpt-5.4` would also mark mini and nano, which have no
     // long-context rate.
     static let longContextModels = ["%gpt-6.1-sol%", "%gpt-6.1-terra%", "%gpt-6-astra%", "%gpt-6-sol%", "%gpt-6-luna%",
-                                    "%gpt-5.6-sol%", "%gpt-5.6-terra%", "%gpt-5.6-luna%", "%gpt-5.6-20%", "%gpt-5.6",
-                                    "%gpt-5.5-pro%", "%gpt-5.5-20%", "%gpt-5.5",
-                                    "%gpt-5.4-pro%", "%gpt-5.4-20%", "%gpt-5.4"]
+                                    "%gpt-5.6-sol%", "%gpt-5.6-terra%", "%gpt-5.6-luna%", "%gpt-5.6-20%", "%gpt-5.6-latest%", "%gpt-5.6:%", "%gpt-5.6[%", "%gpt-5.6",
+                                    "%gpt-5.5-pro%", "%gpt-5.5-20%", "%gpt-5.5-latest%", "%gpt-5.5:%", "%gpt-5.5[%", "%gpt-5.5",
+                                    "%gpt-5.4-pro%", "%gpt-5.4-20%", "%gpt-5.4-latest%", "%gpt-5.4:%", "%gpt-5.4[%", "%gpt-5.4"]
     /// Marks an estimated row whose computed price is zero, so the 60s
     /// backfill does not select it again until this revision changes.
     static let zeroCostStamp = version + "#0"
@@ -131,11 +132,22 @@ enum Pricing {
         ("deepseek-reasoner", ModelPrice(input: 0.56, output: 1.68, cacheRead: 0.056, cacheWrite: 0.56)),
         ("deepseek", ModelPrice(input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28)),
         // Others
+        ("gemini-3.5-flash", ModelPrice(input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.45)),
+        ("gemini-3-flash", ModelPrice(input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.45)),
+        ("gemini-2.5-flash-lite", ModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.15)),
         ("gemini-2.5-flash", ModelPrice(input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.45)),
         ("gemini-2.5", ModelPrice(input: 1.25, output: 10, cacheRead: 0.0625, cacheWrite: 1.875)),
         ("gemini-2.0-flash", ModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.15)),
         ("gemini-2.0", ModelPrice(input: 1.25, output: 10, cacheRead: 0.0625, cacheWrite: 1.875)),
         ("gemini", ModelPrice(input: 1.25, output: 10, cacheRead: 0.0625, cacheWrite: 1.875)),
+        ("grok-4-fast", ModelPrice(input: 0.2, output: 0.5, cacheRead: 0.05, cacheWrite: 0.2)),
+        ("grok-code-fast", ModelPrice(input: 0.2, output: 1.5, cacheRead: 0.02, cacheWrite: 0.2)),
+        ("grok-3-mini", ModelPrice(input: 0.3, output: 0.5, cacheRead: 0.075, cacheWrite: 0.3)),
+        ("grok", ModelPrice(input: 3, output: 15, cacheRead: 0.75, cacheWrite: 3)),
+        ("minimax-m1", ModelPrice(input: 0.4, output: 2.2, cacheRead: 0.04, cacheWrite: 0.4)),
+        ("minimax", ModelPrice(input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375)),
+        ("mimo", ModelPrice(input: 0.1, output: 0.3, cacheRead: 0.01, cacheWrite: 0.1)),
+        ("codex-mini", ModelPrice(input: 1.5, output: 6, cacheRead: 0.375, cacheWrite: 1.5)),
         ("qwen3", ModelPrice(input: 0.5, output: 2, cacheRead: 0.05, cacheWrite: 0.75)),
         ("qwen", ModelPrice(input: 0.5, output: 2, cacheRead: 0.05, cacheWrite: 0.75)),
         ("kimi", ModelPrice(input: 0.6, output: 2.5, cacheRead: 0.06, cacheWrite: 0.9)),
@@ -143,6 +155,9 @@ enum Pricing {
         ("glm", ModelPrice(input: 0.1, output: 0.1, cacheRead: 0.01, cacheWrite: 0.05)),
         ("o4-mini", ModelPrice(input: 1.1, output: 4.4, cacheRead: 0.275, cacheWrite: 1.65)),
         ("o3-mini", ModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.65)),
+        ("o1-mini", ModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.65)),
+        ("o1-pro", ModelPrice(input: 150, output: 600, cacheRead: 0, cacheWrite: 0)),
+        ("o1", ModelPrice(input: 15, output: 60, cacheRead: 7.5, cacheWrite: 15)),
         ("o3", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
         ("o4", ModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 3)),
     ]
@@ -189,18 +204,22 @@ enum Pricing {
     /// family matches a prefix only at a `-` or `.` boundary, never as a
     /// substring (`gpt-5` must not price `gpt-5-mini`).
     static func price(for model: String) -> ModelPrice? {
-        let lowered = model.lowercased()
+        let lowered = model.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let rawLeaf = lowered.split(separator: "/").last.map(String.init) ?? lowered
         let leaf = stripRouterSuffix(rawLeaf)
-        var best: (length: Int, price: ModelPrice)?
+        var best: (pattern: String, length: Int, price: ModelPrice)?
         for entry in table {
             let candidate = entry.pattern.hasPrefix("claude-")
                 ? leaf.replacingOccurrences(of: ".", with: "-")
                 : leaf
             guard matches(candidate, pattern: entry.pattern) else { continue }
             if best == nil || entry.pattern.count > best!.length {
-                best = (entry.pattern.count, entry.price)
+                best = (entry.pattern, entry.pattern.count, entry.price)
             }
+        }
+        // Any newer Gemini Flash variant falls back to the Flash tier rather than Pro.
+        if best?.pattern == "gemini", leaf.contains("-flash") {
+            return table.first { $0.pattern == "gemini-2.5-flash" }?.price ?? best?.price
         }
         return best?.price
     }
@@ -223,13 +242,27 @@ enum Pricing {
            dot.lowerBound == s.startIndex || s[s.index(before: dot.lowerBound)] == "." {
             s.removeSubrange(s.startIndex..<dot.upperBound)
         }
-        if let bracket = s.range(of: "\\[[0-9]+[mk]\\]$", options: .regularExpression) {
+        if let paren = s.range(of: #"\s*\((low|medium|high|xhigh|minimal|thinking|tiered|[0-9]+[mk])\)$"#,
+                               options: .regularExpression) {
+            s.removeSubrange(paren)
+        }
+        if s.hasPrefix("claude ") {
+            s = s.replacingOccurrences(of: " ", with: "-")
+        }
+        if let bracket = s.range(of: #"\[[0-9]+[mk]\]$"#, options: .regularExpression) {
             s.removeSubrange(bracket)
         }
-        if let bedrock = s.range(of: "-v[0-9]+:[0-9]+$", options: .regularExpression) {
+        if let bedrock = s.range(of: #"-v[0-9]+:[0-9]+$"#, options: .regularExpression) {
             s.removeSubrange(bedrock)
-        } else if let colon = s.range(of: ":[a-z0-9._-]+$", options: .regularExpression) {
+        } else if let colon = s.range(of: #":[a-z0-9._-]+$"#, options: .regularExpression) {
             s.removeSubrange(colon)
+        }
+        if let vertex = s.range(of: #"@([0-9]{8}|default)$"#, options: .regularExpression) {
+            s.removeSubrange(vertex)
+        }
+        while let modifier = s.range(of: #"-(low|medium|high|xhigh|minimal|thinking|tiered|[0-9]+[mk])$"#,
+                                     options: .regularExpression) {
+            s.removeSubrange(modifier)
         }
         return s
     }

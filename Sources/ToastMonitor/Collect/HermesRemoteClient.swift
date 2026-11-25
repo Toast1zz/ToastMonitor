@@ -1,6 +1,8 @@
+import AppKit
 import Foundation
 import Combine
 import CryptoKit
+import Darwin
 
 /// Remote usage collector: pulls the usage feed exported by the VPS
 /// (cron exporter over a user-configured HTTPS or private-network feed)
@@ -78,6 +80,15 @@ final class HermesRemoteClient: ObservableObject {
                 self.updateForeground()
             }
         }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                self?.lastPoll = 0
+                self?.maybePoll()
+            }
+        }
     }
 
     /// Remote ingestion is opt-in. A local Mac installation therefore stays
@@ -110,6 +121,18 @@ final class HermesRemoteClient: ObservableObject {
         guard !started else { return }
         started = true
         updateForeground()
+    }
+
+    func reloadConfiguration() {
+        guard started else { return }
+        if !remoteSourcesEnabled {
+            clearRemoteHealth()
+        }
+        lastPoll = 0
+        updateForeground()
+        if remoteSourcesEnabled {
+            poll()
+        }
     }
 
     private func startTimer() {
@@ -152,7 +175,7 @@ final class HermesRemoteClient: ObservableObject {
             if ip.isTailscale || ip.isLoopback { return true }
             return false
         }
-        return host == "localhost"
+        return host.lowercased() == "localhost"
     }
 
     private static func validField(_ value: Any?, maxLength: Int,
@@ -168,9 +191,20 @@ final class HermesRemoteClient: ObservableObject {
     private struct IPv4Address {
         let a: UInt8, b: UInt8, c: UInt8, d: UInt8
         init?(_ s: String) {
-            let parts = s.split(separator: ".").compactMap { UInt8($0) }
+            let parts = s.split(separator: ".", omittingEmptySubsequences: false)
             guard parts.count == 4 else { return nil }
-            (a, b, c, d) = (parts[0], parts[1], parts[2], parts[3])
+            var bytes: [UInt8] = []
+            bytes.reserveCapacity(4)
+            for part in parts {
+                guard !part.isEmpty, part.count <= 3,
+                      part.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      part == "0" || part.first != "0",
+                      let byte = UInt8(part) else { return nil }
+                bytes.append(byte)
+            }
+            var addr = in_addr()
+            guard inet_pton(AF_INET, s, &addr) == 1 else { return nil }
+            (a, b, c, d) = (bytes[0], bytes[1], bytes[2], bytes[3])
         }
         var isTailscale: Bool { a == 100 && b >= 64 && b <= 127 }
         var isLoopback: Bool { a == 127 }
@@ -276,12 +310,17 @@ final class HermesRemoteClient: ObservableObject {
         }
     }
 
-    private func publishStatus(_ update: @escaping (inout SyncStatus) -> Void) {
+    private func publishStatus(reportErrorToHealth: Bool = true,
+                               _ update: @escaping (inout SyncStatus) -> Void) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             update(&self.status)
             if let error = self.status.error {
                 NSLog("[ToastMonitor] remote feed error: %@", error)
+                if reportErrorToHealth {
+                    SourceHealthHub.shared.record(tool: "remote-feed", rows: 0, failed: 1,
+                                                  durationMs: 0, error: error)
+                }
             }
         }
     }
@@ -301,38 +340,59 @@ final class HermesRemoteClient: ObservableObject {
 
         // Retain a monotonic watermark for diagnostics and migration
         // visibility, but never use it to decide whether a per-turn event is
-        // eligible: event_id is the durable deduplication boundary. The
-        // Cursor keeps the eventID only for same-second tie-break ordering;
-        // only the timestamp is persisted (see the write below).
+        // eligible: event_id is the durable deduplication boundary.
         struct Cursor {
             var ts: Int64
             var eventID: String
         }
+        struct HermesSubCounters {
+            var input: Int64
+            var output: Int64
+            var reasoning: Int64
+            var cacheRead: Int64
+            var cacheWrite: Int64
+        }
+        struct HermesRoute {
+            let sessionID: String
+            let model: String?
+            let billingProvider: String?
+            var project: String?
+            var subRows: [String: HermesSubCounters]
+            var firstSeen: Int64
+            var lastSeen: Int64
+        }
 
+        let staged = StagedParserStateStore(database: database, sourcePaths: [])
         var turns: [TurnRecord] = []
         var sessions: [String: SessionInfo] = [:]
-        var pendingHermesBaselines: [(key: String, value: String)] = []
-        var pendingOpenCodeTotals: [(key: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double, updated: Int64)] = []
+        var hermesRoutes: [String: HermesRoute] = [:]
         var pendingWatermarks: [ToolKind: Cursor] = [:]
         var seenRemoteTools: Set<String> = []
         var unknownTools = 0
         var malformedRows = 0
-        let totals = database.sessionTotals() // once per poll
+        let totals = staged.sessionTotals() // once per poll
         // Resolve the remote-source set once per poll instead of
         // hitting the settings table for every row.
         let toolRemoteSources = Set(ToolKind.allCases.filter {
-            (database.setting($0.sourceKey) ?? $0.defaultSource) == "remote"
+            (staged.setting($0.sourceKey) ?? $0.defaultSource) == "remote"
         })
-        // Running baselines: a later row for the same key in this poll
-        // must compute against the previous row's write, not the stale
-        // committed value, or the cumulative delta is inserted twice.
-        var runningHermes: [String: [Int64]] = [:]
         var runningOpenCode: [String: (tool: String, input: Int64, output: Int64, reasoning: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double)] = [:]
         let nowTs = Int64(Date().timeIntervalSince1970)
         // Feed rows outside this window are rejected (a future-dated row
         // would poison the monotonic watermark and blind per-turn tools).
         let tsLower = nowTs - 10 * 366 * 86400
         let tsUpper = nowTs + 24 * 3600
+
+        func updateWatermark(_ tool: ToolKind, lastSeen: Int64, eventID: String) {
+            let candidate = Cursor(ts: min(lastSeen, nowTs), eventID: eventID)
+            if let previous = pendingWatermarks[tool] {
+                if candidate.ts > previous.ts || (candidate.ts == previous.ts && candidate.eventID > previous.eventID) {
+                    pendingWatermarks[tool] = candidate
+                }
+            } else {
+                pendingWatermarks[tool] = candidate
+            }
+        }
 
         for row in rows {
             // Unknown tools are rejected, never silently treated as Hermes.
@@ -352,6 +412,8 @@ final class HermesRemoteClient: ObservableObject {
                   Self.validField(row["title"], maxLength: Self.maxFieldLength),
                   Self.validField(row["project"], maxLength: Self.maxFieldLength),
                   Self.validField(row["billing_provider"], maxLength: Self.maxProviderLength),
+                  Self.validField(row["billing_mode"], maxLength: Self.maxFieldLength),
+                  Self.validField(row["task"], maxLength: Self.maxFieldLength),
                   Self.validField(row["provider"], maxLength: Self.maxProviderLength),
                   Self.validField(row["billing_base_url"], maxLength: Self.maxFieldLength),
                   Self.validField(row["event_id"], maxLength: Self.maxFieldLength) else {
@@ -376,7 +438,8 @@ final class HermesRemoteClient: ObservableObject {
             }
             let normalizedFirst = Int64(rawFirst > 1_000_000_000_000 ? rawFirst / 1000 : rawFirst)
             let firstSeenS = min(max(normalizedFirst, tsLower), min(lastSeenS, nowTs))
-            let model = row["model"] as? String
+            let rawModel = row["model"] as? String
+            let model = tool == .opencode ? OpenCodeParser.normalizeModel(rawModel) : rawModel
             // All token values are non-negative and capped before arithmetic;
             // malformed numbers become zero instead of overflowing Int64 sums.
             func count(_ key: String) -> Int64 {
@@ -394,75 +457,81 @@ final class HermesRemoteClient: ObservableObject {
             let cost = rawCost.isFinite ? min(max(rawCost, 0), 1_000_000_000) : 0
             let title = row["title"] as? String
             let project = row["project"] as? String
+            let hasReportedCost = (row["cost_usd"] as? NSNumber).map {
+                CFGetTypeID($0) != CFBooleanGetTypeID() && $0.doubleValue.isFinite && $0.doubleValue >= 0
+            } ?? false
 
-            var dInput = input
-            var dReasoning = reasoning
-            var dOutput = output
-            var dCacheRead = cacheRead
-            var dCacheWrite = cacheWrite
-            var dCost = cost
-            let hasReportedCost = (row["cost_usd"] as? NSNumber).map { $0.doubleValue.isFinite } ?? false
-            var costQuality = hasReportedCost ? "estimated" : "unknown"
             let rawEventID = row["event_id"] as? String ?? ""
-            let eventID = rawEventID.isEmpty
+            let fallbackID = rawEventID.isEmpty
                 ? Self.fallbackEventID(row: row, tool: tool, sessionID: sessionID,
                                        lastSeen: lastSeenS, firstSeen: firstSeenS)
                 : rawEventID
-            // Event identity, not a timestamp watermark, is the idempotency
-            // boundary for per-turn rows. A producer can append a valid event
-            // older than the current cursor; re-reading it is cheap and
-            // INSERT ... ON CONFLICT DO NOTHING keeps the import exact.
-            // Cumulative Hermes/OpenCode rows remain idempotent via their
-            // persisted baselines below.
-            var isFirstRow = false // first row = the session's cumulative baseline, dated firstSeen
+
+            let safeSessionUpdated = max(lastSeenS, firstSeenS)
+            let sessionKey = "\(tool.rawValue)|\(sessionID)"
+            if let existing = sessions[sessionKey] {
+                let mergedCreated = existing.created > 0 && firstSeenS > 0 ? min(existing.created, firstSeenS) : max(existing.created, firstSeenS)
+                sessions[sessionKey] = SessionInfo(tool: tool, sessionID: sessionID,
+                                                   title: existing.title ?? title,
+                                                   project: existing.project ?? project,
+                                                   model: existing.model ?? model,
+                                                   created: mergedCreated,
+                                                   updated: max(existing.updated, safeSessionUpdated))
+            } else {
+                sessions[sessionKey] = SessionInfo(tool: tool, sessionID: sessionID, title: title,
+                                                   project: project, model: model,
+                                                   created: firstSeenS,
+                                                   updated: safeSessionUpdated)
+            }
 
             switch tool {
             case .hermes:
-                // Hermes traffic bills through the underlying plans
-                // (OpenCode Go plan / OpenRouter balance / Codex subscription) — tokens
-                // only, never cost here.
-                // Delta key is per (session, model, billing route): one
-                // cumulative row per (provider, base_url) combo — sharing a
-                // key lets later small rows clobber the baseline. base_url is
-                // normalized (trailing slash) because Hermes flips the slash
-                // on route changes, which would otherwise open a fresh row
-                // carrying the FULL cumulative value (double counting).
+                // Mirror Hermes `session_model_usage` key semantics: duplicate or
+                // sequential snapshots for the same `(billing_mode, task)` take
+                // `max`, whereas distinct tasks within one billing route sum.
+                let billingProvider = row["billing_provider"] as? String
                 let key = HermesUsageBaseline.key(session: sessionID, model: model,
-                                                  provider: row["billing_provider"] as? String,
+                                                  provider: billingProvider,
                                                   baseURL: row["billing_base_url"] as? String)
-                // hm_d| baselines grow one settings entry per distinct
-                // (session, model, billing route) and are never pruned.
-                // Retention is deliberately absent: deleting a baseline would
-                // replay that session's cumulative totals as fresh deltas
-                // (double counting). Growth is bounded by distinct sessions
-                // seen via the feed and is the accepted tradeoff. A session
-                // the local parser already counted continues from its
-                // baseline instead of starting over.
-                let current = HermesUsageBaseline.Counters(input: input, output: output, reasoning: reasoning,
-                                                            cacheRead: cacheRead, cacheWrite: cacheWrite)
-                let local: [Int64] = totals[HermesUsageBaseline.localTotalsKey(key)]
-                    .map { [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0] } ?? []
-                let prev = HermesUsageBaseline.merge(current: current, baselines: [local,
-                    runningHermes[key] ?? HermesUsageBaseline.parse(database.setting(key))])
-                let step = HermesUsageBaseline.advance(
-                    current: .init(input: input, output: output, reasoning: reasoning,
-                                   cacheRead: cacheRead, cacheWrite: cacheWrite),
-                    prev: prev)
-                isFirstRow = step.isFirst
-                dInput = step.delta.input
-                dOutput = step.delta.output
-                dReasoning = step.delta.reasoning
-                dCacheRead = step.delta.cacheRead
-                dCacheWrite = step.delta.cacheWrite
-                let encoded = HermesUsageBaseline.encode(step.base)
-                runningHermes[key] = HermesUsageBaseline.parse(encoded)
-                pendingHermesBaselines.append((key, encoded))
-                dCost = 0
-                costQuality = "unknown"
+                let subKey = "\((row["billing_mode"] as? String) ?? "")\u{0}\((row["task"] as? String) ?? "")"
+                let subSample = HermesSubCounters(input: input, output: output, reasoning: reasoning,
+                                                  cacheRead: cacheRead, cacheWrite: cacheWrite)
+                if var route = hermesRoutes[key] {
+                    if let existingSub = route.subRows[subKey] {
+                        route.subRows[subKey] = HermesSubCounters(
+                            input: max(existingSub.input, subSample.input),
+                            output: max(existingSub.output, subSample.output),
+                            reasoning: max(existingSub.reasoning, subSample.reasoning),
+                            cacheRead: max(existingSub.cacheRead, subSample.cacheRead),
+                            cacheWrite: max(existingSub.cacheWrite, subSample.cacheWrite))
+                    } else {
+                        route.subRows[subKey] = subSample
+                    }
+                    if firstSeenS > 0 && (route.firstSeen == 0 || firstSeenS < route.firstSeen) {
+                        route.firstSeen = firstSeenS
+                    }
+                    route.lastSeen = max(route.lastSeen, lastSeenS)
+                    if route.project == nil { route.project = project }
+                    hermesRoutes[key] = route
+                } else {
+                    hermesRoutes[key] = HermesRoute(
+                        sessionID: sessionID, model: model,
+                        billingProvider: billingProvider ?? (row["provider"] as? String),
+                        project: project,
+                        subRows: [subKey: subSample],
+                        firstSeen: firstSeenS, lastSeen: lastSeenS)
+                }
+                updateWatermark(.hermes, lastSeen: lastSeenS, eventID: fallbackID)
             case .opencode:
                 let totalsKey = "opencode|\(sessionID)"
                 let prev = runningOpenCode[totalsKey] ?? totals[totalsKey]
-                isFirstRow = prev == nil
+                let isFirstRow = prev == nil
+                var dInput = input
+                var dOutput = output
+                var dReasoning = reasoning
+                var dCacheRead = cacheRead
+                var dCacheWrite = cacheWrite
+                var dCost = cost
                 var legacyCombinedInput = false
                 if let prev {
                     legacyCombinedInput = prev.reasoning == 0
@@ -482,70 +551,130 @@ final class HermesRemoteClient: ObservableObject {
                 let safeCost = prev.map { max(cost, $0.cost) } ?? cost
                 runningOpenCode[totalsKey] = ("opencode", safeInput, safeOutput, safeReasoning,
                                               safeRead, safeWrite, safeCost)
-                pendingOpenCodeTotals.append((totalsKey, safeInput, safeOutput, safeReasoning,
-                                              safeRead, safeWrite, safeCost, lastSeenS))
-                costQuality = hasReportedCost ? "actual" : "unknown"
-            default:
-                break // per-turn events: insert as-is
-            }
-
-            if dInput > 0 || dOutput > 0 || dReasoning > 0 || dCacheRead > 0 || dCacheWrite > 0 {
-                // First-seen rows are cumulative baselines: attribute them to
-                // the session's start date, not "now".
-                let ts = (isFirstRow && firstSeenS > 0) ? firstSeenS : lastSeenS
-                let provider = (row["billing_provider"] as? String)
-                    ?? (row["provider"] as? String)
-                turns.append(TurnRecord(tool: tool, sessionID: sessionID, project: project,
-                                        model: model, ts: ts,
-                                        inputTokens: dInput, outputTokens: dOutput,
-                                        reasoningTokens: dReasoning,
-                                        cacheRead: dCacheRead, cacheWrite: dCacheWrite, cost: dCost,
-                                        provider: provider, sourceInstance: sourceInstance,
-                                        eventID: eventID, costQuality: costQuality))
-            }
-            sessions["\(tool.rawValue)|\(sessionID)"] = SessionInfo(tool: tool, sessionID: sessionID, title: title,
-                                                                    project: project, model: model,
-                                                                    created: firstSeenS,
-                                                                    updated: lastSeenS)
-            // Clamp the cursor to now: a future-dated row (within the +24h
-            // acceptance window) must not advance the watermark past the
-            // present, or it would blind per-turn import until the feed
-            // catches up.
-            let candidate = Cursor(ts: min(lastSeenS, nowTs), eventID: eventID)
-            if let previous = pendingWatermarks[tool] {
-                if candidate.ts > previous.ts || (candidate.ts == previous.ts && candidate.eventID > previous.eventID) {
-                    pendingWatermarks[tool] = candidate
+                staged.setSessionTotals(totalsKey, tool: "opencode",
+                                        input: safeInput, output: safeOutput,
+                                        reasoning: safeReasoning,
+                                        cacheRead: safeRead, cacheWrite: safeWrite,
+                                        cost: safeCost, updated: lastSeenS)
+                // Always derive cumulative delta event_id from post-step counters
+                // rather than reusing a static row["event_id"], which would drop
+                // subsequent deltas via ON CONFLICT DO NOTHING.
+                let deltaEventID = "opencode-remote:\(sessionID):\(lastSeenS):\(safeInput):\(safeOutput):\(safeReasoning):\(safeRead):\(safeWrite)"
+                let dTokens = dInput + dOutput + dReasoning + dCacheRead + dCacheWrite
+                if dTokens > 0 {
+                    let ts = (isFirstRow && firstSeenS > 0) ? firstSeenS : lastSeenS
+                    let provider = (row["billing_provider"] as? String)
+                        ?? (row["provider"] as? String)
+                        ?? OpenCodeParser.normalizeProvider(rawModel)
+                    let quality = (dCost == 0 || !hasReportedCost) ? "unknown" : "actual"
+                    turns.append(TurnRecord(tool: .opencode, sessionID: sessionID, project: project,
+                                            model: model, ts: ts,
+                                            inputTokens: dInput, outputTokens: dOutput,
+                                            reasoningTokens: dReasoning,
+                                            cacheRead: dCacheRead, cacheWrite: dCacheWrite, cost: dCost,
+                                            provider: provider, sourceInstance: sourceInstance,
+                                            eventID: deltaEventID, costQuality: quality))
                 }
-            } else {
-                pendingWatermarks[tool] = candidate
+                updateWatermark(.opencode, lastSeen: lastSeenS, eventID: deltaEventID)
+            default:
+                let dTokens = input + output + reasoning + cacheRead + cacheWrite
+                if dTokens > 0 {
+                    let provider = (row["billing_provider"] as? String) ?? (row["provider"] as? String)
+                    let finalCost: Double
+                    let quality: String
+                    if hasReportedCost {
+                        finalCost = cost
+                        quality = "estimated"
+                    } else if let est = Pricing.estimate(model: model, input: input, output: output,
+                                                         cacheRead: cacheRead, cacheWrite: cacheWrite,
+                                                         inputIncludesCache: tool == .codex) {
+                        finalCost = est
+                        quality = "estimated"
+                    } else {
+                        finalCost = 0
+                        quality = "unknown"
+                    }
+                    turns.append(TurnRecord(tool: tool, sessionID: sessionID, project: project,
+                                            model: model, ts: lastSeenS,
+                                            inputTokens: input, outputTokens: output,
+                                            reasoningTokens: reasoning,
+                                            cacheRead: cacheRead, cacheWrite: cacheWrite, cost: finalCost,
+                                            provider: provider, sourceInstance: sourceInstance,
+                                            eventID: fallbackID, costQuality: quality))
+                }
+                updateWatermark(tool, lastSeen: lastSeenS, eventID: fallbackID)
             }
         }
 
-        // Atomic commit: turns + sessions + cumulative baselines + watermarks
-        // are one unit. A failed write must leave the feed replayable.
+        for key in hermesRoutes.keys.sorted() {
+            guard let route = hermesRoutes[key] else { continue }
+            var totalInput: Int64 = 0
+            var totalOutput: Int64 = 0
+            var totalReasoning: Int64 = 0
+            var totalCacheRead: Int64 = 0
+            var totalCacheWrite: Int64 = 0
+            for sub in route.subRows.values {
+                totalInput = min(totalInput + sub.input, TurnRecord.maxTokens)
+                totalOutput = min(totalOutput + sub.output, TurnRecord.maxTokens)
+                totalReasoning = min(totalReasoning + sub.reasoning, TurnRecord.maxTokens)
+                totalCacheRead = min(totalCacheRead + sub.cacheRead, TurnRecord.maxTokens)
+                totalCacheWrite = min(totalCacheWrite + sub.cacheWrite, TurnRecord.maxTokens)
+            }
+            let current = HermesUsageBaseline.Counters(input: totalInput, output: totalOutput,
+                                                       reasoning: totalReasoning,
+                                                       cacheRead: totalCacheRead,
+                                                       cacheWrite: totalCacheWrite)
+            let localKey = HermesUsageBaseline.localTotalsKey(key)
+            let local: [Int64] = totals[localKey].map {
+                [$0.input, $0.output, $0.reasoning, $0.cacheRead, $0.cacheWrite, 0]
+            } ?? []
+            let prev = HermesUsageBaseline.merge(current: current, baselines: [
+                local,
+                HermesUsageBaseline.parse(staged.setting(key))
+            ])
+            let step = HermesUsageBaseline.advance(current: current, prev: prev)
+            let b = step.base
+            let encoded = HermesUsageBaseline.encode(b)
+            if staged.setting(key) != encoded {
+                staged.setSetting(key, encoded)
+            }
+            let stored = totals[localKey]
+            if stored?.input != b.input || stored?.output != b.output || stored?.reasoning != b.reasoning
+                || stored?.cacheRead != b.cacheRead || stored?.cacheWrite != b.cacheWrite {
+                staged.setSessionTotals(localKey, tool: "hermes",
+                                        input: b.input, output: b.output,
+                                        reasoning: b.reasoning, cacheRead: b.cacheRead,
+                                        cacheWrite: b.cacheWrite, cost: 0, updated: nowTs)
+            }
+            let d = step.delta
+            if d.input > 0 || d.output > 0 || d.reasoning > 0 || d.cacheRead > 0 || d.cacheWrite > 0 {
+                let ts = (step.isFirst && route.firstSeen > 0) ? route.firstSeen : route.lastSeen
+                let eventID = "hermes-remote:\(key):\(b.input):\(b.output):\(b.reasoning):\(b.cacheRead):\(b.cacheWrite)"
+                turns.append(TurnRecord(tool: .hermes, sessionID: route.sessionID, project: route.project,
+                                        model: route.model, ts: ts,
+                                        inputTokens: d.input, outputTokens: d.output,
+                                        reasoningTokens: d.reasoning,
+                                        cacheRead: d.cacheRead, cacheWrite: d.cacheWrite, cost: 0,
+                                        provider: route.billingProvider, sourceInstance: sourceInstance,
+                                        eventID: eventID, costQuality: "unknown"))
+            }
+        }
+
+        for (tool, value) in pendingWatermarks {
+            staged.setSetting("remote_watermark_\(tool.rawValue)", "\(value.ts)")
+        }
+
+        // Atomic commit: validate baselines + turns + sessions + cumulative baselines + watermarks.
+        var insertedTurnCount = 0
+        var importedByTool: [String: Int] = [:]
         let ok = database.inTransaction {
-            var writesOK = database.insertTurns(turns)
-            writesOK = database.upsertSessions(Array(sessions.values)) && writesOK
-            for p in pendingHermesBaselines {
-                writesOK = database.setSetting(p.key, p.value) && writesOK
-                let base = HermesUsageBaseline.parse(p.value)
-                writesOK = database.setSessionTotals(HermesUsageBaseline.localTotalsKey(p.key), tool: "hermes",
-                    input: base[0], output: base[1], reasoning: base[2], cacheRead: base[3], cacheWrite: base[4],
-                    cost: 0, updated: nowTs) && writesOK
-            }
-            for p in pendingOpenCodeTotals {
-                writesOK = database.setSessionTotals(p.key, tool: "opencode",
-                                                      input: p.input, output: p.output,
-                                                      reasoning: p.reasoning,
-                                                      cacheRead: p.cacheRead, cacheWrite: p.cacheWrite,
-                                                      cost: p.cost, updated: p.updated) && writesOK
-            }
-            for (tool, value) in pendingWatermarks {
-                // Diagnostic-only: persist just the timestamp.
-                writesOK = database.setSetting("remote_watermark_\(tool.rawValue)",
-                                               "\(value.ts)") && writesOK
-            }
-            return writesOK
+            guard staged.validateForCommit() else { return false }
+            let insertResult = database.insertTurnsCounting(turns)
+            guard insertResult.ok else { return false }
+            insertedTurnCount = insertResult.changed
+            importedByTool = insertResult.changedByTool
+            guard database.upsertSessions(Array(sessions.values)), staged.apply() else { return false }
+            return true
         }
         guard ok else {
             publishStatus { $0.error = "Import transaction failed, watermark not advanced" }
@@ -554,35 +683,36 @@ final class HermesRemoteClient: ObservableObject {
         let ignoredRows = unknownTools + malformedRows
         let errorText = ignoredRows > 0 ? "\(ignoredRows) invalid/unknown rows ignored" : nil
         let syncTime = Int64(Date().timeIntervalSince1970)
-        let importedTurnCount = turns.count
-        let importedByTool = turns.reduce(into: [String: Int]()) { counts, turn in
-            counts[turn.tool.rawValue, default: 0] += 1
+        if insertedTurnCount > 0 {
+            database.setSetting("last_scan_heartbeat", "\(syncTime)")
+            database.backfillCosts()
         }
-        publishStatus {
+        publishStatus(reportErrorToHealth: false) {
             $0.lastSync = syncTime
-            $0.lastRows = importedTurnCount
+            $0.lastRows = insertedTurnCount
             $0.error = errorText
         }
         Task { @MainActor in
             for tool in seenRemoteTools {
                 let imported = importedByTool[tool] ?? 0
-                SourceHealthHub.shared.record(tool: tool, rows: imported, failed: 0,
-                                              durationMs: 0, error: nil)
+                if imported > 0 {
+                    SourceHealthHub.shared.record(tool: tool, rows: imported, failed: 0,
+                                                  durationMs: 0, error: nil)
+                } else {
+                    SourceHealthHub.shared.recordIdle(tool: tool, durationMs: 0)
+                }
             }
-            // Always record the remote-feed outcome. A successful poll must
-            // clear a prior malformed-row error, otherwise the aggregate
-            // popover status remains red forever after the feed recovers.
-            SourceHealthHub.shared.record(tool: "remote-feed", rows: importedTurnCount,
+            // Always record the remote-feed outcome so recovery clears prior errors.
+            SourceHealthHub.shared.record(tool: "remote-feed", rows: insertedTurnCount,
                                           failed: ignoredRows, durationMs: 0,
                                           error: errorText)
-            // Remote import completes after the collector's local scan
-            // notification. Publish the same refresh signal so the menu bar
-            // and dashboard do not wait for the next snapshot poll.
-            NotificationCenter.default.post(name: CollectorEngine.didCollect, object: nil)
+            if insertedTurnCount > 0 {
+                NotificationCenter.default.post(name: CollectorEngine.didCollect, object: nil)
+            }
         }
-        if importedTurnCount > 0 || ignoredRows > 0 {
+        if insertedTurnCount > 0 || ignoredRows > 0 {
             NSLog("[ToastMonitor] remote feed: %d rows received, %d turns imported, %d invalid",
-                  rows.count, importedTurnCount, ignoredRows)
+                  rows.count, insertedTurnCount, ignoredRows)
         }
     }
 

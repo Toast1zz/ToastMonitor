@@ -13,6 +13,7 @@ final class UsageQueryService: @unchecked Sendable {
         var estimated: Double
         var actual: Double
         var deepseekActual: Double = 0
+        var openrouterActual: Double = 0
     }
 
     /// Fields needed by the status bar and popover. Dashboard-only model and
@@ -115,6 +116,19 @@ final class UsageQueryService: @unchecked Sendable {
             DispatchQueue.main.async { completion() }
         }
     }
+
+    func invalidateAllCaches(completion: (@MainActor @Sendable () -> Void)? = nil) {
+        queue.async {
+            self.cachedLight = nil
+            self.cachedSnapshot = nil
+            self.cachedDailyAggs = nil
+            self.cachedPerfPoints = nil
+            self.cachedElsewhere = nil
+            if let completion {
+                DispatchQueue.main.async { completion() }
+            }
+        }
+    }
     func loadSnapshot(configuration: UsagePeriodConfiguration = UsagePeriodConfiguration(),
                       completion: @escaping @MainActor @Sendable (Snapshot) -> Void) {
         queue.async {
@@ -185,11 +199,20 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
 
-    func loadSessions(tool: ToolKind?, limit: Int = 500,
+    func loadTurnsWithQuality(sessionTool: String, sessionID: String,
+                              completion: @escaping @MainActor @Sendable ([(ts: Int64, model: String?, input: Int64, output: Int64, cacheRead: Int64, cacheWrite: Int64, cost: Double, costQuality: String)]) -> Void) {
+        queue.async {
+            let turns = self.database.turnsWithQuality(sessionTool: sessionTool, sessionID: sessionID)
+            DispatchQueue.main.async { completion(turns) }
+        }
+    }
+
+    func loadSessions(tool: ToolKind?, search: String = "", sort: Database.SessionSortOrder = .newest,
+                      limit: Int = 500,
                       completion: @escaping @MainActor @Sendable ([Database.SessionRow], Int) -> Void) {
         queue.async {
-            let sessions = self.database.sessions(tool: tool, limit: limit)
-            let total = self.database.sessionCount(tool: tool)
+            let sessions = self.database.sessions(tool: tool, search: search, sort: sort, limit: limit)
+            let total = self.database.sessionCount(tool: tool, search: search)
             DispatchQueue.main.async { completion(sessions, total) }
         }
     }
@@ -215,8 +238,10 @@ final class UsageQueryService: @unchecked Sendable {
         }
     }
     private func cacheKey(configuration: UsagePeriodConfiguration, now: Date) -> String {
-        let settled = elsewhereSettledKey(now: Int64(now.timeIntervalSince1970))
-        return "\(database.dataVersionKey())|\(settled)|\(configuration.cacheKey(now: now))"
+        let nowTs = Int64(now.timeIntervalSince1970)
+        let settled = elsewhereSettledKey(now: nowTs)
+        let futureTick = database.hasTurnsAfter(nowTs) ? "f:\(nowTs / 5)" : "p"
+        return "\(database.dataVersionKey())|\(settled)|\(futureTick)|\(configuration.cacheKey(now: now))"
     }
 
     /// The newest quota interval joins the estimate once its ingest margin
@@ -237,7 +262,8 @@ final class UsageQueryService: @unchecked Sendable {
 
         func costQuality(from: Int64, to: Int64) -> CostQuality {
             let b = database.costBreakdown(from: from, to: to)
-            return CostQuality(estimated: b.estimated, actual: b.actual, deepseekActual: b.deepseekActual)
+            return CostQuality(estimated: b.estimated, actual: b.actual,
+                               deepseekActual: b.deepseekActual, openrouterActual: b.openrouterActual)
         }
 
         // The grouped rows already contain every total; deriving the four
@@ -315,7 +341,7 @@ final class UsageQueryService: @unchecked Sendable {
 
     /// Caller runs on `queue`.
     private func claudeElsewhereEstimate(now: Int64) -> ClaudeNonLocalEstimator.TokenEstimate? {
-        let key = "\(database.claudeQuotaSampleMarker())|\(elsewhereSettledKey(now: now))|\(now / 300)"
+        let key = "\(database.dataVersionKey())|\(database.claudeQuotaSampleMarker())|\(elsewhereSettledKey(now: now))|\(now / 300)"
         if let cached = cachedElsewhere, cached.key == key { return cached.estimate }
         let samples = database.claudeQuotaSamples(since: now - Database.claudeQuotaSampleRetention)
         let estimate = ClaudeNonLocalEstimator.tokenEstimate(

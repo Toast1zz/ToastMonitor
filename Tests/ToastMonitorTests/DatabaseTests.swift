@@ -59,6 +59,7 @@ final class DatabaseTests: XCTestCase {
         let result = db.costBreakdown(from: 0, to: 200)
         XCTAssertEqual(result.actual, 6)
         XCTAssertEqual(result.deepseekActual, 2)
+        XCTAssertEqual(result.openrouterActual, 2)
     }
 
     func testScanStateTableCacheInvalidatesAfterWrite() {

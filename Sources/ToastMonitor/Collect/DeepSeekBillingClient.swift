@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -39,33 +40,44 @@ final class DeepSeekBillingClient: ObservableObject {
     private var configuration = UsagePeriodConfiguration()
     private var credential: DeepSeekBilling.Credential?
     private let fetch: Fetch
-    private let readCredential: () async -> DeepSeekBilling.Credential?
+    private let readCredentialWithStatus: () async -> (credential: DeepSeekBilling.Credential?, locked: Bool)
     private let saveCredential: (DeepSeekBilling.Credential?) async -> Bool
     private var revision: UInt64 = 0
     private var credentialRevision: UInt64 = 0
     private var connectionRevision: UInt64 = 0
     private var started = false
+    private var keychainLocked = false
     private var task: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var popoverVisible = false
     private var dashboardVisible = false
     private var failures = 0
     private var nextRefresh = Date.distantPast
+    private nonisolated static let sampleQueue = DispatchQueue(label: "com.toastmonitor.deepseek-samples", qos: .utility)
 
     init(fetch: Fetch? = nil,
          readCredential: (() async -> DeepSeekBilling.Credential?)? = nil,
          saveCredential: ((DeepSeekBilling.Credential?) async -> Bool)? = nil) {
         let transport = DeepSeekBillingTransport()
         self.fetch = fetch ?? { try await transport.fetch($0) }
-        self.readCredential = readCredential ?? {
-            await Task.detached(priority: .utility) {
-                guard let raw = KeychainStore.get(account: Self.keychainAccount),
-                      let data = raw.data(using: .utf8),
-                      let decoded = try? JSONDecoder().decode(DeepSeekBilling.Credential.self, from: data) else { return nil }
-                return try? DeepSeekBilling.Credential.make(decoded.secret, kind: decoded.kind)
-            }.value
+        if let readCredential {
+            self.readCredentialWithStatus = { (await readCredential(), false) }
+        } else {
+            self.readCredentialWithStatus = {
+                await Task.detached(priority: .utility) {
+                    let (raw, status) = KeychainStore.getWithStatus(account: Self.keychainAccount)
+                    let locked = KeychainStore.authorizationFailures.contains(status)
+                    guard let raw,
+                          let data = raw.data(using: .utf8),
+                          let decoded = try? JSONDecoder().decode(DeepSeekBilling.Credential.self, from: data) else {
+                        return (nil, locked)
+                    }
+                    return (try? DeepSeekBilling.Credential.make(decoded.secret, kind: decoded.kind), false)
+                }.value
+            }
         }
         self.saveCredential = saveCredential ?? { value in
             await Task.detached(priority: .userInitiated) {
@@ -77,14 +89,21 @@ final class DeepSeekBillingClient: ObservableObject {
                     _ = Database.shared.setSetting(Self.configuredKey, "1")
                     return true
                 }
-                // An empty value is an atomic overwrite: failed writes leave
-                // the old session usable instead of silently claiming logout.
-                guard KeychainStore.set("", account: Self.keychainAccount, allowPrompt: true) else { return false }
+                guard KeychainStore.delete(account: Self.keychainAccount, allowPrompt: true) else { return false }
                 _ = Database.shared.setSetting(Self.configuredKey, nil)
                 return true
             }.value
         }
         window = DeepSeekBilling.Window.make(slot: .today, configuration: configuration, now: Date())
+    }
+
+    deinit {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        for observer in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
     }
 
     func start() {
@@ -95,7 +114,7 @@ final class DeepSeekBillingClient: ObservableObject {
                      TMNotifications.usagePeriodSettingsChanged] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let visible = note.object as? Bool ?? false
-                Task { @MainActor [weak self] in
+                MainActor.assumeIsolated {
                     guard let self else { return }
                     if name == TMNotifications.popoverVisibility { self.popoverVisible = visible }
                     if name == TMNotifications.dashboardVisibility { self.dashboardVisible = visible }
@@ -109,18 +128,37 @@ final class DeepSeekBillingClient: ObservableObject {
                 }
             })
         }
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.nextRefresh = .distantPast
+                if self.popoverVisible || self.dashboardVisible || self.state.balanceError != nil {
+                    self.refresh(force: true, bypassBackoff: true)
+                }
+            }
+        })
         installTimer()
         Task { [weak self] in await self?.restoreSavedCredential() }
     }
 
     func restoreSavedCredential() async {
         let version = credentialRevision
-        let saved = await readCredential()
+        let loaded = await readCredentialWithStatus()
         guard credentialRevision == version else { return }
-        credential = saved
-        state.kind = saved?.kind
-        if saved == nil, Database.shared.setting(Self.configuredKey) == "1" {
+        credential = loaded.credential
+        keychainLocked = loaded.locked
+        state.kind = loaded.credential?.kind
+        if loaded.locked {
+            state.balanceError = "Keychain locked or access denied — unlock Keychain to refresh"
+        } else if loaded.credential == nil, Database.shared.setting(Self.configuredKey) == "1" {
             state.balanceError = "Saved DeepSeek session unavailable. Reconnect your account."
+        } else if loaded.credential != nil {
+            if state.balanceError?.localizedCaseInsensitiveContains("keychain") == true
+                || state.balanceError?.localizedCaseInsensitiveContains("Saved DeepSeek session unavailable") == true {
+                state.balanceError = nil
+            }
         }
         refresh()
     }
@@ -177,9 +215,13 @@ final class DeepSeekBillingClient: ObservableObject {
                 self.resetOtherSpends()
                 self.task?.cancel(); self.task = nil
                 self.credential = candidate
+                self.keychainLocked = false
                 self.state = State(kind: kind, balance: balance, balanceUpdated: Date())
                 self.failures = 0; self.nextRefresh = .distantPast
                 self.connecting = false
+                Self.sampleQueue.async {
+                    _ = Database.shared.beginDeepSeekBalanceSeries()
+                }
                 self.refresh()
             } catch {
                 guard let self, self.connectionRevision == version else { return }
@@ -204,19 +246,31 @@ final class DeepSeekBillingClient: ObservableObject {
             self.resetOtherSpends()
             self.task?.cancel(); self.task = nil
             self.credential = nil
+            self.keychainLocked = false
             self.state = State()
             self.failures = 0; self.nextRefresh = .distantPast
+            Self.sampleQueue.async {
+                _ = Database.shared.beginDeepSeekBalanceSeries()
+            }
         }
     }
 
     func clearConnectionError() { connectionError = nil }
 
-    func refresh(force: Bool = false, now: Date = Date()) {
+    func refresh(force: Bool = false, bypassBackoff: Bool = false, now: Date = Date()) {
         guard !isDemo else { return }
         let current = DeepSeekBilling.Window.make(slot: selectedSlot, configuration: configuration, now: now)
         if current != window { select(selectedSlot, configuration: configuration, now: now); return }
-        guard task == nil, let credential, !state.expired,
-              (force && failures == 0) || now >= nextRefresh else { return }
+        guard task == nil, !state.expired else { return }
+        if credential == nil {
+            if keychainLocked, (bypassBackoff || force || now >= nextRefresh) {
+                nextRefresh = now.addingTimeInterval(30)
+                Task { [weak self] in await self?.restoreSavedCredential() }
+            }
+            return
+        }
+        guard let credential,
+              (force && failures == 0) || bypassBackoff || now >= nextRefresh else { return }
         let version = revision
         let requestedWindow = window
         let needsSpend = credential.kind == .platform && requestedWindow != nil
@@ -237,10 +291,13 @@ final class DeepSeekBillingClient: ObservableObject {
             case .success(let value):
                 self.state.balance = value; self.state.balanceUpdated = Date(); self.state.balanceError = nil
                 // History for the days-left line when no spend report exists.
-                for wallet in value.wallets {
-                    Database.shared.insertDeepSeekBalance(
-                        currency: wallet.currency,
-                        amount: NSDecimalNumber(decimal: wallet.total.amount).doubleValue)
+                let samples = value.wallets.map {
+                    ($0.currency, NSDecimalNumber(decimal: $0.total.amount).doubleValue)
+                }
+                Self.sampleQueue.async {
+                    for (currency, amount) in samples {
+                        Database.shared.insertDeepSeekBalance(currency: currency, amount: amount)
+                    }
                 }
             case .failure(let error):
                 failed = true

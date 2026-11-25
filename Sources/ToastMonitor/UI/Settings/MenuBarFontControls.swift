@@ -48,7 +48,7 @@ struct MenuBarFontControls: View {
             }
             .accessibilityLabel("Menu bar font")
             .accessibilityValue(settings.selection.displayName)
-            if !settings.selection.isSystemDefault {
+            if !settings.selection.isSystemDefaultSelection {
                 Button("Reset") { settings.resetToDefault() }
                     .accessibilityLabel("Reset menu bar font")
             }

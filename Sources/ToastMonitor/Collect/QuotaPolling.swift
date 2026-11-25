@@ -1,15 +1,24 @@
+import AppKit
 import Foundation
+
+enum MonotonicClock {
+    /// Continuous monotonic uptime (advances across system sleep on Darwin).
+    static func now() -> TimeInterval {
+        Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000_000
+    }
+}
 
 /// Failure backoff shared by the quota clients: after a failed refresh the
 /// next attempt waits 1, 2, 4, 8, then 15 minutes; a success resets the
-/// schedule. Measured on systemUptime.
+/// schedule. Measured on continuous monotonic time so sleep advances backoff.
 struct RefreshBackoff {
     private var delay: TimeInterval = 0
     private(set) var nextAllowed: TimeInterval = 0
 
-    var isWaiting: Bool { ProcessInfo.processInfo.systemUptime < nextAllowed }
+    func isWaiting(now: TimeInterval = MonotonicClock.now()) -> Bool { now < nextAllowed }
+    var isWaiting: Bool { isWaiting() }
 
-    mutating func failed(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    mutating func failed(now: TimeInterval = MonotonicClock.now()) {
         delay = min(max(delay, 60), 15 * 60)
         nextAllowed = now + delay
         delay *= 2
@@ -27,14 +36,16 @@ struct RefreshBackoff {
 
 /// Refresh timer for a quota client: the foreground cadence while the
 /// popover or dashboard is visible, the background cadence otherwise, and an
-/// immediate refresh when either becomes visible. Main thread only.
+/// immediate refresh when either becomes visible or the Mac wakes. Main thread only.
 final class ForegroundPoller {
     private var popoverVisible = false
     private var dashboardVisible = false
     private var foreground = false
     private var timer: Timer?
     private var tick: (() -> Void)?
+    private var onWake: (() -> Void)?
     private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     init() {
         for name in [TMNotifications.popoverVisibility, TMNotifications.dashboardVisibility] {
@@ -50,16 +61,31 @@ final class ForegroundPoller {
             }
             observers.append(token)
         }
+        let wakeToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.tick != nil else { return }
+            if let onWake = self.onWake {
+                onWake()
+            } else if self.foreground {
+                self.tick?()
+            }
+        }
+        workspaceObservers.append(wakeToken)
     }
 
     deinit {
         for token in observers {
             NotificationCenter.default.removeObserver(token)
         }
+        for token in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
     }
 
     /// Installs the timer; `tick` runs on the main thread on every fire.
-    func start(tick: @escaping () -> Void) {
+    func start(onWake: (() -> Void)? = nil, tick: @escaping () -> Void) {
+        self.onWake = onWake
         guard self.tick == nil else { return }
         self.tick = tick
         update()
@@ -85,6 +111,7 @@ final class ForegroundPoller {
         timer?.invalidate()
         timer = nil
         tick = nil
+        onWake = nil
         foreground = false
     }
 }

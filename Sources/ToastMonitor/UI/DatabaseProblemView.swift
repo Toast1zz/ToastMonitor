@@ -72,8 +72,12 @@ struct DatabaseProblemView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let ok = DataMaintenance.recover(from: backup)
             DispatchQueue.main.async {
-                failed = !ok
-                app.databaseWasReplaced()
+                if ok {
+                    failed = false
+                    app.databaseWasReplaced()
+                } else {
+                    failed = true
+                }
             }
         }
     }

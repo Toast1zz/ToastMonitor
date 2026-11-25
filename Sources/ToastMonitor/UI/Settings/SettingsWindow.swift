@@ -74,6 +74,8 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
     private var closeObserver: NSObjectProtocol?
     private var lifecycleGeneration = 0
     private(set) var pendingExpandAccount: String?
+    var defaults: UserDefaults = .standard
+    var activatesAppOnShow = true
 
     @objc func showSettings(_ sender: Any?) {
         show()
@@ -83,15 +85,19 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         if let expandAccount {
             pendingExpandAccount = expandAccount
         }
-        let target = pane ?? current ?? Self.savedPane
+        let target = pane ?? current ?? savedPane
         let window = self.window ?? makeWindow()
         let wasVisible = window.isVisible
         select(target, animated: wasVisible)
         if !wasVisible {
             window.center()
         }
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        if activatesAppOnShow {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderFront(nil)
+        }
         if !wasVisible {
             // A window's first animator frame change lands without animating,
             // which made the first pane switch after opening a jump. Spend
@@ -114,8 +120,8 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         return pendingExpandAccount
     }
 
-    private static var savedPane: SettingsPane {
-        UserDefaults.standard.string(forKey: lastPaneKey).flatMap(SettingsPane.init(rawValue:)) ?? .general
+    private var savedPane: SettingsPane {
+        defaults.string(forKey: Self.lastPaneKey).flatMap(SettingsPane.init(rawValue:)) ?? .general
     }
 
     private func makeWindow() -> NSWindow {
@@ -162,10 +168,12 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         window.toolbar?.selectedItemIdentifier = pane.itemIdentifier
         window.title = pane.title
         if remember {
-            UserDefaults.standard.set(pane.rawValue, forKey: Self.lastPaneKey)
+            defaults.set(pane.rawValue, forKey: Self.lastPaneKey)
         }
         let incoming = host(for: pane)
         guard pane != current else {
+            incoming.install(in: root, below: window)
+            incoming.view.alphaValue = 1
             // Measuring leaves the last pane current before any frame was set.
             window.setFrame(frame(for: incoming, in: window), display: true)
             return
@@ -262,6 +270,7 @@ final class SettingsWindowController: NSObject, NSToolbarDelegate {
         panes.removeAll()
         closingWindow.toolbar = nil
         closingWindow.contentView = nil
+        current = nil
         window = nil
         root = nil
     }

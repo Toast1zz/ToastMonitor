@@ -108,11 +108,24 @@ final class GrokQuotaClient: ObservableObject {
     /// when the saved access token is expired.
     func setEnabled(_ on: Bool) {
         guard on != enabled else { return }
-        enabled = on
-        loadedPreference = true
         DispatchQueue.global(qos: .utility).async {
             _ = Database.shared.setSetting(Self.enabledSettingKey, on ? "1" : nil)
         }
+        applyEnabled(on)
+    }
+
+    func reloadFromDatabase() {
+        let on = Database.shared.setting(Self.enabledSettingKey) == "1"
+        applyEnabled(on)
+    }
+
+    private func applyEnabled(_ on: Bool) {
+        loadedPreference = true
+        guard on != enabled else {
+            if on && !started { start() }
+            return
+        }
+        enabled = on
         if on {
             started = false
             start()
@@ -121,8 +134,10 @@ final class GrokQuotaClient: ObservableObject {
             poller.stop()
             refreshGeneration &+= 1
             inFlight = false
+            backoff.succeeded()
             renewalRetry.reset()
             rejectedToken = nil
+            state = State()
         }
     }
 
@@ -134,7 +149,15 @@ final class GrokQuotaClient: ObservableObject {
         guard enabled, !started else { return }
         started = true
         refresh()
-        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
+        poller.start(onWake: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.backoff.allowNow()
+                self.refresh(force: self.state.error != nil)
+            }
+        }) { [weak self] in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
     // MARK: - Refresh
@@ -152,23 +175,34 @@ final class GrokQuotaClient: ObservableObject {
 
     private func renewalFailed(outcome: CLIRenewalOutcome?) {
         renewalRetry.schedule(counting: outcome != .throttled) { [weak self] in
-            self?.refresh(renewing: true)
+            guard let self else { return }
+            self.refresh(renewing: true, retestRejected: self.renewalRetry.shouldRetestRejectedToken)
         }
         if renewalRetry.shouldReport { state.error = Self.expired }
-        if renewalRetry.shouldRetestRejectedToken { rejectedToken = nil }
     }
 
     /// `renewing` is a retry of a failed login renewal. It runs through the
     /// backoff, which covers the billing API and not the CLI, so the retry
     /// can't stop; the billing API still waits for the backoff to end.
-    func refresh(renewing: Bool = false) {
-        guard enabled, !inFlight, !isDemo else { return }
+    func refresh(force: Bool = false, renewing: Bool = false, retestRejected: Bool = false) {
+        guard enabled, !isDemo else { return }
+        if inFlight {
+            if renewing {
+                renewalRetry.schedule(counting: false) { [weak self] in
+                    guard let self else { return }
+                    self.refresh(renewing: true, retestRejected: self.renewalRetry.shouldRetestRejectedToken)
+                }
+            }
+            return
+        }
+        if !force && !renewing && renewalRetry.hasActiveRetry { return }
+        if force { backoff.allowNow() }
         // Backoff gate: skip attempts inside the backoff window.
         if !renewing, backoff.isWaiting { return }
         inFlight = true
         refreshGeneration &+= 1
         let generation = refreshGeneration
-        let rejected = rejectedToken
+        let effectiveRejected = retestRejected ? nil : rejectedToken
 
         // Never read auth.json on the main actor.
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -176,7 +210,7 @@ final class GrokQuotaClient: ObservableObject {
             var outcome: CLIRenewalOutcome?
             // The access token lasts about six hours; let the Grok CLI renew
             // it from the refresh token instead of asking for a new login.
-            if let current = credentials, Self.needsRenewal(current, rejectedToken: rejected) {
+            if let current = credentials, Self.needsRenewal(current, rejectedToken: effectiveRejected) {
                 outcome = GrokCLIRefresher.refresh()
                 credentials = Self.loadCredentials()
             }
@@ -187,7 +221,8 @@ final class GrokQuotaClient: ObservableObject {
                 guard let resolved else {
                     self.inFlight = false
                     self.state.isLoading = false
-                    if self.renewalRetry.loginUnreadable(renewing: renewing, outcome: attempted, retry: { [weak self] in
+                    let expectedLogin = renewing || self.state.configured || self.state.lastSync > 0 || self.renewalRetry.failures > 0
+                    if self.renewalRetry.loginUnreadable(renewing: expectedLogin, outcome: attempted, retry: { [weak self] in
                         self?.refresh(renewing: true)
                     }) { return }
                     self.state.configured = false
@@ -195,16 +230,20 @@ final class GrokQuotaClient: ObservableObject {
                     return
                 }
                 self.state.configured = true
-                if Self.needsRenewal(resolved, rejectedToken: rejected) {
+                if Self.needsRenewal(resolved, rejectedToken: effectiveRejected) {
                     self.inFlight = false
                     self.state.isLoading = false
                     self.renewalFailed(outcome: attempted)
                     return
                 }
-                self.renewalRetry.reset()
-                self.rejectedToken = nil
                 guard !self.backoff.isWaiting else {
                     self.inFlight = false
+                    if renewing || self.renewalRetry.failures > 0 {
+                        self.renewalRetry.schedule(counting: false) { [weak self] in
+                            guard let self else { return }
+                            self.refresh(renewing: true, retestRejected: self.renewalRetry.shouldRetestRejectedToken)
+                        }
+                    }
                     return
                 }
                 self.requestUsage(token: resolved.accessToken, generation: generation)
@@ -303,6 +342,7 @@ final class GrokQuotaClient: ObservableObject {
                 guard var snapshot = Self.parseBilling(data) else {
                     self.state.error = "Failed to parse Grok billing response"
                     self.backoff.failed()
+                    self.scheduleBackgroundRecoveryIfNeeded()
                     return
                 }
                 if let plan = settingsData.flatMap(Self.parsePlanName) {
@@ -312,19 +352,35 @@ final class GrokQuotaClient: ObservableObject {
             case .failure(.status(let code))? where code == 401 || code == 403:
                 // Rejected before its expiry (revoked, or the clock is off):
                 // renew through the CLI, then a normal refresh with the new token.
-                self.rejectedToken = token
-                self.refresh(renewing: true)
+                if self.rejectedToken == token {
+                    self.renewalFailed(outcome: .failed("HTTP \(code)"))
+                } else {
+                    self.rejectedToken = token
+                    self.refresh(renewing: true)
+                }
             case .failure(let error)?:
                 self.state.error = Self.message(for: error)
                 self.backoff.failed()
+                self.scheduleBackgroundRecoveryIfNeeded()
             case nil:
                 self.state.error = "Grok billing request failed"
                 self.backoff.failed()
+                self.scheduleBackgroundRecoveryIfNeeded()
             }
         }
     }
 
+    private func scheduleBackgroundRecoveryIfNeeded() {
+        guard renewalRetry.failures > 0 || rejectedToken != nil else { return }
+        renewalRetry.schedule(counting: false) { [weak self] in
+            guard let self else { return }
+            self.refresh(renewing: true, retestRejected: self.renewalRetry.shouldRetestRejectedToken)
+        }
+    }
+
     private func apply(_ snapshot: Snapshot) {
+        renewalRetry.reset()
+        rejectedToken = nil
         state.usedPercent = snapshot.usedPercent
         state.resetAt = snapshot.resetAt
         state.windowSeconds = snapshot.windowSeconds

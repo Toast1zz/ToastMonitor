@@ -36,8 +36,22 @@ enum ModelName {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // "deepseek/deepseek-v4-flash", "z-ai/glm-5.3-flash": the part after
         // the last slash is the model.
-        let id = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+        var id = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
         guard !id.isEmpty else { return trimmed }
+
+        if let dot = id.range(of: "anthropic.", options: [.caseInsensitive]),
+           dot.lowerBound == id.startIndex || id[id.index(before: dot.lowerBound)] == "." {
+            id.removeSubrange(id.startIndex..<dot.upperBound)
+        }
+        if let bracket = id.range(of: #"\[[0-9]+[mk]\]$"#, options: [.regularExpression, .caseInsensitive]) {
+            id.removeSubrange(bracket)
+        }
+        if let bedrock = id.range(of: #"-v[0-9]+:[0-9]+$"#, options: .regularExpression) {
+            id.removeSubrange(bedrock)
+        }
+        if let vertex = id.range(of: #"@([0-9]{8}|default)$"#, options: [.regularExpression, .caseInsensitive]) {
+            id.removeSubrange(vertex)
+        }
 
         let base = stripParenthesizedModifier(id)
         var tokens = base.lowercased()

@@ -92,14 +92,23 @@ struct DashCard<Trailing: View, Content: View>: View {
 struct DashMetric: View {
     let label: String
     let value: String
+    var warningDetail: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-                .font(TMType.regular(TMType.caption))
-                .foregroundStyle(TMDesign.quiet)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(TMType.regular(TMType.caption))
+                    .foregroundStyle(TMDesign.quiet)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let warningDetail {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(TMDesign.warning)
+                        .help(warningDetail)
+                }
+            }
             Text(value)
                 .font(TMType.semibold(26))
                 .tmMonospacedDigit()
@@ -140,17 +149,43 @@ struct ShareBar: View {
     let items: [ShareItem]
     var height: CGFloat = 8
 
+    static func segmentWidths(values: [Int64], availableWidth: CGFloat, gap: CGFloat = 2) -> [CGFloat] {
+        let positive = values.filter { $0 > 0 }
+        guard !positive.isEmpty, availableWidth > 0 else { return [] }
+        let totalGap = CGFloat(max(positive.count - 1, 0)) * gap
+        let usable = max(0, availableWidth - totalGap)
+        guard usable > 0 else { return Array(repeating: 0, count: positive.count) }
+        let total = Double(positive.reduce(0, +))
+        let minSeg = min(3, usable / CGFloat(positive.count))
+        var widths = positive.map { usable * CGFloat(Double($0) / total) }
+        var deficit: CGFloat = 0
+        var surplusTotal: CGFloat = 0
+        for i in widths.indices {
+            if widths[i] < minSeg {
+                deficit += minSeg - widths[i]
+                widths[i] = minSeg
+            } else {
+                surplusTotal += widths[i] - minSeg
+            }
+        }
+        if deficit > 0, surplusTotal > 0 {
+            let scale = min(1, deficit / surplusTotal)
+            for i in widths.indices where widths[i] > minSeg {
+                widths[i] -= (widths[i] - minSeg) * scale
+            }
+        }
+        return widths
+    }
+
     var body: some View {
         GeometryReader { geo in
-            let total = Double(items.reduce(Int64(0)) { $0 + $1.value })
-            let gaps = CGFloat(max(items.count - 1, 0)) * 2
+            let active = items.filter { $0.value > 0 }
+            let widths = Self.segmentWidths(values: active.map(\.value), availableWidth: geo.size.width)
             HStack(spacing: 2) {
-                ForEach(items) { item in
+                ForEach(Array(zip(active, widths).enumerated()), id: \.offset) { _, pair in
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(item.color)
-                        .frame(width: total > 0
-                               ? max(3, (geo.size.width - gaps) * CGFloat(Double(item.value) / total))
-                               : 0)
+                        .fill(pair.0.color)
+                        .frame(width: pair.1)
                 }
             }
         }

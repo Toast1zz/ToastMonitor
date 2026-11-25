@@ -211,12 +211,14 @@ struct SubscriptionSettingsSection: View {
             return
         }
         dateError = false
+        let endOfEndDay = Calendar.current.date(byAdding: DateComponents(day: 1, second: -1), to: endDay)
+            ?? endDay.addingTimeInterval(86_399)
         let sub = Database.Subscription(
             id: editID > 0 ? editID : (editing?.id ?? 0),
             name: name.trimmingCharacters(in: .whitespaces),
             plan: plan,
-            startDate: Int64(startDate.timeIntervalSince1970),
-            endDate: hasEndDate ? Int64(endDate.timeIntervalSince1970) : 0,
+            startDate: Int64(startDay.timeIntervalSince1970),
+            endDate: hasEndDate ? Int64(endOfEndDay.timeIntervalSince1970) : 0,
             cycle: cycle,
             price: p,
             currency: "USD")

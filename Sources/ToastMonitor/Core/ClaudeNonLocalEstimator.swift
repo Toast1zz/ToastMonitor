@@ -135,7 +135,10 @@ enum ClaudeNonLocalEstimator {
     private static func costCalibration(_ intervals: [QuotaInterval]) -> CostCalibration? {
         let active = intervals.filter { !$0.idle && $0.local.cost > 0 }
         guard let newest = active.last?.end else { return nil }
-        let recent = active.filter { $0.end >= newest - calibrationWindowSeconds }
+        let recentAll = active.filter { $0.end >= newest - calibrationWindowSeconds }
+        let pureRecent = recentAll.filter { $0.local.unpricedTokens == 0 }
+        let usePure = pureRecent.filter { $0.points >= 2 }.reduce(0, { $0 + $1.points }) >= minCalibrationPoints
+        let recent = usePure ? pureRecent : recentAll
         let readable = recent.filter { $0.points >= 2 }
         guard readable.reduce(0, { $0 + $1.points }) >= minCalibrationPoints else { return nil }
         let rates = readable.map { (dollars: $0.local.cost / Double($0.points), weight: $0.local.cost) }
@@ -148,10 +151,12 @@ enum ClaudeNonLocalEstimator {
             median = rate.dollars
             if running >= half { break }
         }
-        let tokens = recent.reduce(Int64(0)) { $0 + $1.local.totalTokens }
+        let pricedTokens = recent.reduce(Int64(0)) {
+            $0 + max($1.local.totalTokens - $1.local.unpricedTokens, 0)
+        }
         let cost = recent.reduce(0) { $0 + $1.local.cost }
-        guard median > 0, tokens > 0 else { return nil }
-        return CostCalibration(dollarsPerPoint: median, tokensPerDollar: Double(tokens) / cost)
+        guard median > 0, pricedTokens > 0, cost > 0 else { return nil }
+        return CostCalibration(dollarsPerPoint: median, tokensPerDollar: Double(pricedTokens) / cost)
     }
 
     private static func nonLocalEvents(_ intervals: [QuotaInterval], _ calibration: CostCalibration,

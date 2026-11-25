@@ -43,14 +43,20 @@ struct DeepSeekAccountSettings: View {
             exchangeRateDraft = String(rate)
         }
         .onChange(of: exchangeRateDraft) { text in
-            if let rate = Double(text), DeepSeekBilling.validExchangeRate(rate) { cnyPerUSD = rate }
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                cnyPerUSD = DeepSeekBilling.defaultCNYPerUSD
+            } else if let rate = Double(trimmed), DeepSeekBilling.validExchangeRate(rate) {
+                cnyPerUSD = rate
+            }
         }
         .sheet(isPresented: $showConnection) { DeepSeekConnectionView() }
         .confirmationDialog("Disconnect DeepSeek?", isPresented: $showDisconnect) {
             Button("Disconnect", role: .destructive) { client.disconnect() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("The saved DeepSeek credential and displayed account data will be cleared.") }
-        if !exchangeRateDraft.isEmpty && (Double(exchangeRateDraft).map(DeepSeekBilling.validExchangeRate) != true) {
+        let trimmedDraft = exchangeRateDraft.trimmingCharacters(in: .whitespaces)
+        if !trimmedDraft.isEmpty && (Double(trimmedDraft).map(DeepSeekBilling.validExchangeRate) != true) {
             Text("Enter a rate between 0.01 and 1000.")
                 .foregroundStyle(TMDesign.danger)
         }

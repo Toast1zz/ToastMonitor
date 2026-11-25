@@ -53,8 +53,8 @@ enum DemoMode {
                     let input = Int64(perCall * 0.12)
                     let output = Int64(perCall * 0.05)
                     let cacheWrite = Int64(perCall * 0.01)
-                    let cost = Double(input) * 3e-6 + Double(output) * 15e-6
-                        + Double(cacheRead) * 0.3e-6 + Double(cacheWrite) * 3.75e-6
+                    let cost = Pricing.estimate(model: model, input: input, output: output,
+                                                cacheRead: cacheRead, cacheWrite: cacheWrite) ?? 0
                     turns.append(TurnRecord(
                         tool: tool, sessionID: "demo-\(tool.rawValue)-\(back)", project: "demo",
                         model: model, ts: ts, inputTokens: input, outputTokens: output,

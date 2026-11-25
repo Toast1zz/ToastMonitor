@@ -129,21 +129,30 @@ enum DeepSeekBrowserSession {
         let deadline = Date().addingTimeInterval(timeout)
         var data = Data()
         var complete = false
-        while Date() < deadline {
-            try Task.checkCancellation()
-            var descriptor = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP), revents: 0)
-            let ready = poll(&descriptor, 1, 80)
-            if ready > 0 {
-                var bytes = [UInt8](repeating: 0, count: 4096)
+        func drainPipe() throws -> Bool {
+            var bytes = [UInt8](repeating: 0, count: 4096)
+            while true {
                 let count = Darwin.read(fd, &bytes, bytes.count)
                 if count > 0 {
                     guard data.count + count <= 65_536 else { throw Failure.failed }
                     data.append(contentsOf: bytes.prefix(count))
                     continue
                 }
-                if count == 0 { complete = true; break }
+                return count == 0
             }
-            if !process.isRunning { complete = true; break }
+        }
+        while Date() < deadline {
+            try Task.checkCancellation()
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP), revents: 0)
+            let ready = poll(&descriptor, 1, 80)
+            if ready > 0 {
+                if try drainPipe() { complete = true; break }
+            }
+            if !process.isRunning {
+                _ = try drainPipe()
+                complete = true
+                break
+            }
         }
         guard complete else { throw Failure.timeout }
         // A script compilation/TCC failure produces no trusted result marker.

@@ -26,6 +26,9 @@ final class UpdateManager: ObservableObject {
     static let endpoint = URL(string: "https://toast1zz.github.io/ToastMonitor/appcast.json")!
     /// Ed25519 public key (raw, 32 bytes) of the release signing key.
     static let publicKey = Data(hex: "4381a84e55358fe6a10dbd58be54a10e7b16b7f7d9b2c290e42ea6c5125b1d70")
+    /// Trusted signing Team IDs for in-place updates (supports certificate rotation,
+    /// e.g., transitioning from personal Apple Development to Developer ID).
+    nonisolated static let trustedTeamIDs: Set<String> = ["N6EN6RZKF2"]
 
     /// Setting key: "1" checks for updates automatically at launch, "0" only
     /// on manual request. Defaults to on when unset.
@@ -48,16 +51,20 @@ final class UpdateManager: ObservableObject {
     private var autoCheckStarted = false
     static let installFailureName = "update-install-failure.txt"
 
-    func consumeInstallFailure() {
-        let url = Self.installFailureURL
+    func consumeInstallFailure(reportURL: URL? = nil, executableURL: URL? = Bundle.main.executableURL) {
+        let url = reportURL ?? Self.installFailureURL
         guard let message = try? String(contentsOf: url, encoding: .utf8) else { return }
         // A report older than this build is about an update that has since
         // been replaced by hand, so it no longer applies.
-        if Self.reportIsStale(url, executable: Bundle.main.executableURL) {
+        if Self.reportIsStale(url, executable: executableURL) {
             try? FileManager.default.removeItem(at: url)
             return
         }
         lastError = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func clearErrorForTesting() {
+        lastError = nil
     }
 
     nonisolated static func reportIsStale(_ report: URL, executable: URL?) -> Bool {
@@ -248,25 +255,11 @@ final class UpdateManager: ObservableObject {
 
         // ditto unzips preserving symlinks/permissions; zip bombs are bounded
         // by the earlier SHA-256 artifact size check on the archive itself.
-        let unzip = Process()
-        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        unzip.arguments = ["-x", "-k", archive.path, staging.path]
-        unzip.standardOutput = FileHandle.nullDevice
-        unzip.standardError = FileHandle.nullDevice
-        let unzipExited = DispatchSemaphore(value: 0)
-        unzip.terminationHandler = { _ in unzipExited.signal() }
-        try unzip.run()
-        if unzipExited.wait(timeout: .now() + 60) == .timedOut {
-            if unzip.isRunning { unzip.terminate() }
-            if unzipExited.wait(timeout: .now() + 2) == .timedOut,
-               unzip.isRunning, unzip.processIdentifier > 0 {
-                kill(unzip.processIdentifier, SIGKILL)
-            }
-            unzip.waitUntilExit()
-            throw UpdateChecker.CheckError.malformedManifest
-        }
-        unzip.waitUntilExit()
-        guard unzip.terminationStatus == 0 else {
+        let unzipStatus = try Self.runProcessSync(
+            executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+            arguments: ["-x", "-k", archive.path, staging.path],
+            timeout: 60)
+        guard unzipStatus == 0 else {
             throw UpdateChecker.CheckError.malformedManifest
         }
 
@@ -281,9 +274,12 @@ final class UpdateManager: ObservableObject {
         // Re-verify identity beyond the archive hash: signature, bundle id and
         // the manifest version must all match before anything is replaced.
         let runningBundleID = Bundle.main.bundleIdentifier
+        var allowedTeams = Self.trustedTeamIDs
+        if let runningTeam = Self.teamIdentifier(Bundle.main.bundleURL) {
+            allowedTeams.insert(runningTeam)
+        }
         guard let runningBundleID,
-              let runningTeamID = Self.teamIdentifier(Bundle.main.bundleURL),
-              Self.verifyCodesign(candidate, expectedTeamID: runningTeamID, expectedBundleID: runningBundleID) else {
+              Self.verifyCodesign(candidate, allowedTeamIDs: allowedTeams, expectedBundleID: runningBundleID) else {
             throw UpdateChecker.CheckError.invalidSignature
         }
         let candidateBundleID = Bundle(path: candidate.path)?.bundleIdentifier
@@ -295,6 +291,7 @@ final class UpdateManager: ObservableObject {
         guard candidateVersion == version else {
             throw UpdateChecker.CheckError.invalidVersion
         }
+        Self.clearQuarantine(candidate)
 
         let target = Bundle.main.bundleURL
         let parent = target.deletingLastPathComponent()
@@ -405,7 +402,8 @@ final class UpdateManager: ObservableObject {
         fi
         exit 1
     fi
-    for _ in $(seq 1 120); do
+    polls="${TM_UPDATE_READY_POLLS:-120}"
+    for _ in $(seq 1 "$polls"); do
         if [ -f "$ready" ]; then
             rm -f "$ready" "$result"
             rm -rf "$old"
@@ -413,11 +411,66 @@ final class UpdateManager: ObservableObject {
         fi
         sleep 0.5
     done
-    # A successful `open` only requests startup; keep both bundles for manual
-    # recovery after timeout and try to launch the installed app for the error.
-    report 'Update launch was not confirmed. The previous app is preserved at .tm-backup.'
+    # The replacement failed to confirm launch in time; terminate any stuck
+    # candidate instance at target and roll back so .tm-backup never strands updates.
+    target_exec="$target/Contents/MacOS/ToastMonitor"
+    while read -r pid comm; do
+        if [ "$comm" = "$target_exec" ]; then
+            kill "$pid" >/dev/null 2>&1 || true
+        fi
+    done < <(ps -axo pid=,comm= || true)
+    sleep 0.5
+    while read -r pid comm; do
+        if [ "$comm" = "$target_exec" ]; then
+            kill -9 "$pid" >/dev/null 2>&1 || true
+        fi
+    done < <(ps -axo pid=,comm= || true)
+    rm -rf "$incoming"
+    if mv "$target" "$incoming" && mv "$old" "$target"; then
+        rm -rf "$incoming"
+        report 'Update launch was not confirmed; the original app was restored.'
+    else
+        report 'Update launch was not confirmed and rollback failed; recover the original app from .tm-backup.'
+    fi
     exit 1
     """
+
+    nonisolated private static func runProcessSync(executable: URL, arguments: [String], timeout: TimeInterval) throws -> Int32 {
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        try process.run()
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            if process.isRunning { process.terminate() }
+            if exited.wait(timeout: .now() + 2) == .timedOut,
+               process.isRunning, process.processIdentifier > 0 {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            throw UpdateChecker.CheckError.malformedManifest
+        }
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    nonisolated private static func clearQuarantine(_ url: URL) {
+        _ = try? runProcessSync(
+            executable: URL(fileURLWithPath: "/usr/bin/xattr"),
+            arguments: ["-dr", "com.apple.quarantine", url.path],
+            timeout: 10)
+    }
+
+    nonisolated static func verifyCodesign(_ app: URL, allowedTeamIDs: Set<String>, expectedBundleID: String) -> Bool {
+        guard let actualTeam = teamIdentifier(app),
+              allowedTeamIDs.contains(actualTeam) else {
+            return false
+        }
+        return verifyCodesign(app, expectedTeamID: actualTeam, expectedBundleID: expectedBundleID)
+    }
 
     nonisolated static func verifyCodesign(_ app: URL, expectedTeamID: String, expectedBundleID: String) -> Bool {
         guard expectedTeamID.count == 10,

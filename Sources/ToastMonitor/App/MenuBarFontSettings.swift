@@ -19,9 +19,14 @@ struct MenuBarTextFont: Equatable, Codable {
     var size: CGFloat
 
     var isSystemDefault: Bool { name.isEmpty }
+    var isSystemDefaultSelection: Bool { name.isEmpty && abs(Self.clamped(size) - Self.defaultSize) < 0.01 }
 
     var displayName: String {
-        if isSystemDefault { return "System UI (SF Pro)" }
+        if isSystemDefault {
+            return isSystemDefaultSelection
+                ? "System UI (SF Pro)"
+                : "System UI (SF Pro) · \(Int(Self.clamped(size).rounded())) pt"
+        }
         return family.isEmpty ? name : family
     }
 

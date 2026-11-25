@@ -63,10 +63,10 @@ enum EventIdentity {
     }
 
     static func omp(relativePath: String, sessionID: String, object: [String: Any],
-                    usage: [String: Any]) -> String {
+                    usage: [String: Any], offset: Int64 = 0) -> String {
         if let messageID = object["id"] as? String, !messageID.isEmpty {
             return "omp:\(relativePath):\(messageID)"
         }
-        return "omp:\(relativePath):fallback:\(digest([sessionID, canonicalJSON(usage), canonicalJSON(object["message"]), object["timestamp"] as? String ?? ""]))"
+        return "omp:\(relativePath):fallback:\(digest([sessionID, String(offset), canonicalJSON(usage), canonicalJSON(object["message"]), object["timestamp"] as? String ?? ""]))"
     }
 }

@@ -86,7 +86,7 @@ final class TurnRollupTests: XCTestCase {
                 .map { "M \($0.tool) \($0.model) \($0.input) \($0.output) \($0.cacheRead) \(r($0.cost)) \($0.count)" }
                 .sorted()
             let c = db.costBreakdown(from: from, to: to)
-            out.append("C \(r(c.estimated)) \(r(c.actual)) \(r(c.deepseekActual))")
+            out.append("C \(r(c.estimated)) \(r(c.actual)) \(r(c.deepseekActual)) \(r(c.openrouterActual))")
             out.append("A \(r(db.apiValue(from: from, to: to))) \(r(db.apiValue(from: from, to: to, tool: "claude")))")
         }
         out += db.dailyAggregates(days: 100_000)
@@ -210,7 +210,7 @@ final class TurnRollupTests: XCTestCase {
         XCTAssertTrue(db.insertTurns(randomTurns(100, seed: 8)))
         assertRollupMatchesRaw("after upgrade")
         reopen()
-        XCTAssertEqual(db.setting("turn_rollup_schema"), "4")
+        XCTAssertEqual(db.setting("turn_rollup_schema"), "6")
     }
 
     func testLegacyStoreWithoutRollupIsBackfilled() {

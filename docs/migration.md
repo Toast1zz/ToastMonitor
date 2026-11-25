@@ -4,15 +4,15 @@ Version: 2026-08-09
 
 ## 1. Current state
 
-- Real DB: `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL).
-- Contains: turns / sessions / scan_state / session_totals / openrouter_snapshots / opencodego_snapshots / subscriptions / settings.
+- Real DB: `~/Library/Application Support/ToastMonitor/toastmonitor.db` (WAL, `user_version = 8`).
+- Contains: `turns`, `sessions`, `scan_state`, `session_totals`, `openrouter_snapshots`, `opencodego_snapshots`, `subscriptions`, `settings`, `claude_quota_samples`, `turn_rollup`, `perf_samples`, `perf_cursors`, `deepseek_balance_samples`.
 - Migrations must never delete or reset the user's database; when the user explicitly invokes a clear/rebuild API, a protected backup must be created first and rolled back on failure.
 
 ## 2. Backup & restore
 
-- The app's backup directory is `~/Library/Application Support/ToastMonitor/Backups/` with directory permissions 0700; database backup files are 0600.
-- `DataMaintenance.createBackup(label:)` uses an online SQLite backup snapshot and keeps the most recent 7; `exportDatabase(to:)` exports a full snapshot and sets the target file to 0600.
-- `DataMaintenance.clearAllData()` clears turns, sessions, scan_state, session_totals, quota snapshots (including `claude_quota_samples`) and subscriptions, but keeps settings, user preferences, Keychain credentials, and Hermes `hm_d|...` cumulative high-water baselines. Retaining those remote baselines prevents a later feed poll from re-importing pre-clear cumulative usage; only usage accrued after the retained baseline can return. A `pre-clear` backup is forced before execution and the clear rolls back on failure.
+- The app's backup directory is `~/Library/Application Support/ToastMonitor/Backups/` with directory permissions 0700; compressed backup files (`.db.lzfse`) are 0600 (written via temp file and atomically renamed after header/footer verification).
+- `DataMaintenance.createBackup(label:)` uses an online SQLite backup snapshot and keeps the 4 most recent weekly backups plus 10 operation backups (pre-clear and pre-repair backups are protected); `exportDatabase(to:)` exports a full snapshot and sets the target file to 0600.
+- `DataMaintenance.clearAllData()` clears `turns`, `sessions`, `scan_state`, `session_totals`, quota snapshots (`claude_quota_samples`, `deepseek_balance_samples`, `openrouter_snapshots`, `opencodego_snapshots`), `perf_samples`, `perf_cursors`, and `subscriptions`, as well as local parser cursors (`opencode_row_watermark`, `antigravity_gen_%`) and transient cache keys (`remote_watermark_%`, `last_scan_heartbeat`, `claude_quota_cache_v1`, etc.), while preserving settings, user preferences, Keychain credentials, and Hermes `hm_d|...` cumulative high-water baselines. Retaining those remote baselines prevents a later feed poll from re-importing pre-clear cumulative usage; only usage accrued after the retained baseline can return. A `pre-clear` backup is forced before execution and the clear rolls back on failure.
 - A protected backup is always created before repair/clear; on failure the original database is never further modified.
 
 ## 3. Manual diagnostics

@@ -225,8 +225,9 @@ struct CollectorStatusSection: View {
 
     private func rescan() {
         expanded = true
-        CollectorEngine.shared.scheduleScan()
-        OpenRouterClient.shared.refresh()
-        OpenCodeGoClient.shared.refresh()
+        CollectorEngine.shared.scheduleScan(force: true)
+        OpenRouterClient.shared.refresh(force: true)
+        OpenCodeGoClient.shared.refresh(force: true)
+        HermesRemoteClient.shared.poll()
     }
 }

@@ -27,7 +27,7 @@ final class AuditFixRegressionTests: XCTestCase {
     /// window so re-provisioning credentials triggers a refresh right away.
     func testRefreshBackoffSucceededClearsNextAllowed() {
         var backoff = RefreshBackoff()
-        backoff.failed(now: ProcessInfo.processInfo.systemUptime)
+        backoff.failed(now: MonotonicClock.now())
         XCTAssertTrue(backoff.isWaiting)
         backoff.succeeded()
         XCTAssertFalse(backoff.isWaiting)

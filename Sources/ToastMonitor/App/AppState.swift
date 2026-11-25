@@ -27,6 +27,8 @@ struct RefreshCoordinator {
         if isInFlight {
             if now - startedAt > watchdogSeconds {
                 isInFlight = false
+                pendingManual = false
+                pendingRefresh = false
                 restartedByWatchdog = true
             } else {
                 if manual { pendingManual = true }
@@ -110,6 +112,9 @@ final class AppState: ObservableObject {
     @Published private(set) var manualRefreshing = false
     /// Set at launch and after a recovery attempt.
     @Published private(set) var databaseProblem: Database.OpenProblem?
+    /// Monotonic revision bumped whenever snapshot data, database state, or
+    /// billing/reset settings change so secondary Dashboard views always reload.
+    @Published private(set) var dataRevision: UInt64 = 0
 
     // Read-only views of `state`; every write goes through refresh()'s
     // single `state = next` publish.
@@ -174,16 +179,28 @@ final class AppState: ObservableObject {
                 let visible = (note.object as? Bool) ?? false
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    var forceFullSnapshot = false
                     if name == TMNotifications.popoverVisibility {
                         self.popoverVisible = visible
                     } else {
+                        forceFullSnapshot = visible && !self.dashboardVisible
                         self.dashboardVisible = visible
                     }
-                    self.updateForeground()
+                    self.updateForeground(forceFullSnapshot: forceFullSnapshot)
                 }
             }
         }
-        NotificationCenter.default.addObserver(forName: CollectorEngine.didCollect, object: nil, queue: .main) { [weak self] note in
+        NotificationCenter.default.addObserver(forName: Database.didResetState, object: nil, queue: nil) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                UsageQueryService.shared.invalidateAllCaches { [weak self] in
+                    guard let self else { return }
+                    self.dataRevision &+= 1
+                    self.refresh()
+                }
+            }
+        }
+        NotificationCenter.default.addObserver(forName: CollectorEngine.didCollect, object: nil, queue: nil) { [weak self] note in
             // Change-driven: refresh only when the scan found new data, so idle
             // scans do not run a full aggregation every second.
             if let receipt = note.object as? CollectorEngine.ScanReceipt,
@@ -192,17 +209,17 @@ final class AppState: ObservableObject {
                 self?.refresh()
             }
         }
-        NotificationCenter.default.addObserver(forName: Database.subscriptionsDidChange, object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(forName: Database.subscriptionsDidChange, object: nil, queue: nil) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
-        NotificationCenter.default.addObserver(forName: TMNotifications.usagePeriodSettingsChanged, object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(forName: TMNotifications.usagePeriodSettingsChanged, object: nil, queue: nil) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
-        NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { [weak self] _ in
+        NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: nil) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
         NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
@@ -219,11 +236,16 @@ final class AppState: ObservableObject {
     /// immediately on activation. When everything is hidden, retain a slower
     /// cadence as a fallback; the collector's didCollect notification still
     /// refreshes immediately when new data lands.
-    private func updateForeground() {
+    private func updateForeground(forceFullSnapshot: Bool = false) {
         let fg = popoverVisible || dashboardVisible
         // At launch both flags are false. The missing timer is the signal that
         // the initial background cadence still needs to be installed.
-        guard fg != foreground || refreshTimer == nil else { return }
+        if fg == foreground && refreshTimer != nil {
+            if forceFullSnapshot {
+                refresh()
+            }
+            return
+        }
         foreground = fg
         if let t = refreshTimer {
             t.invalidate()
@@ -249,6 +271,7 @@ final class AppState: ObservableObject {
     /// `manual` marks user-initiated refreshes (toolbar button) so the
     /// spinner shows only for those.
     func refresh(manual: Bool = false) {
+        if manual && !manualRefreshing { manualRefreshing = true }
         guard let request = refreshCoordinator.request(
             manual: manual,
             now: CFAbsoluteTimeGetCurrent(),
@@ -258,7 +281,6 @@ final class AppState: ObservableObject {
         if request.restartedByWatchdog, DebugLog.enabled {
             NSLog("[ToastMonitor][refresh] watchdog reset inFlight")
         }
-        if manual { manualRefreshing = true }
         if DebugLog.enabled {
             NSLog("[ToastMonitor][refresh] enter fg=%d popover=%d dashboard=%d",
                   foreground ? 1 : 0, popoverVisible ? 1 : 0, dashboardVisible ? 1 : 0)
@@ -302,6 +324,7 @@ final class AppState: ObservableObject {
                 next.heatmapCost = complete.heatmapCost
             }
             self.state = next
+            self.dataRevision &+= 1
             if DebugLog.enabled {
                 NSLog("[ToastMonitor][refresh] publish today=%lld (codex %lld) turns=%d",
                       light.todayTokens,
@@ -330,26 +353,35 @@ final class AppState: ObservableObject {
     /// The user asked for fresh numbers: every source's poller, together. Each
     /// client keeps its own opt-in and backoff checks.
     func refreshAllSources() {
-        DeepSeekBillingClient.shared.refresh(force: true)
+        DeepSeekBillingClient.shared.refresh(force: true, bypassBackoff: true)
         refresh(manual: true)
-        CollectorEngine.shared.scheduleScan()
-        OpenRouterClient.shared.refresh()
-        OpenCodeGoClient.shared.refresh()
-        CodexQuotaClient.shared.refresh()
+        CollectorEngine.shared.scheduleScan(force: true)
+        OpenRouterClient.shared.refresh(force: true)
+        OpenCodeGoClient.shared.refresh(force: true)
+        CodexQuotaClient.shared.refresh(force: true)
         ClaudeQuotaClient.shared.refresh(force: true)
-        if AccountConnection.commandCode { CommandCodeQuotaClient.shared.refresh() }
-        GrokQuotaClient.shared.refresh()
-        AntigravityQuotaClient.shared.refresh()
-        HermesRemoteClient.shared.maybePoll()
+        if AccountConnection.commandCode { CommandCodeQuotaClient.shared.refresh(force: true) }
+        GrokQuotaClient.shared.refresh(force: true)
+        AntigravityQuotaClient.shared.refresh(force: true)
+        HermesRemoteClient.shared.poll()
     }
 
     /// Re-reads everything after the store was replaced.
     func databaseWasReplaced() {
         PerfCollector.resetCaches()
+        CollectorEngine.shared.resetCaches()
+        UsageQueryService.shared.invalidateAllCaches()
         MenuBarFontSettings.shared.reloadFromDatabase()
         UsagePeriodSettings.shared.reloadFromDatabase()
         QuotaAlertManager.shared.reloadFromDatabase()
+        CodexBillingModeCoordinator.shared.reloadFromDatabase()
+        CodexQuotaClient.shared.reloadFromDatabase()
+        ClaudeQuotaClient.shared.reloadFromDatabase()
+        GrokQuotaClient.shared.reloadFromDatabase()
+        AntigravityQuotaClient.shared.reloadFromDatabase()
+        HermesRemoteClient.shared.reloadConfiguration()
         databaseProblem = Database.shared.openProblem
+        dataRevision &+= 1
         NotificationCenter.default.post(name: TMNotifications.databaseReplaced, object: nil)
         refresh(manual: true)
         CollectorEngine.shared.scheduleScan(force: true)
@@ -357,7 +389,7 @@ final class AppState: ObservableObject {
 
     private func finishRefresh(generation: UInt64) {
         guard let rerun = refreshCoordinator.finish(generation: generation) else { return }
-        manualRefreshing = false
+        if !rerun.manual { manualRefreshing = false }
         if rerun.manual || rerun.requested {
             refresh(manual: rerun.manual)
         }

@@ -197,9 +197,15 @@ enum DSHParser {
     /// Parses changed session logs. `decompress` is injectable so tests can
     /// pass an identity function over plain-JSONL fixtures.
     static func scanLogs(knownPaths: [String], database: any ParserStateStore = Database.shared,
-                         decompress: (Data) -> Data? = { Zstd.decompress($0) })
+                         decompress: ((Data) -> Data?)? = nil)
         -> (turns: [TurnRecord], sessions: [SessionInfo]) {
         guard !ToolKind.dsh.sourceIsRemote else { return ([], []) }
+        if decompress == nil, knownPaths.contains(where: { $0.hasSuffix(".zstd") }),
+           Zstd.executablePath() == nil {
+            database.noteScanProblem("zstd CLI not found — cannot read compressed DSH logs")
+            return ([], [])
+        }
+        let decompressFn: (Data) -> Data? = decompress ?? { Zstd.decompress($0) }
         var turns: [TurnRecord] = []
         var sessions: [SessionInfo] = []
         for file in knownPaths {
@@ -218,23 +224,27 @@ enum DSHParser {
             let sameAppendOnlyFile = !stalled
                 && FileScanner.isAppendOnly(path: file, stat: st, previous: prev,
                                             checkLineBoundary: !file.hasSuffix(".zstd"))
+            let persisted = (sameAppendOnlyFile ? prev.context : nil)
+                .flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            var sessionID = (persisted?["sid"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let hadPersistedSessionID = sessionID != nil
             let offset = sameAppendOnlyFile ? prev.size : 0
-            let persisted = (try? JSONSerialization.jsonObject(with: Data((prev.context ?? "").utf8))) as? [String: Any]
-            var sessionID = persisted?["sid"] as? String
             var project = persisted?["cwd"] as? String
-            var headerCreated: Int64 = 0
+            var headerCreated: Int64 = (persisted?["created"] as? NSNumber)?.int64Value ?? 0
             var newOffset = offset
             var preliminaryCount: Int?
 
             // A known append cursor already has header identity persisted, so
-            // fold it in one pass. Only a full rescan needs a header pass.
+            // fold it in one pass. Only a missing/unseeded header needs a pre-pass.
             if offset == 0 || sessionID == nil {
                 var headerFound = false
                 var headerSessionID: String?
                 var headerProject: String?
-                let firstPass = forEachObject(path: file, fromOffset: offset, decompress: decompress,
-                                              stopWhen: { offset == 0 && headerFound }) { item in
-                    guard offset == 0, !headerFound,
+                let firstPass = forEachObject(path: file, fromOffset: offset, maxOffset: st.size,
+                                              decompress: decompressFn,
+                                              stopWhen: { headerFound }) { item in
+                    guard !headerFound,
                           item.obj["type"] as? String == "session" else { return }
                     headerFound = true
                     if let id = item.obj["id"] as? String, !id.isEmpty { headerSessionID = id }
@@ -243,10 +253,8 @@ enum DSHParser {
                 }
                 preliminaryCount = firstPass.count
                 newOffset = firstPass.newOffset
-                if offset == 0 {
-                    sessionID = headerSessionID ?? sessionID
-                    project = headerProject ?? project
-                }
+                sessionID = headerSessionID ?? sessionID
+                project = headerProject ?? project
             }
 
             func recordEmptyScan() {
@@ -268,22 +276,26 @@ enum DSHParser {
                 continue
             }
             guard let sid = sessionID, !sid.isEmpty else {
+                // Headerless tails advance `newOffset` so subsequent scans do not
+                // re-read them; once a `session` header arrives, `foldOffset`
+                // rewinds to 0 once to recover earlier steps.
                 database.setScanState(file, size: newOffset, mtime: st.mtime,
                                       identity: st.identity,
                                       context: FileScanner.contextWithStallCount(prev.context, count: 0))
                 continue
             }
 
+            let foldOffset = hadPersistedSessionID ? offset : 0
             var initialPending: [PendingStep] = []
-            if offset > 0, let rows = persisted?["pending"] as? [[String: Any]] {
+            if foldOffset > 0, let rows = persisted?["pending"] as? [[String: Any]] {
                 initialPending = rows.compactMap(PendingStep.from)
             }
-            let initialHeaderProvider = offset > 0 ? persisted?["headerProvider"] as? String : nil
-            let initialHeaderModel = offset > 0 ? persisted?["headerModel"] as? String : nil
-            var foldPass = (count: 0, newOffset: offset)
+            let initialHeaderProvider = foldOffset > 0 ? persisted?["headerProvider"] as? String : nil
+            let initialHeaderModel = foldOffset > 0 ? persisted?["headerModel"] as? String : nil
+            var foldPass = (count: 0, newOffset: foldOffset)
             let parsed = parseLogEvents({ consume in
-                foldPass = forEachObject(path: file, fromOffset: offset,
-                                         decompress: decompress, consume)
+                foldPass = forEachObject(path: file, fromOffset: foldOffset, maxOffset: st.size,
+                                         decompress: decompressFn, consume)
             }, sessionID: sid, project: project,
                pending: initialPending,
                initialHeaderProvider: initialHeaderProvider,
@@ -296,11 +308,13 @@ enum DSHParser {
             }
             turns.append(contentsOf: parsed.turns)
             if parsed.lastTs > 0 || !parsed.turns.isEmpty {
+                let rawUpdated = parsed.lastTs > 0 ? parsed.lastTs : headerCreated
                 sessions.append(SessionInfo(tool: .dsh, sessionID: sid, title: nil, project: project,
                                             model: parsed.model, created: headerCreated,
-                                            updated: sec(parsed.lastTs > 0 ? parsed.lastTs : headerCreated)))
+                                            updated: max(sec(rawUpdated), headerCreated)))
             }
             var ctx: [String: Any] = ["sid": sid]
+            if headerCreated > 0 { ctx["created"] = headerCreated }
             if let project { ctx["cwd"] = project }
             if let hp = parsed.headerProvider { ctx["headerProvider"] = hp }
             if let hm = parsed.headerModel { ctx["headerModel"] = hm }
@@ -321,14 +335,14 @@ enum DSHParser {
     /// Peak memory also includes the largest decoded frame, output rows,
     /// and bounded-cache retention (subject to NSCache's advisory limits).
     @discardableResult
-    static func forEachObject(path: String, fromOffset: Int64,
+    static func forEachObject(path: String, fromOffset: Int64, maxOffset: Int64? = nil,
                                       decompress: (Data) -> Data?,
                                       stopWhen: (() -> Bool)? = nil,
                                       _ body: ((offset: Int64, obj: [String: Any])) -> Void)
         -> (count: Int, newOffset: Int64) {
         guard path.hasSuffix(".zstd") else {
             var count = 0
-            let newOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: fromOffset) {
+            let newOffset = FileScanner.forEachNewJSONLine(path: path, fromOffset: fromOffset, maxOffset: maxOffset) {
                 if stopWhen?() == true { return }
                 count += 1
                 body($0)
@@ -338,7 +352,8 @@ enum DSHParser {
 
         guard let fh = FileHandle(forReadingAtPath: path) else { return (0, fromOffset) }
         defer { fh.closeFile() }
-        guard let total = try? fh.seekToEnd() else { return (0, fromOffset) }
+        guard let seekEnd = try? fh.seekToEnd() else { return (0, fromOffset) }
+        let total = maxOffset.map { min(seekEnd, UInt64(max($0, 0))) } ?? seekEnd
         var start: UInt64 = 0
         if fromOffset > 0 && Int64(total) >= fromOffset {
             start = UInt64(fromOffset)

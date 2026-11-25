@@ -104,11 +104,12 @@ enum FileScanner {
     /// autorelease pool: Foundation's JSON objects and callback temporaries
     /// must not accumulate for the lifetime of a collector queue work item.
     @discardableResult
-    static func forEachNewJSONLine(path: String, fromOffset: Int64,
+    static func forEachNewJSONLine(path: String, fromOffset: Int64, maxOffset: Int64? = nil,
                                    _ body: ((offset: Int64, obj: [String: Any])) -> Void) -> Int64 {
         guard let fh = FileHandle(forReadingAtPath: path) else { return fromOffset }
         defer { fh.closeFile() }
-        let total = (try? fh.seekToEnd()) ?? 0
+        let seekEnd = (try? fh.seekToEnd()) ?? 0
+        let total = maxOffset.map { min(seekEnd, UInt64(max($0, 0))) } ?? seekEnd
         var start: UInt64 = 0
         if fromOffset > 0 && Int64(total) >= fromOffset {
             start = UInt64(fromOffset)
@@ -123,32 +124,38 @@ enum FileScanner {
         // binary file without newlines cannot exhaust process memory.
         let maxLineBytes = 64 * 1024 * 1024
         var skippingOversizedLine = false
+        var oversizedStartConsumed: UInt64 = 0
+        var oversizedSkippedBytes: UInt64 = 0
         var pending = Data()
         pending.reserveCapacity(64 * 1024)
         var consumed: UInt64 = 0
         // Bytes at the front of `pending` already known to hold no newline,
         // so a line spanning many chunks is not rescanned from its start.
         var scanned = 0
-        while true {
+        var position = start
+        while position < total {
             let chunk: Data?
             do {
+                let toRead = Int(min(UInt64(64 * 1024), total - position))
                 // FileHandle can also autorelease its backing NSData. Keep
                 // the returned Data alive without retaining every old chunk.
-                chunk = try autoreleasepool { try fh.read(upToCount: 64 * 1024) }
+                chunk = try autoreleasepool { try fh.read(upToCount: toRead) }
             } catch {
                 break
             }
             guard let chunk, !chunk.isEmpty else { break }
+            position += UInt64(chunk.count)
             if skippingOversizedLine {
                 if let nl = chunk.firstIndex(of: 0x0a) {
-                    let dropped = chunk.distance(from: chunk.startIndex, to: nl) + 1
-                    consumed += UInt64(dropped)
+                    let dropped = UInt64(chunk.distance(from: chunk.startIndex, to: nl) + 1)
+                    consumed = oversizedStartConsumed + oversizedSkippedBytes + dropped
                     skippingOversizedLine = false
+                    oversizedSkippedBytes = 0
                     let tail = chunk[chunk.index(after: nl)...]
                     if !tail.isEmpty { pending.append(tail) }
                     scanned = 0
                 } else {
-                    consumed += UInt64(chunk.count)
+                    oversizedSkippedBytes += UInt64(chunk.count)
                     continue
                 }
             } else {
@@ -174,13 +181,19 @@ enum FileScanner {
                 consumed += UInt64(lineStart)
             }
             if pending.count > maxLineBytes {
-                consumed += UInt64(pending.count)
+                oversizedStartConsumed = consumed
+                oversizedSkippedBytes = UInt64(pending.count)
                 pending.removeAll(keepingCapacity: false)
                 skippingOversizedLine = true
                 scanned = 0
             } else {
                 scanned = pending.count
             }
+        }
+        if skippingOversizedLine {
+            // An unterminated >64MB line stops at its start boundary so later
+            // scans stay aligned when its newline arrives.
+            return Int64(start + oversizedStartConsumed)
         }
         if !pending.isEmpty {
             autoreleasepool {

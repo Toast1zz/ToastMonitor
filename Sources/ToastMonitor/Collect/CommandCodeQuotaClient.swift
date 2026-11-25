@@ -16,11 +16,11 @@ import Combine
 @MainActor
 final class CommandCodeQuotaClient: ObservableObject {
     static let shared = CommandCodeQuotaClient()
-    static let maxCookieLength = 16_384
-    static let maxResponseBytes = 10_000_000
+    nonisolated static let maxCookieLength = 16_384
+    nonisolated static let maxResponseBytes = 10_000_000
 
     /// Keychain account used for the full `Cookie:` header value.
-    static let keychainAccount = "commandcode-cookie"
+    nonisolated static let keychainAccount = "commandcode-cookie"
 
     /// The three Better Auth session cookie names the app accepts. Provisioning
     /// stores whatever the user pastes as the full Cookie header; this list is
@@ -78,7 +78,15 @@ final class CommandCodeQuotaClient: ObservableObject {
         guard !started else { return }
         started = true
         refresh()
-        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
+        poller.start(onWake: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.backoff.allowNow()
+                self.refresh(force: self.state.error != nil)
+            }
+        }) { [weak self] in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
     // MARK: - Provisioning
@@ -93,7 +101,25 @@ final class CommandCodeQuotaClient: ObservableObject {
             state.error = "Invalid cookie"
             return false
         }
-        if KeychainStore.set(normalized, account: Self.keychainAccount, allowPrompt: true) {
+        let res = KeychainStore.setWithStatus(normalized, account: Self.keychainAccount, allowPrompt: true)
+        return applyProvisionResult(ok: res.ok, locked: KeychainStore.authorizationFailures.contains(res.status))
+    }
+
+    @discardableResult
+    func provisionAsync(cookie raw: String) async -> Bool {
+        guard let normalized = Self.normalizedCookie(raw) else {
+            state.error = "Invalid cookie"
+            return false
+        }
+        let account = Self.keychainAccount
+        let res = await Task.detached(priority: .userInitiated) {
+            KeychainStore.setWithStatus(normalized, account: account, allowPrompt: true)
+        }.value
+        return applyProvisionResult(ok: res.ok, locked: KeychainStore.authorizationFailures.contains(res.status))
+    }
+
+    private func applyProvisionResult(ok: Bool, locked: Bool) -> Bool {
+        if ok {
             invalidateInFlight()
             state.configured = true
             state.error = nil
@@ -101,22 +127,41 @@ final class CommandCodeQuotaClient: ObservableObject {
             refresh()
             return true
         }
-        keychainLocked = KeychainStore.lastWasInteractionNotAllowed
+        keychainLocked = locked
         state.error = keychainLocked
             ? "Keychain locked or access denied — cookie not saved"
             : "Keychain write failed — cookie not saved"
         return false
     }
 
-    func clear() {
+    @discardableResult
+    func clear() -> Bool {
         invalidateInFlight()
         guard KeychainStore.delete(account: Self.keychainAccount, allowPrompt: true) else {
             state.error = "Keychain delete failed — cookie still stored"
-            return
+            return false
         }
         state = State()
         state.error = "Not configured"
         keychainLocked = false
+        return true
+    }
+
+    @discardableResult
+    func clearAsync() async -> Bool {
+        invalidateInFlight()
+        let account = Self.keychainAccount
+        let ok = await Task.detached(priority: .userInitiated) {
+            KeychainStore.delete(account: account, allowPrompt: true)
+        }.value
+        guard ok else {
+            state.error = "Keychain delete failed — cookie still stored"
+            return false
+        }
+        state = State()
+        state.error = "Not configured"
+        keychainLocked = false
+        return true
     }
 
     private func invalidateInFlight() {
@@ -140,8 +185,9 @@ final class CommandCodeQuotaClient: ObservableObject {
 
     // MARK: - Refresh
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         guard !inFlight else { return }
+        if force { backoff.allowNow() }
         // Backoff gate: skip attempts inside the backoff window.
         if backoff.isWaiting { return }
         inFlight = true
@@ -155,12 +201,14 @@ final class CommandCodeQuotaClient: ObservableObject {
                 self.keychainLocked = loaded?.locked ?? false
                 guard let cookie = loaded?.cookie else {
                     self.inFlight = false
+                    self.state.configured = false
                     self.state.error = self.keychainLocked
                         ? "Keychain locked or access denied — reauthorize to refresh"
                         : "Not configured"
                     self.state.isLoading = false
                     return
                 }
+                self.state.configured = true
                 self.requestUsage(cookie: cookie, generation: generation)
             }
         }
@@ -350,10 +398,10 @@ final class CommandCodeQuotaClient: ObservableObject {
         return .success(parsed)
     }
 
-    /// Accepts string or numeric amounts; rejects non-finite or negative.
+    /// Accepts string or numeric amounts; rejects non-finite or negative (and CFBoolean).
     nonisolated static func boundedAmount(_ value: Any?) -> Double? {
         let d: Double?
-        if let n = value as? NSNumber {
+        if let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
             d = n.doubleValue
         } else if let s = value as? String, let v = Double(s) {
             d = v
@@ -399,6 +447,7 @@ final class CommandCodeQuotaClient: ObservableObject {
             return
         }
         backoff.succeeded()
+        state.configured = true
         state.lastSync = Int64(Date().timeIntervalSince1970)
         state.monthlyCreditsRemaining = parsed.monthlyCreditsRemaining
         state.purchasedCredits = parsed.purchasedCredits

@@ -16,9 +16,23 @@ import Security
 /// file-based login keychain.
 enum KeychainStore {
     static let service = "ToastMonitor"
-    static var readImpl: ((String, Bool) -> (OSStatus, String?))?
-    static var writeImpl: ((String, String, Bool) -> OSStatus)?
-    static var deleteImpl: ((String, Bool) -> OSStatus)?
+    private static let hookLock = NSLock()
+    nonisolated(unsafe) private static var _readImpl: ((String, Bool) -> (OSStatus, String?))?
+    nonisolated(unsafe) private static var _writeImpl: ((String, String, Bool) -> OSStatus)?
+    nonisolated(unsafe) private static var _deleteImpl: ((String, Bool) -> OSStatus)?
+
+    static var readImpl: ((String, Bool) -> (OSStatus, String?))? {
+        get { hookLock.lock(); defer { hookLock.unlock() }; return _readImpl }
+        set { hookLock.lock(); defer { hookLock.unlock() }; _readImpl = newValue }
+    }
+    static var writeImpl: ((String, String, Bool) -> OSStatus)? {
+        get { hookLock.lock(); defer { hookLock.unlock() }; return _writeImpl }
+        set { hookLock.lock(); defer { hookLock.unlock() }; _writeImpl = newValue }
+    }
+    static var deleteImpl: ((String, Bool) -> OSStatus)? {
+        get { hookLock.lock(); defer { hookLock.unlock() }; return _deleteImpl }
+        set { hookLock.lock(); defer { hookLock.unlock() }; _deleteImpl = newValue }
+    }
 
     // Most recent SecItem result, thread-safe, so clients can tell "not
     // configured" (errSecItemNotFound) apart from "there but unreadable
@@ -122,20 +136,25 @@ enum KeychainStore {
         return query
     }
 
-    static func set(_ value: String, account: String, allowPrompt: Bool = false) -> Bool {
+    @discardableResult
+    static func setWithStatus(_ value: String, account: String, allowPrompt: Bool = false) -> (ok: Bool, status: OSStatus) {
         if let writeImpl {
             let status = writeImpl(value, account, allowPrompt)
             recordStatus(status)
-            return status == errSecSuccess
+            return (status == errSecSuccess, status)
         }
-        guard let data = value.data(using: .utf8) else { return false }
-        guard allowPrompt else {
-            return withoutUserInteraction { setLocked(data, account: account, allowPrompt: false) }
+        guard let data = value.data(using: .utf8) else { return (false, errSecParam) }
+        if allowPrompt {
+            return withUserInteraction { setLockedWithStatus(data, account: account, allowPrompt: true) }
         }
-        return withUserInteraction { setLocked(data, account: account, allowPrompt: true) }
+        return withoutUserInteraction { setLockedWithStatus(data, account: account, allowPrompt: false) }
     }
 
-    private static func setLocked(_ data: Data, account: String, allowPrompt: Bool) -> Bool {
+    static func set(_ value: String, account: String, allowPrompt: Bool = false) -> Bool {
+        setWithStatus(value, account: account, allowPrompt: allowPrompt).ok
+    }
+
+    private static func setLockedWithStatus(_ data: Data, account: String, allowPrompt: Bool) -> (Bool, OSStatus) {
         let query = query(account: account, allowPrompt: allowPrompt)
         let update: [String: Any] = [kSecValueData as String: data]
 
@@ -144,23 +163,23 @@ enum KeychainStore {
         // build look like a different Keychain client and prompts again.
         let updated = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         recordStatus(updated)
-        if updated == errSecSuccess { return true }
-        guard updated == errSecItemNotFound else { return false }
+        if updated == errSecSuccess { return (true, updated) }
+        guard updated == errSecItemNotFound else { return (false, updated) }
 
         var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let added = SecItemAdd(add as CFDictionary, nil)
         recordStatus(added)
-        if added == errSecSuccess { return true }
+        if added == errSecSuccess { return (true, added) }
         // A concurrent writer may have created the item between the update
         // and add calls; preserve the same in-place semantics in that case.
         if added == errSecDuplicateItem {
             let retry = SecItemUpdate(query as CFDictionary, update as CFDictionary)
             recordStatus(retry)
-            return retry == errSecSuccess
+            return (retry == errSecSuccess, retry)
         }
-        return false
+        return (false, added)
     }
 
     static func getWithStatus(account: String, allowPrompt: Bool = false) -> (value: String?, status: OSStatus) {
@@ -190,7 +209,8 @@ enum KeychainStore {
     @discardableResult
     static func delete(account: String, allowPrompt: Bool = false) -> Bool {
         let query = query(account: account, allowPrompt: allowPrompt)
-        let remove = { deleteImpl?(account, allowPrompt) ?? SecItemDelete(query as CFDictionary) }
+        let impl = deleteImpl
+        let remove = { impl?(account, allowPrompt) ?? SecItemDelete(query as CFDictionary) }
         let status = allowPrompt ? withUserInteraction(remove) : withoutUserInteraction(remove)
         recordStatus(status)
         return status == errSecSuccess || status == errSecItemNotFound

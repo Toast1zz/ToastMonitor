@@ -32,19 +32,36 @@ if not needles:
     print("error: no usable checkout or home path to scan for", file=sys.stderr)
     sys.exit(2)
 
-def files(path):
-    if os.path.isfile(path):
+def entries(path):
+    if os.path.islink(path) or os.path.isfile(path):
         yield path
         return
-    for dp, dns, fns in os.walk(path):
+    for dp, dns, fns in os.walk(path, followlinks=False):
+        for dn in dns:
+            full = os.path.join(dp, dn)
+            if os.path.islink(full):
+                yield full
         for fn in fns:
             yield os.path.join(dp, fn)
 
 found = []
-for f in files(scan):
+unreadable = []
+for f in entries(scan):
+    if os.path.islink(f):
+        try:
+            target = os.readlink(f).encode("utf-8", errors="surrogateescape")
+        except OSError as exc:
+            unreadable.append((f, str(exc)))
+            continue
+        for label, text, needle in needles:
+            if needle in target:
+                found.append((f, label, text, f"symlink -> {os.readlink(f)}"))
+        continue
     try:
-        data = open(f, "rb").read()
-    except OSError:
+        with open(f, "rb") as fh:
+            data = fh.read()
+    except OSError as exc:
+        unreadable.append((f, str(exc)))
         continue
     for label, text, needle in needles:
         cap = 0
@@ -60,6 +77,15 @@ for f in files(scan):
             i = j + len(needle)
             if cap >= 5:
                 break
+
+if unreadable:
+    print(
+        f"error: could not inspect {len(unreadable)} file(s) while scanning for build paths:",
+        file=sys.stderr,
+    )
+    for f, err in unreadable[:24]:
+        print(f"  {f}: {err}", file=sys.stderr)
+    sys.exit(1)
 
 if found:
     print(

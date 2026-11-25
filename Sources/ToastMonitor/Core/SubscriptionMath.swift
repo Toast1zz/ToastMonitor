@@ -11,6 +11,19 @@ enum SubscriptionMath {
         let progress: Double // 0...1
     }
 
+    static func activeSubscription(in subscriptions: [Database.Subscription],
+                                   matching plans: Set<String>,
+                                   now: Date = Date()) -> Database.Subscription? {
+        subscriptions
+            .filter { plans.contains($0.plan) && cycleInfo(start: $0.startDate, end: $0.endDate, cycle: $0.cycle, now: now) != nil }
+            .max { ($0.startDate, $0.id) < ($1.startDate, $1.id) }
+    }
+
+    static func activeCodexSubscription(in subscriptions: [Database.Subscription],
+                                        now: Date = Date()) -> Database.Subscription? {
+        activeSubscription(in: subscriptions, matching: ["openai", "codex"], now: now)
+    }
+
     static func cycleInfo(start: Int64, end: Int64 = 0, cycle: String, now: Date = Date()) -> CycleInfo? {
         guard start > 0 else { return nil }
         // Only the supported cycles have defined math; anything else (old

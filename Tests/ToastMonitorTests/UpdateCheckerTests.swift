@@ -141,6 +141,22 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(found?.sha256, "28338e912826050eac86cc08623b658b3f0a8d188cea0e0daf0144a22b22c05a")
     }
 
+    @MainActor
+    func testRepositoryAppcastFilesMatchAndVerifyAgainstBakedInKey() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let rootAppcast = repoRoot.appendingPathComponent("appcast.json")
+        let docsAppcast = repoRoot.appendingPathComponent("docs/appcast.json")
+        let rootData = try Data(contentsOf: rootAppcast)
+        let docsData = try Data(contentsOf: docsAppcast)
+        XCTAssertEqual(rootData, docsData, "appcast.json and docs/appcast.json must match")
+        let envelope = try JSONDecoder().decode(UpdateChecker.Envelope.self, from: docsData)
+        let found = try UpdateChecker.parseEnvelope(envelope, publicKey: UpdateManager.publicKey, current: [0, 0, 1])
+        XCTAssertNotNil(found)
+    }
+
     /// Failures surface user-friendly copy, never raw technical strings, and a
     /// reachable-but-404 feed reads as a connectivity problem.
     func testFriendlyMessages() {
@@ -209,6 +225,23 @@ final class UpdateCheckerTests: XCTestCase {
     }
 
     @MainActor
+    func testInstallerRollsBackWhenLaunchNeverConfirmsReady() throws {
+        let fixture = try InstallerFixture()
+        defer { fixture.cleanup() }
+        try fixture.createApp(fixture.target, version: "old")
+        try fixture.createApp(fixture.candidate, version: "new")
+        // Launcher exits 0 (simulating `open` returning) without ever touching `ready`.
+        try "#!/bin/bash\nexit 0\n".write(to: fixture.launcher, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixture.launcher.path)
+        let installer = try fixture.start(parentPID: 999_999_999, extraEnv: ["TM_UPDATE_READY_POLLS": "2"])
+        installer.waitUntilExit()
+        XCTAssertNotEqual(installer.terminationStatus, 0)
+        XCTAssertEqual(try fixture.version(fixture.target), "old")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.backup.path))
+        XCTAssertTrue(try String(contentsOf: fixture.result).contains("original app was restored"))
+    }
+
+    @MainActor
     func testInstallerPreservesExistingBackupRatherThanOverwritingRecovery() throws {
         let fixture = try InstallerFixture()
         defer { fixture.cleanup() }
@@ -225,18 +258,17 @@ final class UpdateCheckerTests: XCTestCase {
     }
     @MainActor
     func testLaunchFailureReportSurvivesNextStartup() throws {
-        let failureURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ToastMonitor/\(UpdateManager.installFailureName)")
-        let previous = try? Data(contentsOf: failureURL)
-        defer {
-            if let previous { try? previous.write(to: failureURL, options: .atomic) }
-            else { try? FileManager.default.removeItem(at: failureURL) }
-        }
-        try FileManager.default.createDirectory(at: failureURL.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        try Data("Update failed while replacing the app.\n".utf8).write(to: failureURL)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tm-install-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let failureURL = dir.appendingPathComponent(UpdateManager.installFailureName)
         let updates = UpdateManager.shared
-        updates.consumeInstallFailure()
+        defer {
+            updates.clearErrorForTesting()
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try Data("Update failed while replacing the app.\n".utf8).write(to: failureURL)
+        updates.consumeInstallFailure(reportURL: failureURL, executableURL: nil)
         XCTAssertEqual(updates.lastError, "Update failed while replacing the app.")
         XCTAssertTrue(FileManager.default.fileExists(atPath: failureURL.path))
     }
@@ -306,7 +338,7 @@ private final class InstallerFixture {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
     }
 
-    func start(parentPID: Int32) throws -> Process {
+    func start(parentPID: Int32, extraEnv: [String: String] = [:]) throws -> Process {
         let script = staging.appendingPathComponent("install.sh")
         try UpdateManager.installerScript.write(to: script, atomically: true, encoding: .utf8)
         try "9.9.9\n".write(to: pending, atomically: true, encoding: .utf8)
@@ -314,6 +346,11 @@ private final class InstallerFixture {
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script.path, target.path, candidate.path, String(parentPID),
                              ready.path, result.path, launcher.path, "9.9.9"]
+        if !extraEnv.isEmpty {
+            var env = ProcessInfo.processInfo.environment
+            for (k, v) in extraEnv { env[k] = v }
+            process.environment = env
+        }
         try process.run()
         return process
     }

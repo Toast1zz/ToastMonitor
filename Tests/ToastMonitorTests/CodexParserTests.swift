@@ -284,6 +284,7 @@ final class OpenCodeParserDeltaTests: XCTestCase {
     private var db: Database!
     private var dbPath = ""
     private var homeDir = ""
+    private var previousHome: String?
 
     override func setUp() {
         super.setUp()
@@ -293,11 +294,11 @@ final class OpenCodeParserDeltaTests: XCTestCase {
         homeDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("opencode-home-\(UUID().uuidString)").path
         try? FileManager.default.createDirectory(atPath: homeDir, withIntermediateDirectories: true)
-        setenv("OPENCODE_HOME", homeDir, 1)
+        previousHome = TestEnvironment.beginScope("OPENCODE_HOME", value: homeDir)
     }
 
     override func tearDown() {
-        unsetenv("OPENCODE_HOME")
+        TestEnvironment.endScope("OPENCODE_HOME", restoring: previousHome)
         db.close()
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(atPath: dbPath + suffix)

@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 
 /// Antigravity (Google AI Pro / Ultra) model quota, read from the language
 /// server that Antigravity — standalone or inside Gemini.app — runs on this
@@ -128,11 +129,24 @@ final class AntigravityQuotaClient: ObservableObject {
     /// On by default: the source is a local server and nothing is sent anywhere.
     func setEnabled(_ on: Bool) {
         guard on != enabled else { return }
-        enabled = on
-        loadedPreference = true
         DispatchQueue.global(qos: .utility).async {
             _ = Database.shared.setSetting(Self.enabledSettingKey, on ? nil : "0")
         }
+        applyEnabled(on)
+    }
+
+    func reloadFromDatabase() {
+        let on = Database.shared.setting(Self.enabledSettingKey) != "0"
+        applyEnabled(on)
+    }
+
+    private func applyEnabled(_ on: Bool) {
+        loadedPreference = true
+        guard on != enabled else {
+            if on && !started { start() }
+            return
+        }
+        enabled = on
         started = false
         if on {
             start()
@@ -140,6 +154,8 @@ final class AntigravityQuotaClient: ObservableObject {
             poller.stop()
             refreshGeneration &+= 1
             inFlight = false
+            backoff.succeeded()
+            state = State()
         }
     }
 
@@ -151,11 +167,20 @@ final class AntigravityQuotaClient: ObservableObject {
         guard enabled, !started else { return }
         started = true
         refresh()
-        poller.start { [weak self] in MainActor.assumeIsolated { self?.refresh() } }
+        poller.start(onWake: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.backoff.allowNow()
+                self.refresh(force: self.state.error != nil)
+            }
+        }) { [weak self] in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         guard enabled, !inFlight, !isDemo else { return }
+        if force { backoff.allowNow() }
         if backoff.isWaiting { return }
         inFlight = true
         refreshGeneration &+= 1
@@ -193,12 +218,36 @@ final class AntigravityQuotaClient: ObservableObject {
         FileManager.default.fileExists(atPath: appDataDir().path)
     }
 
+    nonisolated static func isTrustedServerProcess(pid: Int32) -> Bool {
+        guard pid > 1, kill(pid, 0) == 0 else { return false }
+        var bsdInfo = proc_bsdinfo()
+        let infoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdInfo, infoSize) == infoSize,
+              bsdInfo.pbi_uid == getuid() else {
+            return false
+        }
+        var pathBuf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let pathLen = proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count))
+        if pathLen > 0 {
+            let path = String(cString: pathBuf).lowercased()
+            if path.contains("antigravity") || path.contains("language_server") {
+                return true
+            }
+        }
+        let comm = withUnsafeBytes(of: bsdInfo.pbi_comm) { raw -> String in
+            let bytes = raw.prefix { $0 != 0 }
+            return String(decoding: bytes, as: UTF8.self).lowercased()
+        }
+        return comm.contains("antigravity") || comm.contains("language_server")
+    }
+
     /// The newest discovery file whose server process is still alive. A
     /// crashed server leaves its file behind, so the pid is checked.
-    nonisolated static func findHub() -> Hub? {
-        let dir = appDataDir().appendingPathComponent("daemon")
+    nonisolated static func findHub(in dir: URL? = nil,
+                                    isValidProcess: (Int32) -> Bool = isTrustedServerProcess) -> Hub? {
+        let daemonDir = dir ?? appDataDir().appendingPathComponent("daemon")
         guard let names = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return nil }
+            at: daemonDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return nil }
         let candidates = names
             .filter { $0.lastPathComponent.hasPrefix("hub_") && $0.pathExtension == "json" }
             .sorted {
@@ -208,7 +257,7 @@ final class AntigravityQuotaClient: ObservableObject {
             }
         for url in candidates {
             guard let data = try? Data(contentsOf: url), data.count <= 64_000,
-                  let hub = parseHub(data), kill(hub.pid, 0) == 0 || errno == EPERM else { continue }
+                  let hub = parseHub(data), isValidProcess(hub.pid) else { continue }
             return hub
         }
         return nil
@@ -216,8 +265,12 @@ final class AntigravityQuotaClient: ObservableObject {
 
     nonisolated static func parseHub(_ data: Data) -> Hub? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let pid = (root["pid"] as? NSNumber)?.int32Value, pid > 0,
-              let port = (root["httpPort"] as? NSNumber)?.intValue, (1...65535).contains(port),
+              let pidNum = root["pid"] as? NSNumber,
+              CFGetTypeID(pidNum) != CFBooleanGetTypeID(),
+              let pid = Int32(exactly: pidNum.int64Value), pid > 1,
+              let portNum = root["httpPort"] as? NSNumber,
+              CFGetTypeID(portNum) != CFBooleanGetTypeID(),
+              let port = Int(exactly: portNum.int64Value), (1...65535).contains(port),
               let token = (root["csrfToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !token.isEmpty, token.count <= 256,
               token.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }

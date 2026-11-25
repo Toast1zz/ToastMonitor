@@ -105,22 +105,30 @@ enum Format {
 
     /// Money in USD with adaptive precision. Non-finite values render as
     /// $0.00 (never "nan"); negatives format normally with a leading "-".
+    /// Threshold checks use rounded values so values like 99.995 promote cleanly.
     static func money(_ v: Double) -> String {
         guard v.isFinite else { return "$0.00" }
-        if v == 0 { return "$0.00" }
+        if abs(v) < 0.00005 { return "$0.00" }
         if v < 0 { return "-" + money(-v) }
-        if v >= 100 { return "$" + moneyWholeString(v) }
-        if v >= 1 { return String(format: "$%.2f", v) }
-        if v >= 0.01 { return String(format: "$%.3f", v) }
+        if v >= 1e15 { return "$" + moneyWholeString(v) }
+        let rounded2 = (v * 100).rounded() / 100
+        if rounded2 >= 100 { return "$" + moneyWholeString(rounded2) }
+        let rounded3 = (v * 1_000).rounded() / 1_000
+        if rounded3 >= 1 { return String(format: "$%.2f", v) }
+        let rounded4 = (v * 10_000).rounded() / 10_000
+        if rounded4 >= 0.01 { return String(format: "$%.3f", v) }
         return String(format: "$%.4f", v)
     }
 
     static func moneyShort(_ v: Double) -> String {
         guard v.isFinite else { return "$0.00" }
-        if v == 0 { return "$0.00" }
+        if abs(v) < 0.0005 { return "$0.00" }
         if v < 0 { return "-" + moneyShort(-v) }
-        if v >= 1000 { return String(format: "$%.1fk", v / 1000) }
-        if v >= 0.01 { return String(format: "$%.2f", v) }
+        if v >= 1e15 { return String(format: "$%.1fk", v / 1000) }
+        let rounded2 = (v * 100).rounded() / 100
+        if rounded2 >= 1000 { return String(format: "$%.1fk", v / 1000) }
+        let rounded3 = (v * 1_000).rounded() / 1_000
+        if rounded3 >= 0.01 { return String(format: "$%.2f", v) }
         return String(format: "$%.3f", v)
     }
 
@@ -146,13 +154,15 @@ enum Format {
         return dateFormatterCache.string(date, format: "MMM d")
     }
 
-    /// "2026-08-05 14:23"
+    /// "2026-08-05 14:23" ("—" when ts <= 0 per data-semantics.md)
     static func dateTime(_ ts: Int64) -> String {
-        dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "MM-dd HH:mm")
+        guard ts > 0 else { return "—" }
+        return dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "MM-dd HH:mm")
     }
 
     static func day(_ ts: Int64) -> String {
-        dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "yyyy-MM-dd")
+        guard ts > 0 else { return "—" }
+        return dateString(Date(timeIntervalSince1970: TimeInterval(ts)), format: "yyyy-MM-dd")
     }
     /// Count abbreviation (1.2k / 34), same units as compact.
     static func count(_ n: Int64) -> String {

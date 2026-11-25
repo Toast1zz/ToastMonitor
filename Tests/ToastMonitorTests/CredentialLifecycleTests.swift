@@ -3,7 +3,12 @@ import Security
 @testable import ToastMonitor
 
 final class CredentialResponseProtocol: URLProtocol {
-    static var handler: ((CredentialResponseProtocol) -> Void)?
+    private static let handlerLock = NSLock()
+    nonisolated(unsafe) private static var _handler: ((CredentialResponseProtocol) -> Void)?
+    static var handler: ((CredentialResponseProtocol) -> Void)? {
+        get { handlerLock.lock(); defer { handlerLock.unlock() }; return _handler }
+        set { handlerLock.lock(); defer { handlerLock.unlock() }; _handler = newValue }
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {

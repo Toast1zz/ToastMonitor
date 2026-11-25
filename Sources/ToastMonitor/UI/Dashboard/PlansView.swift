@@ -113,7 +113,7 @@ struct PlansView: View {
                 HStack(alignment: .top, spacing: DashLayout.gap) {
                     if hasQuotas {
                         quotasCard
-                            .frame(width: hasRight ? floor((geo.size.width - DashLayout.gap) * 0.57) : geo.size.width)
+                            .frame(width: hasRight ? max(0, floor((geo.size.width - DashLayout.gap) * 0.57)) : max(0, geo.size.width))
                             .frame(maxHeight: .infinity)
                     }
                     if hasRight {
@@ -129,7 +129,14 @@ struct PlansView: View {
             now = tick
         }
         .onChange(of: activeTab) { _ in
-            if isTabActive { now = Date() }
+            if isTabActive {
+                now = Date()
+                deepseek.loadSpendIfNeeded(for: .today, configuration: UsagePeriodSettings.shared.configuration)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TMNotifications.dashboardVisibility)) { note in
+            guard (note.object as? Bool) == true, isTabActive else { return }
+            deepseek.loadSpendIfNeeded(for: .today, configuration: UsagePeriodSettings.shared.configuration)
         }
         .task {
             while !Task.isCancelled {
@@ -238,8 +245,9 @@ struct PlansView: View {
 
     private var codexRow: some View {
         let cx = codexQuota.state
-        let sub = app.subscriptions.first { $0.plan == "openai" || $0.plan == "codex" }
-        let title = CodexPlanName.resolve(custom: codexCustomName, apiPlan: nil, subscription: sub)
+        let sub = SubscriptionMath.activeCodexSubscription(in: app.subscriptions, now: now)
+        let customTitle = codexCustomName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = customTitle.isEmpty ? "Codex" : customTitle
         let planLabel = CodexPlanName.tier(apiPlan: cx.planType) ?? sub.flatMap(CodexPlanName.tier(subscription:))
         let windowLabel: String = {
             guard let s = cx.windowSeconds else { return "Limit" }
@@ -272,7 +280,7 @@ struct PlansView: View {
             now: now,
             windows: windows,
             footnote: footnote,
-            refresh: codexQuota.enabled ? { codexQuota.refresh() } : nil,
+            refresh: codexQuota.enabled ? { codexQuota.refresh(force: true) } : nil,
             openSettings: { openAccountSettings(expandAccount: "codex") }
         )
     }
@@ -303,7 +311,7 @@ struct PlansView: View {
             now: now,
             windows: windows,
             footnote: footnote,
-            refresh: { ccQuota.refresh() },
+            refresh: { ccQuota.refresh(force: true) },
             openSettings: { openAccountSettings(expandAccount: "cc") }
         )
     }
@@ -334,7 +342,7 @@ struct PlansView: View {
             now: now,
             windows: windows,
             footnote: parts.isEmpty ? nil : parts.joined(separator: " · "),
-            refresh: { grokQuota.refresh() },
+            refresh: { grokQuota.refresh(force: true) },
             openSettings: { openAccountSettings(expandAccount: "grok") }
         )
     }
@@ -366,7 +374,7 @@ struct PlansView: View {
             now: now,
             windows: windows,
             footnote: nil,
-            refresh: { antigravity.refresh() },
+            refresh: { antigravity.refresh(force: true) },
             openSettings: { openAccountSettings(expandAccount: "antigravity") }
         )
     }
@@ -398,7 +406,7 @@ struct PlansView: View {
             now: now,
             windows: windows,
             footnote: footnote,
-            refresh: goClient.configured ? { goClient.refresh() } : nil,
+            refresh: goClient.configured ? { goClient.refresh(force: true) } : nil,
             openSettings: { openAccountSettings(expandAccount: "go") }
         )
     }
@@ -456,8 +464,9 @@ struct PlansView: View {
         let periods = UsagePeriodConfiguration(mode: .calendar)
         let todayStart = periods.range(for: .today, now: now).start
         let monthStart = periods.range(for: .month, now: now).start
-        let todaySpend = app.openRouterSpend(since: todayStart, current: or.creditsUsage)
-        let monthSpend = app.openRouterSpend(since: monthStart, current: or.creditsUsage)
+        let hasCredits = or.creditsUsage != nil
+        let todaySpend = hasCredits ? app.openRouterSpend(since: todayStart, current: or.creditsUsage) : 0
+        let monthSpend = hasCredits ? app.openRouterSpend(since: monthStart, current: or.creditsUsage) : 0
         let err = or.authInvalid ? "API key rejected (401/403)" : or.error
 
         return PlanBalanceRow(
@@ -472,13 +481,13 @@ struct PlansView: View {
             balanceText: or.lastOK > 0 ? (or.accountBalance.map(Format.money) ?? "—") : nil,
             balanceTint: .primary,
             secondaryStats: or.lastOK > 0 ? [
-                ("Today", Format.money(todaySpend)),
-                ("Month", Format.money(monthSpend)),
+                ("Today", hasCredits ? Format.money(todaySpend) : "—"),
+                ("Month", hasCredits ? Format.money(monthSpend) : "—"),
             ] : [],
             keyQuota: (or.lastOK > 0 && or.limitRemaining != nil && (or.limit ?? 0) > 0)
                 ? (remaining: or.limitRemaining!, limit: or.limit!) : nil,
             showsRemaining: showsRemaining,
-            refresh: { orClient.refresh() },
+            refresh: { orClient.refresh(force: true) },
             openSettings: { openAccountSettings(expandAccount: "router") }
         )
     }
@@ -517,7 +526,7 @@ struct PlansView: View {
             keyQuota: nil,
             showsRemaining: showsRemaining,
             warningNote: unavailable ? "Unavailable for API calls" : nil,
-            refresh: { deepseek.refresh(force: true) },
+            refresh: { deepseek.refresh(force: true, bypassBackoff: true) },
             openSettings: { openAccountSettings(expandAccount: "deepseek") }
         )
     }
@@ -657,7 +666,7 @@ private struct PlanQuotaRow: View {
                         .padding(.vertical, 4)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(windows, id: \.label) { window in
+                        ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                             windowRow(window)
                         }
                         if let footnote {
@@ -840,24 +849,27 @@ private struct PlanBalanceRow: View {
                 Spacer(minLength: 8)
                 if isLoading {
                     ProgressView().controlSize(.small)
-                } else if hovering || error != nil {
-                    Button(action: refresh) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12))
+                } else {
+                    if lastSync > 0 {
+                        let age = max(0, Int64(now.timeIntervalSince1970) - lastSync)
+                        Text(age < 60 ? "Just now" : "\(Format.remaining(age)) ago")
+                            .font(TMType.regular(TMType.caption))
+                            .tmMonospacedDigit()
+                            .foregroundStyle(age > 120 ? TMDesign.accent : TMDesign.quiet)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Refresh \(title)")
-                    .accessibilityLabel("Refresh \(title)")
-                } else if lastSync > 0 {
-                    let age = Int64(now.timeIntervalSince1970) - lastSync
-                    Text(age < 60 ? "Just now" : "\(Format.remaining(age)) ago")
-                        .font(TMType.regular(TMType.caption))
-                        .tmMonospacedDigit()
-                        .foregroundStyle(age > 120 ? TMDesign.accent : TMDesign.quiet)
+                    if hovering || error != nil {
+                        Button(action: refresh) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Refresh \(title)")
+                        .accessibilityLabel("Refresh \(title)")
+                    }
                 }
             }
 
-            if failedEmpty, let error {
+            if (failedEmpty || (error != nil && balanceText == nil)), let error {
                 let problem = RowProblem.from(service: title, error: error, accountKey: accountKey)
                 HStack(spacing: 8) {
                     Label(problem.title, systemImage: "exclamationmark.triangle.fill")
@@ -918,8 +930,20 @@ private struct PlanBalanceRow: View {
                         .font(TMType.regular(TMType.caption))
                         .foregroundStyle(TMDesign.danger)
                 }
+                if let error {
+                    let problem = RowProblem.from(service: title, error: error, accountKey: accountKey)
+                    Text(problem.title)
+                        .font(TMType.regular(TMType.caption))
+                        .foregroundStyle(TMDesign.danger)
+                        .lineLimit(1)
+                        .help(problem.detail)
+                }
             } else if isLoading {
                 ProgressView().controlSize(.small)
+            } else {
+                Text("—")
+                    .font(TMType.semibold(22))
+                    .foregroundStyle(TMDesign.quiet)
             }
         }
         .contentShape(Rectangle())
