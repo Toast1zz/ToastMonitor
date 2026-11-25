@@ -1,0 +1,3 @@
+## Fixed
+
+- **Settings Form Text Fields (`Add Subscription` & Account Sheets)**: Wrap grouped-form `TextField` and `SecureField` inputs inside `LabeledContent` with `.labelsHidden()`, `.textFieldStyle(.roundedBorder)`, and `.multilineTextAlignment(.leading)` in `SubscriptionSettingsSection` (`Add Subscription` / `Edit Subscription`), `AccountsSettingsSection` (custom Codex name, OpenCode Go, OpenRouter, Command Code sheets), and `DeepSeekConnectionView`. Previously macOS SwiftUI grouped forms rendered bare `TextField`s as right-aligned borderless controls where trailing spaces were hidden in the right margin without shifting text or advancing the visible caret.

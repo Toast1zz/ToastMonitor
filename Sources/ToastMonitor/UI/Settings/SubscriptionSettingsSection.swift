@@ -138,13 +138,19 @@ struct SubscriptionSettingsSection: View {
         showForm = true
     }
 
-    private var subscriptionForm: some View {
+    var subscriptionForm: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(editing == nil ? "Add Subscription" : "Edit Subscription")
                 .font(.title2.weight(.semibold))
 
             Form {
-                TextField("Name", text: $name, prompt: Text("Codex / Claude Pro"))
+                LabeledContent("Name") {
+                    TextField("Name", text: $name, prompt: Text("Codex / Claude Pro"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: 240)
+                }
                 Picker("Plan", selection: $plan) {
                     Text("None").tag("")
                     Text("OpenCode Go").tag("go")
@@ -164,7 +170,13 @@ struct SubscriptionSettingsSection: View {
                     Text("Yearly").tag("yearly")
                 }
                 .pickerStyle(.menu)
-                TextField("Price per period (USD)", text: $price)
+                LabeledContent("Price per period (USD)") {
+                    TextField("Price per period (USD)", text: $price, prompt: Text("20.00"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: 120)
+                }
             }
             .formStyle(.grouped)
 

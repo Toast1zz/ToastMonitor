@@ -124,8 +124,14 @@ struct DeepSeekConnectionView: View {
                 .disabled(client.connecting)
             } else {
                 Form {
-                    SecureField(mode == .apiKey ? "DeepSeek API key" : "Platform userToken", text: $secret)
-                        .font(.system(size: TMType.body, design: .monospaced))
+                    LabeledContent(mode == .apiKey ? "DeepSeek API key" : "Platform userToken") {
+                        SecureField(mode == .apiKey ? "DeepSeek API key" : "Platform userToken", text: $secret)
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.leading)
+                            .font(.system(size: TMType.body, design: .monospaced))
+                            .frame(width: 240)
+                    }
                     LabeledContent("Access", value: mode == .apiKey ? "Balance only" : "Account balance and billed usage")
                     LabeledContent("Storage", value: "macOS Keychain")
                 }

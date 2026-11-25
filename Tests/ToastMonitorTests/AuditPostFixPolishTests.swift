@@ -1,5 +1,7 @@
-import XCTest
+import AppKit
 import SQLite3
+import SwiftUI
+import XCTest
 @testable import ToastMonitor
 
 final class AuditPostFixPolishTests: XCTestCase {
@@ -305,5 +307,52 @@ final class AuditPostFixPolishTests: XCTestCase {
         let second = DSHParser.scanLogs(knownPaths: [dshFile], database: db)
         XCTAssertEqual(second.sessions.count, 1)
         XCTAssertEqual(second.sessions.first?.created, 1_786_628_702)
+    }
+
+    @MainActor
+    func testSubscriptionFormTextFieldsAdvanceCaretOnTrailingSpaces() {
+        let host = NSHostingView(rootView: SubscriptionSettingsSection().subscriptionForm)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+
+        var fields: [NSTextField] = []
+        func collect(_ view: NSView) {
+            if let tf = view as? NSTextField, tf.isEditable {
+                fields.append(tf)
+            }
+            for child in view.subviews {
+                collect(child)
+            }
+        }
+        collect(host)
+
+        XCTAssertEqual(fields.count, 2)
+        for field in fields {
+            XCTAssertNotEqual(field.alignment, .right)
+            XCTAssertTrue(field.isBezeled)
+        }
+
+        let nameField = fields[0]
+        window.makeFirstResponder(nameField)
+        guard let editor = nameField.currentEditor() as? NSTextView,
+              let layoutManager = editor.layoutManager,
+              let textContainer = editor.textContainer else {
+            return XCTFail("Expected active field editor for Name text field")
+        }
+
+        editor.string = "Gemini AI Ultra"
+        editor.selectedRange = NSRange(location: editor.string.utf16.count, length: 0)
+        layoutManager.ensureLayout(for: textContainer)
+        let xBefore = layoutManager.location(forGlyphAt: layoutManager.numberOfGlyphs).x
+
+        editor.string = "Gemini AI Ultra "
+        editor.selectedRange = NSRange(location: editor.string.utf16.count, length: 0)
+        layoutManager.ensureLayout(for: textContainer)
+        let xAfter = layoutManager.location(forGlyphAt: layoutManager.numberOfGlyphs).x
+
+        XCTAssertGreaterThan(xAfter - xBefore, 2.0,
+                             "Trailing space must visibly advance the caret in Subscription Name field")
     }
 }

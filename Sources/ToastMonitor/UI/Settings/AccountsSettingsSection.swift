@@ -160,7 +160,13 @@ struct AccountsSettingsSection: View {
                     .horizontalRadioGroupLayout()
                     .labelsHidden()
                 }
-                TextField("Name", text: $codexName, prompt: Text(codexAutoName))
+                LabeledContent("Name") {
+                    TextField("Name", text: $codexName, prompt: Text(codexAutoName))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: 200)
+                }
             }
             account("cc", "Command Code", symbol: "c.circle.fill", color: TMDesign.commandCode,
                     status: ccStatus) {
@@ -387,10 +393,22 @@ struct AccountsSettingsSection: View {
                         key: "go", saveTitle: "Save & Query",
                         canSave: !goWS.trimmed.isEmpty && !goCookie.trimmed.isEmpty,
                         cancel: { showGoForm = false }, save: saveGo) {
-            TextField("Workspace ID", text: $goWS, prompt: Text("wrk_..."))
-                .font(.system(size: TMType.body, design: .monospaced))
-            SecureField("Authentication cookie", text: $goCookie, prompt: Text("Fe26.2**..."))
-                .font(.system(size: TMType.body, design: .monospaced))
+            LabeledContent("Workspace ID") {
+                TextField("Workspace ID", text: $goWS, prompt: Text("wrk_..."))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .font(.system(size: TMType.body, design: .monospaced))
+                    .frame(width: 240)
+            }
+            LabeledContent("Authentication cookie") {
+                SecureField("Authentication cookie", text: $goCookie, prompt: Text("Fe26.2**..."))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .font(.system(size: TMType.body, design: .monospaced))
+                    .frame(width: 240)
+            }
         }
     }
 
@@ -400,8 +418,14 @@ struct AccountsSettingsSection: View {
                         key: "router", saveTitle: "Save",
                         canSave: !orKey.trimmed.isEmpty,
                         cancel: { showORForm = false }, save: saveOpenRouter) {
-            SecureField("API key", text: $orKey, prompt: Text("sk-or-..."))
-                .font(.system(size: TMType.body, design: .monospaced))
+            LabeledContent("API key") {
+                SecureField("API key", text: $orKey, prompt: Text("sk-or-..."))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .font(.system(size: TMType.body, design: .monospaced))
+                    .frame(width: 240)
+            }
             if orClient.hasKey {
                 Toggle("Keep existing keys", isOn: $orAppend)
             }
@@ -415,9 +439,15 @@ struct AccountsSettingsSection: View {
                         key: "cc", saveTitle: "Save",
                         canSave: !ccCookie.trimmed.isEmpty,
                         cancel: { showCCForm = false }, save: saveCommandCode) {
-            SecureField("Cookie header or session token", text: $ccCookie,
-                        prompt: Text("__Secure-commandcode_prod_.session_token=…"))
-                .font(.system(size: TMType.body, design: .monospaced))
+            LabeledContent("Cookie header or session token") {
+                SecureField("Cookie header or session token", text: $ccCookie,
+                            prompt: Text("__Secure-commandcode_prod_.session_token=…"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .font(.system(size: TMType.body, design: .monospaced))
+                    .frame(width: 240)
+            }
         }
     }
 
