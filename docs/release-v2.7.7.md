@@ -1,0 +1,3 @@
+## Fixed
+
+- **Claude & Grok CLI Online Notarization Check**: When `SecStaticCodeCheckValidity` with `"notarized"` misses `syspolicyd`'s offline cache (for example, immediately after Homebrew upgrades a bare Mach-O `claude` binary before it has been run in Terminal), `ClaudeCLIRefresher.isNotarized(_:)` now verifies the code signature, triggers an online notarization ticket lookup via `/usr/sbin/spctl -a -t open --context context:primary-signature`, and re-verifies the `"notarized"` requirement. This prevents repeated false `blocked by Gatekeeper` failures from breaking background login renewal.

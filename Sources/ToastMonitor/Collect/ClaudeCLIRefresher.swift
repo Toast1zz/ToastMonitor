@@ -103,16 +103,71 @@ enum ClaudeCLIRefresher {
         isQuarantined(path) && !isNotarized(path)
     }
 
-    /// Checks the notarization ticket (stapled, or online); may block briefly.
-    nonisolated static func isNotarized(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath() as CFURL
+    /// Checks notarization. `SecStaticCodeCheckValidity` with `"notarized"`
+    /// only checks stapled/cached tickets offline, so bare Mach-O binaries
+    /// upgraded by Homebrew fail until `syspolicyd` fetches the ticket online.
+    /// A validly signed binary falls back to `spctl` to populate that cache
+    /// and then re-checks the `"notarized"` requirement.
+    nonisolated static func isNotarized(
+        _ path: String,
+        checkOffline: (URL) -> Bool = checkNotarizedOffline,
+        hasSignature: (URL) -> Bool = hasValidCodeSignature,
+        refreshTicket: (String) -> Bool = { fetchOnlineNotarizationTicket($0) }
+    ) -> Bool {
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        if checkOffline(url) { return true }
+        guard hasSignature(url) else { return false }
+        guard refreshTicket(url.path) else { return false }
+        return checkOffline(url)
+    }
+
+    nonisolated static func checkNotarizedOffline(_ url: URL) -> Bool {
         var code: SecStaticCode?
         var requirement: SecRequirement?
-        guard SecStaticCodeCreateWithPath(url, [], &code) == errSecSuccess, let code,
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code,
               SecRequirementCreateWithString("notarized" as CFString, [], &requirement) == errSecSuccess,
               let requirement else { return false }
         return SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
                                           requirement) == errSecSuccess
+    }
+
+    nonisolated static func hasValidCodeSignature(_ url: URL) -> Bool {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code else {
+            return false
+        }
+        return SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
+                                          nil) == errSecSuccess
+    }
+
+    nonisolated static func fetchOnlineNotarizationTicket(_ path: String, timeout: TimeInterval = 10) -> Bool {
+        let spctlPath = "/usr/sbin/spctl"
+        guard FileManager.default.isExecutableFile(atPath: spctlPath) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: spctlPath)
+        process.arguments = ["-a", "-t", "open", "--context", "context:primary-signature", "--", path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            if process.isRunning { process.terminate() }
+            if exited.wait(timeout: .now() + 2) == .timedOut,
+               process.isRunning, process.processIdentifier > 0 {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            return false
+        }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
     }
 
     /// The xattr reads "flags;timestamp;agent;uuid" with hex flags; 0x40

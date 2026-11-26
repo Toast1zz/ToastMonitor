@@ -117,4 +117,78 @@ final class ClaudeCLIRefresherTests: XCTestCase {
         XCTAssertEqual(ClaudeCLIRefresher.refresh(binary: script), .failed("blocked by Gatekeeper"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
     }
+
+    func testIsNotarizedUsesFastOfflinePathWithoutRefreshingTicket() {
+        var signatureChecked = false
+        var ticketRefreshed = false
+
+        let result = ClaudeCLIRefresher.isNotarized(
+            "/tmp/fake-claude",
+            checkOffline: { _ in true },
+            hasSignature: { _ in signatureChecked = true; return true },
+            refreshTicket: { _ in ticketRefreshed = true; return true }
+        )
+
+        XCTAssertTrue(result)
+        XCTAssertFalse(signatureChecked)
+        XCTAssertFalse(ticketRefreshed)
+    }
+
+    func testIsNotarizedSkipsTicketRefreshForUnsignedBinary() {
+        var ticketRefreshed = false
+
+        let result = ClaudeCLIRefresher.isNotarized(
+            "/tmp/fake-claude",
+            checkOffline: { _ in false },
+            hasSignature: { _ in false },
+            refreshTicket: { _ in ticketRefreshed = true; return true }
+        )
+
+        XCTAssertFalse(result)
+        XCTAssertFalse(ticketRefreshed)
+    }
+
+    func testIsNotarizedRetriesOfflineCheckAfterOnlineTicketRefresh() {
+        var offlineChecks = 0
+        var refreshedPath: String?
+
+        let result = ClaudeCLIRefresher.isNotarized(
+            "/tmp/fake-claude",
+            checkOffline: { _ in
+                offlineChecks += 1
+                return offlineChecks >= 2
+            },
+            hasSignature: { _ in true },
+            refreshTicket: { path in
+                refreshedPath = path
+                return true
+            }
+        )
+
+        XCTAssertTrue(result)
+        XCTAssertEqual(offlineChecks, 2)
+        XCTAssertEqual(refreshedPath, URL(fileURLWithPath: "/tmp/fake-claude").resolvingSymlinksInPath().path)
+    }
+
+    func testIsNotarizedReturnsFalseIfTicketRefreshDoesNotSatisfyNotarizedCheck() {
+        var offlineChecks = 0
+        var ticketRefreshed = false
+
+        let result = ClaudeCLIRefresher.isNotarized(
+            "/tmp/fake-claude",
+            checkOffline: { _ in
+                offlineChecks += 1
+                return false
+            },
+            hasSignature: { _ in true },
+            refreshTicket: { _ in
+                ticketRefreshed = true
+                return true
+            }
+        )
+
+        XCTAssertFalse(result)
+        XCTAssertTrue(ticketRefreshed)
+        XCTAssertEqual(offlineChecks, 2)
+    }
 }
