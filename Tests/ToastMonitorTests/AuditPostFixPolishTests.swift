@@ -311,7 +311,7 @@ final class AuditPostFixPolishTests: XCTestCase {
 
     @MainActor
     func testSubscriptionFormTextFieldsAdvanceCaretOnTrailingSpaces() {
-        let host = NSHostingView(rootView: SubscriptionSettingsSection().subscriptionForm)
+        let host = NSHostingView(rootView: SubscriptionSettingsSection().subscriptionFormAnyView)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
@@ -369,5 +369,11 @@ final class AuditPostFixPolishTests: XCTestCase {
         XCTAssertLessThanOrEqual(topPath.boundingRect.maxY, rect.maxY + 0.01)
 
         XCTAssertTrue(DashBarSegmentShape(topRadius: 2.5).path(in: .zero).isEmpty)
+    }
+
+    func testMenuBarStatusItemLengthUsesTwoPointHorizontalPadding() {
+        XCTAssertEqual(MenuBarIcon.horizontalPadding, 2)
+        XCTAssertEqual(MenuBarIcon.statusItemLength(imageWidth: 18, titleWidth: 42.3), 67)
+        XCTAssertEqual(MenuBarIcon.statusItemLength(imageWidth: 18, titleWidth: 0), 22)
     }
 }

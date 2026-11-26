@@ -3,6 +3,18 @@ import AppKit
 /// The exact vector path from artifacts/menu-bar-icon.svg, drawn natively so
 /// both SwiftPM runs and packaged apps have the same resolution-independent icon.
 enum MenuBarIcon {
+    /// Horizontal padding (points) on each side of the menu bar icon + label.
+    static let horizontalPadding: CGFloat = 2
+    /// Gap AppKit's `NSButtonCell` places between `.imageLeading` image and title.
+    private static let imageTitleGap: CGFloat = 2
+
+    /// Computes the explicit `NSStatusItem.length` needed to give `horizontalPadding`
+    /// on both sides without clipping the label.
+    static func statusItemLength(imageWidth: CGFloat, titleWidth: CGFloat) -> CGFloat {
+        let contentWidth = imageWidth + (titleWidth > 0 ? imageTitleGap + ceil(titleWidth) : 0)
+        return ceil(contentWidth + horizontalPadding * 2)
+    }
+
     static func makeImage() -> NSImage {
         // SVG coordinates grow downwards. Keep its 24-point viewBox and inset
         // while fitting the image into the standard menu bar at 18 points.

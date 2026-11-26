@@ -841,6 +841,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ]))
         }
         button.attributedTitle = attr
+        if let statusItem {
+            statusItem.length = MenuBarIcon.statusItemLength(
+                imageWidth: button.image?.size.width ?? 0,
+                titleWidth: attr.size().width
+            )
+        }
         var access = "Today: \(text) tokens"
         if quotaAlerts.unreadCount > 0 {
             access += ", \(quotaAlerts.unreadCount) unread"

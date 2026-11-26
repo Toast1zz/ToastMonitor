@@ -209,6 +209,14 @@ struct SubscriptionSettingsSection: View {
         .frame(width: 520)
     }
 
+    /// Type-erased wrapper so tests can host `subscriptionForm` without
+    /// exposing its opaque `some View` return type across the module boundary
+    /// in release builds (which emits a symbolic reference to SwiftUICore's
+    /// `View.tag(_:includeOptional:)` opaque type descriptor).
+    var subscriptionFormAnyView: AnyView {
+        AnyView(subscriptionForm)
+    }
+
     private func saveSubscription() {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         guard let p = Double(price.trimmingCharacters(in: .whitespaces)), p.isFinite, p >= 0 else {
